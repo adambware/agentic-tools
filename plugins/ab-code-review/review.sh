@@ -33,7 +33,7 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
 # Detect base branch if not provided
 if [ -z "$BASE_BRANCH" ]; then

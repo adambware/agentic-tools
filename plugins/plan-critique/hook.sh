@@ -13,7 +13,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Debug setup
 # ---------------------------------------------------------------------------
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PLAN_DIR="${REPO_ROOT}/.plan-critique"
 mkdir -p "$PLAN_DIR"
 DEBUG_LOG="${PLAN_DIR}/debug.log"
@@ -24,6 +24,8 @@ log() {
 
 log "=== Hook invoked ==="
 log "Args: $*"
+log "CLAUDE_PROJECT_DIR=${CLAUDE_PROJECT_DIR:-<unset>}"
+log "REPO_ROOT=$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
 # Input handling
