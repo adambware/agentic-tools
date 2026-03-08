@@ -1,6 +1,6 @@
 # Plan Critique Plugin
 
-Parallel critique system that spawns two independent AI reviewers (Claude Opus + Codex CLI) whenever a plan file is written or edited, then consolidates their feedback into a final revised plan.
+Parallel critique system that spawns two independent AI reviewers (Claude Opus + Codex CLI) when you exit plan mode, then consolidates their feedback into a final revised plan.
 
 ## Install
 
@@ -14,22 +14,24 @@ Parallel critique system that spawns two independent AI reviewers (Claude Opus +
 
 ## How It Works
 
-1. **Trigger**: Fires on any `Write` or `Edit` of a file matching `*plan*` or `*phase*` (case-insensitive)
-2. **Parallel Review**: Spawns Claude Opus and Codex CLI as independent critics, both exploring the repo for context
-3. **Consolidation**: Feeds both critiques back into the parent session to produce a merged `*_final.md` plan
+1. **Trigger**: Fires on `ExitPlanMode` — when a plan is finalized and approved
+2. **Plan capture**: Extracts the plan content from the tool input and writes it to `.plan-critique/`
+3. **Parallel Review**: Spawns Claude Opus and Codex CLI as independent critics, both exploring the repo for context
+4. **Consolidation**: Feeds both critiques back into the parent session to produce a merged final plan
 
 ## Output Files
 
-For a plan file called `my-plan.md`, the hook produces:
+All output is written to `.plan-critique/` in the repository root:
 
 | File | Contents |
 |------|----------|
-| `my-plan_critique_opus.md` | Opus critique |
-| `my-plan_critique_codex.md` | Codex critique |
-| `my-plan_final.md` | Consolidated plan (after resume) |
-| `my-plan_consolidation_prompt.md` | Fallback if session resume fails |
+| `plan_<timestamp>.md` | The original plan |
+| `plan_<timestamp>_critique_opus.md` | Opus critique |
+| `plan_<timestamp>_critique_codex.md` | Codex critique |
+| `plan_<timestamp>_final.md` | Consolidated plan (after resume) |
+| `plan_<timestamp>_consolidation_prompt.md` | Fallback if session resume fails |
 
-All output files are written as siblings of the original plan file.
+> **Tip**: Add `.plan-critique/` to your project's `.gitignore`.
 
 ## Requirements
 

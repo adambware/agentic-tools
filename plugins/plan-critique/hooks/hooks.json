@@ -2,7 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "ExitPlanMode",
         "hooks": [
           {
             "type": "command",

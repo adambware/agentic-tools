@@ -2,8 +2,8 @@
 # critique-plan.sh — Parallel critique system for plan files
 #
 # Usage:
-#   Manual/VSCode:  bash critique-plan.sh /path/to/my-plan.md
-#   Hook (stdin):   Called by PostToolUse hook, reads JSON from stdin
+#   Manual:       bash critique-plan.sh /path/to/my-plan.md
+#   Hook (stdin): Called by PostToolUse hook on ExitPlanMode, reads JSON from stdin
 #
 # Spawns two parallel critic agents (Claude Opus + Codex CLI), waits for both,
 # then feeds consolidated critiques back into the parent session.
@@ -13,58 +13,54 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Input handling
 # ---------------------------------------------------------------------------
-# Accept file path as argument (manual/VSCode) or extract from stdin JSON (hook)
 PLAN_FILE=""
+PLAN_CONTENT=""
 SESSION_ID=""
 
 if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
+    # Manual mode: file path as argument
     PLAN_FILE="$1"
+    if [ ! -f "$PLAN_FILE" ]; then
+        echo "ERROR: File does not exist: $PLAN_FILE"
+        exit 1
+    fi
+    PLAN_CONTENT="$(cat "$PLAN_FILE")"
 elif [ ! -t 0 ]; then
-    # Hook mode: read JSON from stdin
+    # Hook mode: ExitPlanMode sends plan content in tool_input.plan
     INPUT="$(cat)"
-    PLAN_FILE="$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')"
+    PLAN_CONTENT="$(echo "$INPUT" | jq -r '.tool_input.plan // empty')"
     SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty')"
 else
-    echo "SKIP: No file path provided (pass as argument or pipe JSON on stdin)"
+    echo "SKIP: No plan provided (pass file path as argument or pipe JSON on stdin)"
     exit 0
 fi
 
 # ---------------------------------------------------------------------------
 # Guard clauses
 # ---------------------------------------------------------------------------
-if [ -z "$PLAN_FILE" ]; then
-    echo "SKIP: No file path extracted"
+if [ -z "$PLAN_CONTENT" ]; then
+    echo "SKIP: No plan content found"
     exit 0
 fi
-
-# Resolve to absolute path if relative
-if [ "${PLAN_FILE#/}" = "$PLAN_FILE" ]; then
-    PLAN_FILE="$(pwd)/$PLAN_FILE"
-fi
-
-if [ ! -f "$PLAN_FILE" ]; then
-    echo "SKIP: File does not exist: $PLAN_FILE"
-    exit 0
-fi
-
-# Case-insensitive check for plan/phase patterns
-BASENAME="$(basename "$PLAN_FILE")"
-if ! echo "$BASENAME" | grep -iqE '(plan|phase)'; then
-    echo "SKIP: File does not match plan patterns (plan/phase): $BASENAME"
-    exit 0
-fi
-
-echo "=== Plan critique triggered for: $PLAN_FILE ==="
 
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-PLAN_DIR="$(dirname "$PLAN_FILE")"
-PLAN_BASE="${BASENAME%.*}"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PLAN_DIR="${REPO_ROOT}/.plan-critique"
+mkdir -p "$PLAN_DIR"
 
-CRITIQUE_OPUS="${PLAN_DIR}/${PLAN_BASE}_critique_opus.md"
-CRITIQUE_CODEX="${PLAN_DIR}/${PLAN_BASE}_critique_codex.md"
-FINAL_PLAN="${PLAN_DIR}/${PLAN_BASE}_final.md"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+PLAN_FILE="${PLAN_DIR}/plan_${TIMESTAMP}.md"
+CRITIQUE_OPUS="${PLAN_DIR}/plan_${TIMESTAMP}_critique_opus.md"
+CRITIQUE_CODEX="${PLAN_DIR}/plan_${TIMESTAMP}_critique_codex.md"
+FINAL_PLAN="${PLAN_DIR}/plan_${TIMESTAMP}_final.md"
+
+# Write the plan content to a file so reviewers can read it
+echo "$PLAN_CONTENT" > "$PLAN_FILE"
+
+echo "=== Plan critique triggered ==="
+echo "  Plan written to: $PLAN_FILE"
 
 # Session ID: prefer stdin JSON, fall back to env vars
 if [ -z "$SESSION_ID" ]; then
@@ -184,7 +180,7 @@ if [ "$HAS_SESSION" = "true" ]; then
 fi
 
 if [ "$HAS_SESSION" = "false" ]; then
-    CONSOLIDATION_FILE="${PLAN_DIR}/${PLAN_BASE}_consolidation_prompt.md"
+    CONSOLIDATION_FILE="${PLAN_DIR}/plan_${TIMESTAMP}_consolidation_prompt.md"
     echo ""
     echo "Session ID not available or resume failed."
     echo "Writing consolidation prompt to: $CONSOLIDATION_FILE"
