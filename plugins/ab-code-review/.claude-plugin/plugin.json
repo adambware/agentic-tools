@@ -1,5 +1,5 @@
 {
   "name": "code-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main"
 }

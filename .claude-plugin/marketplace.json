@@ -10,14 +10,14 @@
       "name": "plan-critique",
       "source": "./plugins/plan-critique",
       "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "keywords": ["hooks", "code-review", "planning"]
     },
     {
       "name": "ab-code-review",
       "source": "./plugins/ab-code-review",
       "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "keywords": ["skills", "code-review", "diff"]
     }
   ]
