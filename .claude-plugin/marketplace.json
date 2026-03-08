@@ -1,0 +1,24 @@
+{
+  "name": "agentic-tools",
+  "owner": { "name": "adamb" },
+  "metadata": {
+    "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "plan-critique",
+      "source": "./plugins/plan-critique",
+      "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
+      "version": "1.0.0",
+      "keywords": ["hooks", "code-review", "planning"]
+    },
+    {
+      "name": "code-review",
+      "source": "./plugins/code-review",
+      "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
+      "version": "1.0.0",
+      "keywords": ["skills", "code-review", "diff"]
+    }
+  ]
+}

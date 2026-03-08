@@ -1,6 +1,16 @@
-# Plan Critique Hook
+# Plan Critique Plugin
 
 Parallel critique system that spawns two independent AI reviewers (Claude Opus + Codex CLI) whenever a plan file is written or edited, then consolidates their feedback into a final revised plan.
+
+## Install
+
+```bash
+# Add the marketplace (once)
+/plugin marketplace add adamb/agentic-tools
+
+# Install this plugin
+/plugin install plan-critique@agentic-tools
+```
 
 ## How It Works
 
@@ -21,40 +31,16 @@ For a plan file called `my-plan.md`, the hook produces:
 
 All output files are written as siblings of the original plan file.
 
-## Trigger Methods
-
-| Method | How |
-|--------|-----|
-| Automatic | PostToolUse hook fires on Write/Edit (registered in `.claude/settings.json`) |
-| VSCode | "Run Plan Critiques" task (`Ctrl+Shift+P` > Tasks: Run Task) |
-| CLI | `bash hooks/plan-critique/hook.sh /path/to/plan.md` |
-
 ## Requirements
 
 - `claude` CLI (required)
 - `codex` CLI (optional — degrades gracefully with a placeholder if not installed)
 - `jq` (required for stdin JSON parsing in hook mode)
 
-## Configuration
+## Manual Usage
 
-The hook is registered in `.claude/settings.json` as an async PostToolUse hook:
+You can also run the hook directly from the CLI:
 
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash hooks/plan-critique/hook.sh",
-            "async": true,
-            "timeout": 600
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+bash hook.sh /path/to/plan.md
 ```

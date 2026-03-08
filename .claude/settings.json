@@ -1,17 +1,1 @@
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash hooks/plan-critique/hook.sh",
-            "async": true,
-            "timeout": 600
-          }
-        ]
-      }
-    ]
-  }
-}
+{}
