@@ -1,0 +1,5 @@
+{
+  "name": "claude-code-notifications",
+  "version": "1.0.0",
+  "description": "Push notifications to your phone via ntfy when Claude Code needs input or approval"
+}
