@@ -5,8 +5,8 @@
 #   Manual:       bash critique-plan.sh /path/to/my-plan.md
 #   Hook (stdin): Called by PermissionRequest hook on ExitPlanMode, reads JSON from stdin
 #
-# Spawns two parallel critic agents (Claude Opus + Codex CLI), waits for both,
-# then returns a PermissionRequest decision with file paths for the parent session.
+# First invocation: spawns parallel critics, denies with critique file paths.
+# Second invocation: detects marker file, allows plan through.
 
 set -euo pipefail
 
@@ -17,6 +17,7 @@ REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || 
 PLAN_DIR="${REPO_ROOT}/.plan-critique"
 mkdir -p "$PLAN_DIR"
 DEBUG_LOG="${PLAN_DIR}/debug.log"
+MARKER_FILE="${PLAN_DIR}/.critiqued"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$DEBUG_LOG"
@@ -26,6 +27,15 @@ log "=== Hook invoked ==="
 log "Args: $*"
 log "CLAUDE_PROJECT_DIR=${CLAUDE_PROJECT_DIR:-<unset>}"
 log "REPO_ROOT=$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# Second-run check: if already critiqued, allow through and clean up
+# ---------------------------------------------------------------------------
+if [ -f "$MARKER_FILE" ]; then
+    log "Marker file found — skipping critique (second run), letting user decide"
+    rm -f "$MARKER_FILE"
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Input handling
@@ -132,7 +142,13 @@ fi
 log "Critique files written: $CRITIQUE_OPUS, $CRITIQUE_CODEX"
 
 # ---------------------------------------------------------------------------
-# Return PermissionRequest decision with file paths
+# Write marker so next ExitPlanMode is allowed through
+# ---------------------------------------------------------------------------
+echo "$TIMESTAMP" > "$MARKER_FILE"
+log "Marker file written: $MARKER_FILE"
+
+# ---------------------------------------------------------------------------
+# Return deny with critique file paths
 # ---------------------------------------------------------------------------
 MESSAGE="Plan critique complete. Read and consolidate the critiques:
 - Opus critique: $CRITIQUE_OPUS
