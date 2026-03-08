@@ -21,7 +21,7 @@ agentic-tools/
 Packaged capabilities that can be invoked by name. Each skill defines a trigger, a prompt, and optionally the tools it needs.
 
 ### Hooks
-Shell commands that run in response to lifecycle events (e.g., session start, pre-tool-use, post-commit). Useful for environment setup, linting, and guardrails.
+Shell commands that run in response to lifecycle events (e.g., PostToolUse, PreToolUse, Stop). Useful for environment setup, linting, guardrails, and automated review pipelines. See [hooks/](hooks/) for available hooks.
 
 ### Agents
 Agent definitions and configurations — system prompts, tool access policies, and behavioral guidelines for specialized agents.

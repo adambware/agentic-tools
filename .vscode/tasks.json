@@ -4,7 +4,7 @@
     {
       "label": "Run Plan Critiques",
       "type": "shell",
-      "command": "bash .claude/scripts/critique-plan.sh \"${file}\"",
+      "command": "bash hooks/plan-critique/hook.sh \"${file}\"",
       "group": "build",
       "presentation": {
         "reveal": "always",

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/scripts/critique-plan.sh",
+            "command": "bash hooks/plan-critique/hook.sh",
             "async": true,
             "timeout": 600
           }

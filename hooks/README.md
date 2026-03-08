@@ -15,7 +15,14 @@ hooks/
 
 Common lifecycle events hooks can attach to:
 
-- **session-start**: Runs when a new session begins (environment setup, dependency checks)
-- **pre-tool-use**: Runs before a tool is invoked (validation, guardrails)
-- **post-tool-use**: Runs after a tool completes (logging, cleanup)
-- **pre-commit**: Runs before a git commit (linting, formatting)
+- **PostToolUse**: Runs after a tool completes (validation, logging, follow-up actions)
+- **PreToolUse**: Runs before a tool is invoked (guardrails, blocking dangerous commands)
+- **SessionStart**: Runs when a new session begins (environment setup, dependency checks)
+- **Stop**: Runs when the agent finishes responding (quality gates, continuation logic)
+- **UserPromptSubmit**: Runs when a prompt is submitted (filtering, context injection)
+
+## Available Hooks
+
+| Hook | Event | Description |
+|------|-------|-------------|
+| [plan-critique](plan-critique/) | PostToolUse (Write/Edit) | Parallel critique system — spawns Opus + Codex reviewers for plan files |
