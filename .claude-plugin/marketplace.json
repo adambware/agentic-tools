@@ -19,6 +19,13 @@
       "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
       "version": "1.0.4",
       "keywords": ["skills", "code-review", "diff"]
+    },
+    {
+      "name": "claude-code-notifications",
+      "source": "./plugins/claude-code-notifications",
+      "description": "Push notifications to your phone via ntfy when Claude Code needs input or approval",
+      "version": "1.0.0",
+      "keywords": ["hooks", "notifications", "ntfy", "push"]
     }
   ]
 }
