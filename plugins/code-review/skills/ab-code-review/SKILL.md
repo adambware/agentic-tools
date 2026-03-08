@@ -1,3 +1,8 @@
+---
+name: ab-code-review
+description: Parallel code review of the current branch diff against main. Spawns Opus and Codex as independent reviewers, then consolidates findings into a triaged action plan. Use when the user asks for a code review, wants feedback on their branch, or says "review my changes".
+---
+
 # Code Review
 
 Run a parallel code review of your current branch against main using two independent AI reviewers (Claude Opus + Codex).
