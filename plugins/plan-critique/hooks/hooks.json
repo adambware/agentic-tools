@@ -1,6 +1,6 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "PermissionRequest": [
       {
         "matcher": "ExitPlanMode",
         "hooks": [

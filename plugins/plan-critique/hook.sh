@@ -3,10 +3,10 @@
 #
 # Usage:
 #   Manual:       bash critique-plan.sh /path/to/my-plan.md
-#   Hook (stdin): Called by PostToolUse hook on ExitPlanMode, reads JSON from stdin
+#   Hook (stdin): Called by PermissionRequest hook on ExitPlanMode, reads JSON from stdin
 #
 # Spawns two parallel critic agents (Claude Opus + Codex CLI), waits for both,
-# then outputs the consolidated critique to stdout (returned to parent session).
+# then returns a PermissionRequest decision with file paths for the parent session.
 
 set -euo pipefail
 
@@ -51,7 +51,6 @@ elif [ ! -t 0 ]; then
     log "Extracted plan content length: ${#PLAN_CONTENT}"
 else
     log "SKIP: No stdin and no args"
-    echo "SKIP: No plan provided (pass file path as argument or pipe JSON on stdin)"
     exit 0
 fi
 
@@ -60,7 +59,6 @@ fi
 # ---------------------------------------------------------------------------
 if [ -z "$PLAN_CONTENT" ]; then
     log "SKIP: No plan content found"
-    echo "SKIP: No plan content found"
     exit 0
 fi
 
@@ -134,38 +132,28 @@ fi
 log "Critique files written: $CRITIQUE_OPUS, $CRITIQUE_CODEX"
 
 # ---------------------------------------------------------------------------
-# Output consolidation prompt to stdout (returned to parent session)
+# Return PermissionRequest decision with file paths
 # ---------------------------------------------------------------------------
-OPUS_CONTENT="$(cat "$CRITIQUE_OPUS")"
-CODEX_CONTENT="$(cat "$CRITIQUE_CODEX")"
+MESSAGE="Plan critique complete. Read and consolidate the critiques:
+- Opus critique: $CRITIQUE_OPUS
+- Codex critique: $CRITIQUE_CODEX
+- Original plan: $PLAN_FILE
 
-cat <<EOF
-The two critic agents have completed their reviews of your plan.
+Produce a final revised plan that integrates valid critique, rejects points you disagree with, and resolves conflicts. Write it to: $FINAL_PLAN"
 
-## Critic 1: Opus (second instance)
-$OPUS_CONTENT
+# Escape the message for JSON
+MESSAGE_JSON="$(echo "$MESSAGE" | jq -Rs '.')"
 
----
-
-## Critic 2: Codex
-$CODEX_CONTENT
-
----
-
-## Your Task: Consolidate
-
-You wrote the original plan at $PLAN_FILE. You've now received external critique from two independent agents.
-
-Produce a final revised plan that:
-1. Integrates valid critique points — update the plan accordingly
-2. Explicitly rejects critique points you disagree with — state why and keep your original approach
-3. Resolves conflicts between the two critiques using your own judgment — pick a side and explain it
-4. Calls out any new open questions surfaced by the critiques that need human decision before work starts
-5. Preserves your original intent and structure where the critiques are off-base
-
-Write the final consolidated plan to: $FINAL_PLAN
-
-Format it as a clean, production-ready plan — not a critique response. The final.md should be the document someone picks up to start executing.
-EOF
+cat <<ENDJSON
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": {
+      "behavior": "allow",
+      "message": $MESSAGE_JSON
+    }
+  }
+}
+ENDJSON
 
 log "=== Plan critique complete ==="
