@@ -6,31 +6,49 @@
 #   Hook (stdin): Called by PostToolUse hook on ExitPlanMode, reads JSON from stdin
 #
 # Spawns two parallel critic agents (Claude Opus + Codex CLI), waits for both,
-# then feeds consolidated critiques back into the parent session.
+# then outputs the consolidated critique to stdout (returned to parent session).
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Debug setup
+# ---------------------------------------------------------------------------
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PLAN_DIR="${REPO_ROOT}/.plan-critique"
+mkdir -p "$PLAN_DIR"
+DEBUG_LOG="${PLAN_DIR}/debug.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$DEBUG_LOG"
+}
+
+log "=== Hook invoked ==="
+log "Args: $*"
 
 # ---------------------------------------------------------------------------
 # Input handling
 # ---------------------------------------------------------------------------
 PLAN_FILE=""
 PLAN_CONTENT=""
-SESSION_ID=""
 
 if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
     # Manual mode: file path as argument
     PLAN_FILE="$1"
+    log "Manual mode: PLAN_FILE=$PLAN_FILE"
     if [ ! -f "$PLAN_FILE" ]; then
         echo "ERROR: File does not exist: $PLAN_FILE"
         exit 1
     fi
     PLAN_CONTENT="$(cat "$PLAN_FILE")"
 elif [ ! -t 0 ]; then
-    # Hook mode: ExitPlanMode sends plan content in tool_input.plan
+    # Hook mode: read JSON from stdin
     INPUT="$(cat)"
+    log "Hook mode stdin received (${#INPUT} bytes)"
+    log "Full stdin JSON: $INPUT"
     PLAN_CONTENT="$(echo "$INPUT" | jq -r '.tool_input.plan // empty')"
-    SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty')"
+    log "Extracted plan content length: ${#PLAN_CONTENT}"
 else
+    log "SKIP: No stdin and no args"
     echo "SKIP: No plan provided (pass file path as argument or pipe JSON on stdin)"
     exit 0
 fi
@@ -39,6 +57,7 @@ fi
 # Guard clauses
 # ---------------------------------------------------------------------------
 if [ -z "$PLAN_CONTENT" ]; then
+    log "SKIP: No plan content found"
     echo "SKIP: No plan content found"
     exit 0
 fi
@@ -46,10 +65,6 @@ fi
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-PLAN_DIR="${REPO_ROOT}/.plan-critique"
-mkdir -p "$PLAN_DIR"
-
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 PLAN_FILE="${PLAN_DIR}/plan_${TIMESTAMP}.md"
 CRITIQUE_OPUS="${PLAN_DIR}/plan_${TIMESTAMP}_critique_opus.md"
@@ -59,24 +74,9 @@ FINAL_PLAN="${PLAN_DIR}/plan_${TIMESTAMP}_final.md"
 # Write the plan content to a file so reviewers can read it
 echo "$PLAN_CONTENT" > "$PLAN_FILE"
 
-echo "=== Plan critique triggered ==="
-echo "  Plan written to: $PLAN_FILE"
+log "Plan written to: $PLAN_FILE"
 
-# Session ID: prefer stdin JSON, fall back to env vars
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID="${CLAUDE_SESSION_ID:-}"
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID="${CLAUDE_TOOL_SESSION_ID:-}"
-fi
-
-HAS_SESSION="true"
-if [ -z "$SESSION_ID" ]; then
-    echo "WARNING: No parent session ID available. Critiques will run but auto-resume is disabled."
-    HAS_SESSION="false"
-fi
-
-# Prevent "nested session" error when spawning claude from inside a hook
+# Prevent nested session errors
 unset CLAUDECODE 2>/dev/null || true
 unset CLAUDE_CODE_ENVIRONMENT_KIND 2>/dev/null || true
 
@@ -101,18 +101,18 @@ Be specific. Reference actual files and line numbers where relevant. Be ruthless
 # ---------------------------------------------------------------------------
 # Parallel execution
 # ---------------------------------------------------------------------------
-echo "Spawning Opus critic..."
+log "Spawning Opus critic..."
 claude -p "$CRITIQUE_PROMPT" --output-format text > "$CRITIQUE_OPUS" 2>&1 &
 PID_OPUS=$!
-echo "  Opus PID: $PID_OPUS"
+log "  Opus PID: $PID_OPUS"
 
 if command -v codex >/dev/null 2>&1; then
-    echo "Spawning Codex critic..."
+    log "Spawning Codex critic..."
     codex exec "$CRITIQUE_PROMPT" > "$CRITIQUE_CODEX" 2>&1 &
     PID_CODEX=$!
-    echo "  Codex PID: $PID_CODEX"
+    log "  Codex PID: $PID_CODEX"
 else
-    echo "NOTE: codex not found on PATH — skipping Codex critic"
+    log "codex not found on PATH — skipping"
     cat > "$CRITIQUE_CODEX" <<'PLACEHOLDER'
 # Codex Critique — Not Available
 
@@ -123,24 +123,22 @@ PLACEHOLDER
 fi
 
 # Wait for both to finish
-echo "Waiting for critics to complete..."
-wait "$PID_OPUS" && echo "  Opus critic finished (exit 0)" || echo "  Opus critic finished (exit $?)"
+log "Waiting for critics to complete..."
+wait "$PID_OPUS" && log "  Opus critic finished (exit 0)" || log "  Opus critic finished (exit $?)"
 if [ -n "$PID_CODEX" ]; then
-    wait "$PID_CODEX" && echo "  Codex critic finished (exit 0)" || echo "  Codex critic finished (exit $?)"
+    wait "$PID_CODEX" && log "  Codex critic finished (exit 0)" || log "  Codex critic finished (exit $?)"
 fi
 
-echo ""
-echo "Critique files written:"
-echo "  Opus:  $CRITIQUE_OPUS"
-echo "  Codex: $CRITIQUE_CODEX"
+log "Critique files written: $CRITIQUE_OPUS, $CRITIQUE_CODEX"
 
 # ---------------------------------------------------------------------------
-# Build consolidation prompt
+# Output consolidation prompt to stdout (returned to parent session)
 # ---------------------------------------------------------------------------
 OPUS_CONTENT="$(cat "$CRITIQUE_OPUS")"
 CODEX_CONTENT="$(cat "$CRITIQUE_CODEX")"
 
-CONSOLIDATION_PROMPT="The two critic agents have completed their reviews of your plan.
+cat <<EOF
+The two critic agents have completed their reviews of your plan.
 
 ## Critic 1: Opus (second instance)
 $OPUS_CONTENT
@@ -165,33 +163,7 @@ Produce a final revised plan that:
 
 Write the final consolidated plan to: $FINAL_PLAN
 
-Format it as a clean, production-ready plan — not a critique response. The final.md should be the document someone picks up to start executing."
-
-# ---------------------------------------------------------------------------
-# Resume parent session
-# ---------------------------------------------------------------------------
-if [ "$HAS_SESSION" = "true" ]; then
-    echo ""
-    echo "Resuming parent session ($SESSION_ID) with consolidation prompt..."
-    claude --resume "$SESSION_ID" -p "$CONSOLIDATION_PROMPT" --output-format text 2>&1 || {
-        echo "WARNING: Failed to resume session. Writing consolidation prompt to file instead."
-        HAS_SESSION="false"
-    }
-fi
-
-if [ "$HAS_SESSION" = "false" ]; then
-    CONSOLIDATION_FILE="${PLAN_DIR}/plan_${TIMESTAMP}_consolidation_prompt.md"
-    echo ""
-    echo "Session ID not available or resume failed."
-    echo "Writing consolidation prompt to: $CONSOLIDATION_FILE"
-    echo "Paste its contents into your Claude session to consolidate the critiques."
-    cat > "$CONSOLIDATION_FILE" <<EOF
-$CONSOLIDATION_PROMPT
+Format it as a clean, production-ready plan — not a critique response. The final.md should be the document someone picks up to start executing.
 EOF
-    echo ""
-    echo "=== Consolidation prompt ==="
-    echo "$CONSOLIDATION_PROMPT"
-fi
 
-echo ""
-echo "=== Plan critique complete ==="
+log "=== Plan critique complete ==="
