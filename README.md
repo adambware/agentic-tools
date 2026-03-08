@@ -1,6 +1,10 @@
-# Agentic Tools
+# Adam Does Agentic Tools
 
-A Claude Code plugin marketplace — a collection of hooks, skills, and agents you can install per-project.
+Adam's Claude Code plugin marketplace — a collection of hooks, skills, and agents you can install.
+
+Currently focused on using Claude and Codex in parallel to critique plans and PRs.
+
+More orchestration patterns and plugin types to come!
 
 ## Quick Start
 
