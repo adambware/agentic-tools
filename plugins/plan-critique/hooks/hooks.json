@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hook.sh",
-            "timeout": 600
+            "timeout": 1200
           }
         ]
       }

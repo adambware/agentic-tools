@@ -10,7 +10,7 @@
       "name": "plan-critique",
       "source": "./plugins/plan-critique",
       "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "keywords": ["hooks", "code-review", "planning"]
     },
     {

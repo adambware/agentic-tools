@@ -149,7 +149,7 @@ cat <<ENDJSON
   "hookSpecificOutput": {
     "hookEventName": "PermissionRequest",
     "decision": {
-      "behavior": "allow",
+      "behavior": "deny",
       "message": $MESSAGE_JSON
     }
   }
