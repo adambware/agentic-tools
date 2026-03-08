@@ -7,22 +7,17 @@
 #   Skill:    Invoked by SKILL.md via Claude Code
 #
 # Spawns two parallel reviewer agents (Claude Opus + Codex CLI), waits for both,
-# then feeds consolidated review back into the parent session.
+# then outputs the consolidation prompt to stdout (returned to parent session).
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Input handling
 # ---------------------------------------------------------------------------
-SESSION_ID=""
 BASE_BRANCH=""
 
 if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
     BASE_BRANCH="$1"
-elif [ ! -t 0 ]; then
-    # Skill/hook mode: read JSON from stdin
-    INPUT="$(cat)"
-    SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty')"
 fi
 
 # ---------------------------------------------------------------------------
@@ -35,7 +30,25 @@ fi
 
 REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
-# Detect base branch if not provided
+# ---------------------------------------------------------------------------
+# Debug setup
+# ---------------------------------------------------------------------------
+REVIEW_DIR="${REPO_ROOT}/.code-review"
+mkdir -p "$REVIEW_DIR"
+DEBUG_LOG="${REVIEW_DIR}/debug.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$DEBUG_LOG"
+}
+
+log "=== Review invoked ==="
+log "Args: $*"
+log "CLAUDE_PROJECT_DIR=${CLAUDE_PROJECT_DIR:-<unset>}"
+log "REPO_ROOT=$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# Branch detection
+# ---------------------------------------------------------------------------
 if [ -z "$BASE_BRANCH" ]; then
     if git show-ref --verify --quiet refs/heads/main; then
         BASE_BRANCH="main"
@@ -62,33 +75,16 @@ fi
 DIFF_STAT="$(git diff --stat "${BASE_BRANCH}...HEAD")"
 COMMIT_LOG="$(git log --oneline "${BASE_BRANCH}..HEAD")"
 
-echo "=== Code review triggered for branch: $CURRENT_BRANCH (vs $BASE_BRANCH) ==="
-echo "$DIFF_STAT"
-echo ""
+log "Branch: $CURRENT_BRANCH vs $BASE_BRANCH"
+log "Diff stat: $DIFF_STAT"
 
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-REVIEW_DIR="${REPO_ROOT}/.code-review"
-mkdir -p "$REVIEW_DIR"
-
-REVIEW_OPUS="${REVIEW_DIR}/review_opus.md"
-REVIEW_CODEX="${REVIEW_DIR}/review_codex.md"
-REVIEW_FINAL="${REVIEW_DIR}/review_final.md"
-
-# Session ID: prefer stdin JSON, fall back to env vars
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID="${CLAUDE_SESSION_ID:-}"
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID="${CLAUDE_TOOL_SESSION_ID:-}"
-fi
-
-HAS_SESSION="true"
-if [ -z "$SESSION_ID" ]; then
-    echo "WARNING: No parent session ID available. Reviews will run but auto-resume is disabled."
-    HAS_SESSION="false"
-fi
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+REVIEW_OPUS="${REVIEW_DIR}/review_${TIMESTAMP}_opus.md"
+REVIEW_CODEX="${REVIEW_DIR}/review_${TIMESTAMP}_codex.md"
+REVIEW_FINAL="${REVIEW_DIR}/review_${TIMESTAMP}_final.md"
 
 # Prevent nested session errors
 unset CLAUDECODE 2>/dev/null || true
@@ -147,18 +143,18 @@ Brief list of things done well (important for morale and balance)."
 # ---------------------------------------------------------------------------
 # Parallel execution
 # ---------------------------------------------------------------------------
-echo "Spawning Opus reviewer..."
+log "Spawning Opus reviewer..."
 claude -p "$REVIEW_PROMPT" --output-format text > "$REVIEW_OPUS" 2>&1 &
 PID_OPUS=$!
-echo "  Opus PID: $PID_OPUS"
+log "  Opus PID: $PID_OPUS"
 
 if command -v codex >/dev/null 2>&1; then
-    echo "Spawning Codex reviewer..."
+    log "Spawning Codex reviewer..."
     codex exec "$REVIEW_PROMPT" > "$REVIEW_CODEX" 2>&1 &
     PID_CODEX=$!
-    echo "  Codex PID: $PID_CODEX"
+    log "  Codex PID: $PID_CODEX"
 else
-    echo "NOTE: codex not found on PATH — skipping Codex reviewer"
+    log "codex not found on PATH — skipping"
     cat > "$REVIEW_CODEX" <<'PLACEHOLDER'
 # Codex Review — Not Available
 
@@ -169,79 +165,27 @@ PLACEHOLDER
 fi
 
 # Wait for both to finish
-echo "Waiting for reviewers to complete..."
-wait "$PID_OPUS" && echo "  Opus reviewer finished (exit 0)" || echo "  Opus reviewer finished (exit $?)"
+log "Waiting for reviewers to complete..."
+wait "$PID_OPUS" && log "  Opus reviewer finished (exit 0)" || log "  Opus reviewer finished (exit $?)"
 if [ -n "$PID_CODEX" ]; then
-    wait "$PID_CODEX" && echo "  Codex reviewer finished (exit 0)" || echo "  Codex reviewer finished (exit $?)"
+    wait "$PID_CODEX" && log "  Codex reviewer finished (exit 0)" || log "  Codex reviewer finished (exit $?)"
 fi
 
-echo ""
-echo "Review files written:"
-echo "  Opus:  $REVIEW_OPUS"
-echo "  Codex: $REVIEW_CODEX"
+log "Review files written: $REVIEW_OPUS, $REVIEW_CODEX"
 
 # ---------------------------------------------------------------------------
-# Build consolidation prompt
+# Output consolidation prompt to stdout (returned to parent session)
 # ---------------------------------------------------------------------------
-OPUS_CONTENT="$(cat "$REVIEW_OPUS")"
-CODEX_CONTENT="$(cat "$REVIEW_CODEX")"
+cat <<EOF
+Code review complete for branch $CURRENT_BRANCH (vs $BASE_BRANCH). Read and consolidate the reviews:
+- Opus review: $REVIEW_OPUS
+- Codex review: $REVIEW_CODEX
 
-CONSOLIDATION_PROMPT="Two independent code reviewers have completed their review of your branch ($CURRENT_BRANCH vs $BASE_BRANCH).
+Triage all findings into must-fix, should-fix, and nit. Resolve conflicts between reviewers. Dismiss false positives. Create an ordered action plan for must-fix items.
 
-## Reviewer 1: Opus
-$OPUS_CONTENT
+Write the consolidated review to: $REVIEW_FINAL
 
----
-
-## Reviewer 2: Codex
-$CODEX_CONTENT
-
----
-
-## Your Task: Triage and Action Plan
-
-You are the orchestrator. Analyze both reviews and produce an action plan.
-
-1. **Triage all findings** into:
-   - **Must-fix** — bugs, security issues, broken contracts (block merge)
-   - **Should-fix** — error handling gaps, performance issues, missing tests (fix before merge if time allows)
-   - **Nit** — style, naming, minor suggestions (fix opportunistically)
-
-2. **Resolve conflicts** between the two reviewers. Where they disagree, state which reviewer is correct and why.
-
-3. **Dismiss false positives** — if a reviewer flagged something that is actually correct, explain why and dismiss it.
-
-4. **Create an ordered action plan** for must-fix items. List the specific files to change, what to change, and in what order.
-
-5. **Write the consolidated review** to: $REVIEW_FINAL
-
-Then begin executing the must-fix items from the action plan."
-
-# ---------------------------------------------------------------------------
-# Resume parent session
-# ---------------------------------------------------------------------------
-if [ "$HAS_SESSION" = "true" ]; then
-    echo ""
-    echo "Resuming parent session ($SESSION_ID) with consolidation prompt..."
-    claude --resume "$SESSION_ID" -p "$CONSOLIDATION_PROMPT" --output-format text 2>&1 || {
-        echo "WARNING: Failed to resume session. Writing consolidation prompt to file instead."
-        HAS_SESSION="false"
-    }
-fi
-
-if [ "$HAS_SESSION" = "false" ]; then
-    CONSOLIDATION_FILE="${REVIEW_DIR}/review_consolidation_prompt.md"
-    echo ""
-    echo "Session ID not available or resume failed."
-    echo "Writing consolidation prompt to: $CONSOLIDATION_FILE"
-    echo "Paste its contents into your Claude session to consolidate the reviews."
-    cat > "$CONSOLIDATION_FILE" <<EOF
-$CONSOLIDATION_PROMPT
+Then begin executing the must-fix items from the action plan.
 EOF
-    echo ""
-    echo "=== Consolidation prompt ==="
-    echo "$CONSOLIDATION_PROMPT"
-fi
 
-echo ""
-echo "=== Code review complete ==="
+log "=== Code review complete ==="
