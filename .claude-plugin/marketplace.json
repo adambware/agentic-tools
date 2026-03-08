@@ -14,8 +14,8 @@
       "keywords": ["hooks", "code-review", "planning"]
     },
     {
-      "name": "code-review",
-      "source": "./plugins/code-review",
+      "name": "ab-code-review",
+      "source": "./plugins/ab-code-review",
       "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
       "version": "1.0.0",
       "keywords": ["skills", "code-review", "diff"]
