@@ -1,6 +1,6 @@
 {
   "name": "agentic-tools",
-  "owner": { "name": "adamb" },
+  "owner": { "name": "adambware" },
   "metadata": {
     "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code",
     "pluginRoot": "./plugins"
