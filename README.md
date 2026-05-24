@@ -10,7 +10,7 @@ More orchestration patterns and plugin types to come!
 
 ```bash
 # Add this marketplace (once per machine)
-/plugin marketplace add adamb/agentic-tools
+/plugin marketplace add adambware/agentic-tools
 
 # Install a plugin into your current project
 /plugin install plan-critique@agentic-tools

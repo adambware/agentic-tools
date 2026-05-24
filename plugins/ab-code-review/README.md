@@ -6,10 +6,10 @@ Parallel code review system that spawns two independent AI reviewers (Claude Opu
 
 ```bash
 # Add the marketplace (once)
-/plugin marketplace add adamb/agentic-tools
+/plugin marketplace add adambware/agentic-tools
 
 # Install this plugin
-/plugin install code-review@agentic-tools
+/plugin install ab-code-review@agentic-tools
 ```
 
 ## How It Works

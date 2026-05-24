@@ -6,7 +6,7 @@ Produces a one-page codebase onboarding doc that makes an unfamiliar system **pi
 
 ```bash
 # Add the marketplace (once)
-/plugin marketplace add adamb/agentic-tools
+/plugin marketplace add adambware/agentic-tools
 
 # Install this plugin
 /plugin install onboardme@agentic-tools
