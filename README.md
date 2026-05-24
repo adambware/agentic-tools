@@ -10,7 +10,7 @@ More orchestration patterns and plugin types to come!
 
 ```bash
 # Add this marketplace (once per machine)
-/plugin marketplace add adamb/agentic-tools
+/plugin marketplace add adambware/agentic-tools
 
 # Install a plugin into your current project
 /plugin install plan-critique@agentic-tools
@@ -21,7 +21,8 @@ More orchestration patterns and plugin types to come!
 | Plugin | Type | Description |
 |--------|------|-------------|
 | [plan-critique](plugins/plan-critique/) | Hook | Parallel critique system — spawns Opus + Codex reviewers for plan files |
-| [code-review](plugins/code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
+| [ab-code-review](plugins/ab-code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
+| [onboardme](plugins/onboardme/) | Skill | Onboarding one-pager — traces one real request to make a codebase picturable in ~3 minutes |
 
 ## Creating a New Plugin
 

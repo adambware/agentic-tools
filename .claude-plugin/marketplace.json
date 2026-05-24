@@ -1,6 +1,6 @@
 {
   "name": "agentic-tools",
-  "owner": { "name": "adamb" },
+  "owner": { "name": "adambware" },
   "metadata": {
     "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code",
     "pluginRoot": "./plugins"
@@ -19,6 +19,13 @@
       "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
       "version": "1.0.4",
       "keywords": ["skills", "code-review", "diff"]
+    },
+    {
+      "name": "onboardme",
+      "source": "./plugins/onboardme",
+      "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
+      "version": "1.0.0",
+      "keywords": ["skills", "onboarding", "codebase"]
     }
   ]
 }

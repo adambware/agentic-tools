@@ -6,7 +6,7 @@ Parallel critique system that spawns two independent AI reviewers (Claude Opus +
 
 ```bash
 # Add the marketplace (once)
-/plugin marketplace add adamb/agentic-tools
+/plugin marketplace add adambware/agentic-tools
 
 # Install this plugin
 /plugin install plan-critique@agentic-tools

@@ -1,0 +1,5 @@
+{
+  "name": "onboardme",
+  "version": "1.0.0",
+  "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes"
+}
