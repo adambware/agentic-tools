@@ -27,7 +27,7 @@ These shape every phase. Internalize them before starting.
 ## Inputs
 
 1. **Target region** — a file, module, package, or directory. If the user is vague ("add some tests"), ask them to name a region; a whole repo is not a valid scope for one plan.
-2. **Mode hint** (optional) — does the user want to *lock down current behavior* (characterization) or *test against intended behavior* (specification)? If unknown, Phase 1 decides per-target.
+2. **Mode hint** (optional) — Mode tag: `char` or `spec` — set in Phase 1. If unknown, Phase 1 decides per-target.
 3. **Coverage data** (optional) — an existing coverage report narrows the region fast. If absent, do not block; infer from reading the code and the test directory.
 4. **Stack** — language(s) and test framework. Drives seam techniques and tooling. See `reference/language-tooling.md`.
 5. **Human availability** for ≤7 clarifying questions.
@@ -60,7 +60,7 @@ Mixing these silently is a classic mistake — a characterization test that pins
 
 To learn behavior in characterization mode, it is allowed (and encouraged) to write small throwaway **probes** — call the code with sample inputs, observe outputs, and record them. Probes inform the plan; they are not the final tests.
 
-**Stop-the-line if:** the region is too large to triage meaningfully (e.g., a 30-file package) — ask the user to narrow it, or propose a sub-region to start with. Do not produce a shallow plan over a huge scope.
+**Stop-the-line if:** the target region contains more than 20 source files OR more than 2,000 lines of production code — ask the user to narrow it, or propose a sub-region to start with. Do not produce a shallow plan over a huge scope.
 
 ### Phase 2 — Risk Triage (the Prioritizer)
 
@@ -69,13 +69,17 @@ Rank every target. The goal is a defensible ordering, not a complete one.
 Score each target on two axes:
 
 - **Blast radius** — how bad is a silent failure here? Money, data integrity, security, and auth changes are high; a display formatter is low. Apply the **Beyoncé rule**: *if you'd be upset when it breaks silently, it needs a test.*
-- **Fragility** — how likely is it to break? Proxy this with **complexity × change-frequency** (Tornhill's behavioral code analysis). High cyclomatic complexity in a file that changes every sprint is where bugs are born; gnarly code nobody touches is low priority. Use `git log` on the file to gauge churn if no other signal exists.
+- **Fragility** — how likely is it to break? Proxy this with **complexity × change-frequency** (Tornhill's behavioral code analysis). High cyclomatic complexity in a file that changes every sprint is where bugs are born; gnarly code nobody touches is low priority. Use `git log` on the file to gauge churn if no other signal exists. To measure churn concretely: run `git log --oneline --follow -- <file>` and count commits in the last 90 days. >10 commits in a complex function = high fragility. Cross-reference with `git blame` to identify which functions changed most recently.
 
 Produce the **Risk Triage Table** with a tier per target: **P0 / P1 / P2 / Won't-cover**. The *won't-cover* list is mandatory and must have rationale — trivial getters, generated code, thin delegators, and dead code belong here. Stating what you skip is what makes the plan honest.
+
+**Pause after Phase 2.** Present the Risk Triage Table to the user and say: "Here is the triage — P0s are [X], P1s are [Y], Won't-cover are [Z] with rationale. Does this ordering look right before I continue to Seam Survey and Case Enumeration?" Proceed to Phase 3 only after the user confirms or adjusts. A wrong triage at this point makes all subsequent work land on the wrong targets.
 
 ### Phase 3 — Seam Survey (the Locksmith)
 
 For each P0/P1 target, determine how a test gets *in*. A **seam** is a place where behavior can be substituted without editing the code at that point — a constructor parameter, an interface, an injectable clock, a function argument.
+
+Detect the stack from the target region's file extensions and build tooling. Read only the matching language section of `reference/language-tooling.md`; skip the rest.
 
 For each target, record one of:
 
@@ -100,12 +104,14 @@ Also enumerate the **unhappy paths**: nulls/empties, error returns, exceptions, 
 
 ### Phase 5 — Plan Assembly (the Author)
 
+**Before writing planned tests:** check for any P0/P1 target flagged "Not safely reachable" in Phase 3. Move these to the "Do first" section of Testability Recommendations — include the minimal seam change required. Do not plan tests for an unreachable target; a plan that cannot be executed is not a plan. If all P0 targets are unreachable, the plan's first deliverable is the refactor list, not tests.
+
 Write `TEST_PLAN.md` using the template below. For every planned test, specify:
 
 - **Name** — states *scenario + expected outcome* in plain language, not a method name. `returns_zero_discount_when_cart_is_empty`, not `testCalculateDiscount`.
 - **Layer** — unit / integration / e2e. Each layer answers a different question: unit = "is this logic correct," integration = "do these pieces agree," e2e = "does the critical path work at all." Push toward the lowest layer that gives real confidence; reserve e2e for a few critical paths only — they are slow, flaky, and bad at localizing failure. Do not plan the same behavior at three layers.
-- **Asserts** — the *single* outcome. If you write "and," split it.
-- **Mode** — characterization or specification (from Phase 1).
+- **Asserts** — the single outcome (see Guiding Principle 4). If you write "and," it is two tests.
+- **Mode** — Mode tag: `char` or `spec` — set in Phase 1.
 - **Fixtures / control** — what setup is needed, and how non-determinism is controlled (injected clock, seeded RNG, fixed fixture).
 
 Then write the **Testability Recommendations**, split into:
@@ -115,6 +121,8 @@ Then write the **Testability Recommendations**, split into:
 ### Phase 6 — Rubric Pass (the Critic)
 
 Before finalizing, review the assembled plan against the quality rubric in `reference/grading-rubric.md`. Every planned test should plausibly satisfy all properties once written. Flag any test that can't — usually it means the target needs a Phase 3 refactor, or the test is doing too much and should be split. Revise the plan, don't just note the problem.
+
+**Coverage adequacy check:** after the rubric pass, verify every P0 target has at least one test case per major behavioral branch from Phase 4 enumeration. A plan that passes the rubric while covering only the happy path is not adequate — add the error-path or boundary cases from Phase 4. Adequacy is about behavioral branches covered, not properties of individual tests.
 
 ---
 

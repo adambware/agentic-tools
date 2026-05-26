@@ -36,7 +36,14 @@ This is a review, not a rewrite. The output is a report a human reads alongside 
 
 A single review report (markdown, structured like a thorough PR review comment), following the template at the end of this file:
 
-1. **Verdict** — one of *Tests look solid* / *Approve with test suggestions* / *Testing needs work before merge*, with a one-line justification.
+1. **Verdict** — one of the four verdicts below, with a one-line justification:
+
+| Verdict | Trigger |
+|---------|---------|
+| Tests look solid | No Blockers, ≤1 trivial Nit |
+| Approve with minor suggestions | No Blockers; Concerns the author can address post-merge |
+| Approve with test work needed | No Blockers; material Concerns that should be addressed before merge |
+| Testing needs work before merge | Any Blocker present |
 2. **Change Inventory** — each changed unit, classified by change type, with its test status.
 3. **Graded Findings** — assessment of the tests present, each with a severity (Blocker / Concern / Nit).
 4. **Testability Recommendations** — strongly-suggested design changes for testability, with rationale.
@@ -61,7 +68,9 @@ Obtain the diff. For every changed unit (function, method, class, component), cl
 
 Also note **deleted tests** — a removed test needs a reason. Removing a test to make a diff green is a Blocker-class finding unless the behavior it covered is genuinely gone.
 
-**Stop-the-line if:** the diff is enormous and unfocused (mixes refactor + new feature + unrelated changes) — say so; a tangled PR is itself the top finding, because it can't be reviewed for testing cleanly.
+Cross-check each classification against the PR description and linked ticket. A change labeled "refactor" in the description that introduces observable new behavior is itself a finding — the intent claimed and the diff diverge.
+
+**Stop-the-line if:** the diff exceeds ~500 changed lines (excluding generated/vendor files), touches more than ~15 distinct files with mixed change types (e.g. refactor + new feature + unrelated fixes), or has 10+ changed units with unclear intent. State this as the top finding — a tangled PR is itself the problem; it cannot be cleanly reviewed for testing.
 
 ### Phase 2 — Map Tests to Changes (the Auditor)
 
@@ -72,7 +81,11 @@ For each changed unit, locate the tests that exercise it — both tests added in
 - For bug fixes, confirm a regression test exists and would actually have failed before the fix.
 - Sanity-check: would a plausible bug in this changed code be caught by the tests as written? If you can imagine an easy mutation that stays green, the behavior is effectively untested even if the line is "covered."
 
+**Deleted-test audit:** list every test file and test function removed in the PR. Each requires one of: (a) the behavior it covered is provably gone from the diff, (b) a replacement test in the PR covers the same scenario, or (c) an explicit Blocker finding in Phase 3. There is no fourth option.
+
 ### Phase 3 — Grade the Tests Present (the Critic)
+
+Before grading: infer the primary language from the diff's file extensions and imports. Then read only the matching language section of `reference/language-tooling.md` — skip all other sections. If the stack mixes two languages, read those two sections only.
 
 Apply the rubric in `reference/grading-rubric.md` to the tests added or modified in the PR. For each finding, assign a **severity**:
 
@@ -86,6 +99,8 @@ Also note what is **done well** — a review that only lists faults is less usef
 
 ### Phase 4 — Testability Assessment (the Designer)
 
+Before grading: infer the primary language from the diff's file extensions and imports. Then read only the matching language section of `reference/language-tooling.md` — skip all other sections. If the stack mixes two languages, read those two sections only.
+
 Inspect the *changed code* for testability problems. Hard-to-test code is a design signal — surface the cause, not just the symptom. But be selective: only raise changes that are **genuinely worth making now**, i.e. they would materially improve the suite or unblock a Blocker/Concern from Phase 3. Common ones:
 
 - A new function reaches a hard dependency directly (clock, network, global) with no seam → suggest the minimal seam (inject the dependency). See `reference/language-tooling.md`.
@@ -94,6 +109,8 @@ Inspect the *changed code* for testability problems. Hard-to-test code is a desi
 - A new public surface that is awkward to call in isolation → the contract may be wrong.
 
 For each: state the problem, the design cause, and the *smallest* change that fixes it. Do not propose large refactors as merge-blockers — note big ones as follow-ups.
+
+Raise at most 3 testability findings per review. If more exist, choose the ones that directly unblock Blocker or Concern findings from Phase 3. The remainder belong in a tech-debt ticket, not a PR review.
 
 ### Phase 5 — High-Value Missing Tests (the Adversary)
 
@@ -116,7 +133,7 @@ ALWAYS use this exact structure:
 # Test Review: <PR title / branch>
 
 ## Verdict
-**<Tests look solid | Approve with test suggestions | Testing needs work before merge>**
+**<Tests look solid | Approve with minor suggestions | Approve with test work needed | Testing needs work before merge>**
 <one-line justification>
 
 ## Change Inventory
@@ -158,5 +175,5 @@ ALWAYS use this exact structure:
 ## Calibration notes
 
 - A clean PR with good tests should get a short report and a *Tests look solid* verdict. Do not manufacture findings to look thorough — proportionality is the point.
-- The verdict should follow the findings: any Blocker → *Testing needs work before merge*; Concerns only → *Approve with test suggestions*; neither → *Tests look solid*.
+- The verdict should follow the findings: any Blocker → *Testing needs work before merge*; Concerns only → verdict depends on severity: minor Concerns → *Approve with minor suggestions*; material Concerns → *Approve with test work needed*; neither → *Tests look solid*.
 - If the PR is a pure refactor with green behavior-level tests, that is a *good* outcome — do not flag "no new tests."
