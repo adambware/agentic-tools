@@ -1,0 +1,5 @@
+{
+  "name": "pr-test-reviewer",
+  "version": "1.0.0",
+  "description": "Test-focused PR review — grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code"
+}

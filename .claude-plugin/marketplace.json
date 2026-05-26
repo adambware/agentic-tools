@@ -26,6 +26,20 @@
       "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
       "version": "1.0.0",
       "keywords": ["skills", "onboarding", "codebase"]
+    },
+    {
+      "name": "pr-test-reviewer",
+      "source": "./plugins/pr-test-reviewer",
+      "description": "Test-focused PR review — grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
+      "version": "1.0.0",
+      "keywords": ["skills", "testing", "code-review", "pr"]
+    },
+    {
+      "name": "test-plan-explorer",
+      "source": "./plugins/test-plan-explorer",
+      "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
+      "version": "1.0.0",
+      "keywords": ["skills", "testing", "tdd", "planning"]
     }
   ]
 }
