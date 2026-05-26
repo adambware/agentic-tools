@@ -56,7 +56,7 @@ A single review report (markdown, structured like a thorough PR review comment),
 
 Five phases, in order.
 
-### Phase 1 — Establish Scope & Classify (the Cartographer)
+### Phase 1 — Establish scope & classify
 
 Obtain the diff. For every changed unit (function, method, class, component), classify the **change type** — this sets the bar for everything after:
 
@@ -72,7 +72,7 @@ Cross-check each classification against the PR description and linked ticket. A 
 
 **Stop-the-line if:** the diff exceeds ~500 changed lines (excluding generated/vendor files), touches more than ~15 distinct files with mixed change types (e.g. refactor + new feature + unrelated fixes), or has 10+ changed units with unclear intent. State this as the top finding — a tangled PR is itself the problem; it cannot be cleanly reviewed for testing.
 
-### Phase 2 — Map Tests to Changes (the Auditor)
+### Phase 2 — Map tests to changes
 
 For each changed unit, locate the tests that exercise it — both tests added in the PR and pre-existing tests that cover it. Build the mapping:
 
@@ -83,9 +83,9 @@ For each changed unit, locate the tests that exercise it — both tests added in
 
 **Deleted-test audit:** list every test file and test function removed in the PR. Each requires one of: (a) the behavior it covered is provably gone from the diff, (b) a replacement test in the PR covers the same scenario, or (c) an explicit Blocker finding in Phase 3. There is no fourth option.
 
-### Phase 3 — Grade the Tests Present (the Critic)
+### Phase 3 — Grade the tests present
 
-Before grading: infer the primary language from the diff's file extensions and imports. Then read only the matching language section of `reference/language-tooling.md` — skip all other sections. If the stack mixes two languages, read those two sections only.
+Infer the primary language from the diff's file extensions and imports, then read only the matching language section of `reference/language-tooling.md` (two sections if the stack mixes two languages, none of the rest). This language read also serves Phase 4.
 
 Apply the rubric in `reference/grading-rubric.md` to the tests added or modified in the PR. For each finding, assign a **severity**:
 
@@ -97,9 +97,7 @@ Be concrete: cite the test by name and say what's wrong and what better looks li
 
 Also note what is **done well** — a review that only lists faults is less useful and less likely to be heeded.
 
-### Phase 4 — Testability Assessment (the Designer)
-
-Before grading: infer the primary language from the diff's file extensions and imports. Then read only the matching language section of `reference/language-tooling.md` — skip all other sections. If the stack mixes two languages, read those two sections only.
+### Phase 4 — Testability assessment
 
 Inspect the *changed code* for testability problems. Hard-to-test code is a design signal — surface the cause, not just the symptom. But be selective: only raise changes that are **genuinely worth making now**, i.e. they would materially improve the suite or unblock a Blocker/Concern from Phase 3. Common ones:
 
@@ -112,7 +110,7 @@ For each: state the problem, the design cause, and the *smallest* change that fi
 
 Raise at most 3 testability findings per review. If more exist, choose the ones that directly unblock Blocker or Concern findings from Phase 3. The remainder belong in a tech-debt ticket, not a PR review.
 
-### Phase 5 — High-Value Missing Tests (the Adversary)
+### Phase 5 — High-value missing tests
 
 From the untested changed behavior found in Phase 2, derive specific suggested tests — but **rank and cap**. Use the techniques in `reference/test-design-techniques.md` (boundary analysis and error-path enumeration are usually the highest-yield). For each suggested test, give:
 

@@ -47,9 +47,9 @@ A single `TEST_PLAN.md` written to the working directory, following the template
 
 ## Workflow
 
-The agent adopts five roles in sequence. Do not skip ahead — each phase feeds the next.
+Six phases in sequence. Do not skip ahead — each phase feeds the next.
 
-### Phase 1 — Scope & Mode (the Surveyor)
+### Phase 1 — Scope & mode
 
 Read the target region and its existing tests. Establish boundaries and, for each meaningful target (a function, a behavior cluster, a class with a real contract), decide the **mode**:
 
@@ -62,20 +62,20 @@ To learn behavior in characterization mode, it is allowed (and encouraged) to wr
 
 **Stop-the-line if:** the target region contains more than 20 source files OR more than 2,000 lines of production code — ask the user to narrow it, or propose a sub-region to start with. Do not produce a shallow plan over a huge scope.
 
-### Phase 2 — Risk Triage (the Prioritizer)
+### Phase 2 — Risk triage
 
 Rank every target. The goal is a defensible ordering, not a complete one.
 
 Score each target on two axes:
 
 - **Blast radius** — how bad is a silent failure here? Money, data integrity, security, and auth changes are high; a display formatter is low. Apply the **Beyoncé rule**: *if you'd be upset when it breaks silently, it needs a test.*
-- **Fragility** — how likely is it to break? Proxy this with **complexity × change-frequency** (Tornhill's behavioral code analysis). High cyclomatic complexity in a file that changes every sprint is where bugs are born; gnarly code nobody touches is low priority. Use `git log` on the file to gauge churn if no other signal exists. To measure churn concretely: run `git log --oneline --follow -- <file>` and count commits in the last 90 days. >10 commits in a complex function = high fragility. Cross-reference with `git blame` to identify which functions changed most recently.
+- **Fragility** — how likely is it to break? Proxy this with **complexity × change-frequency** (Tornhill's behavioral code analysis). High cyclomatic complexity in a file that changes every sprint is where bugs are born; gnarly code nobody touches is low priority. Use `git log --follow -- <file>` to gauge churn when no other signal exists — recent, repeated commits to complex code mark it as fragile. Treat that as a heuristic, not a fixed threshold.
 
 Produce the **Risk Triage Table** with a tier per target: **P0 / P1 / P2 / Won't-cover**. The *won't-cover* list is mandatory and must have rationale — trivial getters, generated code, thin delegators, and dead code belong here. Stating what you skip is what makes the plan honest.
 
 **Pause after Phase 2.** Present the Risk Triage Table to the user and say: "Here is the triage — P0s are [X], P1s are [Y], Won't-cover are [Z] with rationale. Does this ordering look right before I continue to Seam Survey and Case Enumeration?" Proceed to Phase 3 only after the user confirms or adjusts. A wrong triage at this point makes all subsequent work land on the wrong targets.
 
-### Phase 3 — Seam Survey (the Locksmith)
+### Phase 3 — Seam survey
 
 For each P0/P1 target, determine how a test gets *in*. A **seam** is a place where behavior can be substituted without editing the code at that point — a constructor parameter, an interface, an injectable clock, a function argument.
 
@@ -91,7 +91,7 @@ Prefer **fakes** (in-memory implementations you can assert state against) over *
 
 See `reference/language-tooling.md` for seam techniques per language.
 
-### Phase 4 — Case Enumeration (the Adversary)
+### Phase 4 — Case enumeration
 
 For each P0/P1 target, derive concrete test cases. Do not improvise — apply technique systematically. See `reference/test-design-techniques.md` for the full catalog. The core four:
 
@@ -102,7 +102,7 @@ For each P0/P1 target, derive concrete test cases. Do not improvise — apply te
 
 Also enumerate the **unhappy paths**: nulls/empties, error returns, exceptions, and — for any past bug in this code — a regression case (every bug fix ships with the test that would have caught it).
 
-### Phase 5 — Plan Assembly (the Author)
+### Phase 5 — Plan assembly
 
 **Before writing planned tests:** check for any P0/P1 target flagged "Not safely reachable" in Phase 3. Move these to the "Do first" section of Testability Recommendations — include the minimal seam change required. Do not plan tests for an unreachable target; a plan that cannot be executed is not a plan. If all P0 targets are unreachable, the plan's first deliverable is the refactor list, not tests.
 
@@ -118,7 +118,7 @@ Then write the **Testability Recommendations**, split into:
 - **Do first** — changes required before the P0 tests can be written at all (the minimal seams from Phase 3).
 - **Nice to have** — design improvements that would make the suite cleaner but aren't blocking.
 
-### Phase 6 — Rubric Pass (the Critic)
+### Phase 6 — Rubric pass
 
 Before finalizing, review the assembled plan against the quality rubric in `reference/grading-rubric.md`. Every planned test should plausibly satisfy all properties once written. Flag any test that can't — usually it means the target needs a Phase 3 refactor, or the test is doing too much and should be split. Revise the plan, don't just note the problem.
 
