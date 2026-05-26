@@ -1,0 +1,5 @@
+{
+  "name": "test-plan-explorer",
+  "version": "1.0.0",
+  "description": "Risk-prioritized test plan for untested or weakly-tested code — decides what is worth testing and why, before any test code is written"
+}
