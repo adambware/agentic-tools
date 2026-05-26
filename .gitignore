@@ -3,3 +3,7 @@
 .plan-critique/
 
 .DS_Store
+
+# dev-doctor generated, machine-specific reports (regenerated per run)
+.agent/dev-doctor.json
+reports/dev-doctor.md
