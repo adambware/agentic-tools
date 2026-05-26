@@ -10,5 +10,5 @@
 
 ### For Contributors
 
-- Added dependency-free shell tests and GitHub Actions coverage for plugin manifests, report generation, env blockers, Compose warnings, and setup-command detection.
+- Added minimal-dependency shell tests and GitHub Actions coverage for plugin manifests, report generation, env blockers, Compose warnings, and setup-command detection.
 - Added testing guidance for marketplace plugin changes.

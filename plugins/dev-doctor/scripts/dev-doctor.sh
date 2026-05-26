@@ -7,8 +7,10 @@
 # migrates, starts/stops containers, runs tests, formats files, or prints secret
 # values. The only writes are its own report files.
 
-# Keep compatibility with macOS Bash 3.2, where expanding empty arrays with
-# nounset is surprisingly brittle.
+# Keep fail-fast behavior without nounset. macOS Bash 3.2 makes empty-array
+# expansion brittle under nounset, but errexit/pipefail should still catch
+# unexpected probe failures.
+set -eo pipefail
 set +u
 
 START_DIR="$(pwd)"
@@ -155,7 +157,7 @@ if [ -f "$PROJECT_ROOT/.tool-versions" ]; then
       want="$(printf '%s' "$line" | awk '{print $2}')"
       [ -z "$tool" ] && continue
       [ -z "$want" ] && want="unspecified"
-      current_line="$(cd "$PROJECT_ROOT" && asdf current "$tool" 2>/dev/null | awk -v t="$tool" '$1==t{print; found=1} END{if(!found) exit 0}')"
+      current_line="$(cd "$PROJECT_ROOT" && asdf current "$tool" 2>/dev/null | awk -v t="$tool" '$1==t{print; found=1} END{if(!found) exit 0}' || true)"
       if [ -z "$current_line" ]; then
         active=""
       else
@@ -308,15 +310,18 @@ EOF_VOLUMES
   fi
 
   if [ -n "$COMPOSE_COMMAND" ]; then
+    set +e
     CONFIG_OUT="$(cd "$PROJECT_ROOT" && $COMPOSE_COMMAND -f "$COMPOSE_FILE" config 2>&1)"
-    if [ $? -eq 0 ]; then
+    CONFIG_STATUS=$?
+    set -e
+    if [ "$CONFIG_STATUS" -eq 0 ]; then
       COMPOSE_VALID=true
       HOST_PORTS_LONG="$(printf '%s\n' "$CONFIG_OUT" | grep -Eo 'published:[[:space:]]*"?[0-9]{2,5}' | grep -Eo '[0-9]{2,5}' || true)"
       HOST_PORTS_SHORT="$(printf '%s\n' "$CONFIG_OUT" | grep -Eo '"?[0-9]{2,5}:[0-9]{2,5}"?' | tr -d '"' | cut -d: -f1 || true)"
       while IFS= read -r port || [ -n "$port" ]; do
         [ -n "$port" ] && add_unique_array PUBLISHED_PORTS "$port"
       done <<EOF_PORTS
-$(printf '%s\n%s\n' "$HOST_PORTS_LONG" "$HOST_PORTS_SHORT" | grep -E '^[0-9]+$' | sort -un)
+$(printf '%s\n%s\n' "$HOST_PORTS_LONG" "$HOST_PORTS_SHORT" | grep -E '^[0-9]+$' | sort -un || true)
 EOF_PORTS
     else
       COMPOSE_VALID=false
@@ -328,9 +333,9 @@ EOF_PORTS
   for port in "${PUBLISHED_PORTS[@]}"; do
     in_use=""
     if have lsof; then
-      in_use="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}')"
+      in_use="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}' || true)"
     elif have ss; then
-      in_use="$(ss -ltnH "( sport = :$port )" 2>/dev/null | head -n1)"
+      in_use="$(ss -ltnH "( sport = :$port )" 2>/dev/null | head -n1 || true)"
     fi
     if [ -n "$in_use" ]; then
       warn "Port $port is already in use; Compose may fail to bind it"
@@ -341,7 +346,7 @@ EOF_PORTS
     while IFS= read -r container || [ -n "$container" ]; do
       [ -n "$container" ] && RUNNING_CONTAINERS+=("$container")
     done <<EOF_CONTAINERS
-$(docker ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}} ({{.Status}})' 2>/dev/null)
+$(docker ps --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" --format '{{.Names}} ({{.Status}})' 2>/dev/null || true)
 EOF_CONTAINERS
   fi
 fi
@@ -372,7 +377,7 @@ if [ -f "$PROJECT_ROOT/Makefile" ]; then
   while IFS= read -r target || [ -n "$target" ]; do
     [ -n "$target" ] && SETUP_HINTS+=("make $target")
   done <<EOF_MAKE
-$(grep -Eo '^[a-zA-Z0-9_.-]+:' "$PROJECT_ROOT/Makefile" 2>/dev/null | sed 's/:$//' | grep -Ei 'setup|install|init|bootstrap|up|dev|start|build|migrate' | sort -u | head -n 10)
+$(grep -Eo '^[a-zA-Z0-9_.-]+:' "$PROJECT_ROOT/Makefile" 2>/dev/null | sed 's/:$//' | grep -Ei 'setup|install|init|bootstrap|up|dev|start|build|migrate' | sort -u | head -n 10 || true)
 EOF_MAKE
 fi
 
@@ -394,7 +399,7 @@ for readme in README.md readme.md README; do
     while IFS= read -r hint || [ -n "$hint" ]; do
       [ -n "$hint" ] && SETUP_HINTS+=("$hint")
     done <<EOF_README
-$(grep -Eo '(make |npm |pnpm |yarn |docker compose |docker-compose |composer |go |asdf )[a-zA-Z0-9_:. /-]+' "$PROJECT_ROOT/$readme" 2>/dev/null | grep -Ei 'install|setup|up|dev|start|build|init|migrate|bootstrap' | sed 's/[[:space:]]*$//' | sort -u | head -n 8)
+$(grep -Eo '(make |npm |pnpm |yarn |docker compose |docker-compose |composer |go |asdf )[a-zA-Z0-9_:. /-]+' "$PROJECT_ROOT/$readme" 2>/dev/null | grep -Ei 'install|setup|up|dev|start|build|init|migrate|bootstrap' | sed 's/[[:space:]]*$//' | sort -u | head -n 8 || true)
 EOF_README
     break
   fi

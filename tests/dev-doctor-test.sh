@@ -31,6 +31,13 @@ tmpdir() {
   mktemp -d "${TMPDIR:-/tmp}/dev-doctor-test.XXXXXX"
 }
 
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'not ok - jq is required to run dev-doctor tests\n' >&2
+  exit 1
+fi
+
+OUT="$(tmpdir)"
+
 printf '1..7\n'
 
 jq empty "$ROOT/.claude-plugin/marketplace.json" "$ROOT/plugins/dev-doctor/.claude-plugin/plugin.json"
@@ -39,8 +46,7 @@ printf 'ok 1 - plugin manifests are valid JSON\n'
 bash -n "$SCRIPT"
 printf 'ok 2 - dev-doctor script parses\n'
 
-OUT="$(tmpdir)"
-DEV_DOCTOR_JSON_OUT="$OUT/root.json" bash "$SCRIPT" "$OUT/root.md" >/tmp/dev-doctor-root.out
+DEV_DOCTOR_JSON_OUT="$OUT/root.json" bash "$SCRIPT" "$OUT/root.md" > "$OUT/root.out"
 assert_eq "ok" "$(jq -r '.verdict' "$OUT/root.json")" "root run verdict"
 assert_eq "true" "$(jq -r '.read_only' "$OUT/root.json")" "root run read-only flag"
 assert_contains "dev-doctor report" "$OUT/root.md" "root Markdown report"
@@ -53,7 +59,7 @@ printf 'SECRET_TOKEN=\n' > "$FIXTURE/.env.example"
 set +e
 (
   cd "$FIXTURE/app"
-  DEV_DOCTOR_JSON_OUT="$OUT/missing-env.json" bash "$SCRIPT" "$OUT/missing-env.md" >/tmp/dev-doctor-missing-env.out
+  DEV_DOCTOR_JSON_OUT="$OUT/missing-env.json" bash "$SCRIPT" "$OUT/missing-env.md" > "$OUT/missing-env.out"
 )
 status=$?
 set -e
@@ -79,7 +85,7 @@ YAML
 set +e
 (
   cd "$COMPOSE_FIXTURE"
-  DEV_DOCTOR_JSON_OUT="$OUT/compose.json" bash "$SCRIPT" "$OUT/compose.md" >/tmp/dev-doctor-compose.out
+  DEV_DOCTOR_JSON_OUT="$OUT/compose.json" bash "$SCRIPT" "$OUT/compose.md" > "$OUT/compose.out"
 )
 status=$?
 set -e
@@ -101,7 +107,7 @@ ENV
 printf 'DATABASE_URL=postgres://example\n' > "$ENV_DRIFT_FIXTURE/.env"
 (
   cd "$ENV_DRIFT_FIXTURE"
-  DEV_DOCTOR_JSON_OUT="$OUT/env-drift.json" bash "$SCRIPT" "$OUT/env-drift.md" >/tmp/dev-doctor-env-drift.out
+  DEV_DOCTOR_JSON_OUT="$OUT/env-drift.json" bash "$SCRIPT" "$OUT/env-drift.md" > "$OUT/env-drift.out"
 )
 assert_eq "caution" "$(jq -r '.verdict' "$OUT/env-drift.json")" "env drift verdict"
 assert_eq "SECRET_TOKEN" "$(jq -r '.env.missing_keys[0]' "$OUT/env-drift.json")" "env drift missing key"
@@ -118,7 +124,7 @@ dev:
 MAKE
 (
   cd "$MAKE_FIXTURE"
-  DEV_DOCTOR_JSON_OUT="$OUT/make.json" bash "$SCRIPT" "$OUT/make.md" >/tmp/dev-doctor-make.out
+  DEV_DOCTOR_JSON_OUT="$OUT/make.json" bash "$SCRIPT" "$OUT/make.md" > "$OUT/make.out"
 )
 assert_eq "ok" "$(jq -r '.verdict' "$OUT/make.json")" "make fixture verdict"
 assert_eq "make setup" "$(jq -r '.recommended_next' "$OUT/make.json")" "make setup recommendation"
