@@ -1,0 +1,5 @@
+{
+  "name": "dev-doctor",
+  "version": "1.0.0",
+  "description": "Read-only local environment preflight — inspects git/worktree state, runtimes, Docker/Compose identity, ports, volumes, and env files, then writes a report the agent reads before changing code"
+}

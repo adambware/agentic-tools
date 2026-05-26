@@ -40,6 +40,13 @@
       "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
       "version": "1.0.0",
       "keywords": ["skills", "testing", "tdd", "planning"]
+    },
+    {
+      "name": "dev-doctor",
+      "source": "./plugins/dev-doctor",
+      "description": "Read-only local environment preflight — inspects git/worktree state, runtimes, Docker/Compose identity, ports, volumes, and env files, then writes a report the agent reads before changing code",
+      "version": "1.0.0",
+      "keywords": ["skills", "environment", "preflight", "docker", "worktree"]
     }
   ]
 }
