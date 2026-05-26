@@ -16,6 +16,13 @@ More orchestration patterns and plugin types to come!
 /plugin install plan-critique@agentic-tools
 ```
 
+## Project Docs
+
+- [Changelog](CHANGELOG.md)
+- [Testing](TESTING.md)
+- [TODOs](TODOS.md)
+- [dev-doctor blend plan](env-preflight-branch-blend-plan.md)
+
 ## Available Plugins
 
 | Plugin | Type | Description |
@@ -60,5 +67,6 @@ agentic-tools/
 │       ├── .mcp.json           # MCP servers (if any)
 │       └── README.md
 ├── CLAUDE.md
+├── TESTING.md
 └── README.md
 ```
