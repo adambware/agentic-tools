@@ -16,6 +16,13 @@ More orchestration patterns and plugin types to come!
 /plugin install plan-critique@agentic-tools
 ```
 
+## Project Docs
+
+- [Changelog](CHANGELOG.md)
+- [Testing](TESTING.md)
+- [TODOs](TODOS.md)
+- [dev-doctor blend plan](env-preflight-branch-blend-plan.md)
+
 ## Available Plugins
 
 | Plugin | Type | Description |
@@ -23,6 +30,9 @@ More orchestration patterns and plugin types to come!
 | [plan-critique](plugins/plan-critique/) | Hook | Parallel critique system — spawns Opus + Codex reviewers for plan files |
 | [ab-code-review](plugins/ab-code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
 | [onboardme](plugins/onboardme/) | Skill | Onboarding one-pager — traces one real request to make a codebase picturable in ~3 minutes |
+| [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present and suggests high-value missing tests |
+| [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code before tests are written |
+| [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight for runtimes, Docker/Compose, env files, ports, volumes, and worktrees |
 
 ## Creating a New Plugin
 
@@ -57,5 +67,6 @@ agentic-tools/
 │       ├── .mcp.json           # MCP servers (if any)
 │       └── README.md
 ├── CLAUDE.md
+├── TESTING.md
 └── README.md
 ```
