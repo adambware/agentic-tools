@@ -1,0 +1,184 @@
+# .nightshift/registries/vectors.yml — BearHost security registry
+# ===============================================================
+#
+# Cloned from the base taxonomy ${CLAUDE_PLUGIN_ROOT}/taxonomy/owasp-asvs.yml and then
+# EXTENDED with BearHost-specific surfaces. Each entry conforms to
+# ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml (kind: vector, owner: security).
+#
+# Two sections:
+#   A. BASE ASVS vectors  — representative entries cloned from the taxonomy, with `area`
+#      globs REMAPPED from BearHost's REPO_MAP.yml to real laravel paths.
+#   B. BearHost extensions — the BH-SEC-* surfaces the base taxonomy can't know, one per
+#      row of the spec's BearHost seed table, each with a `why_bearhost_specific` note.
+#
+# last_reviewed / status / linear are (auto), shown here populated as a worked example of
+# a registry the engine has been running against. interval_days derives from weight:
+#   critical -> 7 / high -> 14 / medium -> 30 / low -> 90.
+#
+# Reviewed-quality and lean: only surfaces that are real in the BearHost control plane.
+# ---------------------------------------------------------------------------
+
+vectors:
+
+  # ============================================================================
+  # A. BASE ASVS (cloned from taxonomy/owasp-asvs.yml, area globs remapped to BearHost)
+  # ============================================================================
+
+  - id:            ASVS-AUTH-01
+    title:         "Authentication: credential verification & brute-force resistance"
+    kind:          vector
+    area:          ["app/Http/Controllers/Auth/*", "app/Actions/Fortify/*", "config/auth.php"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V2.1 (Authentication / Password Security)"
+
+  - id:            ASVS-SESS-02
+    title:         "Session management: token binding, fixation, rotation & logout"
+    kind:          vector
+    area:          ["app/Http/Middleware/*", "config/session.php", "config/sanctum.php"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-15
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V3.2 (Session Management / Session Binding)"
+
+  - id:            ASVS-INPV-04
+    title:         "Input validation & injection (SQLi, command, template injection)"
+    kind:          vector
+    area:          ["app/Http/Controllers/**", "app/Http/Requests/*", "app/Repositories/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-14
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Validation, Sanitization / Output Encoding & Injection)"
+
+  - id:            ASVS-SECRET-05
+    title:         "Secrets & credential storage: at-rest protection, no hardcoded keys"
+    kind:          vector
+    area:          ["config/**", ".env.example", "app/Services/Vault/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V6.4 (Stored Cryptography / Secret Management)"
+
+  - id:            ASVS-RATE-07
+    title:         "Rate limiting / anti-automation on sensitive endpoints"
+    kind:          vector
+    area:          ["app/Http/Middleware/ThrottleRequests*", "routes/api.php", "config/horizon.php"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-06-05
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V2.2 (Authentication / General Authenticator)"
+
+  # ============================================================================
+  # B. BearHost-specific extensions (BH-SEC-*) — from the spec's seed table
+  # ============================================================================
+
+  - id:            BH-SEC-01
+    title:         "Stored WP credentials / app-passwords for connected sites"
+    kind:          vector
+    # control plane persists per-site WP application passwords + API tokens
+    area:          ["app/Models/SiteCredential.php", "app/Services/Vault/*", "database/migrations/*site_credential*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V6.4 (Stored Cryptography / Secret Management)"
+    # why_bearhost_specific: control plane holds keys to *other people's* sites — a leak
+    # compromises every connected customer install, not just BearHost itself.
+
+  - id:            BH-SEC-02
+    title:         "Control-plane -> WP command channel auth / replay"
+    kind:          vector
+    # signed remote commands BearHost issues to each connected WP install
+    area:          ["app/Services/CommandChannel/*", "app/Jobs/DispatchSiteCommand.php", "../descry/internal/agent/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-10
+    status:        open-findings
+    linear:        [BEAR-512]
+    asvs_ref:      "ASVS 4.0.3 V9.2 (Communications / Server Communication Security)"
+    # why_bearhost_specific: these messages execute remote actions on customer installs;
+    # missing nonce/replay protection lets a captured command be replayed against a site.
+
+  - id:            BH-SEC-03
+    title:         "SSRF via \"monitor this URL\" fetchers"
+    kind:          vector
+    # user supplies URLs the platform then fetches server-side to monitor
+    area:          ["app/Services/Monitor/UrlFetcher.php", "app/Http/Controllers/MonitorController.php"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-06-08
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V12.6 (Files and Resources / SSRF Protection)"
+    # why_bearhost_specific: the system fetches arbitrary site-controlled URLs, so a
+    # crafted target can pivot fetches at internal metadata/admin endpoints.
+
+  - id:            BH-SEC-04
+    title:         "Indirect prompt injection through Content Gate"
+    kind:          vector
+    # monitored site content flows into the Content Gate LLM review prompt
+    area:          ["app/Services/ContentGate/*", "app/Services/ContentGate/PromptBuilder.php"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-05-30
+    status:        stale
+    asvs_ref:      "ASVS 4.0.3 V5.1 (Validation / Input Validation Requirements)"
+    # why_bearhost_specific: monitored site content flows into an LLM; attacker-controlled
+    # page text can carry instructions that subvert the gate's review verdict.
+
+  - id:            BH-SEC-05
+    title:         "Multi-tenant isolation / IDOR on site-scoped resources"
+    kind:          vector
+    # every site-scoped resource must be authorized against the caller's tenant
+    area:          ["app/Http/Controllers/Site*", "app/Policies/*", "app/Models/Site.php"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-11
+    status:        open-findings
+    linear:        [BEAR-541]
+    asvs_ref:      "ASVS 4.0.3 V4.2 (Access Control / Operation Level)"
+    # why_bearhost_specific: one customer must not reach another's sites; a missing
+    # tenant-scope check exposes other tenants' site config, alerts, and credentials.
+
+  - id:            BH-SEC-06
+    title:         "Webhook / callback authenticity from sites"
+    kind:          vector
+    # connected sites call back into the control plane (status, alerts)
+    area:          ["app/Http/Controllers/WebhookController.php", "app/Http/Middleware/VerifyWebhookSignature.php"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    last_reviewed: 2026-05-20
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V13.2 (API / RESTful Web Service)"
+    # why_bearhost_specific: sites calling back into the control plane must be
+    # authenticated; unsigned callbacks let an attacker forge alerts/status for a site.
+
+  - id:            BH-SEC-07
+    title:         "Content Gate output handling / data exfil via review queue"
+    kind:          vector
+    # LLM verdicts + excerpts rendered to operators in the review queue UI
+    area:          ["app/Services/ContentGate/ReviewQueue.php", "resources/js/pages/ContentGate/*"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    last_reviewed: 2026-04-22
+    status:        overdue
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Output Encoding & Injection Prevention)"
+    # why_bearhost_specific: LLM output is rendered to operators; unescaped model output
+    # (or smuggled markup from monitored content) can run in the operator's session.

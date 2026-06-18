@@ -1,0 +1,29 @@
+# .nightshift/registries/flows.yml — designer flow registry (TEMPLATE)
+# ====================================================================
+#
+# User-flow coverage for the Designer (friction & a11y) lane (kind: flow, owner: design).
+# Each entry conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml; `area` here is
+# the route(s)/component(s) the flow exercises rather than backend code paths.
+#
+# PREREQUISITE (do not seed this file until BOTH exist):
+#   1. A STAGING environment wired into manifest.stack_adapter.browser.base_url.
+#   2. SEEDED TEST PERSONAS in ../fixtures/personas.yml. Without seeded personas the
+#      reviewer confuses environment drift with real friction. See personas.example.yml.
+#
+# Until then leave `flows:` empty. The Designer lane is Phase 2 — onboard security first.
+# ---------------------------------------------------------------------------
+
+flows: []
+
+# ---- Commented example flow entry (uncomment + adapt when Phase 2 prerequisites exist):
+#
+# flows:
+#   - id:            FLOW-01
+#     title:         "Sign up and complete onboarding"
+#     kind:          flow
+#     area:          ["/signup", "/onboarding/*"]   # routes the flow drives, from REPO_MAP
+#     weight:        high            # high -> 14d; core/revenue flows warrant higher weight
+#     interval_days: 14
+#     owner:         design
+#     persona:       new-user        # which fixtures/personas.yml persona drives this flow
+#     # last_reviewed / status / linear are (auto) — do not hand-edit.

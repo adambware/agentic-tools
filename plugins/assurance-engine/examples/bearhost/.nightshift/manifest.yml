@@ -1,0 +1,53 @@
+# .nightshift/manifest.yml — BearHost pack (worked example)
+# =========================================================
+#
+# BearHost is a control plane that manages connected WordPress sites (laravel+vue), with
+# a sibling repo `descry` (go) and a "Content Gate" LLM that reviews monitored site
+# content. This manifest realizes the spec's manifest.yml example concretely.
+# Conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml.
+# ---------------------------------------------------------------------------
+
+project: bearhost
+
+repos:
+  - path: .
+    stack: laravel+vue
+  - path: ../descry
+    stack: go
+
+stack_adapter:
+  test: "composer test"        # how the engine runs tests for this project
+  build: "npm run build"
+  browser:
+    tool: playwright-mcp
+    base_url: "https://staging.bearhost.example"   # seeded staging, never production
+
+# Least-privilege tool grants for reviewer agents (read/test-oriented only).
+allowlist:
+  - "Read"
+  - "Grep"
+  - "Glob"
+  - "Bash(composer test:*)"
+  - "Bash(npm run *)"
+  - "WebFetch"
+  - "playwright-mcp"           # browser MCP — Designer lane (Phase 2)
+
+# PM: support/churn/reviews — empty for now (PM deferred). Until these are connected the
+# PM lane stays off; running it dry would produce invented problems.
+evidence_sources: []
+
+linear:
+  project: BEAR
+  labels:
+    security: sec-review
+    ux: ux-flow
+    pm: pm-gap
+
+cadences:
+  security: nightly            # diff-triggered, vectors.yml is reviewed/complete-enough
+  designer: weekly             # Phase 2 — needs staging + seeded test site
+  pm: off                      # Phase 3 — deferred until evidence_sources exist
+
+window_budget_k:
+  security: 6                  # top-K per run, sized to one usage window
+  designer: 4

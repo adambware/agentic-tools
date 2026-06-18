@@ -1,0 +1,82 @@
+# .nightshift/registries/flows.yml — BearHost designer flows
+# ==========================================================
+#
+# Designer (friction & a11y) coverage for BearHost (kind: flow, owner: design).
+# Each entry conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml; `area` is the
+# route(s) the flow drives.
+#
+# PHASE 2 — these are seeded but NOT yet active. The Designer lane needs a STAGING
+# environment (manifest.stack_adapter.browser.base_url) AND a SEEDED TEST SITE +
+# personas (fixtures/personas.yml) before runs are trustworthy; otherwise the reviewer
+# confuses environment drift with real friction. last_reviewed/status are (auto) and
+# remain unset until the lane goes live.
+#
+# CORE FLOWS to instrument first (per the spec): connect-a-site and content-gate-triage.
+# ---------------------------------------------------------------------------
+
+flows:
+
+  - id:            FLOW-01
+    title:         "Connect / onboard a WP site"
+    kind:          flow
+    area:          ["/sites/connect", "/sites/connect/verify"]
+    weight:        critical          # CORE FLOW #1 — revenue-critical activation path
+    interval_days: 7
+    owner:         design
+    persona:       single-site-owner
+    core:          true              # instrument first
+
+  - id:            FLOW-02
+    title:         "Content Gate review queue (approve/reject a flagged item)"
+    kind:          flow
+    area:          ["/content-gate", "/content-gate/{itemId}"]
+    weight:        critical          # CORE FLOW #2 — daily operator workflow
+    interval_days: 7
+    owner:         design
+    persona:       agency-admin
+    core:          true              # instrument first
+
+  - id:            FLOW-03
+    title:         "Dashboard overview"
+    kind:          flow
+    area:          ["/dashboard"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       agency-admin
+
+  - id:            FLOW-04
+    title:         "View a monitoring alert"
+    kind:          flow
+    area:          ["/sites/{siteId}/alerts/{alertId}"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       single-site-owner
+
+  - id:            FLOW-05
+    title:         "Site detail"
+    kind:          flow
+    area:          ["/sites/{siteId}"]
+    weight:        medium
+    interval_days: 30
+    owner:         design
+    persona:       single-site-owner
+
+  - id:            FLOW-06
+    title:         "Billing / plan change"
+    kind:          flow
+    area:          ["/billing", "/billing/plan"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       agency-admin
+
+  - id:            FLOW-07
+    title:         "Add team member"
+    kind:          flow
+    area:          ["/team", "/team/invite"]
+    weight:        medium
+    interval_days: 30
+    owner:         design
+    persona:       agency-admin

@@ -1,0 +1,53 @@
+# .nightshift/fixtures/personas.yml — BearHost seeded test personas
+# =================================================================
+#
+# Seeded, non-production personas the Designer lane drives flows AS, against the staging
+# base_url in manifest.yml. They make Designer runs deterministic so the reviewer
+# measures real friction, not environment drift. Persona schema (spec Designer prereq):
+#   account_type, plan, permissions, data_seed, feature_flags, credentials_ref,
+#   success_criteria.
+#
+# credentials_ref points at a secrets reference (vault path), never a real secret value.
+# ---------------------------------------------------------------------------
+
+personas:
+
+  - id: single-site-owner
+    account_type: owner            # owns one connected WP site on the entry tier
+    plan: starter
+    permissions: [site.read, site.write, alerts.read, billing.read]
+    data_seed: seeds/single-site-owner.sql   # 1 connected site, recent alerts
+    feature_flags:
+      content_gate: true
+      multi_site_dashboard: false
+    credentials_ref: vault://staging/bearhost/personas/single-site-owner
+    success_criteria: >
+      Connects the seeded staging WP site and reaches its site-detail page with a
+      green monitoring status in <= 8 steps, no dead-ends, no >2s waits.
+
+  - id: agency-admin
+    account_type: team-admin       # multi-site agency, manages a team
+    plan: agency
+    permissions: [site.read, site.write, alerts.read, alerts.triage,
+                  content_gate.review, billing.manage, team.manage]
+    data_seed: seeds/agency-admin.sql        # 12 connected sites, queued Content Gate items
+    feature_flags:
+      content_gate: true
+      multi_site_dashboard: true
+    credentials_ref: vault://staging/bearhost/personas/agency-admin
+    success_criteria: >
+      Triages a flagged Content Gate item (approve or reject with a reason) and sees the
+      review queue count decrement, in <= 5 steps with a visible confirmation.
+
+  - id: limited-member
+    account_type: member           # invited teammate with read-only/triage scope
+    plan: agency                    # inherits the agency org plan
+    permissions: [site.read, alerts.read, content_gate.review]   # no billing, no team mgmt
+    data_seed: seeds/limited-member.sql      # member of the agency-admin org
+    feature_flags:
+      content_gate: true
+      multi_site_dashboard: true
+    credentials_ref: vault://staging/bearhost/personas/limited-member
+    success_criteria: >
+      Can review the Content Gate queue but is cleanly blocked (clear, non-error
+      messaging) from billing and team-management routes — used to test permission UX.

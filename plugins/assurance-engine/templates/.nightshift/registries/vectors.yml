@@ -1,0 +1,38 @@
+# .nightshift/registries/vectors.yml — security registry (TEMPLATE)
+# =================================================================
+#
+# This is the security coverage registry for this pack (kind: vector, owner: security).
+# Each entry conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml.
+#
+# HOW TO SEED THIS FILE (assurance-onboard, Phase 1):
+#   1. CLONE the base taxonomy: copy every entry from
+#        ${CLAUDE_PLUGIN_ROOT}/taxonomy/owasp-asvs.yml
+#      into the `vectors:` list below (authn, session, injection, secrets, deps,
+#      rate-limiting, SSRF, crypto, logging, file-handling, config, …).
+#   2. REMAP each entry's `area` globs from your repo's REPO_MAP.yml so they point at
+#      REAL paths in this codebase. The base globs are generic placeholders; an entry
+#      with the wrong `area` is a silent blind spot.
+#   3. EXTEND with project-specific surfaces the base taxonomy can't know — give each a
+#      project-prefixed id (e.g. ACME-SEC-01), a `why_<project>_specific` rationale, and
+#      an `asvs_ref` where one applies.
+#   4. Leave last_reviewed / status / linear UNSET — those are engine-managed (auto).
+#
+# Design discipline: reviewed beats complete. A short registry where every entry maps to
+# a real surface beats an exhaustive one full of phantoms. Seed fewer, mapped correctly,
+# owned by someone.
+# ---------------------------------------------------------------------------
+
+vectors:
+
+  # ---- Illustrative placeholder entry (a project-specific extension) -------------
+  # Delete this once you have cloned the base taxonomy and seeded real surfaces.
+  - id:            PROJ-SEC-01
+    title:         "Example: cross-tenant isolation on account-scoped resources"
+    kind:          vector
+    area:          ["app/Http/Controllers/Account*", "app/Policies/*"]  # remap from REPO_MAP.yml
+    weight:        critical
+    interval_days: 7            # critical -> 7 / high -> 14 / medium -> 30 / low -> 90
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V4.2 (Access Control / Operation Level)"
+    # why_proj_specific: "one tenant must never reach another tenant's resources"
+    # last_reviewed / status / linear are (auto) — do not hand-edit.

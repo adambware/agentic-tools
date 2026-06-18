@@ -40,6 +40,13 @@
       "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
       "version": "1.0.0",
       "keywords": ["skills", "testing", "tdd", "planning"]
+    },
+    {
+      "name": "assurance-engine",
+      "source": "./plugins/assurance-engine",
+      "description": "Coverage-driven assurance loop — keeps security surfaces and user flows continuously fresh, evidence-linked, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
+      "version": "1.0.0",
+      "keywords": ["skills", "agents", "security", "assurance", "ux", "coverage"]
     }
   ]
 }

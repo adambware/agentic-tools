@@ -23,6 +23,7 @@ More orchestration patterns and plugin types to come!
 | [plan-critique](plugins/plan-critique/) | Hook | Parallel critique system — spawns Opus + Codex reviewers for plan files |
 | [ab-code-review](plugins/ab-code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
 | [onboardme](plugins/onboardme/) | Skill | Onboarding one-pager — traces one real request to make a codebase picturable in ~3 minutes |
+| [assurance-engine](plugins/assurance-engine/) | Skills + Agents | Coverage-driven assurance loop — keeps security surfaces and user flows fresh, evidence-linked, and visible; onboard any repo as a `.nightshift/` pack |
 
 ## Creating a New Plugin
 
