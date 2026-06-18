@@ -76,7 +76,7 @@ anchor:                     # enum, REQUIRED for [ux] findings — no anchor, no
                             # Forces every UX ticket onto an objective hook (no taste/opinion
                             # tickets). Omit for non-UX lanes.
 
-location:                   # string, optional [ux]. Route / screen / component where observed.
+screen:                     # string, optional [ux]. Route / screen / component where observed.
 evidence:                   # string, optional [ux]. Screenshot/recording reference for the issue state.
 measured:                   # string, optional [ux]. The objective measurement (steps, backtracks, wait seconds) backing a friction_delta anchor.
 

@@ -58,7 +58,7 @@ See the plugin README (`plugins/nightshift/README.md`) and the rework plan
 | `fixtures/personas.example.yml` | **Multi-role personas** — end-user, support-agent, and workspace-admin exercise distinct permission and feature-flag surfaces. |
 | `registries/flows.yml` | **Identifiable UX flows** — 7 named, persona-bound flows with FLOW-01 (submit a ticket) and FLOW-02 (Triage Gate review) marked core. |
 | `metrics/findings/2026-06.jsonl` + `findings/suppressions.yml` | **Reviewed findings + accepted risk** — ND-SEC-05 IDOR, ND-SEC-02 replay, Triage Gate UX friction (each with `first_seen`/`last_seen`/`run_id` lifecycle fields), and a time-boxed ND-SEC-03 SSRF suppression. |
-| `metrics/runs/2026-06.jsonl` + `metrics/daily.jsonl` | **Durable day-over-day tracking** — append-only per-run records (split `rejected_tier1`/`rejected_tier2`) and daily coverage-freshness rollups that make the trend readable over weeks. |
+| `metrics/runs/2026-06.jsonl` + `metrics/daily.jsonl` | **Durable day-over-day tracking** — append-only per-run records (split `rejected_tier1`/`rejected_tier2`) and daily coverage-freshness rollups for both security and design lanes that make the trend readable over weeks. |
 
 The security content is deliberately **defensive**: findings are framed as failing
 authorization/security invariants with explicit preconditions and human-verification

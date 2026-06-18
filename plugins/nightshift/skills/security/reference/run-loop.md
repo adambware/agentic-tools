@@ -1,13 +1,12 @@
 # Per-Run Mechanics — the bounded workflow in detail
 
 This is the **shared** mechanics reference for both nightshift review lanes:
-`security` (via `/nightshift:qa`) and `design` (via `/nightshift:design`). It expands the
+`security` (via `/nightshift:security`) and `design` (via `/nightshift:design`). It expands the
 six-step loop with the exact computations, record shapes, the **two-stage refuter
 protocol**, the **fan-out budget table**, and the **metrics writer**. Read it when
 executing a run; the SKILL.md holds the summary.
 
-Lane values are `security | design`. (`security` is surfaced under the friendlier verb
-`qa`; `design` drives the ux-reviewer.) All field names here are canonical — they match
+Lane values are `security | design`. All field names here are canonical — they match
 `${CLAUDE_PLUGIN_ROOT}/schemas/` and the pack's `.nightshift/` registries and findings.
 Do not rename them.
 
@@ -67,6 +66,14 @@ compute-allocation key. Allocate per selected entry by band:
 Parallelize reviewers **3–5 at a time** via parallel Agent dispatch. Get speed from
 parallelism **inside** K — never by raising K. If the backlog exceeds K, the overdue
 surplus routes to the digest/trend; it is not reviewed this run.
+
+### Tuning cost
+
+Three independent levers to reduce cost without touching the registry:
+
+1. **K** = `manifest.window_budget_k[<lane>]` — the hard per-window ceiling. Lower K → fewer reviews per run. Never raise to clear backlog.
+2. **`maxTurns`** per agent — set in each agent's frontmatter.
+3. **`CLAUDE_CODE_SUBAGENT_MODEL` env var** — the highest-precedence override. Drops the entire fleet a model tier with a single env var (e.g. `CLAUDE_CODE_SUBAGENT_MODEL=haiku`). The most powerful zero-edit cost lever — set it before running `/nightshift:security` to cut cost immediately.
 
 ### Scoped tool grant (de-hardcoded, injected at dispatch)
 
@@ -182,7 +189,6 @@ Write one NDJSON object to `metrics/runs/<YYYY-MM>.jsonl`:
 | `confirmed` | findings that passed dedupe/suppression and were logged |
 | `rejected_tier1` | candidates the Tier-1 refuter knocked out |
 | `rejected_tier2` | candidates the Tier-2 refuter knocked out |
-| `refuter_invoked` | bool — whether any refuter ran this run |
 | `suppressed` | count dropped by active suppressions |
 | `usage_by_model` | object — usage broken down per model tier |
 | `usage_spent` | usage consumed this run (against the window budget) |
@@ -211,23 +217,24 @@ Recompute the affected day's rollup and **append a fresh line** to `metrics/dail
 (the reader takes the **last** line per `(date, lane)` — append-only + last-wins is
 union-merge-safe by construction). Daily rollup record:
 
-`{date, lane, runs, surfaces_total, surfaces_green, surfaces_stale, surfaces_overdue,
+`{date, lane, ts, runs, surfaces_total, surfaces_green, surfaces_stale, surfaces_overdue,
 open_findings, coverage_freshness_pct, median_staleness_ratio, fpr_7d, fpr_30d}`
 
+- `ts` — ISO-8601 timestamp of when this rollup was computed; enables max-ts last-wins resolution when multiple branches write the same (date, lane).
 - `coverage_freshness_pct` — share of in-scope surfaces with staleness ratio ≤ 1.0. The
   **denominator scopes to lanes whose `cadence != off`**, so deferred lanes don't make
   freshness look artificially terrible.
 - `median_staleness_ratio` — median of `staleness` across in-scope surfaces.
 - `fpr_7d` / `fpr_30d` — false-positive rate over the trailing 7/30 days, derived from the
   split tier counters: `(rejected_tier1 + rejected_tier2) / findings_created` aggregated
-  over the window.
+  over the window. Multiply by 100 to get a 0-100 percentage value (consistent with `coverage_freshness_pct`).
 
 `dashboard.md` and `trends.md` are **disposable** projections regenerated from the JSONL
 truth — never the source of record.
 
-## Step 6 — Severity gates
+## Step 6 — Severity gates (single source)
 
-Apply verbatim (also in SKILL.md):
+Apply verbatim (this is the single canonical source; the SKILL.md files point here):
 
 - **critical / high** → Linear issue immediately.
 - **medium** → issue only if reproducible, recurring, or customer-facing.

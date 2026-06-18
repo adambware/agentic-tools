@@ -53,8 +53,6 @@ This keeps concurrent appends conflict-free: branches just append; the reader de
 ## B. Manifest fields (two-lane — NO PM)
 
 Match every field name byte-exact to `${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml`.
-Do NOT introduce `evidence_sources`, `cadences.pm`, `linear.labels.pm`, or
-`window_budget_k.pm` — the PM lane is dropped from core.
 
 | Field | Type | Onboard fills with |
 |---|---|---|
@@ -127,7 +125,9 @@ Header `Lanes`. Options, Recommended first:
 
 1. **"Accept all detected defaults and seed the pack"** [Recommended] — the fast path; a
    confident standard repo finishes in ONE interaction. Desc: "Security lane on, detected
-   test/build/stack, K=6, no Linear unless detected."
+   test/build/stack, K=6, no Linear unless detected. **Security-only fast path** — to also
+   enable the Design lane, select both Security and Design options below instead of this
+   option."
 2. **Security** [pre-checked] — desc: "Security/assurance lane. Recommended default."
 3. **Design** — desc: "Needs a staging env + seeded personas; seeds the design branch."
 
@@ -158,6 +158,10 @@ ONE explanatory line (never a question): e.g. "Design lane deferred — set
 
 Header `Vectors`. "Which proposed vectors look real?" — each draft vector an option;
 unchecked vectors are dropped from the seeded `vectors.yml`.
+
+**Reject a vector if**: its `area` glob maps to no real files in this repo / the attack
+category doesn't apply to your stack / there's no owner available to triage findings from
+it. Favor a short registry you'll maintain over a long one full of phantom coverage.
 
 ### FINAL card · Write pack
 

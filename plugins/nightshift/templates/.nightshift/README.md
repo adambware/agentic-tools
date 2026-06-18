@@ -21,7 +21,6 @@ schemas) is built once and versioned elsewhere — referenced at run time as
   fixtures/
     personas.example.yml# seeded test personas — design-lane prerequisite
   findings/
-    log.jsonl           # append-only confirmed-findings log (one JSON object per line)
     suppressions.yml    # time-boxed dedupe_key suppressions
   metrics/              # durable day-over-day coverage tracking (the time-series of record)
     runs/<YYYY-MM>.jsonl    # append-only: one record per run, monthly partition
@@ -32,7 +31,7 @@ schemas) is built once and versioned elsewhere — referenced at run time as
   .gitattributes        # sets `metrics/**/*.jsonl merge=union` so appends never conflict
 ```
 
-Two lanes only: **security** (the `vectors.yml` spine, run via `/nightshift:qa`) and
+Two lanes only: **security** (the `vectors.yml` spine, run via `/nightshift:security`) and
 **design** (`flows.yml`, run via `/nightshift:design`). Both are driven by the same
 manifest cadences/budgets.
 

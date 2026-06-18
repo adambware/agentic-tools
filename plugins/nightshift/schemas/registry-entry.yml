@@ -1,4 +1,4 @@
-# Registry Entry Schema — the shared spine of the Assurance Engine
+# Registry Entry Schema — the shared spine of the nightshift engine
 # =================================================================
 #
 # A "registry entry" is one unit of coverage the engine keeps fresh: a security
@@ -9,7 +9,7 @@
 # Design discipline: lean. Humans seed the intent; the engine maintains freshness.
 # Fields marked (auto) are ENGINE-MANAGED — humans never hand-edit them.
 #
-# One entry = one owner lane (security | design | eng), not a graph.
+# One entry = one owner lane (security | design), not a graph.
 # ---------------------------------------------------------------------------
 
 # ---- Identity ----
@@ -53,9 +53,8 @@ interval_days: # int, REQUIRED, human-seeded (derived from weight, overridable).
                # staleness = (today - last_reviewed) / interval_days.
 
 owner:         # enum, REQUIRED, human-seeded.
-               # One of: security | design | eng
-               # The single accountable lane. Usually implied by `kind` but explicit
-               # so eng-owned hardening entries can exist without their own kind.
+               # One of: security | design
+               # The single accountable lane.
 
 # ---- Optional lane-specific fields (human-seeded) ----
 

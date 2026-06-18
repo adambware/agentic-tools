@@ -1,12 +1,12 @@
 ---
-name: qa
-description: Security/assurance review run for one pack — the nightshift security lane. Selects the stalest/changed registry vectors within the manifest budget, fans out the security-reviewer subagent, runs the two-stage refuter gate (Tier-1 always, Tier-2 conditional), dedupes against open findings, logs confirmed findings, updates registry state, writes durable metrics, and applies severity gates. Use when someone says "/nightshift:qa", "run the security review", "do the nightly assurance review", "review stale coverage", or wants one cadence-driven security review pass over a pack's .nightshift/ registry.
+name: security
+description: Security/assurance review run for one pack — the nightshift security lane. Selects the stalest/changed registry vectors within the manifest budget, fans out the security-reviewer subagent, runs the two-stage refuter gate (Tier-1 always, Tier-2 conditional), dedupes against open findings, logs confirmed findings, updates registry state, writes durable metrics, and applies severity gates. Use when someone says "/nightshift:security", "run the security review", "do the nightly assurance review", "review stale coverage", or wants one cadence-driven security review pass over a pack's .nightshift/ registry.
 allowed-tools: Read, Glob, Grep, Bash(git *), Write, Agent
 model: sonnet
 disable-model-invocation: true
 ---
 
-# Nightshift QA — Security Review Run (Bounded Workflow)
+# Nightshift Security — Security Review Run (Bounded Workflow)
 
 Execute exactly **one** bounded security review run. This skill IS the security lane:
 no lane parameter, no design/pm branching. (The design lane is the sibling
@@ -58,6 +58,9 @@ Intersect these paths with each vector's `area` globs to drive `change_flag` in 
      **only** when a Tier-1 survivor is **critical/high severity OR `confidence == low`**
      (union predicate). A Tier-2 refutation drops the candidate and counts in
      `rejected_tier2`. critical/high survivors get `needs_human_verification: true`.
+
+   After completing each reviewer batch, emit a one-line status: `✓ [X/K] <entry-id> — <brief outcome, e.g. 'no finding survived refutation' or 'critical finding confirmed'>`. Keep the user informed during long runs.
+
 4. **Dedupe + suppress.** Drop any candidate whose `dedupe_key` matches an open finding,
    and honor active suppressions. This is what stops nightly re-filing.
 5. **Log + update state + write metrics.** Append confirmed findings to `findings/`;
@@ -70,15 +73,9 @@ record shape, the **two-stage refuter protocol**, the metrics writer, and the ex
 record fields — are in [reference/run-loop.md](reference/run-loop.md). **Read it when you
 reach step 1; don't preload it.**
 
-## Severity gates (noise control) — apply verbatim
+## Severity gates (apply verbatim)
 
-- **critical / high** → file a Linear issue immediately.
-- **medium** → file an issue **only if** reproducible, recurring, or customer-facing.
-- **low** → write to the findings log; batch into the weekly digest **unless** repeated.
-- **taste / opinion** → **never** an issue unless tied to a measured `anchor`.
-
-These gates are the difference between a signal and a spam generator. When in doubt, log
-to digest, not Linear.
+See **Step 6** of [reference/run-loop.md](reference/run-loop.md) for the single-source severity gate definitions. Apply them verbatim here.
 
 ## Guardrails
 
@@ -94,3 +91,7 @@ to digest, not Linear.
 - Keep field names exact (`dedupe_key`, `last_reviewed`, `window_budget_k`, `anchor`,
   `needs_human_verification`, `status`, `asvs_ref`) to stay aligned with the engine
   schemas.
+
+## End-of-run summary
+
+After applying severity gates, always emit a one-line summary: `Run complete · X reviewed · Y proposed · Z rejected T1 · W confirmed · V filed (LINEAR-XXX) · U suppressed`. A clean run with 0 confirmed is a good run — the summary makes that explicit.

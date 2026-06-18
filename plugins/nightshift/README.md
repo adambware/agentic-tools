@@ -11,6 +11,14 @@ Built once as an **engine** (project-agnostic, this plugin); each codebase is on
 > quality, and digest usefulness — **not** the number of findings. A schema field is added only
 > when a real failure mode demands it.
 
+## Quick start (first run)
+
+1. `/nightshift:onboard` — detect your stack, seed the registry from the base taxonomy, write the pack
+2. `/nightshift:security` — validate allowlist, area globs, and refuter gate before the first cadence
+3. `/nightshift:digest` — read the first weekly signal
+
+The security lane is "done" not when it runs, but when `vectors.yml` is reviewed and the first run's false-positive rate is acceptably low. Start there.
+
 ## Install
 
 ```bash
@@ -42,12 +50,12 @@ plugins/nightshift/                # the ENGINE — project-agnostic, versioned 
 
 ## Skills
 
-Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:qa`,
-`/nightshift:design`, and so on. (The dash form `/nightshift-qa` does not exist.)
+Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:security`,
+`/nightshift:design`, and so on. (The dash form `/nightshift-security` does not exist.)
 
 | Command | What it does |
 |---------|--------------|
-| `/nightshift:qa` | **Security/assurance review run.** Execute **one** bounded run for the security lane: select stalest/changed vectors within the manifest budget (**K**), fan out the security-reviewer subagent, run the mandatory refuter gate, dedupe, log findings, update state, emit per-run metrics, apply severity gates. |
+| `/nightshift:security` | **Security/assurance review run.** Execute **one** bounded run for the security lane: select stalest/changed vectors within the manifest budget (**K**), fan out the security-reviewer subagent, run the mandatory refuter gate, dedupe, log findings, update state, emit per-run metrics, apply severity gates. |
 | `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated — refuses to run until the pack has a staging browser adapter (`stack_adapter.browser.base_url`) **and** seeded `fixtures/personas.yml`. Fails fast with a clear reason rather than half-running. Shares the bounded run-loop with `qa`. |
 | `/nightshift:onboard` | Onboard a codebase as a pack: detect the stack, batch-confirm deltas, seed a draft `vectors.yml` from the base taxonomy, run a human-reviewed seed + gate pass, then write the pack. Interactive + mutating. |
 | `/nightshift:digest` | Produce the **weekly digest** — the management signal: new critical/high, repeated themes, overdue surfaces, false-positive rate, proposed entries awaiting approval, and the top human decisions needed. Read-only; the one skill left model-invocable. |
@@ -64,7 +72,7 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:qa`
 
 ## How a run works (the bounded loop)
 
-The core is strictly **two-lane** — `security` (surfaced as `qa`) and `design`.
+The core is strictly **two-lane** — `security` and `design`.
 
 1. Compute `staleness = (today - last_reviewed)/interval_days`; force-flag entries whose `area` changed in git since `last_reviewed`.
 2. Sort by `max(staleness, change_flag) * weight`; take the top **K** (the manifest's `window_budget_k[<lane>]`).

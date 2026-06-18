@@ -1,6 +1,6 @@
 ---
 name: onboard
-description: Onboard a codebase to nightshift via an interactive interview — detect the repo's stack/scripts/CI, batch-confirm only the deltas, seed a reviewed vectors.yml by cloning the base security taxonomy, gate on a clean pack, and write the .nightshift/ pack. Use when someone says "onboard a repo to nightshift", "set up nightshift here", "add security review coverage to this project", or wants to stand up coverage-driven review. Produces a reviewed registry — it does NOT run reviews (that is /nightshift:qa).
+description: Onboard a codebase to nightshift via an interactive interview — detect the repo's stack/scripts/CI, batch-confirm only the deltas, seed a reviewed vectors.yml by cloning the base security taxonomy, gate on a clean pack, and write the .nightshift/ pack. Use when someone says "onboard a repo to nightshift", "set up nightshift here", "add security review coverage to this project", or wants to stand up coverage-driven review. Produces a reviewed registry — it does NOT run reviews (that is /nightshift:security).
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git *), Write, AskUserQuestion
 model: sonnet
@@ -24,8 +24,6 @@ worse than no pack. Seed fewer entries, mapped correctly, each owned by someone 
 entry is a standing promise to keep that surface fresh.
 
 ## Two-phase rollout (guardrail — do not light up a lane before its prerequisites)
-
-Core is two lanes; there is no PM lane, no `problems.yml`, no `evidence_sources`.
 
 1. **Security now** (default). The only lane the default path onboards. Seed `vectors.yml`,
    review with a human, get the false-positive rate low.
@@ -53,16 +51,20 @@ it; read it at the step that needs it.
    `REPO_MAP.yml`). *(Mechanics §C.)*
 3. **REVIEW.** One multiSelect approval card: "which proposed vectors look real?" Drop
    the unchecked ones.
-4. **GATE (deterministic).** Grep the rendered pack for surviving sentinels (`my-project`,
-   `my-stack`, `https://staging.my-project.example`, `PROJ`, unconfirmed `make test`/
-   `make build`) and REQUIRED-empty keys. Any survivor → a precise batched question.
-   Onboarding is NOT "done" until clean. *(Mechanics §E for the full sentinel list.)*
+4. **GATE (deterministic).** Grep the rendered pack for all sentinels in
+   **[reference/onboard-mechanics.md §E](reference/onboard-mechanics.md)** and
+   REQUIRED-empty keys. Any survivor → a precise batched question. Onboarding is NOT
+   "done" until clean. *(Mechanics §E for the full sentinel list.)*
 5. **WRITE.** Final "Write pack" confirm card, then write the pack: `manifest.yml`,
    `registries/`, the seeded fixtures, `.gitattributes` (`metrics/**/*.jsonl merge=union`),
    the scaffolded `metrics/` dir (`runs/`, `findings/`, `daily.jsonl`), and `.pack-meta.yml`
    `{answers, engine_version, template_ref, pack_format}`. *(Mechanics §A, §F.)*
+   Pack written. Run `/nightshift:security` now to validate the allowlist, area globs, and
+   refuter gate before the first cadence run.
 
 ## Reconcile mode (re-run over an existing pack)
+
+Re-running `/nightshift:onboard` over an existing pack is safe — it detects drift and asks only about changes. Hand-edit `manifest.yml` only for cosmetic values; re-run onboard to absorb stack changes without clobbering `(auto)` fields.
 
 On re-run with an existing `.nightshift/`, re-detect, diff detected-vs-`.pack-meta.yml`,
 and ask ONLY about drift. Never clobber `(auto)` fields (`last_reviewed`, `status`,
@@ -78,6 +80,6 @@ and ask ONLY about drift. Never clobber `(auto)` fields (`last_reviewed`, `statu
 - **Keep field names byte-exact** (`pack_format`, `window_budget_k`, `cadences.design`,
   `last_reviewed`, `interval_days`, `area`, `owner`, …) so the pack lines up with the
   schemas.
-- This skill ends at a reviewed pack. Running reviews is `/nightshift:qa` (security) and
+- This skill ends at a reviewed pack. Running reviews is `/nightshift:security` and
   `/nightshift:design`; keeping the registry honest is `/nightshift:garden`; the weekly
   signal is `/nightshift:digest`.

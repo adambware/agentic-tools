@@ -25,6 +25,11 @@ daily_metrics:
 
   lane:                    # enum, (auto). security | design. One rollup per lane per day.
 
+  ts:                      # string (ISO-8601 run timestamp), (auto). Timestamp of when
+                           #   this rollup was computed/appended. Enables max-ts last-wins
+                           #   semantics when multiple branches append the same (date, lane)
+                           #   rollup. Use the current run's completion timestamp.
+
   runs:                    # int, (auto). Number of runs for this lane on this date.
 
   surfaces_total:          # int, (auto). Registry entries in scope for this lane.
@@ -50,9 +55,11 @@ daily_metrics:
   fpr_7d:                  # number (0-100), (auto). False-positive rate over a trailing
                            #   7-day window. = sum(rejected_tier1 + rejected_tier2) /
                            #   sum(findings_created) across this lane's runs in the window.
+                           #   Expressed as a percentage integer or decimal (e.g. 24 = 24%), NOT as a 0–1 ratio.
 
   fpr_30d:                 # number (0-100), (auto). Same as fpr_7d over a trailing
                            #   30-day window — the slower-moving baseline.
+                           #   Expressed as a percentage integer or decimal (e.g. 24 = 24%), NOT as a 0–1 ratio.
 
 # ---------------------------------------------------------------------------
 # Example (last line for this (date, lane) in metrics/daily.jsonl):
@@ -61,6 +68,7 @@ daily_metrics:
 #   daily_metrics:
 #     date:                   2026-06-18
 #     lane:                   security
+#     ts:                     "2026-06-18T07:03:09Z"
 #     runs:                   1
 #     surfaces_total:         42
 #     surfaces_green:         33

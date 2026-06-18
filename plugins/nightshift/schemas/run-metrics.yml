@@ -48,10 +48,6 @@ run_metrics:
                              #   "retire Tier-2 if rejected_tier2 trends to ~0" call
                              #   is measurable.
 
-  refuter_invoked:           # bool, (auto). Whether the conditional Tier-2 refuter
-                             #   ran at all this run (a critical/high or low-confidence
-                             #   Tier-1 survivor existed).
-
   suppressed:                # int, (auto). Count of would-be findings skipped because
                              #   their dedupe_key matched an active suppression.
 
@@ -81,7 +77,6 @@ run_metrics:
 #     confirmed:        2
 #     rejected_tier1:   2
 #     rejected_tier2:   0
-#     refuter_invoked:  true
 #     suppressed:       1
 #     usage_by_model:   {haiku: "0.2 window", sonnet: "0.6 window"}
 #     usage_spent:      "0.8 window"
