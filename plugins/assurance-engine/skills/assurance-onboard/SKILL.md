@@ -1,6 +1,9 @@
 ---
 name: assurance-onboard
 description: Onboard a codebase to the Agentic Assurance Engine by dropping a .nightshift/ pack, cloning and extending the base security taxonomy into a reviewed vectors.yml, and running a human-reviewed seed + garden pass. Use when someone says "onboard a repo to the assurance engine", "set up nightshift", "add security review coverage to this project", or wants to stand up coverage-driven review for a new codebase. This produces a reviewed registry — it does NOT run nightly reviews (that is assurance-run).
+disable-model-invocation: true
+allowed-tools: Read, Glob, Grep, Bash(git *), Write
+model: sonnet
 ---
 
 # Assurance Engine — Onboard a Codebase (Pack Setup)
@@ -82,7 +85,7 @@ Then make it this project's registry:
   the engine can detect git changes and scope reviewers correctly. An entry with wrong
   `area` is a silent blind spot.
 - **Extend with project-specific surfaces** — the vectors the base taxonomy can't know.
-  For each, set `id` (project-prefixed, e.g. `BH-SEC-05`), `title`, `kind: vector`,
+  For each, set `id` (project-prefixed, e.g. `ND-SEC-05`), `title`, `kind: vector`,
   `area`, `weight`, `interval_days` (derive from weight), and `owner: security`.
 - Leave `last_reviewed`, `status`, and `linear` unset — those are engine-managed `(auto)`.
 
@@ -109,6 +112,9 @@ on the nightly cadence (diff-triggered) and the weekly digest.
   prerequisites (staging + seeded fixtures; real evidence_sources) exist.
 - **Keep field names exact** (`last_reviewed`, `window_budget_k`, `interval_days`,
   `area`, `owner`, …) so the pack lines up with the engine schemas.
+- **Allow a scoped test command in the manifest.** The manifest `allowlist` must include
+  a scoped Bash test entry (e.g. `Bash(bin/rails test:*)`) so the security reviewer can
+  run a failing-invariant test at runtime.
 - This skill ends at a reviewed pack. Running reviews is `assurance-run`; keeping the
   registry honest over time is `assurance-garden`; the management signal is
   `assurance-digest`.

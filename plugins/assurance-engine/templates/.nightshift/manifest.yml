@@ -12,7 +12,7 @@
 # versioned in the repo.
 # ---------------------------------------------------------------------------
 
-project: my-project          # REQUIRED. Short pack slug (lowercase), e.g. "bearhost".
+project: my-project          # REQUIRED. Short pack slug (lowercase), e.g. "novudesk".
 
 # One entry per repo in the project. The engine reviews code across all of them.
 repos:
@@ -47,7 +47,7 @@ evidence_sources: []
 
 # How confirmed findings become tickets.
 linear:
-  project: PROJ              # Linear project key, e.g. "BEAR".
+  project: PROJ              # Linear project key, e.g. "NOVU".
   labels:                    # Per-lane label applied to filed issues.
     security: sec-review
     ux: ux-flow

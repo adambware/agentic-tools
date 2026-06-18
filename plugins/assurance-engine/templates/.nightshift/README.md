@@ -40,6 +40,8 @@ Created by the `assurance-onboard` skill: copy this template, fill in `manifest.
 clone `${CLAUDE_PLUGIN_ROOT}/taxonomy/owasp-asvs.yml` into `registries/vectors.yml` and
 extend with project-specific surfaces, then run a **human-reviewed seed + garden pass**.
 
+See `../../examples/novudesk/.nightshift/` for a fully-populated worked example of this pack.
+
 **Design discipline:** optimize for coverage freshness, confidence, dedupe quality, and
 digest usefulness — NOT number of findings. Human-seeded fields carry intent; `(auto)`
 fields are engine-managed — never hand-edit them.

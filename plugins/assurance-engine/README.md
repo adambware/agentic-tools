@@ -30,7 +30,7 @@ plugins/assurance-engine/          # the ENGINE — project-agnostic, versioned 
   taxonomy/                        # BASE libraries (owasp-asvs.yml) that packs clone + extend
   schemas/                         # canonical registry-entry + finding + manifest + run-metrics
   templates/.nightshift/           # copyable pack skeleton
-  examples/bearhost/.nightshift/   # a worked seed proving the engine adapts to a real project
+  examples/novudesk/.nightshift/   # a worked seed proving the engine adapts to a real project
 
 <each repo>/.nightshift/           # the PACK — travels with the code, versioned in the repo
   manifest.yml                     # stack adapter, allowlist, evidence sources, Linear labels, cadences
@@ -77,7 +77,7 @@ Phase 1 (Security) is "done" not when the nightly run works, but when `vectors.y
 complete-enough (weights + code mappings + owners), with a low false-positive rate. Designer
 (phase 2) needs staging + seeded test personas; PM (phase 3) stays off until real signal exists.
 
-See [`examples/bearhost/`](examples/bearhost/) for a worked seed that proves the engine adapts.
+See [`examples/novudesk/`](examples/novudesk/) for a worked seed that proves the engine adapts.
 
 ## Schemas
 

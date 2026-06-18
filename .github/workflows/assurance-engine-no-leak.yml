@@ -1,0 +1,20 @@
+name: assurance-engine-no-leak
+on:
+  pull_request:
+    paths:
+      - 'plugins/assurance-engine/**'
+  push:
+    paths:
+      - 'plugins/assurance-engine/**'
+jobs:
+  no-leak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on BearHost residue
+        run: |
+          if grep -rinE 'bearhost|bh-sec|bear-|descry' plugins/assurance-engine/; then
+            echo "::error::BearHost residue found under plugins/assurance-engine/ — genericize before merge"
+            exit 1
+          fi
+          echo "No BearHost residue found."

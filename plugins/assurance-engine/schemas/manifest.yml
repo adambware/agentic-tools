@@ -8,17 +8,17 @@
 # to review per run.
 #
 # This file is the ANNOTATED SCHEMA / reference. Values are generic placeholders;
-# a pack's concrete instance (e.g. BearHost) overrides them. The manifest reuses the
+# a pack's concrete instance (e.g. NovuDesk) overrides them. The manifest reuses the
 # pack's plan-contract REPO_MAP.yml for area->path mappings (see registry-entry.yml).
 # ---------------------------------------------------------------------------
 
-project:          # string, REQUIRED. Short pack slug, e.g. "bearhost".
+project:          # string, REQUIRED. Short pack slug, e.g. "novudesk".
 
 repos:            # list[object], REQUIRED. One entry per repo in the project.
                   # The engine reviews code across all listed repos.
   - path:         # string, REQUIRED. Repo path relative to the .nightshift root,
-                  #   e.g. "." or "../descry".
-    stack:        # string, REQUIRED. Tech stack tag, e.g. "laravel+vue" or "go".
+                  #   e.g. "." or "../nova-worker".
+    stack:        # string, REQUIRED. Tech stack tag, e.g. "rails+hotwire" or "go".
                   #   Informs reviewer heuristics and the stack_adapter defaults.
 
 stack_adapter:    # object, REQUIRED. How the engine interacts with this project.
@@ -43,7 +43,7 @@ evidence_sources: # list, REQUIRED (may be empty []). PM lane inputs.
                   # it dry produces invented problems.
 
 linear:           # object, REQUIRED. How findings become tickets.
-  project:        # string. Linear project key, e.g. "BEAR".
+  project:        # string. Linear project key, e.g. "NOVU".
   labels:         # object. Per-lane label to tag filed issues:
     security:     #   string, e.g. "sec-review".
     ux:           #   string, e.g. "ux-flow".

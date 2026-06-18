@@ -53,6 +53,10 @@ anchor:                     # enum, REQUIRED for [ux] findings — no anchor, no
                             # Forces every UX ticket onto an objective hook (no taste/opinion
                             # tickets). Omit for non-UX lanes.
 
+location:                   # string, optional [ux]. Route / screen / component where observed.
+evidence:                   # string, optional [ux]. Screenshot/recording reference for the issue state.
+measured:                   # string, optional [ux]. The objective measurement (steps, backtracks, wait seconds) backing a friction_delta anchor.
+
 # ---- Security write-up (Security lane) ----
 # Present on [security] findings. The defensive case for why the surface is abusable.
 
@@ -94,19 +98,19 @@ preconditions:              # object, REQUIRED for [security].
 # example:
 #   dedupe_key:
 #     surface:    "VEC-014"
-#     symptom:    "cross-tenant read of site config"
-#     root_cause: "missing site-scope policy check"
+#     symptom:    "cross-workspace read of ticket content"
+#     root_cause: "missing workspace-scope policy check"
 #   severity:   critical
 #   confidence: high
 #   needs_human_verification: true
 #   asvs_ref:   "ASVS 4.0.3 V4.2"
-#   location:   "app/Http/Controllers/SiteController.php:88"
+#   location:   "app/controllers/tickets_controller.rb:88"
 #   why_abusable_under_preconditions: >
-#     show() loads Site by id without scoping to the authenticated tenant, so any
-#     authenticated user can read another tenant's site by guessing/enumerating ids.
+#     show loads Ticket by id without scoping to the authenticated workspace, so any
+#     authenticated user can read another workspace's ticket by enumerating ids.
 #   preconditions:
 #     required_role/session: "any authenticated user"
-#     tenant/account setup:  "two tenants, victim owns target site id"
-#     affected path:         "GET /sites/{id}"
-#     impact:                "read of another tenant's site configuration"
+#     tenant/account setup:  "two workspaces, victim owns target ticket id"
+#     affected path:         "GET /tickets/{id}"
+#     impact:                "read of another workspace's ticket content"
 #     confidence:            high

@@ -2,50 +2,43 @@
   "name": "agentic-tools",
   "owner": { "name": "adambware" },
   "metadata": {
-    "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code",
-    "pluginRoot": "./plugins"
+    "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code"
   },
   "plugins": [
     {
       "name": "plan-critique",
       "source": "./plugins/plan-critique",
       "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
-      "version": "1.0.5",
       "keywords": ["hooks", "code-review", "planning"]
     },
     {
       "name": "ab-code-review",
       "source": "./plugins/ab-code-review",
       "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
-      "version": "1.0.4",
       "keywords": ["skills", "code-review", "diff"]
     },
     {
       "name": "onboardme",
       "source": "./plugins/onboardme",
       "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
-      "version": "1.0.0",
       "keywords": ["skills", "onboarding", "codebase"]
     },
     {
       "name": "pr-test-reviewer",
       "source": "./plugins/pr-test-reviewer",
       "description": "Test-focused PR review — grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
-      "version": "1.0.0",
       "keywords": ["skills", "testing", "code-review", "pr"]
     },
     {
       "name": "test-plan-explorer",
       "source": "./plugins/test-plan-explorer",
       "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
-      "version": "1.0.0",
       "keywords": ["skills", "testing", "tdd", "planning"]
     },
     {
       "name": "assurance-engine",
       "source": "./plugins/assurance-engine",
       "description": "Coverage-driven assurance loop — keeps security surfaces and user flows continuously fresh, evidence-linked, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
-      "version": "1.0.0",
       "keywords": ["skills", "agents", "security", "assurance", "ux", "coverage"]
     }
   ]

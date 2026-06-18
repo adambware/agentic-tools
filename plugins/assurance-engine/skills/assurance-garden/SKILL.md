@@ -1,6 +1,8 @@
 ---
 name: assurance-garden
 description: Run a registry gardening pass over an assurance pack — scan recent code, flows, and signal to find changes that map to NO existing registry entry, propose new entries for human approval (never auto-add), and flag orphaned entries and stale area mappings. Use when someone says "registry gardening", "find coverage gaps", "what changed that isn't reviewed", or wants to check the .nightshift/ registry still covers the codebase. This is the only defense against permanent blind spots.
+allowed-tools: Read, Glob, Grep, Bash(git *)
+model: sonnet
 ---
 
 # Assurance Engine — Registry Gardening

@@ -1,5 +1,6 @@
 {
   "name": "assurance-engine",
   "version": "1.0.0",
-  "description": "Coverage-driven assurance loop — keeps security surfaces and user flows continuously fresh, evidence-linked, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack."
+  "description": "Coverage-driven assurance loop — keeps security surfaces and user flows continuously fresh, evidence-linked, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
+  "author": {"name": "adambware"}
 }

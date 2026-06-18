@@ -23,24 +23,24 @@ A pack does **not** edit this file. Onboarding clones and extends it:
 3. **Extend** with project-specific surfaces the base taxonomy can't know about. Keep
    the base ids (`ASVS-*`) and add new ids for extensions.
 
-## Extension example (BearHost)
+## Extension example (NovuDesk)
 
-BearHost adds vectors beyond the base because its control plane holds keys to *other
-people's* sites:
+NovuDesk adds vectors beyond the base because its control plane stores OAuth tokens for
+and dispatches commands to a worker on behalf of *other* workspaces:
 
-| id        | vector                                                       | weight   |
-|-----------|--------------------------------------------------------------|----------|
-| BH-SEC-01 | Stored WP credentials / app-passwords for connected sites    | critical |
-| BH-SEC-02 | Control-plane → WP command channel auth / replay             | critical |
-| BH-SEC-03 | SSRF via "monitor this URL" fetchers                         | high     |
-| BH-SEC-04 | Indirect prompt injection through Content Gate               | high     |
-| BH-SEC-05 | Multi-tenant isolation / IDOR on site-scoped resources       | critical |
-| BH-SEC-06 | Webhook/callback authenticity from sites                     | medium   |
-| BH-SEC-07 | Content Gate output handling / data exfil via review queue   | medium   |
+| id        | vector                                                            | weight   |
+|-----------|-------------------------------------------------------------------|----------|
+| ND-SEC-01 | Stored customer OAuth tokens for workspace integrations           | critical |
+| ND-SEC-02 | Control-plane → nova-worker command channel auth / replay         | critical |
+| ND-SEC-03 | SSRF via "monitor this webhook URL" fetchers                      | high     |
+| ND-SEC-04 | Indirect prompt injection through Triage Gate                     | high     |
+| ND-SEC-05 | Multi-tenant isolation / IDOR on ticket-scoped resources          | critical |
+| ND-SEC-06 | Webhook / callback authenticity from integrations                 | medium   |
+| ND-SEC-07 | Triage Gate output encoding / XSS in review queue UI              | medium   |
 
 These live in the pack's `vectors.yml` alongside the cloned `ASVS-*` base. Note some
-extensions specialize a base vector (BH-SEC-05 is a project-specific IDOR built on
-`ASVS-AC-03`; BH-SEC-03 specializes `ASVS-SSRF-10`).
+extensions specialize a base vector (ND-SEC-05 is a project-specific IDOR built on
+`ASVS-AC-03`; ND-SEC-03 specializes `ASVS-SSRF-10`).
 
 ## Keeping `area` mapped
 

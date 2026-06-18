@@ -1,34 +1,35 @@
-# .nightshift/manifest.yml — BearHost pack (worked example)
+# .nightshift/manifest.yml — NovuDesk pack (worked example)
 # =========================================================
 #
-# BearHost is a control plane that manages connected WordPress sites (laravel+vue), with
-# a sibling repo `descry` (go) and a "Content Gate" LLM that reviews monitored site
-# content. This manifest realizes the spec's manifest.yml example concretely.
+# NovuDesk is an AI-assisted B2B helpdesk (rails+hotwire) with a sibling repo
+# `../nova-worker` (go) for async ticket routing + AI triage, and a "Triage Gate"
+# LLM that classifies incoming ticket text. This manifest realizes the spec's
+# manifest.yml example concretely.
 # Conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml.
 # ---------------------------------------------------------------------------
 
-project: bearhost
+project: novudesk
 
 repos:
   - path: .
-    stack: laravel+vue
-  - path: ../descry
+    stack: rails+hotwire
+  - path: ../nova-worker
     stack: go
 
 stack_adapter:
-  test: "composer test"        # how the engine runs tests for this project
-  build: "npm run build"
+  test: "bin/rails test"        # how the engine runs tests for this project
+  build: "bin/rails assets:precompile"
   browser:
     tool: playwright-mcp
-    base_url: "https://staging.bearhost.example"   # seeded staging, never production
+    base_url: "https://staging.novudesk.example"   # seeded staging, never production
 
 # Least-privilege tool grants for reviewer agents (read/test-oriented only).
 allowlist:
   - "Read"
   - "Grep"
   - "Glob"
-  - "Bash(composer test:*)"
-  - "Bash(npm run *)"
+  - "Bash(bin/rails test:*)"
+  - "Bash(bin/rails assets:precompile)"
   - "WebFetch"
   - "playwright-mcp"           # browser MCP — Designer lane (Phase 2)
 
@@ -37,7 +38,7 @@ allowlist:
 evidence_sources: []
 
 linear:
-  project: BEAR
+  project: NOVU
   labels:
     security: sec-review
     ux: ux-flow
@@ -45,7 +46,7 @@ linear:
 
 cadences:
   security: nightly            # diff-triggered, vectors.yml is reviewed/complete-enough
-  designer: weekly             # Phase 2 — needs staging + seeded test site
+  designer: weekly             # Phase 2 — needs staging + seeded test workspace
   pm: off                      # Phase 3 — deferred until evidence_sources exist
 
 window_budget_k:

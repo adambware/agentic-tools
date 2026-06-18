@@ -1,6 +1,8 @@
 ---
 name: assurance-run
 description: Execute ONE bounded assurance review run for a single lane (security | designer | pm). Selects the stalest/changed registry entries within the manifest budget, fans out the domain reviewer subagent (security requires a mandatory second refuter agent), dedupes against open findings, logs confirmed findings, updates registry state, emits run_metrics, and applies severity gates. Use when someone says "run the assurance review", "do the nightly security review", "review stale coverage", or wants one cadence-driven review pass over a pack's .nightshift/ registry.
+allowed-tools: Read, Glob, Grep, Bash(git *), Write, Agent
+model: sonnet
 ---
 
 # Assurance Engine — Per-Run (Bounded Workflow)

@@ -1,0 +1,187 @@
+# .nightshift/registries/vectors.yml — NovuDesk security registry
+# ===============================================================
+#
+# Cloned from the base taxonomy ${CLAUDE_PLUGIN_ROOT}/taxonomy/owasp-asvs.yml and then
+# EXTENDED with NovuDesk-specific surfaces. Each entry conforms to
+# ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml (kind: vector, owner: security).
+#
+# Two sections:
+#   A. BASE ASVS vectors  — representative entries cloned from the taxonomy, with `area`
+#      globs REMAPPED from NovuDesk's REPO_MAP.yml to real rails paths.
+#   B. NovuDesk extensions — the ND-SEC-* surfaces the base taxonomy can't know, one per
+#      row of the spec's NovuDesk seed table, each with a `why_novudesk_specific` note.
+#
+# last_reviewed / status / linear are (auto), shown here populated as a worked example of
+# a registry the engine has been running against. interval_days derives from weight:
+#   critical -> 7 / high -> 14 / medium -> 30 / low -> 90.
+#
+# Reviewed-quality and lean: only surfaces that are real in the NovuDesk control plane.
+# ---------------------------------------------------------------------------
+
+vectors:
+
+  # ============================================================================
+  # A. BASE ASVS (cloned from taxonomy/owasp-asvs.yml, area globs remapped to NovuDesk)
+  # ============================================================================
+
+  - id:            ASVS-AUTH-01
+    title:         "Authentication: credential verification & brute-force resistance"
+    kind:          vector
+    area:          ["app/controllers/sessions_controller.rb", "app/controllers/passwords_controller.rb", "config/initializers/devise.rb"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V2.1 (Authentication / Password Security)"
+
+  - id:            ASVS-SESS-02
+    title:         "Session management: token binding, fixation, rotation & logout"
+    kind:          vector
+    area:          ["app/controllers/concerns/authentication.rb", "config/initializers/session_store.rb", "app/controllers/application_controller.rb"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-15
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V3.2 (Session Management / Session Binding)"
+
+  - id:            ASVS-INPV-04
+    title:         "Input validation & injection (SQLi, command, template injection)"
+    kind:          vector
+    area:          ["app/controllers/**", "app/models/**", "app/queries/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-14
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Validation, Sanitization / Output Encoding & Injection)"
+
+  - id:            ASVS-SECRET-05
+    title:         "Secrets & credential storage: at-rest protection, no hardcoded keys"
+    kind:          vector
+    area:          ["config/credentials.yml.enc", "config/credentials/**", "app/services/vault/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V6.4 (Stored Cryptography / Secret Management)"
+
+  - id:            ASVS-RATE-07
+    title:         "Rate limiting / anti-automation on sensitive endpoints"
+    kind:          vector
+    area:          ["config/initializers/rack_attack.rb", "config/routes.rb", "app/controllers/concerns/throttling.rb"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-06-05
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V2.2 (Authentication / General Authenticator)"
+
+  # ============================================================================
+  # B. NovuDesk-specific extensions (ND-SEC-*) — from the spec's seed table
+  # ============================================================================
+
+  - id:            ND-SEC-01
+    title:         "Stored customer OAuth tokens for workspace integrations"
+    kind:          vector
+    # control plane persists OAuth tokens for customers' third-party integrations
+    area:          ["app/models/integration_token.rb", "app/services/vault/*", "db/migrate/*integration_token*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-16
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V6.4 (Stored Cryptography / Secret Management)"
+    # why_novudesk_specific: the control plane stores OAuth tokens for *customers'*
+    # third-party integrations — a leak compromises every connected workspace's external
+    # accounts, not just NovuDesk itself.
+
+  - id:            ND-SEC-02
+    title:         "Control-plane -> nova-worker command channel auth / replay"
+    kind:          vector
+    # signed commands the control plane dispatches to nova-worker for routing/triage
+    area:          ["app/services/dispatch/*", "app/jobs/dispatch_triage_command_job.rb", "../nova-worker/internal/dispatch/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-10
+    status:        open-findings
+    linear:        [NOVU-512]
+    asvs_ref:      "ASVS 4.0.3 V9.2 (Communications / Server Communication Security)"
+    # why_novudesk_specific: signed commands dispatched to nova-worker execute
+    # routing/triage actions; missing nonce/replay protection lets a captured command be
+    # replayed.
+
+  - id:            ND-SEC-03
+    title:         "SSRF via \"monitor this webhook URL\" fetchers"
+    kind:          vector
+    # customer supplies webhook URLs the platform then fetches server-side
+    area:          ["app/services/webhooks/url_fetcher.rb", "app/controllers/webhook_monitors_controller.rb"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-06-08
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V12.6 (Files and Resources / SSRF Protection)"
+    # why_novudesk_specific: the system fetches arbitrary customer-supplied webhook URLs
+    # server-side, so a crafted target can pivot at internal metadata/admin endpoints.
+
+  - id:            ND-SEC-04
+    title:         "Indirect prompt injection through Triage Gate"
+    kind:          vector
+    # untrusted ticket text flows into the Triage Gate LLM prompt
+    area:          ["app/services/triage_gate/*", "app/services/triage_gate/prompt_builder.rb"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    last_reviewed: 2026-05-30
+    status:        stale
+    asvs_ref:      "ASVS 4.0.3 V5.1 (Validation / Input Validation Requirements)"
+    # why_novudesk_specific: untrusted ticket text flows into the Triage Gate LLM prompt;
+    # attacker-controlled text can carry instructions that subvert the gate's triage
+    # verdict.
+
+  - id:            ND-SEC-05
+    title:         "Multi-tenant isolation / IDOR on ticket-scoped resources"
+    kind:          vector
+    # every ticket-scoped resource must be authorized against the caller's workspace
+    area:          ["app/controllers/tickets_controller.rb", "app/policies/*", "app/models/ticket.rb"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    last_reviewed: 2026-06-11
+    status:        open-findings
+    linear:        [NOVU-541]
+    asvs_ref:      "ASVS 4.0.3 V4.2 (Access Control / Operation Level)"
+    # why_novudesk_specific: one workspace must not reach another's tickets; a missing
+    # workspace-scope check exposes other workspaces' ticket content and customer PII.
+
+  - id:            ND-SEC-06
+    title:         "Webhook / callback authenticity from integrations"
+    kind:          vector
+    # external integrations call back into the control plane (events, status)
+    area:          ["app/controllers/webhooks_controller.rb", "app/controllers/concerns/verify_webhook_signature.rb"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    last_reviewed: 2026-05-20
+    status:        green
+    asvs_ref:      "ASVS 4.0.3 V13.2 (API / RESTful Web Service)"
+    # why_novudesk_specific: external integrations calling back into the control plane must
+    # be authenticated; unsigned callbacks let an attacker forge integration events.
+
+  - id:            ND-SEC-07
+    title:         "Triage Gate output encoding / XSS in review queue UI"
+    kind:          vector
+    # LLM output rendered to support agents in the review queue UI
+    area:          ["app/services/triage_gate/review_queue.rb", "app/views/triage/*"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    last_reviewed: 2026-04-22
+    status:        overdue
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Output Encoding & Injection Prevention)"
+    # why_novudesk_specific: LLM output is rendered to support agents; unescaped model
+    # output (or smuggled markup from ticket text) can run in the agent's session.

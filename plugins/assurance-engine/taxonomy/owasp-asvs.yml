@@ -3,7 +3,7 @@
 #
 # The BASE library of security vectors, versioned ONCE in the engine. Packs clone
 # these entries into their own .nightshift/registries/vectors.yml and extend with
-# project-specific surfaces (see taxonomy/README.md and the BearHost BH-SEC-* set).
+# project-specific surfaces (see taxonomy/README.md and the NovuDesk ND-SEC-* set).
 #
 # Every entry is a registry entry conforming to schemas/registry-entry.yml:
 #   kind: vector, owner: security. Plus an `asvs_ref` so findings can cite the

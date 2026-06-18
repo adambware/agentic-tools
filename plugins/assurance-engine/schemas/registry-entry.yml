@@ -17,7 +17,7 @@
 id:            # string, REQUIRED, human-seeded.
                # Stable unique key. Prefix by source/lane, e.g.:
                #   VEC-014 (generic vector), ASVS-AUTH-01 (base taxonomy),
-               #   BH-SEC-05 (project extension), FLOW-03, PROB-07.
+               #   ND-SEC-05 (project extension), FLOW-03, PROB-07.
                # Used by findings.linear refs and dedupe surfaces — never renumber.
 
 title:         # string, REQUIRED, human-seeded.
@@ -58,6 +58,20 @@ owner:         # enum, REQUIRED, human-seeded.
                # The single accountable lane. Usually implied by `kind` but explicit
                # so eng-owned hardening entries can exist without their own kind.
 
+# ---- Optional lane-specific fields (human-seeded) ----
+
+asvs_ref:      # string, optional [security vectors]. OWASP ASVS citation,
+               # e.g. "ASVS 4.0.3 V4.2". Same field as finding.yml; placed on
+               # vector entries so findings inherit the citation.
+
+persona:       # string, optional [design flows]. Which fixtures/personas.example.yml
+               # persona drives this flow.
+
+core:          # bool, optional [design flows]. true => a core flow to instrument first.
+
+signal_class:  # enum, optional [product problems]. observed | estimated | strategic
+               # — which signal type backs this problem.
+
 # ---- Engine-managed state (auto) — humans do not edit ----
 
 last_reviewed: # date (YYYY-MM-DD), (auto), engine-managed.
@@ -73,7 +87,7 @@ status:        # enum, (auto), engine-managed.
                # Surfaced in the weekly digest's "overdue registry areas".
 
 linear:        # list[string], (auto on file), engine-managed.
-               # Linear issue refs filed from this entry, e.g. [BEAR-410].
+               # Linear issue refs filed from this entry, e.g. [NOVU-410].
                # Appended only when a finding crosses a severity gate into a ticket.
 
 # ---------------------------------------------------------------------------
@@ -89,4 +103,6 @@ linear:        # list[string], (auto on file), engine-managed.
 #   owner:         security
 #   last_reviewed: 2026-06-14   # (auto)
 #   status:        green        # (auto)
-#   linear:        [BEAR-410]   # (auto on file)
+#   linear:        [NOVU-410]   # (auto on file)
+#
+# persona/core on flow entries; signal_class on problem entries; asvs_ref on vector entries.

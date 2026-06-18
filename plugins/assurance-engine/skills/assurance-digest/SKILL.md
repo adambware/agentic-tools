@@ -1,6 +1,8 @@
 ---
 name: assurance-digest
 description: Produce the weekly assurance digest — the management signal a human actually reads. Summarizes new critical/high findings and repeated themes, overdue registry areas and stale findings with no movement, the false-positive rate from run_metrics, proposed new registry entries awaiting approval, and the top 3 human decisions needed. Use when someone says "weekly assurance digest", "summarize the week's review findings", or wants the across-lane signal from a .nightshift/ pack. Reads from the pack — it does not run reviews.
+allowed-tools: Read, Glob, Grep
+model: haiku
 ---
 
 # Assurance Engine — Weekly Digest
