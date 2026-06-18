@@ -14,6 +14,9 @@
   - **Context:** Surfaced during /plan-eng-review. Keep the gate deterministic for now; add the judge as an advisory layer once the deterministic gate is stable so a flaky judge never blocks a PR.
   - **Depends on / blocked by:** Stable deterministic gate (V1) first.
 
+- [x] **Fix reconcile mode visibility (onboarding-4)**
+  - Done: added reconcile-mode paragraph to README "Onboarding a codebase" section; added (auto)-field warning + reconcile-mode comment block to template `manifest.yml`.
+
 - [x] **Add `ts` field to `daily-metrics.yml` for merge-safe last-line-wins semantics**
   - Done: added `ts` to `schemas/daily-metrics.yml`, `run-loop.md` daily rollup spec, NovuDesk `daily.jsonl` example records, and NovuDesk `runs/2026-06.jsonl`.
 

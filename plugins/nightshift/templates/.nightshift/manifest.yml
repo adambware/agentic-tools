@@ -14,6 +14,16 @@
 pack_format: 1               # Pack schema version (integer). Bumped independently of the
                              #   plugin's semver; gates engine migrations. Leave as-is.
 
+# ---- IMPORTANT: hand-edit this file for CONFIGURATION (project, repos, stack_adapter,
+# allowlist, linear, cadences, K). Do NOT hand-edit engine-managed fields tagged (auto)
+# in schemas/registry-entry.yml and schemas/finding.yml (last_reviewed, status, run_id,
+# first_seen, last_seen, resolved_at, rejected_tier1/2, etc.).
+#
+# To absorb stack drift (new CI tool, renamed test command, added repo): re-run
+# /nightshift:onboard — it detects this existing .nightshift/ and enters reconcile mode,
+# confirming only the deltas without clobbering your hand-tuned globs or (auto) fields.
+# ---------------------------------------------------------------------------------
+
 project: my-project          # REQUIRED. Short pack slug (lowercase), e.g. "novudesk".
 
 # One entry per repo in the project. The engine reviews code across all of them.

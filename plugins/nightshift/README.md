@@ -119,6 +119,8 @@ lane is reachable but default-off: if selected during onboarding, the interview 
 seed `fixtures/personas.yml` and capture the staging `stack_adapter.browser.base_url`; otherwise
 it is auto-deferred with one explanatory line.
 
+**To absorb stack drift later** (new CI tool, renamed test command, added sibling repo), re-run `/nightshift:onboard` — it detects the existing `.nightshift/` and enters **reconcile mode**, confirming only the deltas and never clobbering hand-tuned globs or `(auto)` fields. Don't hand-edit `manifest.yml` for structural changes; use onboard so the gate runs again.
+
 See [`examples/novudesk/`](examples/novudesk/) for a worked seed that proves the engine adapts.
 
 ## Schemas
