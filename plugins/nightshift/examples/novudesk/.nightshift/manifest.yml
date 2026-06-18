@@ -1,0 +1,50 @@
+# .nightshift/manifest.yml — NovuDesk pack (worked example)
+# =========================================================
+#
+# NovuDesk is an AI-assisted B2B helpdesk (rails+hotwire) with a sibling repo
+# `../nova-worker` (go) for async ticket routing + AI triage, and a "Triage Gate"
+# LLM that classifies incoming ticket text. This manifest realizes the spec's
+# manifest.yml example concretely.
+# Conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml.
+# ---------------------------------------------------------------------------
+
+pack_format: 1
+
+project: novudesk
+
+repos:
+  - path: .
+    stack: rails+hotwire
+  - path: ../nova-worker
+    stack: go
+
+stack_adapter:
+  test: "bin/rails test"        # how the engine runs tests for this project
+  build: "bin/rails assets:precompile"
+  browser:
+    tool: playwright-mcp
+    base_url: "https://staging.novudesk.example"   # seeded staging, never production
+
+# Least-privilege tool grants for reviewer agents (read/test-oriented only).
+allowlist:
+  - "Read"
+  - "Grep"
+  - "Glob"
+  - "Bash(bin/rails test:*)"
+  - "Bash(bin/rails assets:precompile)"
+  - "WebFetch"
+  - "playwright-mcp"           # browser MCP — design lane (Phase 2)
+
+linear:
+  project: NOVU
+  labels:
+    security: sec-review
+    ux: ux-flow
+
+cadences:
+  security: nightly            # diff-triggered, vectors.yml is reviewed/complete-enough
+  design: weekly               # Phase 2 — needs staging + seeded test workspace
+
+window_budget_k:
+  security: 6                  # top-K per run, sized to one usage window
+  design: 4

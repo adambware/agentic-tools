@@ -1,0 +1,87 @@
+name: nightshift-ci
+
+# Positive CI gate for the nightshift plugin. This REPLACES the deleted
+# assurance-engine-no-leak.yml denylist grep. Instead of policing a blocklist of
+# real-looking strings, we assert positive properties: the plugin validates, its
+# manifests/metrics parse, and every example is fully fictional by construction.
+on:
+  pull_request:
+    paths:
+      - "plugins/nightshift/**"
+  push:
+    paths:
+      - "plugins/nightshift/**"
+
+jobs:
+  nightshift-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      # (1) Plugin validation via the claude CLI — strict promotes warnings to
+      #     errors. DEGRADED FALLBACK: if the CLI can't be installed or run, log a
+      #     warning and continue to steps 2-3 (still strictly better than the old
+      #     denylist). Never hard-fail the whole job on CLI absence.
+      - name: claude plugin validate (degraded-fallback)
+        run: |
+          set -uo pipefail
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::warning::npm unavailable, skipping claude plugin validate"
+            exit 0
+          fi
+          if ! npm install -g @anthropic-ai/claude-code >/dev/null 2>&1; then
+            echo "::warning::could not install claude CLI, skipping claude plugin validate"
+            exit 0
+          fi
+          if ! command -v claude >/dev/null 2>&1; then
+            echo "::warning::claude CLI unavailable after install, skipping claude plugin validate"
+            exit 0
+          fi
+          echo "claude CLI present; running strict validate"
+          claude plugin validate ./plugins/nightshift --strict
+
+      # (2) Structural lint (NOT a JSON-Schema validator — none exists yet, see
+      #     open-decision #4). Assert required files exist and that every *.yml and
+      #     *.jsonl under the plugin parses.
+      - name: structural lint
+        run: |
+          set -euo pipefail
+          ROOT=plugins/nightshift
+          echo "Asserting required files exist..."
+          required=(
+            "$ROOT/.claude-plugin/plugin.json"
+            "$ROOT/README.md"
+            "$ROOT/scripts/check-example-hygiene.sh"
+            "$ROOT/fixtures/onboard-answers.example.yml"
+            "$ROOT/templates/.nightshift/manifest.yml"
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::required file missing: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          echo "Parsing every *.yml under $ROOT ..."
+          while IFS= read -r -d '' yml; do
+            python3 -c "import sys,yaml; yaml.safe_load(open(sys.argv[1]))" "$yml" \
+              || { echo "::error::YAML parse failed: $yml"; exit 1; }
+          done < <(find "$ROOT" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
+
+          echo "Parsing every *.jsonl line under $ROOT ..."
+          while IFS= read -r -d '' jsonl; do
+            python3 -c 'import sys, json; [json.loads(l) for n, l in enumerate(open(sys.argv[1]), 1) if l.strip()]' "$jsonl" \
+              || { echo "::error::JSONL parse failed: $jsonl"; exit 1; }
+          done < <(find "$ROOT" -type f -name '*.jsonl' -print0)
+
+          echo "Structural lint passed."
+
+      # (3) Example-hygiene lint — the positive replacement for the leak grep.
+      - name: example-hygiene
+        run: bash plugins/nightshift/scripts/check-example-hygiene.sh

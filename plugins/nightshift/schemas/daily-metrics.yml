@@ -1,0 +1,76 @@
+# Daily Metrics Schema — daily_metrics (the day-over-day trend)
+# =============================================================
+#
+# This is the trend you read over weeks: one rollup per (date, lane) capturing
+# coverage freshness, surface health, open-finding count, and false-positive rate.
+# It is the durable answer to "is the engine keeping the codebase covered, and is
+# it crying wolf?"
+#
+# Storage: <repo>/.nightshift/metrics/daily.jsonl — APPEND-ONLY. Each time the
+# engine recomputes a day's rollup (at the end of every run for the affected day)
+# it APPENDS a fresh line; it never rewrites in place. The READER takes the LAST
+# line per (date, lane). This is what makes the file safe under
+# `metrics/**/*.jsonl merge=union`: concurrent branches only ever append, union
+# keeps every line, and the last-wins read dedupes — no conflict, no lost rollup.
+# (Rewrite-in-place under union would instead leave duplicate stale rollups.)
+#
+# The durable truth is metrics/runs/*.jsonl + this daily.jsonl + git history.
+# dashboard.md / trends.md are disposable projections regenerated from these.
+#
+# All fields are (auto) — engine-managed.
+# ---------------------------------------------------------------------------
+
+daily_metrics:
+  date:                    # date (YYYY-MM-DD), (auto). The day this rollup describes.
+
+  lane:                    # enum, (auto). security | design. One rollup per lane per day.
+
+  runs:                    # int, (auto). Number of runs for this lane on this date.
+
+  surfaces_total:          # int, (auto). Registry entries in scope for this lane.
+
+  surfaces_green:          # int, (auto). Entries with status == green.
+
+  surfaces_stale:          # int, (auto). Entries with status == stale.
+
+  surfaces_overdue:        # int, (auto). Entries with status == overdue.
+
+  open_findings:           # int, (auto). Findings still open (no resolved_at) for this lane.
+
+  coverage_freshness_pct:  # number (0-100), (auto). Headline trend line.
+                           #   Share of IN-SCOPE surfaces with staleness ratio <= 1.0
+                           #   (reviewed within their interval). staleness ratio =
+                           #   (today - last_reviewed) / interval_days.
+                           #   DENOMINATOR scopes to lanes whose cadence != off, so a
+                           #   deferred lane doesn't tank freshness for an active one.
+
+  median_staleness_ratio:  # number, (auto). Median staleness ratio across in-scope
+                           #   surfaces. > 1.0 means the typical surface is overdue.
+
+  fpr_7d:                  # number (0-100), (auto). False-positive rate over a trailing
+                           #   7-day window. = sum(rejected_tier1 + rejected_tier2) /
+                           #   sum(findings_created) across this lane's runs in the window.
+
+  fpr_30d:                 # number (0-100), (auto). Same as fpr_7d over a trailing
+                           #   30-day window — the slower-moving baseline.
+
+# ---------------------------------------------------------------------------
+# Example (last line for this (date, lane) in metrics/daily.jsonl):
+#
+# example:
+#   daily_metrics:
+#     date:                   2026-06-18
+#     lane:                   security
+#     runs:                   1
+#     surfaces_total:         42
+#     surfaces_green:         33
+#     surfaces_stale:         7
+#     surfaces_overdue:       2
+#     open_findings:          5
+#     coverage_freshness_pct: 79
+#     median_staleness_ratio: 0.71
+#     fpr_7d:                  24
+#     fpr_30d:                 18
+#
+# Read as a CHANGELOG delta against the previous committed rollup:
+#   2026-06-18 · security · freshness 83%→79% (-4) · 2 overdue · FPR_7d 24%

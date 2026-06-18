@@ -1,0 +1,2 @@
+# Append-only metrics logs: union-merge so concurrent branches never conflict on appends.
+metrics/**/*.jsonl merge=union

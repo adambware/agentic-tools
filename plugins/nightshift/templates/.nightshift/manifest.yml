@@ -1,0 +1,64 @@
+# .nightshift/manifest.yml — the portability layer (TEMPLATE)
+# ===========================================================
+#
+# This is the GENERIC manifest the `/nightshift:onboard` skill copies into a new
+# repo. Every value below is a placeholder — fill each one in for YOUR project.
+# Field names are byte-consistent with ${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml;
+# do not rename keys.
+#
+# The manifest tells the engine HOW to run against this project: how to test/build/
+# drive a browser, what tools it may use, how to file in Linear, and how often + how
+# much to review per run. It travels with the code and is versioned in the repo.
+# ---------------------------------------------------------------------------
+
+pack_format: 1               # Pack schema version (integer). Bumped independently of the
+                             #   plugin's semver; gates engine migrations. Leave as-is.
+
+project: my-project          # REQUIRED. Short pack slug (lowercase), e.g. "novudesk".
+
+# One entry per repo in the project. The engine reviews code across all of them.
+repos:
+  - path: .                  # REQUIRED. Repo path relative to this .nightshift root.
+    stack: my-stack          # REQUIRED. Stack tag, e.g. "laravel+vue", "go", "rails".
+  # - path: ../sibling-repo  # Add more repos as needed (monorepo or sibling checkout).
+  #   stack: go
+
+# How the engine interacts with this project (the stack adapter).
+stack_adapter:
+  test: "make test"          # REQUIRED. Command to run the test suite. Used when an
+                             #   agent adds a FAILING test that demonstrates a violated
+                             #   security/authz invariant. e.g. "composer test".
+  build: "make build"        # REQUIRED. Build command. e.g. "npm run build".
+  browser:                   # REQUIRED for the design lane (omit if security-only).
+    tool: playwright-mcp     #   Browser automation tool the engine drives flows with.
+    base_url: "https://staging.my-project.example"  # Staging/seeded env ONLY — never prod.
+
+# Tool permissions granted to reviewer agents (least-privilege; Claude Code syntax).
+# Keep read/test-oriented. No destructive or offensive tooling.
+allowlist:
+  - "Read"
+  - "Grep"
+  - "Glob"
+  - "Bash(make test:*)"      # the test command above, scoped
+  - "WebFetch"               # for dependency/CVE lookups, doc checks
+  # - "<browser/MCP tool>"   # add the design-lane browser tool when that lane is live
+
+# How confirmed findings become tickets.
+linear:
+  project: PROJ              # Linear project key, e.g. "NOVU".
+  labels:                    # Per-lane label applied to filed issues.
+    security: sec-review
+    ux: ux-flow
+
+# How often each lane's review run fires. Values: nightly | weekly | off.
+cadences:
+  security: nightly          # diff-triggered, once vectors.yml is reviewed/complete-enough.
+  design: weekly             # only after staging + seeded personas exist.
+
+# Top-K entries selected per run, per lane. Sized to fit ONE usage window — this is the
+# bound that keeps runs lean. The engine sorts by staleness*weight and takes this many.
+# K is a hard per-window ceiling — never raised to clear backlog; overdue surplus routes
+# to the digest/trend instead.
+window_budget_k:
+  security: 6
+  design: 4

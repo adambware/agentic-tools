@@ -1,0 +1,88 @@
+# Run Metrics Schema — run_metrics (one record PER RUN)
+# =====================================================
+#
+# Every review run emits ONE run_metrics record, appended as a single NDJSON
+# object to <repo>/.nightshift/metrics/runs/<YYYY-MM>.jsonl (append-only, monthly
+# partition — no longer a single rewritten blob). These are the engine's
+# self-measurement: they feed the weekly digest's false-positive rate, the
+# daily.jsonl rollup, and usage/throughput tracking. If the false-positive rate
+# climbs, the lane's vectors/flows or thresholds need tuning.
+#
+# All fields are (auto) — engine-managed, written at the end of a run. Lean by design.
+# ---------------------------------------------------------------------------
+
+run_metrics:
+  run_id:                    # string, (auto). Stable unique id for this run.
+                             #   Matches finding.run_id, e.g. "ns-2026-06-18-sec-01".
+
+  ts:                        # string (ISO-8601), (auto). Run completion timestamp,
+                             #   e.g. "2026-06-18T03:14:22Z".
+
+  date:                      # date (YYYY-MM-DD), (auto). Run date; the (date, lane)
+                             #   join key the daily rollup groups by.
+
+  lane:                      # enum, (auto). security | design. Which lane ran.
+
+  pack_sha:                  # string, (auto). Git sha of the .nightshift pack at run
+                             #   time. Ties metrics to the exact pack version reviewed.
+
+  selected:                  # int, (auto). Entries chosen this run (top-K after
+                             #   staleness*weight sort). Bounded by window_budget_k.
+
+  reviewed:                  # int, (auto). Entries actually reviewed (<= selected;
+                             #   may be lower if the usage window was exhausted).
+
+  findings_created:          # int, (auto). Findings produced before refutation
+                             #   and dedupe.
+
+  confirmed:                 # int, (auto). Findings that survived refutation + dedupe
+                             #   and were appended to the log.
+
+  rejected_tier1:            # int, (auto). Candidates the Tier-1 refuter (haiku, runs
+                             #   on EVERY candidate) refuted and did not log. Numerator
+                             #   of the cheap-pass false-positive signal.
+
+  rejected_tier2:            # int, (auto). Tier-1 survivors the Tier-2 refuter
+                             #   (sonnet/high, conditional) refuted. Split out from
+                             #   Tier-1 so FPR is attributable by stage — and so the
+                             #   "retire Tier-2 if rejected_tier2 trends to ~0" call
+                             #   is measurable.
+
+  refuter_invoked:           # bool, (auto). Whether the conditional Tier-2 refuter
+                             #   ran at all this run (a critical/high or low-confidence
+                             #   Tier-1 survivor existed).
+
+  suppressed:                # int, (auto). Count of would-be findings skipped because
+                             #   their dedupe_key matched an active suppression.
+
+  usage_by_model:            # object {model -> usage}, (auto). Per-model usage breakdown,
+                             #   e.g. {haiku: "0.2 window", sonnet: "0.6 window"}.
+                             #   Lets budget be attributed by tier/role.
+
+  usage_spent:               # number/string, (auto). Total model usage consumed this run
+                             #   (e.g. tokens or usage-window fraction). Watches budget.
+
+  elapsed:                   # duration/string, (auto). Wall-clock time for the run
+                             #   (e.g. "11m" or seconds). Watches runtime drift.
+
+# ---------------------------------------------------------------------------
+# Example (one line appended to metrics/runs/2026-06.jsonl):
+#
+# example:
+#   run_metrics:
+#     run_id:           "ns-2026-06-18-sec-01"
+#     ts:               "2026-06-18T03:14:22Z"
+#     date:             2026-06-18
+#     lane:             security
+#     pack_sha:         "a1b2c3d"
+#     selected:         6
+#     reviewed:         6
+#     findings_created: 4
+#     confirmed:        2
+#     rejected_tier1:   2
+#     rejected_tier2:   0
+#     refuter_invoked:  true
+#     suppressed:       1
+#     usage_by_model:   {haiku: "0.2 window", sonnet: "0.6 window"}
+#     usage_spent:      "0.8 window"
+#     elapsed:          "11m"

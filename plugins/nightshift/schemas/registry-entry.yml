@@ -1,0 +1,104 @@
+# Registry Entry Schema — the shared spine of the Assurance Engine
+# =================================================================
+#
+# A "registry entry" is one unit of coverage the engine keeps fresh: a security
+# vector or a user flow. Entries live in a pack's
+# .nightshift/registries/{vectors,flows}.yml and are the rows the engine
+# selects from each run (sort by staleness*weight, take top-K, fan out a reviewer).
+#
+# Design discipline: lean. Humans seed the intent; the engine maintains freshness.
+# Fields marked (auto) are ENGINE-MANAGED — humans never hand-edit them.
+#
+# One entry = one owner lane (security | design | eng), not a graph.
+# ---------------------------------------------------------------------------
+
+# ---- Identity ----
+
+id:            # string, REQUIRED, human-seeded.
+               # Stable unique key. Prefix by source/lane, e.g.:
+               #   VEC-014 (generic vector), ASVS-AUTH-01 (base taxonomy),
+               #   ND-SEC-05 (project extension), FLOW-03.
+               # Used by findings.linear refs and dedupe surfaces — never renumber.
+
+title:         # string, REQUIRED, human-seeded.
+               # Short human-readable description of the surface under review,
+               # e.g. "IDOR on site-scoped resources".
+
+# ---- Classification ----
+
+kind:          # enum, REQUIRED, human-seeded.
+               # One of: vector | flow
+               #   vector  -> security surface (owner: security)
+               #   flow    -> user flow / journey (owner: design)
+               # Determines which reviewer subagent lane handles the entry.
+
+area:          # list[string] (glob patterns), REQUIRED, human-seeded.
+               # Code/path globs this entry maps to, e.g.:
+               #   ["app/Http/Controllers/Site*", "app/Policies/*"]
+               # Sourced from the area->path map built at onboard.
+               # The engine uses these to detect git changes since last_reviewed
+               # (change_flag) and to scope the reviewer to the right code.
+               # Base-taxonomy entries ship generic placeholder globs; packs remap.
+
+# ---- Scheduling ----
+
+weight:        # enum, REQUIRED, human-seeded.
+               # One of: critical | high | medium | low
+               # Sets the default review interval and amplifies selection priority
+               # (selection score = max(staleness, change_flag) * weight).
+
+interval_days: # int, REQUIRED, human-seeded (derived from weight, overridable).
+               # Target days between reviews. Suggested mapping:
+               #   critical -> 7, high -> 14, medium -> 30, low -> 90
+               # staleness = (today - last_reviewed) / interval_days.
+
+owner:         # enum, REQUIRED, human-seeded.
+               # One of: security | design | eng
+               # The single accountable lane. Usually implied by `kind` but explicit
+               # so eng-owned hardening entries can exist without their own kind.
+
+# ---- Optional lane-specific fields (human-seeded) ----
+
+asvs_ref:      # string, optional [security vectors]. OWASP ASVS citation,
+               # e.g. "ASVS 4.0.3 V4.2". Same field as finding.yml; placed on
+               # vector entries so findings inherit the citation.
+
+persona:       # string, optional [design flows]. Which fixtures/personas.example.yml
+               # persona drives this flow.
+
+core:          # bool, optional [design flows]. true => a core flow to instrument first.
+
+# ---- Engine-managed state (auto) — humans do not edit ----
+
+last_reviewed: # date (YYYY-MM-DD), (auto), engine-managed.
+               # Set when the engine completes a review run for this entry.
+               # Drives staleness. Unset/absent => treated as maximally stale.
+
+status:        # enum, (auto), engine-managed.
+               # One of: green | stale | overdue | open-findings
+               #   green         -> reviewed within interval, no open findings
+               #   stale         -> staleness >= 1 (due) but not yet past grace
+               #   overdue       -> well past interval (escalated in digest)
+               #   open-findings -> has unresolved findings filed against it
+               # Surfaced in the weekly digest's "overdue registry areas".
+
+linear:        # list[string], (auto on file), engine-managed.
+               # Linear issue refs filed from this entry, e.g. [NOVU-410].
+               # Appended only when a finding crosses a severity gate into a ticket.
+
+# ---------------------------------------------------------------------------
+# Example entry (generic vector). Lives in .nightshift/registries/vectors.yml:
+#
+# example:
+#   id:            VEC-014
+#   title:         "IDOR on site-scoped resources"
+#   kind:          vector
+#   area:          ["app/Http/Controllers/Site*", "app/Policies/*"]
+#   weight:        critical
+#   interval_days: 7
+#   owner:         security
+#   last_reviewed: 2026-06-14   # (auto)
+#   status:        green        # (auto)
+#   linear:        [NOVU-410]   # (auto on file)
+#
+# persona/core on flow entries; asvs_ref on vector entries.
