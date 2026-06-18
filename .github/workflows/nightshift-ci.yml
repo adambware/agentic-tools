@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: "3.x"
 
+      # PyYAML is not in the stdlib; the structural-lint and render-smoke steps
+      # parse *.yml via python's yaml module, so install it up front.
+      - name: install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
       # (1) Plugin validation via the claude CLI — strict promotes warnings to
       #     errors. DEGRADED FALLBACK: if the CLI can't be installed or run, log a
       #     warning and continue to steps 2-3 (still strictly better than the old
