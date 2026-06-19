@@ -27,6 +27,11 @@ More orchestration patterns and plugin types to come!
 | [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present, flags testability changes, suggests highest-value missing tests |
 | [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
 
+## Changelog & Roadmap
+
+- [CHANGELOG.md](CHANGELOG.md) — version history and release notes
+- [TODOS.md](TODOS.md) — open work items and deferred decisions
+
 ## Creating a New Plugin
 
 1. Create `plugins/<name>/`
