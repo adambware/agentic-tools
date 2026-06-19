@@ -1,0 +1,63 @@
+description: Onboardme live Claude Agent SDK evals
+
+prompts:
+  - "{{request}}"
+
+providers:
+  - id: anthropic:claude-agent-sdk
+    label: claude-agent-sdk-fixed
+    config:
+      model: claude-sonnet-4-6
+      allowedTools:
+        - Read
+        - Glob
+        - Grep
+        - LS
+      disallowedTools:
+        - Write
+        - Edit
+        - MultiEdit
+        - Bash
+      skills:
+        - onboardme
+      options:
+        cwd: "{{workingDir}}"
+
+tests:
+  - description: live http-simple onboardme route
+    vars:
+      request: "Use the onboardme skill to explain this codebase."
+      workingDir: evals/onboardme/fixtures/repos/http-simple
+      expectedPath: evals/onboardme/fixtures/repos/http-simple/expected.json
+    assert:
+      - type: skill-used
+        value: onboardme
+      - type: javascript
+        value: file://asserts/structure.js
+      - type: javascript
+        value: file://asserts/banned.js
+      - type: javascript
+        value: file://asserts/facts.js
+
+  - description: live stale-doc-clear follows source
+    vars:
+      request: "Use the onboardme skill to explain this codebase."
+      workingDir: evals/onboardme/fixtures/repos/stale-doc-clear
+      expectedPath: evals/onboardme/fixtures/repos/stale-doc-clear/expected.json
+    assert:
+      - type: skill-used
+        value: onboardme
+      - type: javascript
+        value: file://asserts/structure.js
+      - type: javascript
+        value: file://asserts/banned.js
+      - type: javascript
+        value: file://asserts/facts.js
+
+  - description: live near-miss code-review prompt does not route to onboardme
+    vars:
+      request: "Review this codebase for risky changes and missing tests."
+      workingDir: evals/onboardme/fixtures/repos/http-simple
+    assert:
+      - type: not-skill-used
+        value: onboardme

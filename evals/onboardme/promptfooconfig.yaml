@@ -1,0 +1,39 @@
+description: Onboardme deterministic saved-output evals
+
+prompts:
+  - "{{request}}"
+
+providers:
+  - id: file://providers/saved-output.js
+    label: saved-output
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://asserts/structure.js
+    - type: javascript
+      value: file://asserts/banned.js
+    - type: javascript
+      value: file://asserts/facts.js
+
+tests:
+  - description: http-simple golden one-pager
+    vars:
+      case: http-simple
+      outputPath: evals/onboardme/fixtures/repos/http-simple/golden.md
+      expectedPath: evals/onboardme/fixtures/repos/http-simple/expected.json
+      request: "Use onboardme to explain this codebase."
+
+  - description: stale-doc-clear follows source over docs
+    vars:
+      case: stale-doc-clear
+      outputPath: evals/onboardme/fixtures/repos/stale-doc-clear/golden.md
+      expectedPath: evals/onboardme/fixtures/repos/stale-doc-clear/expected.json
+      request: "Use onboardme to explain this codebase."
+
+  - description: ambiguous-owner marks unresolved ownership unclear
+    vars:
+      case: ambiguous-owner
+      outputPath: evals/onboardme/fixtures/repos/ambiguous-owner/golden.md
+      expectedPath: evals/onboardme/fixtures/repos/ambiguous-owner/expected.json
+      request: "Use onboardme to explain this codebase."

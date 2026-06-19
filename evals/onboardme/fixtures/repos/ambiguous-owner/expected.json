@@ -1,0 +1,43 @@
+{
+  "tracedOperation": "export-audit",
+  "requiredIdentifiers": [
+    "CLI run",
+    "CsvExporter",
+    "AuditWriter",
+    "audit-log"
+  ],
+  "majorComponents": [
+    "CLI",
+    "CsvExporter",
+    "AuditWriter",
+    "PartnerWebhook"
+  ],
+  "stores": [
+    {
+      "name": "`audit-log` stream",
+      "writer": "AuditWriter",
+      "pattern": "`audit-log` stream",
+      "writerPattern": "AuditWriter"
+    }
+  ],
+  "journeyOrder": [
+    "export-audit",
+    "CLI run",
+    "CsvExporter",
+    "AuditWriter",
+    "audit-log"
+  ],
+  "unclear": [
+    {
+      "target": "sole owner",
+      "pattern": "sole owner"
+    }
+  ],
+  "forbiddenClaims": [
+    "only the CLI writes audit",
+    "PartnerWebhook is the sole owner"
+  ],
+  "seams": [
+    "AuditWriter"
+  ]
+}

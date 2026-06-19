@@ -1,0 +1,19 @@
+{
+  "name": "agentic-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code plugin marketplace eval tooling",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "eval:stage-skill": "bash evals/onboardme/scripts/stage-skill.sh",
+    "eval:det": "promptfoo eval -c evals/onboardme/promptfooconfig.yaml",
+    "eval:live": "promptfoo eval -c evals/onboardme/promptfooconfig.live.yaml --repeat 3 --no-cache",
+    "test": "node --test \"evals/onboardme/asserts/__tests__/*.test.js\""
+  },
+  "devDependencies": {
+    "promptfoo": "0.121.13"
+  }
+}

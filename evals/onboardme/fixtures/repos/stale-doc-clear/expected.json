@@ -1,0 +1,43 @@
+{
+  "tracedOperation": "POST /signup-reports",
+  "requiredIdentifiers": [
+    "SignupController.create",
+    "SignupRecorded",
+    "ReportStore",
+    "DigestQueue"
+  ],
+  "majorComponents": [
+    "SignupController",
+    "ReportStore",
+    "DigestQueue"
+  ],
+  "stores": [
+    {
+      "name": "`signup_reports.sqlite`",
+      "writer": "ReportStore",
+      "pattern": "`signup_reports.sqlite`",
+      "writerPattern": "ReportStore"
+    },
+    {
+      "name": "`SignupRecorded` queue",
+      "writer": "SignupController",
+      "pattern": "`SignupRecorded` queue",
+      "writerPattern": "SignupController"
+    }
+  ],
+  "journeyOrder": [
+    "POST /signup-reports",
+    "SignupController.create",
+    "ReportStore",
+    "`signup_reports.sqlite`",
+    "SignupRecorded",
+    "DigestQueue"
+  ],
+  "forbiddenClaims": [
+    "reports.json",
+    "unclear"
+  ],
+  "seams": [
+    "SignupRecorded"
+  ]
+}

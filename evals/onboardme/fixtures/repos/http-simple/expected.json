@@ -1,0 +1,52 @@
+{
+  "tracedOperation": "POST /orders",
+  "requiredIdentifiers": [
+    "OrderController.create",
+    "OrderPlaced",
+    "FulfillmentWorker",
+    "PaymentAdapter",
+    "InventoryStore"
+  ],
+  "majorComponents": [
+    "OrderController",
+    "FulfillmentWorker",
+    "PaymentAdapter",
+    "InventoryStore"
+  ],
+  "stores": [
+    {
+      "name": "`orders` table",
+      "writer": "OrderController and FulfillmentWorker",
+      "pattern": "`orders` table",
+      "writerPattern": {
+        "regex": "OrderController.*FulfillmentWorker|FulfillmentWorker.*OrderController"
+      }
+    },
+    {
+      "name": "`inventory` table",
+      "writer": "InventoryStore",
+      "pattern": "`inventory` table",
+      "writerPattern": "InventoryStore"
+    },
+    {
+      "name": "Stripe",
+      "writer": "PaymentAdapter",
+      "pattern": "Stripe",
+      "writerPattern": "PaymentAdapter"
+    }
+  ],
+  "journeyOrder": [
+    "POST /orders",
+    "OrderController.create",
+    "`orders`",
+    "OrderPlaced",
+    "FulfillmentWorker",
+    "PaymentAdapter",
+    "InventoryStore",
+    "confirmed"
+  ],
+  "seams": [
+    "OrderPlaced",
+    "PaymentAdapter"
+  ]
+}

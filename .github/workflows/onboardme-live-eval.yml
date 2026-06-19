@@ -1,0 +1,31 @@
+name: Onboardme live eval
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "22 8 * * *"
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run eval:stage-skill
+
+      - name: Skip when live credentials are unavailable
+        if: ${{ env.ANTHROPIC_API_KEY == '' }}
+        run: echo "ANTHROPIC_API_KEY is not configured; skipping live onboardme eval."
+
+      - name: Run live eval
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: npm run eval:live
