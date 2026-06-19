@@ -8,10 +8,11 @@
 #
 # Storage: <repo>/.nightshift/metrics/daily.jsonl — APPEND-ONLY. Each time the
 # engine recomputes a day's rollup (at the end of every run for the affected day)
-# it APPENDS a fresh line; it never rewrites in place. The READER takes the LAST
-# line per (date, lane). This is what makes the file safe under
-# `metrics/**/*.jsonl merge=union`: concurrent branches only ever append, union
-# keeps every line, and the last-wins read dedupes — no conflict, no lost rollup.
+# it APPENDS a fresh line; it never rewrites in place. The READER takes the line
+# with the greatest `ts` per (date, lane) — use max-ts, not physical-last-line.
+# This is what makes the file safe under `metrics/**/*.jsonl merge=union`:
+# concurrent branches only ever append, union keeps every line, and max-ts
+# deduplication is correct regardless of line ordering after a merge.
 # (Rewrite-in-place under union would instead leave duplicate stale rollups.)
 #
 # The durable truth is metrics/runs/*.jsonl + this daily.jsonl + git history.

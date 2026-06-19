@@ -38,7 +38,7 @@
     {
       "name": "nightshift",
       "source": "./plugins/nightshift",
-      "description": "Budget-aware, two-lane assurance loop — qa (security review + mandatory refuter) and design (UX) — that keeps security surfaces and user flows continuously fresh, refuted, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
+      "description": "Budget-aware, two-lane assurance loop — /nightshift:security (security review + mandatory refuter) and /nightshift:design (UX) — that keeps security surfaces and user flows continuously fresh, refuted, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
       "keywords": ["skills", "agents", "security", "assurance", "ux", "coverage"]
     }
   ]

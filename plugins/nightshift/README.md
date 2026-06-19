@@ -33,7 +33,7 @@ The security lane is "done" not when it runs, but when `vectors.yml` is reviewed
 
 ```
 plugins/nightshift/                # the ENGINE — project-agnostic, versioned once
-  skills/                          # human-invokable entry points (qa / design / onboard / digest / garden)
+  skills/                          # human-invokable entry points (security / design / onboard / digest / garden)
   agents/                          # generic reviewer subagents (security / refuters / ux)
   taxonomy/                        # BASE libraries (owasp-asvs.yml) that packs clone + extend
   schemas/                         # canonical registry-entry + finding + manifest + metrics
@@ -56,7 +56,7 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 | Command | What it does |
 |---------|--------------|
 | `/nightshift:security` | **Security/assurance review run.** Execute **one** bounded run for the security lane: select stalest/changed vectors within the manifest budget (**K**), fan out the security-reviewer subagent, run the mandatory refuter gate, dedupe, log findings, update state, emit per-run metrics, apply severity gates. |
-| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated — refuses to run until the pack has a staging browser adapter (`stack_adapter.browser.base_url`) **and** seeded `fixtures/personas.yml`. Fails fast with a clear reason rather than half-running. Shares the bounded run-loop with `qa`. |
+| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated — refuses to run until the pack has a staging browser adapter (`stack_adapter.browser.base_url`) **and** seeded `fixtures/personas.yml`. Fails fast with a clear reason rather than half-running. Shares the bounded run-loop with `/nightshift:security`. |
 | `/nightshift:onboard` | Onboard a codebase as a pack: detect the stack, batch-confirm deltas, seed a draft `vectors.yml` from the base taxonomy, run a human-reviewed seed + gate pass, then write the pack. Interactive + mutating. |
 | `/nightshift:digest` | Produce the **weekly digest** — the management signal: new critical/high, repeated themes, overdue surfaces, false-positive rate, proposed entries awaiting approval, and the top human decisions needed. Read-only; the one skill left model-invocable. |
 | `/nightshift:garden` | Weekly **registry gardening**: does each recent change map to an entry? If not, *propose* one (humans approve). Flags orphaned entries and stale `area` mappings — the only defense against permanent blind spots. |
@@ -66,7 +66,7 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 | Agent | Role |
 |-------|------|
 | `security-reviewer` | Defensive review of a vector's code surface ("is this adequately protected?"). Proposes — never files — a finding with `preconditions` and an optional failing invariant test. **Assurance, not a pentest:** no exploit payloads or offensive tooling. |
-| `security-refuter` | **Tier-1, always.** Mandatory independent re-read of **every** candidate, context-asymmetric (claim + location only, never the reviewer's narrative). Must *refute* before a finding survives; rejections count toward `rejected_tier1`. (haiku, `maxTurns 8`, low effort.) |
+| `security-refuter` | **Tier-1, always.** Mandatory independent re-read of **every** candidate — given the full proposed finding but instructed to ignore the reviewer's narrative and re-read source itself. Must *refute* before a finding survives; rejections count toward `rejected_tier1`. (haiku, `maxTurns 8`, low effort.) |
 | `security-refuter-2` | **Tier-2, conditional.** Runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A second, harder pass; rejections count toward `rejected_tier2`. (sonnet/high, `maxTurns 12`.) |
 | `ux-reviewer` | Designer friction & a11y auditor for the design lane. Requires seeded `fixtures/` personas; drives flows via the manifest browser adapter. Every ticket requires an objective `anchor`. |
 
@@ -80,7 +80,7 @@ The core is strictly **two-lane** — `security` and `design`.
 4. Run the **two-stage refuter gate** (security lane — see below).
 5. **Dedupe** against open findings by `dedupe_key`; honor active **suppressions**.
 6. Append confirmed findings (with `first_seen`/`last_seen`/`run_id`); update `last_reviewed`/`status`; write the per-run metrics record.
-7. Apply **severity gates** (critical/high → Linear now; medium → only if reproducible/recurring/customer-facing; low → digest; taste → never without an anchor).
+7. Apply **severity gates** (critical/high → surface for human Linear filing; medium → only if reproducible/recurring/customer-facing; low → digest; taste → never without an anchor).
 
 ### The two-stage refuter gate (security lane)
 

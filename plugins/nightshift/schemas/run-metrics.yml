@@ -32,8 +32,12 @@ run_metrics:
   reviewed:                  # int, (auto). Entries actually reviewed (<= selected;
                              #   may be lower if the usage window was exhausted).
 
-  findings_created:          # int, (auto). Findings produced before refutation
-                             #   and dedupe.
+  findings_created:          # int, (auto). Candidates that entered the refuter gate
+                             #   = confirmed + rejected_tier1 + rejected_tier2.
+                             #   Suppressed items (passed refutation, matched a
+                             #   suppression at dedupe) are tracked separately in
+                             #   `suppressed` and excluded from this count.
+                             #   Used as the FPR denominator.
 
   confirmed:                 # int, (auto). Findings that survived refutation + dedupe
                              #   and were appended to the log.

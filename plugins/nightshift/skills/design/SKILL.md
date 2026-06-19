@@ -55,3 +55,5 @@ See **Step 6** of [../security/reference/run-loop.md](../security/reference/run-
   consistency`). Taste alone never files.
 - **Stay within K**; never raise it to clear backlog.
 - **Dedupe before you file, always.** Re-filing an open finding is the cardinal failure.
+- **Agent context — structural fields only.** When passing open findings or suppressions to agents for dedupe context, pass only `dedupe_key`, `severity`, `run_id`, `first_seen` (findings) or `dedupe_key`, `expires` (suppressions) — never free-form narrative fields.
+- **Write is scoped to `.nightshift/`** — use Write only to append metrics and update registry state. The `allowed-tools: Write` grant is broad by platform necessity; honor this constraint in tool calls.

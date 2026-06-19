@@ -8,6 +8,11 @@
   - **Context:** Surfaced by Codex outside-voice during /plan-eng-review of `onboardme-eval-system-promptfoo.md`. V1 (saved outputs) and V1.5 (Claude Agent SDK, `.claude/skills`) are unaffected. Start by confirming Codex's skill-install convention and whether Codex support is strategic for this marketplace at all.
   - **Depends on / blocked by:** Blocks the V2 provider lane only.
 
+- [ ] **Delete nightshift planning artifacts from repo root** [P1]
+  - **What:** Delete `assurance-engine-review-plan.md` and `nightshift-review.md` from the repo root. Also make an explicit git-history decision (accept history vs `git filter-repo`).
+  - **Why:** Plan §7 required this one-time cleanup before shipping nightshift 2.0.0. Deferred via /ship.
+  - **Context:** Files are currently untracked (not committed). Clean up on the next commit.
+
 - [ ] **Non-gating LLM-judge relational signal for the onboardme eval**
   - **What:** A separate Promptfoo `llm-rubric` run that grades deeper relational/semantic correctness (full sole-writer ownership, paraphrased facts) beyond the deterministic asserts — reported, never blocking.
   - **Why:** The deterministic presence + relation checks have a ceiling: the hardest "sole writer / no other writer" cases and legitimate paraphrase can't be settled by token/co-occurrence checks alone.

@@ -14,8 +14,7 @@ personas, realistic findings, a suppression, and a generated dashboard.
 
 ## What it realizes (cross-reference)
 
-See the plugin README (`plugins/nightshift/README.md`) and the rework plan
-(`nightshift-rework-plan.md`):
+See the plugin README (`../../README.md`) for context on how these files relate to the engine:
 
 - **"manifest.yml (the portability layer)"** -> `.nightshift/manifest.yml`
 - **"NovuDesk seed"** (the ND-SEC-01..07 table + base ASVS) -> `.nightshift/registries/vectors.yml`
@@ -38,7 +37,8 @@ See the plugin README (`plugins/nightshift/README.md`) and the rework plan
     vectors.yml                 # base ASVS (remapped) + 7 NovuDesk ND-SEC-* extensions
     flows.yml                   # 7 design flows (Phase 2); FLOW-01 submit-ticket + FLOW-02 triage-review core
   fixtures/
-    personas.example.yml        # end-user, support-agent, workspace-admin
+    personas.yml                # end-user, support-agent, workspace-admin (active)
+    personas.example.yml        # copy of personas.yml — template for new packs
   findings/
     suppressions.yml            # one time-boxed ND-SEC-03 suppression
   metrics/

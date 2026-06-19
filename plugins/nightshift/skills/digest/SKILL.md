@@ -20,9 +20,11 @@ read-only, model-invocable skill — `/nightshift:digest` reads the pack and nev
 
 Reads the pack only; never runs reviews or edits the registry. Sources in `.nightshift/`:
 
-- **`metrics/daily.jsonl`** — the append-only day-over-day rollup. **Reader takes the LAST
-  line per `(date, lane)`.** Source for `coverage_freshness_pct`, `fpr_7d`, `fpr_30d`,
-  and the surface counts. Do NOT look for a `run_metrics` blob — it doesn't exist.
+- **`metrics/daily.jsonl`** — the append-only day-over-day rollup. **Reader takes the line
+  with the greatest `ts` per `(date, lane)`** (use max-ts, not physical-last-line — union
+  merge across branches does not preserve append order). Source for
+  `coverage_freshness_pct`, `fpr_7d`, `fpr_30d`, and the surface counts. Do NOT look
+  for a `run_metrics` blob — it doesn't exist.
 - **`metrics/findings/<YYYY-MM>.jsonl`** — the append-only findings log; use `first_seen`/
   `last_seen` to find motionless findings, and severities/`dedupe_key` for themes.
 - **registry status** — each entry's `(auto)` `status`/`last_reviewed`
@@ -51,7 +53,7 @@ Summarize **across both lanes (security and design)**:
 
 ## Workflow
 
-1. Fold over `metrics/daily.jsonl` (last line per `(date, lane)`) to get current
+1. Fold over `metrics/daily.jsonl` (max-ts per `(date, lane)`) to get current
    `coverage_freshness_pct`, `fpr_7d`, `fpr_30d`, and surface counts per lane.
    Note: `fpr_7d` and `fpr_30d` are 0–100 percentage values — render them with a '%' suffix
    (e.g. 'FPR_7d 24%', not '0.24%').

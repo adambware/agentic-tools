@@ -18,6 +18,12 @@
 # invoked from the repo root or from anywhere else.
 set -euo pipefail
 
+# Require PyYAML before doing anything (render-smoke section depends on it).
+if ! python3 -c 'import yaml' 2>/dev/null; then
+  echo "::error::PyYAML not installed — run: pip install pyyaml (or: python3 -m pip install pyyaml)"
+  exit 1
+fi
+
 # --- Resolve repo root from this script's location (scripts/ lives in the plugin) ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"          # plugins/nightshift
@@ -35,12 +41,13 @@ echo "==> Example-hygiene check (repo root: $REPO_ROOT)"
 
 # --- (a) Reserved-TLD rule for every URL under examples/ and templates/ -------------
 echo "--> (a) Checking URLs use reserved TLDs under examples/ and templates/"
+_HYGIENE_TMP=$(mktemp /tmp/nightshift-hygiene-XXXXXXXX)
 for dir in "$EXAMPLES_DIR" "$TEMPLATES_DIR"; do
   [ -d "$dir" ] || continue
   while IFS= read -r -d '' file; do
     # Extract URLs, then strip trailing markdown/punctuation that commonly hugs a URL
     # (backticks, quotes, parens, brackets, angle brackets, commas, periods, semicolons).
-    grep -aEoh 'https?://[^[:space:]"'"'"'`)<>]+' "$file" 2>/dev/null \
+    (grep -aEoh 'https?://[^[:space:]"'"'"'`)<>]+' "$file" 2>/dev/null || true) \
       | sed -E 's/[`"'"'"')\]>,;:.]+$//' \
       | while IFS= read -r url; do
           [ -n "$url" ] || continue
@@ -55,12 +62,12 @@ for dir in "$EXAMPLES_DIR" "$TEMPLATES_DIR"; do
           fi
         done
   done < <(find "$dir" -type f -print0)
-done > /tmp/nightshift-hygiene-urls.$$ 2>&1 || true
-if grep -q '^BADURL$' /tmp/nightshift-hygiene-urls.$$ 2>/dev/null; then
-  grep -v '^BADURL$' /tmp/nightshift-hygiene-urls.$$ || true
+done > "$_HYGIENE_TMP" 2>&1 || true
+if grep -q '^BADURL$' "$_HYGIENE_TMP" 2>/dev/null; then
+  grep -v '^BADURL$' "$_HYGIENE_TMP" || true
   fail=1
 fi
-rm -f /tmp/nightshift-hygiene-urls.$$ 2>/dev/null || true
+rm -f "$_HYGIENE_TMP" 2>/dev/null || true
 
 # --- (b) No sentinels under examples/ (sentinels ARE allowed in templates/) ---------
 echo "--> (b) Checking no example-pack sentinels survive under examples/"

@@ -99,9 +99,9 @@ Per selected vector, dispatch the reviewer then run the **two-stage refuter gate
    confidence}`.
 
 2. **Tier-1 refuter (ALWAYS)** — `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter.md`
-   (**haiku, `maxTurns: 8`, low effort**). An independent second reviewer, fed the claim +
-   location only (never the reviewer's narrative — context-asymmetric), that must actively
-   **refute** the candidate. Runs on **every** candidate. If it cannot refute (the finding
+   (**haiku, `maxTurns: 8`, low effort**). An independent second reviewer given the full
+   proposed finding, but instructed to ignore the reviewer's narrative and re-read the
+   source code itself. Must actively **refute** the candidate. Runs on **every** candidate. If it cannot refute (the finding
    survives), the candidate advances to the Tier-2 predicate. If it refutes, the candidate
    is dropped and counted in `rejected_tier1`.
    **No Tier-1 refute ⇒ no finding may be logged.**
@@ -141,7 +141,8 @@ dedupe_key = {surface, symptom, root_cause}
 - **symptom** — the observable problem.
 - **root_cause** — the underlying mechanism.
 
-A candidate whose `dedupe_key` matches any **open** finding is dropped (do not re-file).
+A candidate whose `dedupe_key` matches any **open** finding is dropped (do not re-file a new record). **However: when dropping due to a dedupe match, update the EXISTING finding's `last_seen` to today and `run_id` to this run's id in `metrics/findings/`.** This is what keeps motionless-finding detection accurate — an issue that re-appears each run stays "active", not "stale".
+
 This is the primary defense against nightly re-filing the same issue.
 
 ### Suppressions
@@ -214,8 +215,8 @@ Also update each reviewed entry's `last_reviewed` to today and recompute `status
 ### (c) Recompute and append the daily rollup
 
 Recompute the affected day's rollup and **append a fresh line** to `metrics/daily.jsonl`
-(the reader takes the **last** line per `(date, lane)` — append-only + last-wins is
-union-merge-safe by construction). Daily rollup record:
+(the reader takes the **line with the greatest `ts`** per `(date, lane)` — append-only +
+max-ts dedup is union-merge-safe regardless of line ordering after a branch merge). Daily rollup record:
 
 `{date, lane, ts, runs, surfaces_total, surfaces_green, surfaces_stale, surfaces_overdue,
 open_findings, coverage_freshness_pct, median_staleness_ratio, fpr_7d, fpr_30d}`
@@ -228,6 +229,7 @@ open_findings, coverage_freshness_pct, median_staleness_ratio, fpr_7d, fpr_30d}`
 - `fpr_7d` / `fpr_30d` — false-positive rate over the trailing 7/30 days, derived from the
   split tier counters: `(rejected_tier1 + rejected_tier2) / findings_created` aggregated
   over the window. Multiply by 100 to get a 0-100 percentage value (consistent with `coverage_freshness_pct`).
+  When `findings_created == 0` over the window (clean run), omit `fpr_7d`/`fpr_30d` or set to `null` — division by zero is undefined.
 
 `dashboard.md` and `trends.md` are **disposable** projections regenerated from the JSONL
 truth — never the source of record.
@@ -236,7 +238,7 @@ truth — never the source of record.
 
 Apply verbatim (this is the single canonical source; the SKILL.md files point here):
 
-- **critical / high** → Linear issue immediately.
+- **critical / high** → surface finding for human Linear filing (the skill has no Linear tool — use the finding's `dedupe_key` as the issue title).
 - **medium** → issue only if reproducible, recurring, or customer-facing.
 - **low** → findings log; batch into weekly digest unless repeated.
 - **taste / opinion** → never an issue unless tied to a measured `anchor`.

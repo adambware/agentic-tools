@@ -63,7 +63,7 @@ linear:
 # How often each lane's review run fires. Values: nightly | weekly | off.
 cadences:
   security: nightly          # diff-triggered, once vectors.yml is reviewed/complete-enough.
-  design: weekly             # only after staging + seeded personas exist.
+  design: off                # enable only after staging + seeded personas exist.
 
 # Top-K entries selected per run, per lane. Sized to fit ONE usage window — this is the
 # bound that keeps runs lean. The engine sorts by staleness*weight and takes this many.

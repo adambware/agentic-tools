@@ -3,3 +3,8 @@
 .plan-critique/
 
 .DS_Store
+node_modules/
+
+# Staged eval skills are copied from canonical plugin sources at test time.
+evals/onboardme/fixtures/repos/*/.claude/
+evals/onboardme/fixtures/repos/*/.agents/

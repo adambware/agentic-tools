@@ -143,8 +143,7 @@ jobs:
                         -e 'Assurance Engine' -e 'assurance-engine' \
                         "$ROOT" \
                         --exclude-dir='.git' \
-                        | grep -v 'docs/future-pm-lane' \
-                        | grep -v 'nightshift-ci.yml' 2>/dev/null)"; then
+                        | grep -v 'docs/future-pm-lane' 2>/dev/null)"; then
             echo "::error::Residual 'Assurance Engine' references found:"
             echo "$hits"
             exit 1
