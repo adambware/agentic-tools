@@ -136,3 +136,7 @@ human-seeded.
 Example packs must be **fully fictional**. Never use a real project as a scratch example. All
 example/template URLs must use a reserved TLD (`.example` / `.test` / `.invalid` / `.localhost`).
 The canonical public example is **NovuDesk**.
+
+Run `scripts/check-example-hygiene.sh` locally before opening a PR — it validates reserved-TLD
+usage, no-sentinel fields, and YAML render-smoke for all example/template packs. The same check
+runs in CI via `nightshift-ci.yml`.
