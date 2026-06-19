@@ -1,0 +1,83 @@
+# .nightshift/registries/flows.yml — NovuDesk designer flows
+# ==========================================================
+#
+# Designer (friction & a11y) coverage for NovuDesk (kind: flow, owner: design).
+# Each entry conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml; `area` is the
+# route(s) the flow drives.
+#
+# PHASE 2 — these are seeded but NOT yet active. The Designer lane needs a STAGING
+# environment (manifest.stack_adapter.browser.base_url) AND SEEDED PERSONAS
+# (fixtures/personas.example.yml) before runs are trustworthy; otherwise the reviewer
+# confuses environment drift with real friction. last_reviewed/status are (auto) and
+# remain unset until the lane goes live.
+#
+# CORE FLOWS to instrument first (per the spec): FLOW-01 submit-ticket and
+# FLOW-02 triage-gate-review.
+# ---------------------------------------------------------------------------
+
+flows:
+
+  - id:            FLOW-01
+    title:         "Submit a support ticket"
+    kind:          flow
+    area:          ["/tickets/new", "/tickets"]
+    weight:        critical          # CORE FLOW #1 — primary activation path
+    interval_days: 7
+    owner:         design
+    persona:       end-user
+    core:          true              # instrument first
+
+  - id:            FLOW-02
+    title:         "Triage Gate review queue (approve/override a suggested triage)"
+    kind:          flow
+    area:          ["/triage", "/triage/{ticketId}"]
+    weight:        critical          # CORE FLOW #2 — daily agent workflow
+    interval_days: 7
+    owner:         design
+    persona:       support-agent
+    core:          true              # instrument first
+
+  - id:            FLOW-03
+    title:         "Dashboard overview"
+    kind:          flow
+    area:          ["/dashboard"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       support-agent
+
+  - id:            FLOW-04
+    title:         "View ticket detail"
+    kind:          flow
+    area:          ["/tickets/{ticketId}"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       end-user
+
+  - id:            FLOW-05
+    title:         "Invite a team member"
+    kind:          flow
+    area:          ["/team", "/team/invite"]
+    weight:        medium
+    interval_days: 30
+    owner:         design
+    persona:       workspace-admin
+
+  - id:            FLOW-06
+    title:         "Billing / plan change"
+    kind:          flow
+    area:          ["/billing", "/billing/plan"]
+    weight:        high
+    interval_days: 14
+    owner:         design
+    persona:       workspace-admin
+
+  - id:            FLOW-07
+    title:         "Connect an integration"
+    kind:          flow
+    area:          ["/integrations", "/integrations/connect"]
+    weight:        medium
+    interval_days: 30
+    owner:         design
+    persona:       workspace-admin

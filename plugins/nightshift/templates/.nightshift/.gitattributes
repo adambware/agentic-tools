@@ -1,0 +1,4 @@
+# Append-only metrics ledgers: merge concurrent branches by unioning their appended
+# lines so parallel runs never produce a merge conflict. The reader dedupes on read
+# (daily.jsonl: last line wins per (date, lane)), so union is conflict-free by construction.
+metrics/**/*.jsonl merge=union

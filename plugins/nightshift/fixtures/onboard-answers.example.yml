@@ -1,0 +1,32 @@
+# fixtures/onboard-answers.example.yml — render-smoke fixture (FICTIONAL)
+# =======================================================================
+# A tiny set of example onboarding answers, fed to the render-smoke step of the
+# example-hygiene check. It stands in for what the /nightshift:onboard interview
+# would collect, so CI can confirm the template pack renders from real-shaped
+# inputs without a live interview.
+#
+# Every value here is fully fictional and uses a reserved TLD (RFC 6761) — there
+# is nothing real to leak. Do NOT point this at a real project.
+# ---------------------------------------------------------------------------
+
+# Which lanes the user enabled. v1 default path is security-only.
+lanes:
+  - security
+
+# Short pack slug (lowercase).
+project: acme-widgets
+
+# Stack tag for the single repo.
+stack: go
+
+stack_adapter:
+  test: "go test ./..."
+  build: "go build ./..."
+
+# Linear project key for filing confirmed findings.
+linear:
+  project: ACME
+
+# Hard per-window ceiling for the security lane (top-K per run).
+window_budget_k:
+  security: 6

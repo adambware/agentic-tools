@@ -23,6 +23,14 @@ More orchestration patterns and plugin types to come!
 | [plan-critique](plugins/plan-critique/) | Hook | Parallel critique system — spawns Opus + Codex reviewers for plan files |
 | [ab-code-review](plugins/ab-code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
 | [onboardme](plugins/onboardme/) | Skill | Onboarding one-pager — traces one real request to make a codebase picturable in ~3 minutes |
+| [nightshift](plugins/nightshift/) | Skills + Agents | Budget-aware, two-lane assurance loop — `/nightshift:security` (security + mandatory refuter) and `/nightshift:design` (UX) — keeping security surfaces and user flows fresh and refuted; onboard any repo as a `.nightshift/` pack |
+| [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present, flags testability changes, suggests highest-value missing tests |
+| [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
+
+## Changelog & Roadmap
+
+- [CHANGELOG.md](CHANGELOG.md) — version history and release notes
+- [TODOS.md](TODOS.md) — open work items and deferred decisions
 
 ## Creating a New Plugin
 

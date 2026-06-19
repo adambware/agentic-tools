@@ -1,0 +1,10 @@
+{
+  "name": "nightshift",
+  "version": "2.0.0",
+  "description": "Coverage-driven, budget-aware assurance loop with two lanes — /nightshift:security (security review + mandatory refuter) and /nightshift:design (designer/UX). Keeps security surfaces and user flows continuously fresh, refuted, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack.",
+  "author": {"name": "adambware"},
+  "homepage": "https://github.com/adambware/agentic-tools",
+  "repository": "https://github.com/adambware/agentic-tools",
+  "license": "MIT",
+  "keywords": ["security", "assurance", "ux", "coverage", "review", "agents", "skills"]
+}

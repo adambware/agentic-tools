@@ -1,0 +1,142 @@
+# Finding Schema — the lean finding record
+# =========================================
+#
+# A "finding" is one confirmed issue produced by a reviewer subagent against a
+# registry entry. Findings are appended to .nightshift/findings/ (append-only log).
+# Only confirmed findings are logged — security findings must survive a second
+# independent reviewer's refutation attempt first.
+#
+# Design discipline: optimize for dedupe quality and confidence, NOT count.
+# The dedupe_key is the spine that prevents nightly re-filing of the same issue.
+#
+# Lanes: fields below are tagged with which agent lane uses them.
+#   [all]      -> every lane
+#   [security] -> Security (defensive review) lane only
+#   [ux]       -> Designer (friction & a11y) lane only
+# ---------------------------------------------------------------------------
+
+# ---- Core (all lanes) ----
+
+dedupe_key:                 # object {surface, symptom, root_cause}, REQUIRED. [all]
+                            # The dedupe spine. A new finding whose dedupe_key matches
+                            # an open finding (or an active suppression) is NOT re-filed.
+  surface:                  # string, REQUIRED. Where it shows up (entry id, route,
+                            #   component, or path), e.g. "VEC-014" / "/sites/{id}".
+  symptom:                  # string, REQUIRED. The observable problem,
+                            #   e.g. "cross-tenant read of site config".
+  root_cause:               # string, REQUIRED. Underlying cause,
+                            #   e.g. "missing site-scope policy check".
+
+severity:                   # enum, REQUIRED. [all]
+                            # One of: critical | high | medium | low
+                            # Feeds severity gates (critical/high -> Linear immediately;
+                            # medium -> issue only if reproducible/recurring/customer-facing;
+                            # low -> log + weekly digest unless repeated).
+
+confidence:                 # enum, REQUIRED. [all]
+                            # One of: low | medium | high
+                            # Reviewer's confidence the finding is real (post-refutation).
+
+needs_human_verification:   # bool, REQUIRED. [all]
+                            # MUST be true for security critical/high findings.
+                            # Engine is assurance, not a pentest — humans verify before action.
+
+# ---- Lifecycle (auto) — engine-managed, all lanes ----
+
+first_seen:                 # date (YYYY-MM-DD), (auto). [all]
+                            # When this dedupe_key was first logged. Set once, never bumped.
+                            # Anchors finding age.
+
+last_seen:                  # date (YYYY-MM-DD), (auto). [all]
+                            # Bumped each time a run re-encounters this dedupe_key while
+                            # still open. Drives "motionless open finding" detection.
+
+resolved_at:                # date (YYYY-MM-DD), optional, (auto). [all]
+                            # Set when the finding is confirmed resolved (dedupe_key no
+                            # longer reproduces / closed). Absent while open.
+                            # last_seen - first_seen (or resolved_at - first_seen) = age.
+
+run_id:                     # string, (auto). [all]
+                            # The run that produced or last touched this finding (matches
+                            # run_metrics.run_id). Ties a finding back to its run record.
+
+linear:                     # array of strings, optional, (auto). [all]
+                            # Filed Linear issue refs for this finding, e.g. ["NOVU-541"].
+                            # Set when a severity gate files a ticket; absent until then.
+
+# ---- UX anchor (Designer lane) ----
+
+anchor:                     # enum, REQUIRED for [ux] findings — no anchor, no ticket.
+                            # One of: friction_delta | broken_path | a11y | evidence | consistency
+                            #   friction_delta -> measured added steps/time/backtracks
+                            #   broken_path    -> flow-completion failure / dead-end
+                            #   a11y           -> accessibility violation
+                            #   evidence       -> screenshot/recording of the issue state
+                            #   consistency    -> objective inconsistency vs the rest of the UI
+                            # Forces every UX ticket onto an objective hook (no taste/opinion
+                            # tickets). Omit for non-UX lanes.
+
+screen:                     # string, optional [ux]. Route / screen / component where observed.
+evidence:                   # string, optional [ux]. Screenshot/recording reference for the issue state.
+measured:                   # string, optional [ux]. The objective measurement (steps, backtracks, wait seconds) backing a friction_delta anchor.
+
+# ---- Security write-up (Security lane) ----
+# Present on [security] findings. The defensive case for why the surface is abusable.
+
+asvs_ref:                   # string, REQUIRED for [security].
+                            # OWASP ASVS citation, e.g. "ASVS 4.0.3 V2.1".
+
+location:                   # string, REQUIRED for [security].
+                            # Precise code location: file:line, route, or symbol.
+
+why_abusable_under_preconditions:
+                            # string, REQUIRED for [security].
+                            # The crux: defensive explanation of how the surface is abusable
+                            # GIVEN the preconditions below. Reasoning, not an exploit payload.
+
+preconditions:              # object, REQUIRED for [security].
+                            # The setup under which the finding holds. Keeps findings honest
+                            # ("only abusable if X") and human-verifiable.
+  required_role/session:    # string. Role/session/auth state needed to reach the surface.
+  tenant/account setup:     # string. Tenant/account/data conditions required.
+  affected path:            # string. The route/endpoint/path exercised.
+  impact:                   # string. What an abuser gains if preconditions are met.
+  confidence:               # enum: low | medium | high. Confidence in this precondition set.
+
+# ---------------------------------------------------------------------------
+# Suppression sub-schema
+# ---------------------------------------------------------------------------
+# Suppressions live alongside the findings log (.nightshift/findings/) and tell the
+# engine to skip re-filing a matching dedupe_key. Small, on demand, time-boxed.
+#
+# suppression:
+#   dedupe_key:  {surface, symptom, root_cause}  # REQUIRED. Matches the finding to silence.
+#   reason:      string                          # REQUIRED. Why it's accepted/deferred.
+#   expires:     date (YYYY-MM-DD)               # REQUIRED. Suppression auto-lifts after this.
+#   approved_by: string                          # REQUIRED. Human who approved (accountability).
+
+# ---------------------------------------------------------------------------
+# Example (security finding):
+#
+# example:
+#   dedupe_key:
+#     surface:    "VEC-014"
+#     symptom:    "cross-workspace read of ticket content"
+#     root_cause: "missing workspace-scope policy check"
+#   severity:   critical
+#   confidence: high
+#   needs_human_verification: true
+#   first_seen: 2026-06-14   # (auto)
+#   last_seen:  2026-06-18   # (auto)
+#   run_id:     "ns-2026-06-18-sec-01"   # (auto)
+#   asvs_ref:   "ASVS 4.0.3 V4.2"
+#   location:   "app/controllers/tickets_controller.rb:88"
+#   why_abusable_under_preconditions: >
+#     show loads Ticket by id without scoping to the authenticated workspace, so any
+#     authenticated user can read another workspace's ticket by enumerating ids.
+#   preconditions:
+#     required_role/session: "any authenticated user"
+#     tenant/account setup:  "two workspaces, victim owns target ticket id"
+#     affected path:         "GET /tickets/{id}"
+#     impact:                "read of another workspace's ticket content"
+#     confidence:            high
