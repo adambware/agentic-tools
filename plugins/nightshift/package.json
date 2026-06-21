@@ -1,0 +1,21 @@
+{
+  "name": "nightshift-engine",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic core for the nightshift assurance engine. Author TS, ship bundled node-runnable bin/*.mjs (zero runtime install). Judgment stays in subscription agents; this package owns every checkable behavior.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
+    "yaml": "^2.6.0"
+  }
+}

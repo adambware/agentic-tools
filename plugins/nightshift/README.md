@@ -123,13 +123,55 @@ it is auto-deferred with one explanatory line.
 
 See [`examples/novudesk/`](examples/novudesk/) for a worked seed that proves the engine adapts.
 
+## Deterministic engine (v2.1)
+
+Every *checkable* behavior — selection, dedupe, the metrics writer, the daily rollup,
+schema validation, the read-only guard — is owned by a small TypeScript core under
+[`src/`](src/), authored in TS and shipped as **bundled, node-runnable `bin/*.mjs`**
+that an onboarded repo runs with **zero install**. The model only reviews code and
+refutes findings; it never executes deterministic logic (D1). The seams between the
+deterministic core, the Workflow orchestrator, and the judgment agents are pinned in
+[`CONTRACTS.md`](CONTRACTS.md).
+
+```
+bin/select    read registry + git diff → top-K stalest/changed → surfaces.json
+bin/validate  schema-gate any artifact (aborts the run on failure)
+bin/dedupe    candidates → new | recurring | suppressed (decisions.json)
+bin/record    append per-run record + finding lines; update registry state (atomic)
+bin/rollup    recompute + append the daily rollup (freshness / median / FPR)
+hooks/guard   PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
+```
+
+The orchestrator is [`nightshift.workflow.js`](nightshift.workflow.js) — a thin
+Workflow shell with **zero decision logic** (E4): it only sequences free Bash plumbing
+(`bin/*.mjs`) and subscription judgment agents, passing artifacts by **file, never by
+text** (E2/E3).
+
+**Develop:**
+
+```bash
+cd plugins/nightshift
+npm install
+npm run typecheck   # tsc --noEmit
+npm test            # vitest — full-branch coverage of the core
+npm run build       # bundle src/{bin,hooks}/*.ts → committed bin/*.mjs, hooks/*.mjs
+npm run check       # all three
+```
+
+CI (`nightshift-ci.yml`) runs the above and fails if the committed `bin/`/`hooks/`
+artifacts are out of sync with `src/`. All writes are atomic (temp + fsync + rename, or
+a whole-line jsonl append) and the record step is chained so a `bin/validate` failure
+aborts before any durable state is touched (E6).
+
 ## Schemas
 
 Canonical shapes live in [`schemas/`](schemas/): `registry-entry.yml` (the shared spine),
 `finding.yml` (lean finding + suppression, with `first_seen`/`last_seen`/`resolved_at`/`run_id`
-lifecycle fields), `manifest.yml` (the portability layer + `pack_format`), and the metrics shapes
-(per-run + daily rollup). Engine-managed fields are tagged `(auto)`; everything else is
-human-seeded.
+lifecycle fields), `candidate-finding.yml` (the model-written artifact gated by `bin/validate`
+before it enters the stateful path), `manifest.yml` (the portability layer + `pack_format`), and
+the metrics shapes (per-run + daily rollup). Engine-managed fields are tagged `(auto)`; everything
+else is human-seeded. The machine validators (`src/lib/validate.ts`) mirror these and are what
+`bin/validate` enforces.
 
 ## Contributor rule
 

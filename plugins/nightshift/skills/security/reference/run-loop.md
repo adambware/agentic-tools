@@ -10,41 +10,31 @@ Lane values are `security | design`. All field names here are canonical — they
 `${CLAUDE_PLUGIN_ROOT}/schemas/` and the pack's `.nightshift/` registries and findings.
 Do not rename them.
 
+> **Determinism boundary (D1/E7).** Every *checkable* computation below — staleness,
+> score, selection, `dedupe_key`, suppression match, the metrics writer, the daily
+> rollup — is **owned by a `bin/` script** (TypeScript, vitest-covered) and is invoked
+> by the orchestrator, never re-derived by the model. Those steps are now **one-line
+> pointers** to the owning command + schema (single source of truth: the code + its
+> tests). Only the **judgment protocol** — the two-stage refuter, anchor discipline,
+> the design walkthrough — stays prose here, because that is the agent spec. See
+> [`CONTRACTS.md`](../../../CONTRACTS.md) for the files-not-text + artifact seams.
+
 ---
 
-## Step 1 — Staleness and change-flag
+## Step 1 — Staleness and change-flag → `bin/select`
 
-For each entry in the lane's registry:
+**Owned by code.** `${CLAUDE_PLUGIN_ROOT}/bin/select.mjs` computes, per entry:
+`staleness = (today - last_reviewed) / interval_days` (unset `last_reviewed` ⇒
+maximally stale, sorts to the top; `interval_days` derived from `weight`
+critical→7/high→14/medium→30/low→90 unless overridden), and `change_flag` from
+`git diff --name-only <commit-at-or-near last_reviewed>..HEAD` intersected with the
+entry's `area` globs. Source: `src/lib/staleness.ts`; tests: `src/lib/staleness.test.ts`.
 
-```
-staleness = (today - last_reviewed) / interval_days
-```
+## Step 2 — Selection and the K budget → `bin/select`
 
-- `last_reviewed` is engine-managed `(auto)`. If it is unset/absent, treat the entry as
-  **maximally stale** (it has never been reviewed) — staleness is effectively unbounded
-  and the entry sorts to the top.
-- `interval_days` comes from the entry (derived from `weight`: critical→7, high→14,
-  medium→30, low→90, unless overridden).
-
-**change_flag** — set when the entry's `area` globs changed in git since `last_reviewed`:
-
-```
-git diff --name-only <commit-at-or-near last_reviewed>..HEAD   # intersect with `area` globs
-```
-
-Any intersection ⇒ `change_flag = 1` (treat as fully due regardless of clock staleness).
-Recently-touched code is the highest-yield place to review.
-
-## Step 2 — Selection and the K budget
-
-```
-score = max(staleness, change_flag) * weight_multiplier
-```
-
-Use a monotonic `weight_multiplier` (critical > high > medium > low) so weight breaks
-ties and amplifies priority. Sort descending; take the top **K**, where
-`K = manifest.window_budget_k[<lane>]` (`window_budget_k.security` /
-`window_budget_k.design`).
+**Owned by code.** `bin/select` sorts by `score = max(staleness, change_flag) *
+weight_multiplier` (monotonic critical > high > medium > low; ties broken by weight then
+id) and takes the top **K = `manifest.window_budget_k[<lane>]`**, writing `surfaces.json`.
 
 **K is a hard ceiling, sized to one usage window. Never raise K to clear backlog** — even
 if many entries are overdue. Surplus overdue entries are a **digest signal** (overdue
@@ -127,38 +117,37 @@ Separate the finding paths: flow-completion failure | friction observation | a11
 violation | visual recommendation. Every ticket REQUIRES an objective `anchor` (see
 below).
 
-## Step 4 — Dedupe and suppressions
+## Step 4 — Dedupe and suppressions → `bin/dedupe` (+ `bin/record`)
 
-### dedupe_key
+**Owned by code.** A finding's identity is the composite `dedupe_key = {surface, symptom,
+root_cause}` (surface = where it occurs; symptom = the observable problem; root_cause =
+the underlying mechanism) — the reviewer proposes one per candidate; `bin/dedupe` decides
+its fate. `${CLAUDE_PLUGIN_ROOT}/bin/dedupe.mjs` partitions validated candidates into
+**new / recurring / suppressed**:
 
-A finding's identity is the composite:
+- a candidate matching any **open** finding's `dedupe_key` → *recurring*: not re-filed;
+  `bin/record` bumps the existing finding's `last_seen`/`run_id` (carrying `first_seen`),
+  which keeps motionless-finding detection accurate.
+- a candidate matching an **unexpired** suppression (`{dedupe_key, reason, expires,
+  approved_by}`) → *suppressed*: dropped silently, counted in `suppressed`. A suppression
+  past `expires` is inactive.
+- otherwise → *new*: logged by `bin/record`.
 
-```
-dedupe_key = {surface, symptom, root_cause}
-```
+Within-lane dedupe is the primary defense against nightly re-filing. Source:
+`src/lib/dedupe-run.ts` / `src/lib/dedupekey.ts`; tests: `src/lib/dedupe-run.test.ts`.
 
-- **surface** — where it occurs (the entry/area or flow step).
-- **symptom** — the observable problem.
-- **root_cause** — the underlying mechanism.
+## Step 5 — Log, update state, write durable metrics → `bin/record` + `bin/rollup`
 
-A candidate whose `dedupe_key` matches any **open** finding is dropped (do not re-file a new record). **However: when dropping due to a dedupe match, update the EXISTING finding's `last_seen` to today and `run_id` to this run's id in `metrics/findings/`.** This is what keeps motionless-finding detection accurate — an issue that re-appears each run stays "active", not "stale".
-
-This is the primary defense against nightly re-filing the same issue.
-
-### Suppressions
-
-Honor active suppression records, shape:
-
-```
-suppression = {dedupe_key, reason, expires, approved_by}
-```
-
-A candidate matching an unexpired suppression's `dedupe_key` is dropped silently (don't
-file, don't escalate) and counted in `suppressed`. A suppression past its `expires` date
-is inactive — ignore it. Suppressions are small and on-demand; `approved_by` records the
-human who signed off.
-
-## Step 5 — Log, update state, write durable metrics
+**Owned by code.** The orchestrator hands `bin/record` the deduped `decisions.json` + a
+`run.json` (run metadata + refuter-derived counts + reviewed ids); `bin/record` appends
+the per-run record (`run-metrics` schema), appends finding lines (new + recurring
+`last_seen` bumps, `finding` schema), and updates each reviewed entry's `last_reviewed`/
+`status` (comments preserved). `bin/rollup` then recomputes and appends the day's rollup
+(`daily-metrics` schema: `coverage_freshness_pct`, `median_staleness_ratio`,
+`fpr_7d`/`fpr_30d`). The exact field semantics live **once** in
+`${CLAUDE_PLUGIN_ROOT}/schemas/{run-metrics,finding,daily-metrics}.yml`; the math lives
+in `src/lib/{record-run,rollup-run}.ts` (tests alongside). Do not re-derive any of it by
+hand. The remainder of this section is the durable-storage **layout** (reference only).
 
 All metrics live under `<repo>/.nightshift/metrics/` (committed text — **never** under
 `CLAUDE_PLUGIN_ROOT`). Layout:
@@ -173,63 +162,17 @@ All metrics live under `<repo>/.nightshift/metrics/` (committed text — **never
 `.nightshift/.gitattributes` sets `metrics/**/*.jsonl merge=union` so concurrent branches
 just append and the reader dedupes on read.
 
-### (a) Append the per-run record
-
-Write one NDJSON object to `metrics/runs/<YYYY-MM>.jsonl`:
-
-| field | meaning |
-|---|---|
-| `run_id` | unique id for this run |
-| `ts` | ISO-8601 timestamp |
-| `date` | `YYYY-MM-DD` |
-| `lane` | `security` \| `design` |
-| `pack_sha` | sha of the pack/config at run time |
-| `selected` | count chosen in step 2 (≤ K) |
-| `reviewed` | count actually reviewed (reviewer fan-out completed) |
-| `findings_created` | candidate findings produced |
-| `confirmed` | findings that passed dedupe/suppression and were logged |
-| `rejected_tier1` | candidates the Tier-1 refuter knocked out |
-| `rejected_tier2` | candidates the Tier-2 refuter knocked out |
-| `suppressed` | count dropped by active suppressions |
-| `usage_by_model` | object — usage broken down per model tier |
-| `usage_spent` | usage consumed this run (against the window budget) |
-| `elapsed` | wall-clock duration of the run |
-
-(The old single `rejected_by_2nd_reviewer` is **replaced** by the split
-`rejected_tier1` + `rejected_tier2`, so FPR is splittable by stage and the "retire Tier-2
-if it trends to ~0" decision is measurable.)
-
-### (b) Append confirmed findings
-
-Append each confirmed finding to `metrics/findings/<YYYY-MM>.jsonl`. Finding record
-(lean) plus lifecycle fields: `dedupe_key`, `severity` (critical|high|medium|low),
-`confidence` (low|medium|high), `needs_human_verification`, `anchor` (UX only —
-REQUIRED there), and lifecycle `first_seen`, `last_seen`, `resolved_at` (optional),
-`run_id`. **Bump `last_seen` to this run when an existing `dedupe_key` recurs** (and
-carry `first_seen` forward); set both to now for a newly-seen `dedupe_key`.
-
-Also update each reviewed entry's `last_reviewed` to today and recompute `status`
-(green | stale | overdue | open-findings). Append any filed Linear ref to the entry's
-`linear` list `(auto on file)`.
-
-### (c) Recompute and append the daily rollup
-
-Recompute the affected day's rollup and **append a fresh line** to `metrics/daily.jsonl`
-(the reader takes the **line with the greatest `ts`** per `(date, lane)` — append-only +
-max-ts dedup is union-merge-safe regardless of line ordering after a branch merge). Daily rollup record:
-
-`{date, lane, ts, runs, surfaces_total, surfaces_green, surfaces_stale, surfaces_overdue,
-open_findings, coverage_freshness_pct, median_staleness_ratio, fpr_7d, fpr_30d}`
-
-- `ts` — ISO-8601 timestamp of when this rollup was computed; enables max-ts last-wins resolution when multiple branches write the same (date, lane).
-- `coverage_freshness_pct` — share of in-scope surfaces with staleness ratio ≤ 1.0. The
-  **denominator scopes to lanes whose `cadence != off`**, so deferred lanes don't make
-  freshness look artificially terrible.
-- `median_staleness_ratio` — median of `staleness` across in-scope surfaces.
-- `fpr_7d` / `fpr_30d` — false-positive rate over the trailing 7/30 days, derived from the
-  split tier counters: `(rejected_tier1 + rejected_tier2) / findings_created` aggregated
-  over the window. Multiply by 100 to get a 0-100 percentage value (consistent with `coverage_freshness_pct`).
-  When `findings_created == 0` over the window (clean run), omit `fpr_7d`/`fpr_30d` or set to `null` — division by zero is undefined.
+- **(a) per-run record** → `bin/record` appends one NDJSON object to
+  `metrics/runs/<YYYY-MM>.jsonl`; fields + meanings in `schemas/run-metrics.yml` (the
+  split `rejected_tier1` + `rejected_tier2` makes FPR attributable by stage).
+- **(b) confirmed findings** → `bin/record` appends to `metrics/findings/<YYYY-MM>.jsonl`
+  (`schemas/finding.yml`), setting `first_seen`/`last_seen`/`run_id`, bumping `last_seen`
+  (carrying `first_seen`) on recurrence, and updating each reviewed entry's
+  `last_reviewed`/`status` (green | stale | overdue | open-findings).
+- **(c) daily rollup** → `bin/rollup` appends a fresh line to `metrics/daily.jsonl`; the
+  reader takes the **greatest-`ts` line per `(date, lane)`** (union-merge-safe). Record
+  shape + the freshness / median-staleness / FPR formulas: `schemas/daily-metrics.yml`
+  and `src/lib/rollup-run.ts`.
 
 `dashboard.md` and `trends.md` are **disposable** projections regenerated from the JSONL
 truth — never the source of record.
