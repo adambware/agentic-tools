@@ -1,6 +1,6 @@
 {
   "name": "nightshift-engine",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "description": "Deterministic core for the nightshift assurance engine. Author TS, ship bundled node-runnable bin/*.mjs (zero runtime install). Judgment stays in subscription agents; this package owns every checkable behavior.",
