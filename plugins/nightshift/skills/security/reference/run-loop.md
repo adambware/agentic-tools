@@ -136,9 +136,18 @@ its fate. `${CLAUDE_PLUGIN_ROOT}/bin/dedupe.mjs` partitions validated candidates
 Within-lane dedupe is the primary defense against nightly re-filing. Source:
 `src/lib/dedupe-run.ts` / `src/lib/dedupekey.ts`; tests: `src/lib/dedupe-run.test.ts`.
 
-## Step 5 — Log, update state, write durable metrics → `bin/record` + `bin/rollup`
+## Step 5 — Log, update state, write durable metrics → `bin/run-meta` → `bin/record` + `bin/rollup`
 
-**Owned by code.** The orchestrator hands `bin/record` the deduped `decisions.json` + a
+**Owned by code.** First, `${CLAUDE_PLUGIN_ROOT}/bin/run-meta.mjs` assembles `run.json`
+(the `RunMeta`) from `surfaces.json`, `candidates.proposed.json` (the reviewer's pre-refute
+set) and `candidates.json` (the Tier-1 survivors): it carries run metadata + `reviewed_ids`
+and derives `rejected_tier1 = proposed_count − survivors_count` — the false-positive-rate
+denominator that would otherwise be lost once the refuter overwrites the candidate set.
+It runs **before** record so `run.json` exists when record reads it, and aborts (exit 2)
+on a blank `run_id` or if survivors exceed proposed. Source: `src/lib/run-meta-build.ts`;
+tests: `src/lib/run-meta-build.test.ts`.
+
+Then the orchestrator hands `bin/record` the deduped `decisions.json` + that
 `run.json` (run metadata + refuter-derived counts + reviewed ids); `bin/record` appends
 the per-run record (`run-metrics` schema), appends finding lines (new + recurring
 `last_seen` bumps, `finding` schema), and updates each reviewed entry's `last_reviewed`/
@@ -164,7 +173,10 @@ just append and the reader dedupes on read.
 
 - **(a) per-run record** → `bin/record` appends one NDJSON object to
   `metrics/runs/<YYYY-MM>.jsonl`; fields + meanings in `schemas/run-metrics.yml` (the
-  split `rejected_tier1` + `rejected_tier2` makes FPR attributable by stage).
+  split `rejected_tier1` + `rejected_tier2` makes FPR attributable by stage). `bin/record`
+  **derives** `findings_created = confirmed + recurring + rejected_tier1 + rejected_tier2`
+  (= `proposed_count − suppressed`); `run-meta` cannot, since it runs before dedupe and so
+  cannot know how many survivors will be suppressed.
 - **(b) confirmed findings** → `bin/record` appends to `metrics/findings/<YYYY-MM>.jsonl`
   (`schemas/finding.yml`), setting `first_seen`/`last_seen`/`run_id`, bumping `last_seen`
   (carrying `first_seen`) on recurrence, and updating each reviewed entry's

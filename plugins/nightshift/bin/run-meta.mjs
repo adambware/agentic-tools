@@ -46,10 +46,10 @@ var require_identity = __commonJS({
     var NODE_TYPE = Symbol.for("yaml.node.type");
     var isAlias = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === ALIAS;
     var isDocument = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === DOC;
-    var isMap2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
+    var isMap = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
     var isPair = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === PAIR;
     var isScalar = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SCALAR;
-    var isSeq2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
+    var isSeq = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
     function isCollection(node) {
       if (node && typeof node === "object")
         switch (node[NODE_TYPE]) {
@@ -82,11 +82,11 @@ var require_identity = __commonJS({
     exports.isAlias = isAlias;
     exports.isCollection = isCollection;
     exports.isDocument = isDocument;
-    exports.isMap = isMap2;
+    exports.isMap = isMap;
     exports.isNode = isNode;
     exports.isPair = isPair;
     exports.isScalar = isScalar;
-    exports.isSeq = isSeq2;
+    exports.isSeq = isSeq;
   }
 });
 
@@ -4192,9 +4192,9 @@ var require_resolve_flow_collection = __commonJS({
     var blockMsg = "Block collections are not allowed within flow collections";
     var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
     function resolveFlowCollection({ composeNode, composeEmptyNode }, ctx, fc, onError, tag) {
-      const isMap2 = fc.start.source === "{";
-      const fcName = isMap2 ? "flow map" : "flow sequence";
-      const NodeClass = tag?.nodeClass ?? (isMap2 ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
+      const isMap = fc.start.source === "{";
+      const fcName = isMap ? "flow map" : "flow sequence";
+      const NodeClass = tag?.nodeClass ?? (isMap ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
       const coll = new NodeClass(ctx.schema);
       coll.flow = true;
       const atRoot = ctx.atRoot;
@@ -4230,7 +4230,7 @@ var require_resolve_flow_collection = __commonJS({
             offset = props.end;
             continue;
           }
-          if (!isMap2 && ctx.options.strict && utilContainsNewline.containsNewline(key))
+          if (!isMap && ctx.options.strict && utilContainsNewline.containsNewline(key))
             onError(
               key,
               // checked by containsNewline()
@@ -4270,7 +4270,7 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap2 && !sep && !props.found) {
+        if (!isMap && !sep && !props.found) {
           const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
@@ -4293,7 +4293,7 @@ var require_resolve_flow_collection = __commonJS({
             startOnNewline: false
           });
           if (valueProps.found) {
-            if (!isMap2 && !props.found && ctx.options.strict) {
+            if (!isMap && !props.found && ctx.options.strict) {
               if (sep)
                 for (const st of sep) {
                   if (st === valueProps.found)
@@ -4325,7 +4325,7 @@ var require_resolve_flow_collection = __commonJS({
           const pair = new Pair.Pair(keyNode, valueNode);
           if (ctx.options.keepSourceTokens)
             pair.srcToken = collItem;
-          if (isMap2) {
+          if (isMap) {
             const map = coll;
             if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
               onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
@@ -4341,7 +4341,7 @@ var require_resolve_flow_collection = __commonJS({
           offset = valueNode ? valueNode.range[2] : valueProps.end;
         }
       }
-      const expectedEnd = isMap2 ? "}" : "]";
+      const expectedEnd = isMap ? "}" : "]";
       const [ce, ...ee] = fc.end;
       let cePos = offset;
       if (ce?.source === expectedEnd)
@@ -7241,7 +7241,7 @@ var require_public_api = __commonJS({
         return docs;
       return Object.assign([], { empty: true }, composer$1.streamInfo());
     }
-    function parseDocument2(source, options = {}) {
+    function parseDocument(source, options = {}) {
       const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options);
       const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
       const composer$1 = new composer.Composer(options);
@@ -7267,7 +7267,7 @@ var require_public_api = __commonJS({
       } else if (options === void 0 && reviver && typeof reviver === "object") {
         options = reviver;
       }
-      const doc = parseDocument2(src, options);
+      const doc = parseDocument(src, options);
       if (!doc)
         return null;
       doc.warnings.forEach((warning) => log.warn(doc.options.logLevel, warning));
@@ -7303,7 +7303,7 @@ var require_public_api = __commonJS({
     }
     exports.parse = parse;
     exports.parseAllDocuments = parseAllDocuments;
-    exports.parseDocument = parseDocument2;
+    exports.parseDocument = parseDocument;
     exports.stringify = stringify;
   }
 });
@@ -7360,9 +7360,6 @@ var require_dist = __commonJS({
   }
 });
 
-// src/bin/record.ts
-import { existsSync as existsSync4 } from "node:fs";
-
 // src/lib/args.ts
 function parseArgs(argv) {
   const out = {};
@@ -7390,6 +7387,15 @@ function requireArg(args, key) {
   }
   return val;
 }
+function resolveToday(args) {
+  const explicit = args.today ?? process.env.NIGHTSHIFT_TODAY;
+  if (explicit) return explicit;
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+
+// src/lib/run-meta-build.ts
+import { execFileSync } from "node:child_process";
+import { existsSync as existsSync2 } from "node:fs";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7417,175 +7423,112 @@ function atomicWrite(path, data) {
   }
   renameSync(tmp, path);
 }
-function appendJsonl(path, record) {
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, JSON.stringify(record) + "\n");
-}
-function readJsonl(path) {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(JSON.parse(trimmed));
-  }
-  return out;
-}
 function readJson(path) {
   if (!existsSync(path)) return void 0;
   return JSON.parse(readFileSync(path, "utf8"));
+}
+function writeJson(path, value) {
+  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
 }
 function basename(path) {
   const i = path.lastIndexOf("/");
   return i === -1 ? path : path.slice(i + 1);
 }
 
-// src/lib/record-run.ts
-import { join as join3 } from "node:path";
-
-// src/lib/findings-store.ts
-import { existsSync as existsSync2, readdirSync } from "node:fs";
-import { join as join2 } from "node:path";
-
-// src/lib/dedupekey.ts
-function dedupeKeyString(k) {
-  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
-}
-function isOpen(f) {
-  return !f.resolved_at;
-}
-
-// src/lib/findings-store.ts
-function readAllFindings(metricsDir) {
-  const dir = join2(metricsDir, "findings");
-  if (!existsSync2(dir)) return [];
-  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
-  const out = [];
-  for (const shard of shards) out.push(...readJsonl(join2(dir, shard)));
-  return out;
-}
-function foldFindings(findings) {
-  const byKey = /* @__PURE__ */ new Map();
-  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
-  return byKey;
-}
-function openFindings(metricsDir) {
-  return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
-}
-
-// src/lib/registry-write.ts
-var import_yaml2 = __toESM(require_dist(), 1);
-import { readFileSync as readFileSync2, existsSync as existsSync3 } from "node:fs";
-function updateRegistryState(path, updates) {
-  if (!existsSync3(path) || updates.size === 0) return;
-  const doc = (0, import_yaml2.parseDocument)(readFileSync2(path, "utf8"));
-  let seq = doc.get("vectors") ?? doc.get("flows") ?? doc.get("entries");
-  if (!(0, import_yaml2.isSeq)(seq) && (0, import_yaml2.isSeq)(doc.contents)) seq = doc.contents;
-  if (!(0, import_yaml2.isSeq)(seq)) return;
-  for (const item of seq.items) {
-    if (!(0, import_yaml2.isMap)(item)) continue;
-    const id = item.get("id");
-    if (typeof id !== "string") continue;
-    const upd = updates.get(id);
-    if (!upd) continue;
-    if (upd.last_reviewed !== void 0) item.set("last_reviewed", upd.last_reviewed);
-    if (upd.status !== void 0) item.set("status", upd.status);
+// src/lib/run-meta-build.ts
+function defaultGitRevParse(packDir) {
+  try {
+    return execFileSync("git", ["-C", packDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return "no-git";
   }
-  atomicWrite(path, String(doc));
 }
-
-// src/lib/record-run.ts
-function monthOf(date) {
-  return date.slice(0, 7);
-}
-function runRecord(opts) {
-  const month = monthOf(opts.date);
-  const findingsPath = join3(opts.metricsDir, "findings", `${month}.jsonl`);
-  const runsPath = join3(opts.metricsDir, "runs", `${month}.jsonl`);
-  let findingsAppended = 0;
-  let recurringBumped = 0;
-  for (const d of opts.decisions.decisions) {
-    if (d.decision === "suppressed") continue;
-    const first_seen = d.decision === "recurring" ? d.first_seen : opts.date;
-    const finding = {
-      ...d.finding,
-      first_seen,
-      last_seen: opts.date,
-      run_id: opts.runId
-    };
-    appendJsonl(findingsPath, finding);
-    if (d.decision === "new") findingsAppended++;
-    else recurringBumped++;
+function buildRunMeta(opts) {
+  if (!opts.runId || !opts.runId.trim()) {
+    throw new Error("run_id is required (got empty/blank)");
   }
-  const findings_created = opts.decisions.counts.confirmed + opts.decisions.counts.recurring + opts.rejectedTier1 + opts.rejectedTier2;
-  const runRecord2 = {
+  if (!existsSync2(opts.surfacesPath)) {
+    throw new Error(`surfaces file not found: ${opts.surfacesPath}`);
+  }
+  if (!existsSync2(opts.proposedPath)) {
+    throw new Error(`proposed candidates file not found: ${opts.proposedPath}`);
+  }
+  if (!existsSync2(opts.survivorsPath)) {
+    throw new Error(`survivors file not found: ${opts.survivorsPath}`);
+  }
+  const surfaces = readJson(opts.surfacesPath);
+  if (!Array.isArray(surfaces)) {
+    throw new Error(`surfaces.json must be a JSON array: ${opts.surfacesPath}`);
+  }
+  const proposed = readJson(opts.proposedPath);
+  if (!Array.isArray(proposed)) {
+    throw new Error(`candidates.proposed.json must be a JSON array: ${opts.proposedPath}`);
+  }
+  const survivors = readJson(opts.survivorsPath);
+  if (!Array.isArray(survivors)) {
+    throw new Error(`candidates.json must be a JSON array: ${opts.survivorsPath}`);
+  }
+  if (survivors.length > proposed.length) {
+    throw new Error(
+      `survivors (${survivors.length}) exceed proposed candidates (${proposed.length}): the Tier-1 refuter must only remove candidates, never add them`
+    );
+  }
+  const proposed_count = proposed.length;
+  const survivors_count = survivors.length;
+  const rejected_tier1 = proposed_count - survivors_count;
+  const rejected_tier2 = 0;
+  const reviewed_ids = surfaces.map((s) => s.id);
+  const reviewed = reviewed_ids.length;
+  const selected = reviewed_ids.length;
+  const ts = opts.nowTs ?? (/* @__PURE__ */ new Date()).toISOString();
+  const date = resolveToday(opts.args);
+  const gitRevParse = opts.gitRevParse ?? defaultGitRevParse;
+  const pack_sha = gitRevParse(opts.packDir);
+  const meta = {
     run_id: opts.runId,
-    ts: opts.ts,
-    date: opts.date,
     lane: opts.lane,
-    pack_sha: opts.packSha,
-    selected: opts.selected,
-    reviewed: opts.reviewed,
-    findings_created,
-    confirmed: opts.decisions.counts.confirmed,
-    rejected_tier1: opts.rejectedTier1,
-    rejected_tier2: opts.rejectedTier2,
-    suppressed: opts.decisions.counts.suppressed,
-    usage_by_model: opts.usageByModel,
-    usage_spent: opts.usageSpent,
-    elapsed: opts.elapsed
+    date,
+    ts,
+    pack_sha,
+    selected,
+    reviewed,
+    rejected_tier1,
+    rejected_tier2,
+    reviewed_ids,
+    usage_by_model: {},
+    usage_spent: 0,
+    elapsed: 0
   };
-  appendJsonl(runsPath, runRecord2);
-  if (opts.registryPath && opts.reviewedIds.length > 0) {
-    const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
-    const updates = /* @__PURE__ */ new Map();
-    for (const id of opts.reviewedIds) {
-      updates.set(id, {
-        last_reviewed: opts.date,
-        status: openSurfaces.has(id) ? "open-findings" : "green"
-      });
-    }
-    updateRegistryState(opts.registryPath, updates);
-  }
-  return { runRecord: runRecord2, findingsAppended, recurringBumped };
+  writeJson(opts.outPath, meta);
+  return { meta };
 }
 
-// src/bin/record.ts
+// src/bin/run-meta.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  const lane = args.lane ?? "security";
   try {
-    const decisionsPath = requireArg(args, "decisions");
-    const runMetaPath = requireArg(args, "run-meta");
-    if (!existsSync4(decisionsPath)) throw new Error(`decisions not found: ${decisionsPath}`);
-    if (!existsSync4(runMetaPath)) throw new Error(`run-meta not found: ${runMetaPath}`);
-    const decisions = readJson(decisionsPath);
-    const m = readJson(runMetaPath);
-    const res = runRecord({
-      decisions,
-      metricsDir: requireArg(args, "metrics-dir"),
-      registryPath: args.registry,
-      reviewedIds: m.reviewed_ids ?? [],
-      runId: m.run_id,
-      lane: m.lane,
-      date: m.date,
-      ts: m.ts,
-      packSha: m.pack_sha,
-      selected: m.selected,
-      reviewed: m.reviewed,
-      rejectedTier1: m.rejected_tier1,
-      rejectedTier2: m.rejected_tier2,
-      usageByModel: m.usage_by_model ?? {},
-      usageSpent: m.usage_spent ?? 0,
-      elapsed: m.elapsed ?? 0
+    const res = buildRunMeta({
+      surfacesPath: requireArg(args, "surfaces"),
+      proposedPath: requireArg(args, "proposed"),
+      survivorsPath: requireArg(args, "survivors"),
+      runId: requireArg(args, "run-id"),
+      lane,
+      packDir: args.pack ?? args.repo ?? process.cwd(),
+      outPath: requireArg(args, "out"),
+      args,
+      nowTs: args.ts
     });
     process.stderr.write(
-      `record: logged=${res.findingsAppended} recurring=${res.recurringBumped} run=${m.run_id}
+      `run-meta: run_id=${res.meta.run_id} lane=${lane} reviewed=${res.meta.reviewed} rejected_tier1=${res.meta.rejected_tier1} -> ${requireArg(args, "out")}
 `
     );
     process.exit(0);
   } catch (err) {
-    process.stderr.write(`record: ${err.message}
+    process.stderr.write(`run-meta: ${err.message}
 `);
     process.exit(2);
   }

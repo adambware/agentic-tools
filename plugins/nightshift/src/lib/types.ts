@@ -107,6 +107,27 @@ export interface RunMetrics {
   elapsed: number | string;
 }
 
+// run.json shape — assembled by bin/run-meta, consumed ONLY by bin/record.
+// reviewed_ids is required (record needs it); findings_created is NOT present
+// here because run-meta runs before dedupe and therefore cannot know how many
+// survivors will be suppressed vs confirmed/recurring. bin/record derives
+// findings_created = confirmed + recurring + rejected_tier1 + rejected_tier2.
+export interface RunMeta {
+  run_id: string;
+  lane: Lane;
+  date: string;
+  ts: string;
+  pack_sha: string;
+  selected: number;
+  reviewed: number;
+  rejected_tier1: number;
+  rejected_tier2: number;
+  reviewed_ids: string[];
+  usage_by_model: Record<string, number | string>;
+  usage_spent: number | string;
+  elapsed: number | string;
+}
+
 // schemas/daily-metrics.yml — one rollup per (date, lane).
 export interface DailyMetrics {
   date: string;

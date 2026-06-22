@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.2.0] - 2026-06-22
+
+### Added
+
+- **`bin/run-meta`** — new deterministic engine step that assembles `run.json` (the per-run `RunMeta`) from `surfaces.json`, `candidates.proposed.json` (pre-refute), and `candidates.json` (Tier-1 survivors). Runs first in the record phase so `bin/record` has `run.json` to consume. Computes `rejected_tier1 = proposed_count − survivors_count` and the `reviewed_ids` set; authored as a thin argv shell over `lib/run-meta-build` (zero decision logic). Full-branch vitest coverage (validation throws, no-git fallback, injected date/ts, empty surfaces, blank-run_id guard, survivors-exceed-proposed guard).
+- Two-file refute convention wired through the security workflow: the reviewer writes `candidates.proposed.json`, the Tier-1 refuter overwrites `candidates.json` with survivors, and `run-meta` reads both so the pre-refute count is preserved for the false-positive-rate denominator.
+- `bin/validate` now gates **both** model-written candidate artifacts (`candidates.proposed.json` and `candidates.json`) before the stateful path, restoring the "validate gates every model-written artifact" invariant.
+
+### Changed
+
+- `findings_created` is now **derived inside `bin/record`** (`confirmed + recurring + rejected_tier1 + rejected_tier2`, i.e. `proposed_count − suppressed`) instead of being injected. `run-meta` cannot compute it because it runs before dedupe and so cannot know how many survivors will be suppressed. A new cross-module test proves the identity end-to-end (run-meta → record).
+- The `RunMeta` interface is centralized in `lib/types.ts`; the duplicate inline definition in `bin/record.ts` was removed.
+
+### Fixed
+
+- `run-meta` now aborts (exit 2) on a blank `run_id` (e.g. an empty `run-id.txt` on resume) and when survivors exceed proposed candidates, instead of silently writing a corrupt run record or a negative `rejected_tier1`.
+
 ## [2.0.0] - 2026-06-18
 
 ### Added

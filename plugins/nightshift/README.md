@@ -123,7 +123,7 @@ it is auto-deferred with one explanatory line.
 
 See [`examples/novudesk/`](examples/novudesk/) for a worked seed that proves the engine adapts.
 
-## Deterministic engine (v2.1)
+## Deterministic engine (v2.2)
 
 Every *checkable* behavior — selection, dedupe, the metrics writer, the daily rollup,
 schema validation, the read-only guard — is owned by a small TypeScript core under
@@ -136,6 +136,7 @@ deterministic core, the Workflow orchestrator, and the judgment agents are pinne
 ```
 bin/select    read registry + git diff → top-K stalest/changed → surfaces.json
 bin/validate  schema-gate any artifact (aborts the run on failure)
+bin/run-meta  assemble run.json from surfaces + candidates.proposed + candidates (survivors)
 bin/dedupe    candidates → new | recurring | suppressed (decisions.json)
 bin/record    append per-run record + finding lines; update registry state (atomic)
 bin/rollup    recompute + append the daily rollup (freshness / median / FPR)
