@@ -7,7 +7,8 @@ import {
   readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildRunMeta, type RunMeta } from "./run-meta-build.js";
 import { runRecord } from "./record-run.js";
 import type { Decisions } from "./dedupe-run.js";
@@ -34,10 +35,6 @@ function writeJsonFile(name: string, value: unknown): string {
 
 /** Stub gitRevParse that returns 'no-git' (simulates non-git directory). */
 const noGitRevParse = (_packDir: string): string => "no-git";
-
-/** A real 40-char hex sha stub. */
-const fakeGitRevParse = (_packDir: string): string =>
-  "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 
 /** Minimal valid surface shape. */
 function makeSurface(id: string) {
@@ -272,58 +269,52 @@ describe("no-git pack_sha fallback", () => {
 
 // ─── valid git pack_sha ──────────────────────────────────────────────────────
 
+// The test file always lives inside the agentic-tools git repo, so its own
+// directory is a reliable real-git packDir. (The previous version pointed git
+// at the throwaway temp `dir`, which is never a git repo, so it always fell
+// back to a stub and never exercised the real defaultGitRevParse — Copilot
+// PR #9.) Resolve the repo dir + expected HEAD once, here, from a known-in-repo
+// path so the real-git branch actually runs.
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+function repoHeadSha(): string | null {
+  try {
+    return execFileSync("git", ["-C", TEST_DIR, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null; // git binary truly unavailable (not a normal checkout)
+  }
+}
+
 describe("valid git pack_sha", () => {
-  it("returns a 40-char hex string when pack dir is a real git repo", () => {
+  it("derives the real HEAD sha via defaultGitRevParse when packDir is a git repo", () => {
+    const expectedSha = repoHeadSha();
+    // In any normal checkout this is non-null; only skip if git is absent.
+    if (!expectedSha) return;
+    expect(expectedSha).toMatch(/^[0-9a-f]{40}$/);
+
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
     const outPath = join(dir, "run.json");
 
-    // Find the real repo root (the agentic-tools monorepo)
-    let repoRoot: string;
-    try {
-      repoRoot = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-    } catch {
-      // If for some reason we can't find a git repo, use stub and skip
-      repoRoot = "";
-    }
-
-    if (!repoRoot) {
-      // Fallback: just verify stub works correctly
-      const { meta } = buildRunMeta({
-        surfacesPath,
-        proposedPath,
-        survivorsPath,
-        runId: RUN_ID,
-        lane: "security",
-        packDir: dir,
-        outPath,
-        args: { today: FIXED_DATE },
-        nowTs: FIXED_TS,
-        gitRevParse: fakeGitRevParse,
-      });
-      expect(meta.pack_sha).toMatch(/^[0-9a-f]{40}$/);
-      return;
-    }
-
-    // Use a real git dir — should get a real 40-char sha
+    // packDir is the test file's own dir (inside the repo) and NO gitRevParse
+    // override — this genuinely exercises defaultGitRevParse against a real repo.
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
       runId: RUN_ID,
       lane: "security",
-      packDir: repoRoot,
+      packDir: TEST_DIR,
       outPath,
       args: { today: FIXED_DATE },
       nowTs: FIXED_TS,
-      // no gitRevParse override — uses real git
     });
 
-    expect(meta.pack_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(meta.pack_sha).toBe(expectedSha);
+    expect(meta.pack_sha).not.toBe("no-git");
   });
 });
 
