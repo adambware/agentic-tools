@@ -13,24 +13,7 @@ import { parseArgs, requireArg } from "../lib/args.js";
 import { readJson } from "../lib/io.js";
 import { runRecord } from "../lib/record-run.js";
 import type { Decisions } from "../lib/dedupe-run.js";
-import type { Lane } from "../lib/types.js";
-
-interface RunMeta {
-  run_id: string;
-  lane: Lane;
-  date: string;
-  ts: string;
-  pack_sha: string;
-  selected: number;
-  reviewed: number;
-  findings_created: number;
-  rejected_tier1: number;
-  rejected_tier2: number;
-  usage_by_model?: Record<string, number | string>;
-  usage_spent?: number | string;
-  elapsed?: number | string;
-  reviewed_ids?: string[];
-}
+import type { RunMeta } from "../lib/types.js";
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
@@ -53,7 +36,6 @@ function main(): void {
       packSha: m.pack_sha,
       selected: m.selected,
       reviewed: m.reviewed,
-      findingsCreated: m.findings_created,
       rejectedTier1: m.rejected_tier1,
       rejectedTier2: m.rejected_tier2,
       usageByModel: m.usage_by_model ?? {},

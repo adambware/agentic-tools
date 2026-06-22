@@ -22,7 +22,10 @@ export interface RecordOpts {
   packSha: string;
   selected: number;
   reviewed: number;
-  findingsCreated: number;
+  // findings_created is NOT injected — runRecord derives it from counts it
+  // already trusts: confirmed + recurring + rejected_tier1 + rejected_tier2
+  // (= proposed_count - suppressed). run-meta cannot compute it because it runs
+  // before dedupe and so cannot know how many survivors will be suppressed.
   rejectedTier1: number;
   rejectedTier2: number;
   usageByModel: Record<string, number | string>;
@@ -65,6 +68,13 @@ export function runRecord(opts: RecordOpts): RecordResult {
 
   // (a) Append the per-run record. confirmed = newly-logged findings; suppressed
   // from the decisions; the refuter-derived counts are injected.
+  // findings_created = confirmed + recurring + rejected_tier1 + rejected_tier2
+  //   = proposed_count - suppressed  (FPR denominator; excludes suppressed).
+  const findings_created =
+    opts.decisions.counts.confirmed +
+    opts.decisions.counts.recurring +
+    opts.rejectedTier1 +
+    opts.rejectedTier2;
   const runRecord: RunMetrics = {
     run_id: opts.runId,
     ts: opts.ts,
@@ -73,7 +83,7 @@ export function runRecord(opts: RecordOpts): RecordResult {
     pack_sha: opts.packSha,
     selected: opts.selected,
     reviewed: opts.reviewed,
-    findings_created: opts.findingsCreated,
+    findings_created,
     confirmed: opts.decisions.counts.confirmed,
     rejected_tier1: opts.rejectedTier1,
     rejected_tier2: opts.rejectedTier2,

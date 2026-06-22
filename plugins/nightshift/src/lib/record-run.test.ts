@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runRecord, type RecordOpts } from "./record-run.js";
 import { readJsonl } from "./io.js";
 import type { Decisions } from "./dedupe-run.js";
-import type { CandidateFinding, Finding } from "./types.js";
+import type { CandidateFinding, Finding, RunMetrics } from "./types.js";
 
 let dir: string;
 beforeEach(() => {
@@ -36,7 +36,6 @@ function baseOpts(decisions: Decisions, over: Partial<RecordOpts> = {}): RecordO
     packSha: "abc1234",
     selected: 1,
     reviewed: 1,
-    findingsCreated: 1,
     rejectedTier1: 0,
     rejectedTier2: 0,
     usageByModel: { haiku: 2 },
@@ -79,7 +78,7 @@ describe("runRecord", () => {
       decisions: [{ decision: "recurring", finding: cand("ND-SEC-02"), first_seen: "2026-06-10" }],
       counts: { confirmed: 0, recurring: 1, suppressed: 0 },
     };
-    const res = runRecord(baseOpts(decisions, { findingsCreated: 0 }));
+    const res = runRecord(baseOpts(decisions));
     expect(res.recurringBumped).toBe(1);
     const findings = readJsonl<Finding>(join(dir, "metrics", "findings", "2026-06.jsonl"));
     expect(findings[0]!.first_seen).toBe("2026-06-10");
@@ -94,7 +93,7 @@ describe("runRecord", () => {
       decisions: [{ decision: "suppressed", finding: cand("ND-SEC-03") }],
       counts: { confirmed: 0, recurring: 0, suppressed: 1 },
     };
-    const res = runRecord(baseOpts(decisions, { findingsCreated: 0 }));
+    const res = runRecord(baseOpts(decisions));
     expect(res.findingsAppended).toBe(0);
     expect(readJsonl(join(dir, "metrics", "findings", "2026-06.jsonl"))).toEqual([]);
     const runs = readJsonl<{ suppressed: number }>(join(dir, "metrics", "runs", "2026-06.jsonl"));
@@ -156,7 +155,86 @@ vectors:
       decisions: [],
       counts: { confirmed: 0, recurring: 0, suppressed: 0 },
     };
-    runRecord(baseOpts(decisions, { registryPath: regPath, reviewedIds: ["ASVS-AUTH-01"], findingsCreated: 0 }));
+    runRecord(baseOpts(decisions, { registryPath: regPath, reviewedIds: ["ASVS-AUTH-01"] }));
     expect(readFileSync(regPath, "utf8")).toContain("status: green");
+  });
+
+  // ── findings_created identity tests ────────────────────────────────────────
+  // findings_created = confirmed + recurring + rejected_tier1 + rejected_tier2
+  // (= proposed_count - suppressed)
+
+  it("findings_created identity: clean-slate — 1 confirmed, 0 rejected, 0 suppressed", () => {
+    // proposed_count=1, survivors=1, suppressed=0 → findings_created should be 1
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [{ decision: "new", finding: cand("ND-SEC-10") }],
+      counts: { confirmed: 1, recurring: 0, suppressed: 0 },
+    };
+    const res = runRecord(
+      baseOpts(decisions, { rejectedTier1: 0, rejectedTier2: 0 }),
+    );
+    // confirmed(1) + recurring(0) + rejected_tier1(0) + rejected_tier2(0) = 1
+    expect(res.runRecord.findings_created).toBe(1);
+  });
+
+  it("findings_created identity: suppressed candidate excluded — proposed=2, suppressed=1, rejected_tier1=0", () => {
+    // proposed_count=2, survivors=2 (tier1 keeps both), dedupe suppresses 1:
+    // confirmed=1, suppressed=1, rejected_tier1=0 → findings_created = 1
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [
+        { decision: "new", finding: cand("ND-SEC-11") },
+        { decision: "suppressed", finding: cand("ND-SEC-12") },
+      ],
+      counts: { confirmed: 1, recurring: 0, suppressed: 1 },
+    };
+    // rejected_tier1=0 (both survivors; suppression happens inside dedupe, not tier1)
+    const res = runRecord(
+      baseOpts(decisions, { rejectedTier1: 0, rejectedTier2: 0 }),
+    );
+    // confirmed(1) + recurring(0) + rejected_tier1(0) + rejected_tier2(0) = 1
+    // (NOT 2, because the suppressed candidate is excluded)
+    expect(res.runRecord.findings_created).toBe(1);
+  });
+
+  it("findings_created identity: recurring candidate — proposed=3, 1 recurring, 1 confirmed, rejected_tier1=1", () => {
+    // proposed_count=3, survivors=2 (tier1 drops 1), dedupe: 1 confirmed + 1 recurring
+    // findings_created = confirmed(1) + recurring(1) + rejected_tier1(1) + rejected_tier2(0) = 3
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [
+        { decision: "new", finding: cand("ND-SEC-13") },
+        { decision: "recurring", finding: cand("ND-SEC-14"), first_seen: "2026-05-01" },
+      ],
+      counts: { confirmed: 1, recurring: 1, suppressed: 0 },
+    };
+    const res = runRecord(
+      baseOpts(decisions, { rejectedTier1: 1, rejectedTier2: 0 }),
+    );
+    expect(res.runRecord.findings_created).toBe(3);
+  });
+
+  it("findings_created identity: all survivors suppressed — proposed=2, survivors=2, suppressed=2", () => {
+    // confirmed(0) + recurring(0) + rejected_tier1(0) + rejected_tier2(0) = 0
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [
+        { decision: "suppressed", finding: cand("ND-SEC-15") },
+        { decision: "suppressed", finding: cand("ND-SEC-16") },
+      ],
+      counts: { confirmed: 0, recurring: 0, suppressed: 2 },
+    };
+    const res = runRecord(
+      baseOpts(decisions, { rejectedTier1: 0, rejectedTier2: 0 }),
+    );
+    expect(res.runRecord.findings_created).toBe(0);
   });
 });

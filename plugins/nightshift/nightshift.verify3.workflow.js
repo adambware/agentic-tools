@@ -24,10 +24,12 @@ const REPO = "/Users/adamboulware/Developer/bearhost";
 const OOB = `${REPO}/NIGHTSHIFT_PROBE_OOB.txt`;
 const INBOUNDS = `${REPO}/.nightshift/.run/probe-inbounds.txt`;
 
-// Arm the guard — it is inert unless NIGHTSHIFT_LANE_RUN is set, and Q-b's whole
-// point is to observe it BLOCK. Without this the OOB write would be allowed and
-// Q-b would report a false negative.
-process.env.NIGHTSHIFT_LANE_RUN = "1";
+// The guard is inert unless NIGHTSHIFT_LANE_RUN is set, and Q-b's whole point is
+// to observe it BLOCK. It must be armed by the LAUNCHING SESSION — start it with
+// `NIGHTSHIFT_LANE_RUN=1 claude` so the env var reaches the hook subprocess. The
+// workflow sandbox has no `process` global, so it cannot arm the guard from here
+// (an earlier `process.env.NIGHTSHIFT_LANE_RUN = "1"` on this line crashed the run
+// with "process is not defined"). Without an armed guard, Q-b is a false negative.
 
 // ── Q-a: capability restriction via agentType ────────────────────────────────
 phase("Q-a captype");
