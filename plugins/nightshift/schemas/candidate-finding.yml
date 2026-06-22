@@ -1,0 +1,44 @@
+# Candidate-Finding Schema — the judgment-agent artifact (E3)
+# ===========================================================
+#
+# A "candidate finding" is what a reviewer/refuter agent WRITES TO DISK
+# (.nightshift/.run/candidates.json, a JSON array). It is the model-authored
+# artifact that crosses the judgment→deterministic seam. `bin/validate --schema
+# candidate-finding` gates it BEFORE bin/dedupe/bin/record may read it — a malformed
+# candidate aborts the run (no partial commit). The machine check lives in
+# src/lib/validate.ts (validateCandidateFinding); this file is its human reference.
+#
+# It is exactly the finding.yml record MINUS the engine-managed lifecycle fields
+# (first_seen / last_seen / resolved_at / run_id / linear), which bin/record adds
+# when it logs the finding. See schemas/finding.yml for full field semantics.
+# ---------------------------------------------------------------------------
+
+# ---- Required (all lanes) ----
+dedupe_key:                 # object {surface, symptom, root_cause}, REQUIRED.
+  surface:                  # string, REQUIRED.
+  symptom:                  # string, REQUIRED.
+  root_cause:               # string, REQUIRED.
+severity:                   # enum critical|high|medium|low, REQUIRED.
+confidence:                 # enum low|medium|high, REQUIRED.
+needs_human_verification:   # bool, REQUIRED. MUST be true when severity is critical|high.
+
+# ---- Security write-up (security lane) ----
+asvs_ref:                   # string. OWASP ASVS citation.
+location:                   # string. file:line / route / symbol.
+why_abusable_under_preconditions:  # string. Defensive reasoning, never an exploit payload.
+preconditions:              # object {required_role/session, tenant/account setup,
+                            #   affected path, impact, confidence}.
+
+# ---- UX anchor (design lane) ----
+anchor:                     # enum friction_delta|broken_path|a11y|evidence|consistency.
+screen:                     # string, optional.
+evidence:                   # string, optional.
+measured:                   # string, optional.
+
+# ---------------------------------------------------------------------------
+# Validation rules enforced by bin/validate (validateCandidateFinding):
+#   - dedupe_key.{surface,symptom,root_cause} are all non-empty strings.
+#   - severity ∈ {critical,high,medium,low}; confidence ∈ {low,medium,high}.
+#   - needs_human_verification is a bool, and is true for critical|high.
+#   - anchor, if present, ∈ the UX anchor enum.
+# Lifecycle fields, if present on a candidate, are ignored here (bin/record owns them).

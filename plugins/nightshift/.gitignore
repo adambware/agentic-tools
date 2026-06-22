@@ -1,0 +1,6 @@
+# Engine dev artifacts. node_modules is also root-ignored.
+node_modules/
+coverage/
+
+# Per-repo run scratch dir (created in TARGET repos under .nightshift/.run/).
+.nightshift/.run/

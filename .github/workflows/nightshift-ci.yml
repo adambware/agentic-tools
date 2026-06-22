@@ -13,6 +13,35 @@ on:
       - "plugins/nightshift/**"
 
 jobs:
+  # Deterministic core (E5/E6/E7): typecheck + vitest + build, and assert the
+  # committed bin/*.mjs / hooks/*.mjs artifacts are in sync with src/ (the engine
+  # ships compiled, node-runnable, zero-install — a stale artifact is a CI failure).
+  nightshift-engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/nightshift
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install
+        run: npm install --no-audit --no-fund
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build
+      - name: committed artifacts are in sync with src
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- bin hooks; then
+            echo "::error::bin/ or hooks/ artifacts are stale — run 'npm run build' and commit the result"
+            exit 1
+          fi
+
   nightshift-ci:
     runs-on: ubuntu-latest
     steps:
