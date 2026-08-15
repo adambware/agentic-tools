@@ -704,6 +704,71 @@ describe("survivors exceed proposed", () => {
   });
 });
 
+// ─── survivor identity (refuter may remove, never substitute) ─────────────────
+// The length guard alone would let a refuter swap proposed candidates for
+// DIFFERENT same-count findings — corrupting rejected_tier1 (the FPR
+// denominator) with valid-looking data. Identity = canonical dedupe_key string
+// (same canonicalization as bin/dedupe), multiset semantics.
+
+describe("survivor identity check", () => {
+  function build(proposed: unknown[], survivors: unknown[]) {
+    const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
+    const proposedPath = writeJsonFile("candidates.proposed.json", proposed);
+    const survivorsPath = writeJsonFile("candidates.json", survivors);
+    const outPath = join(dir, "run.json");
+    return {
+      outPath,
+      run: () =>
+        buildRunMeta({
+          surfacesPath,
+          proposedPath,
+          survivorsPath,
+          runId: RUN_ID,
+          lane: "security" as const,
+          packDir: dir,
+          outPath,
+          args: { today: FIXED_DATE },
+          nowTs: FIXED_TS,
+          gitRevParse: noGitRevParse,
+        }),
+    };
+  }
+  const key = (symptom: string) => ({
+    dedupe_key: { surface: "s", symptom, root_cause: "rc" },
+  });
+
+  it("throws when a survivor's dedupe_key matches no proposed candidate (substitution)", () => {
+    const { outPath, run } = build([key("proposed-a")], [key("swapped-in")]);
+    expect(run).toThrow(/does not match any proposed candidate/);
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws when a duplicated survivor key outnumbers its proposed occurrences", () => {
+    const { run } = build([key("a"), key("b")], [key("a"), key("a")]);
+    expect(run).toThrow(/does not match any proposed candidate/);
+  });
+
+  it("throws when a survivor lacks a well-formed dedupe_key", () => {
+    const { run } = build([key("a")], [{ dedupe_key: {} }]);
+    expect(run).toThrow(/survivor \[0\] has no well-formed dedupe_key/);
+  });
+
+  it("allows duplicate keys when proposed carries the same duplicates", () => {
+    const { run } = build([key("a"), key("a")], [key("a"), key("a")]);
+    const { meta } = run();
+    expect(meta.rejected_tier1).toBe(0);
+  });
+
+  it("differing severity on a matching dedupe_key still matches (identity is the key alone)", () => {
+    const { run } = build(
+      [{ ...key("a"), severity: "low" }],
+      [{ ...key("a"), severity: "critical" }],
+    );
+    const { meta } = run();
+    expect(meta.rejected_tier1).toBe(0);
+  });
+});
+
 // ─── empty surfaces (zero surfaces selected) ──────────────────────────────────
 
 describe("empty surfaces", () => {

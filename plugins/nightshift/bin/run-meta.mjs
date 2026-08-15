@@ -7435,7 +7435,21 @@ function basename(path) {
   return i === -1 ? path : path.slice(i + 1);
 }
 
+// src/lib/dedupekey.ts
+function dedupeKeyString(k) {
+  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
+}
+
 // src/lib/run-meta-build.ts
+function candidateKey(x) {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
+  const dk = x.dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return null;
+  const { surface, symptom, root_cause } = dk;
+  if (typeof surface !== "string" || typeof symptom !== "string" || typeof root_cause !== "string")
+    return null;
+  return dedupeKeyString({ surface, symptom, root_cause });
+}
 function defaultGitRevParse(packDir) {
   try {
     return execFileSync("git", ["-C", packDir, "rev-parse", "HEAD"], {
@@ -7476,6 +7490,26 @@ function buildRunMeta(opts) {
       `survivors (${survivors.length}) exceed proposed candidates (${proposed.length}): the Tier-1 refuter must only remove candidates, never add them`
     );
   }
+  const proposedKeys = /* @__PURE__ */ new Map();
+  for (const c of proposed) {
+    const k = candidateKey(c);
+    if (k !== null) proposedKeys.set(k, (proposedKeys.get(k) ?? 0) + 1);
+  }
+  survivors.forEach((s, i) => {
+    const k = candidateKey(s);
+    if (k === null) {
+      throw new Error(
+        `survivor [${i}] has no well-formed dedupe_key {surface, symptom, root_cause}`
+      );
+    }
+    const remaining = proposedKeys.get(k) ?? 0;
+    if (remaining === 0) {
+      throw new Error(
+        `survivor [${i}] dedupe_key ${k} does not match any proposed candidate: the Tier-1 refuter must only remove candidates, never substitute them`
+      );
+    }
+    proposedKeys.set(k, remaining - 1);
+  });
   const proposed_count = proposed.length;
   const survivors_count = survivors.length;
   const rejected_tier1 = proposed_count - survivors_count;

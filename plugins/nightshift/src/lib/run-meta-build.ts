@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import type { Lane, RunMeta } from "./types.js";
 import { readJson, writeJson } from "./io.js";
 import { resolveToday } from "./args.js";
+import { dedupeKeyString } from "./dedupekey.js";
 
 // Re-export the canonical type so callers can import from this module as before.
 export type { RunMeta };
@@ -36,6 +37,22 @@ export interface RunMetaBuildOpts {
 
 export interface RunMetaBuildResult {
   meta: RunMeta;
+}
+
+/**
+ * Canonical dedupe_key string for a candidate, or null if it lacks a
+ * well-formed `dedupe_key {surface, symptom, root_cause}` (all strings).
+ * Identity here is the SAME canonicalization bin/dedupe uses (dedupeKeyString):
+ * strict equality on the string triple.
+ */
+function candidateKey(x: unknown): string | null {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
+  const dk = (x as Record<string, unknown>).dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return null;
+  const { surface, symptom, root_cause } = dk as Record<string, unknown>;
+  if (typeof surface !== "string" || typeof symptom !== "string" || typeof root_cause !== "string")
+    return null;
+  return dedupeKeyString({ surface, symptom, root_cause });
 }
 
 /** Default git rev-parse runner. Falls back to 'no-git' on any error. */
@@ -96,6 +113,36 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
         `the Tier-1 refuter must only remove candidates, never add them`,
     );
   }
+
+  // Identity, not just count: every survivor must BE one of the proposed
+  // candidates, matched by canonical dedupe_key — multiset semantics, so a
+  // duplicated survivor key cannot outnumber its proposed occurrences. The
+  // length guard alone would let a buggy/hostile refuter SUBSTITUTE different
+  // same-count findings: they'd pass schema validation, get durably logged,
+  // and keep rejected_tier1 (the FPR denominator) falsely low. Malformed
+  // proposed entries contribute no key here; bin/validate rejects them before
+  // any durable write, so being lenient on that side changes nothing.
+  const proposedKeys = new Map<string, number>();
+  for (const c of proposed) {
+    const k = candidateKey(c);
+    if (k !== null) proposedKeys.set(k, (proposedKeys.get(k) ?? 0) + 1);
+  }
+  survivors.forEach((s, i) => {
+    const k = candidateKey(s);
+    if (k === null) {
+      throw new Error(
+        `survivor [${i}] has no well-formed dedupe_key {surface, symptom, root_cause}`,
+      );
+    }
+    const remaining = proposedKeys.get(k) ?? 0;
+    if (remaining === 0) {
+      throw new Error(
+        `survivor [${i}] dedupe_key ${k} does not match any proposed candidate: ` +
+          `the Tier-1 refuter must only remove candidates, never substitute them`,
+      );
+    }
+    proposedKeys.set(k, remaining - 1);
+  });
 
   // --- Derive counts ---
   const proposed_count = proposed.length;
