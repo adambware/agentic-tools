@@ -139,19 +139,24 @@ Within-lane dedupe is the primary defense against nightly re-filing. Source:
 ## Step 5 — Log, update state, write durable metrics → `bin/run-meta` → `bin/record` + `bin/rollup`
 
 **Owned by code.** First, `${CLAUDE_PLUGIN_ROOT}/bin/run-meta.mjs` assembles `run.json`
-(the `RunMeta`) from `surfaces.json`, `candidates.proposed.json` (the reviewer's pre-refute
-set) and `candidates.json` (the Tier-1 survivors): it carries run metadata + `reviewed_ids`
-and derives `rejected_tier1 = proposed_count − survivors_count` — the false-positive-rate
-denominator that would otherwise be lost once the refuter overwrites the candidate set.
-It runs **before** record so `run.json` exists when record reads it, and aborts (exit 2)
-on a blank `run_id` or if survivors exceed proposed. Source: `src/lib/run-meta-build.ts`;
-tests: `src/lib/run-meta-build.test.ts`.
+(the `RunMeta`) from `surfaces.json`, `reviewed.json` (the surface ids the review phase
+**actually** covered — never assumed to be all-selected), `candidates.proposed.json`
+(the reviewer's pre-refute set) and `candidates.json` (the Tier-1 survivors): it carries
+run metadata + `reviewed_ids` and derives `rejected_tier1 = proposed_count −
+survivors_count` — the false-positive-rate denominator that would otherwise be lost once
+the refuter overwrites the candidate set. It runs **before** record so `run.json` exists
+when record reads it, and aborts (exit 2) on a blank `run_id`, if survivors exceed
+proposed, if any survivor's canonical `dedupe_key` matches no proposed candidate (the
+refuter may remove, never substitute), or if `reviewed.json` lists a duplicate or
+non-selected id. Source: `src/lib/run-meta-build.ts`; tests:
+`src/lib/run-meta-build.test.ts`.
 
 Then the orchestrator hands `bin/record` the deduped `decisions.json` + that
 `run.json` (run metadata + refuter-derived counts + reviewed ids); `bin/record` appends
 the per-run record (`run-metrics` schema), appends finding lines (new + recurring
-`last_seen` bumps, `finding` schema), and updates each reviewed entry's `last_reviewed`/
-`status` (comments preserved). `bin/rollup` then recomputes and appends the day's rollup
+`last_seen` bumps, `finding` schema), and updates each **actually-reviewed** entry's
+`last_reviewed`/`status` (comments preserved) — selected-but-unreviewed entries keep
+their state, stay stale, and re-select next run. `bin/rollup` then recomputes and appends the day's rollup
 (`daily-metrics` schema: `coverage_freshness_pct`, `median_staleness_ratio`,
 `fpr_7d`/`fpr_30d`). The exact field semantics live **once** in
 `${CLAUDE_PLUGIN_ROOT}/schemas/{run-metrics,finding,daily-metrics}.yml`; the math lives

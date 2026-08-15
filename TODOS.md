@@ -2,18 +2,6 @@
 
 ## Pending
 
-- [ ] **reviewed_ids must reflect surfaces ACTUALLY reviewed, not all selected** [P1 correctness]
-  - **What:** `run-meta` sets `reviewed_ids = surfaces.map(s => s.id)` (every selected surface) and `bin/record` then stamps each reviewed_id `last_reviewed=today` / `status=green` in the registry. But the security workflow's review phase only reviews `surface at index 0`. When `manifest.window_budget_k.security > 1`, the unreviewed surfaces (indices 1..K-1) are silently marked freshly-reviewed/green — staleness corruption that hides un-reviewed vectors.
-  - **Why:** Consistent only while K=1 (the spike). The `// same in current scope (all selected = dispatched)` comment in `run-meta-build.ts` documents the simplification, but nothing enforces K=1, so raising the manifest budget silently breaks registry freshness. Fix: fan out one reviewer per selected surface, OR have the review phase emit the set of actually-reviewed ids and thread that into run-meta/record instead of assuming all-selected.
-  - **Context:** Surfaced cross-model by Codex adversarial + Claude red-team during /ship of `nightshift-run-meta`. Touches `nightshift.workflow.js` (review fan-out), `run-meta-build.ts:reviewed_ids`, `record-run.ts:99`.
-  - **Depends on / blocked by:** None — live the moment K>1. Not triggered in the K=1 spike.
-
-- [ ] **run-meta: verify survivors ⊆ proposed by identity, not just length** [P1 integrity]
-  - **What:** `buildRunMeta` now throws if `survivors.length > proposed.length`, but a buggy/hostile Tier-1 refuter could replace proposed candidates with *different* valid findings at the same count — passing the now-mandatory schema validation, getting logged by dedupe/record, and keeping `rejected_tier1` (the FPR denominator) falsely low. Add a dedupe_key-identity subset check: every survivor's `dedupe_key` must exist in the proposed set.
-  - **Why:** `rejected_tier1`/`findings_created` are durable FPR metrics; a silent swap corrupts them with valid-looking data. The length guard catches inflation but not substitution.
-  - **Context:** Cross-model (Codex P1 + red-team) during /ship of `nightshift-run-meta`. Contained to `run-meta-build.ts`; needs a decision on dedupe_key uniqueness/canonicalization before implementing.
-  - **Depends on / blocked by:** None.
-
 - [ ] **Per-run artifact isolation + record run-id cross-check** [P2 concurrency]
   - **What:** All run artifacts share `.nightshift/.run` (`run-id.txt`, `candidates*.json`, `run.json`, `decisions.json`), so two overlapping runs can mix proposed/survivor/decision files. `bin/record` never checks `decisions.run_id/lane/date` against `run.json` before appending durable metrics. Either restore a per-run_id subdir, or have record assert `decisions.run_id === runMeta.run_id` (and lane/date) before writing.
   - **Why:** Concurrent or resumed runs append cleanly to metrics with mismatched provenance — silent corruption that no validate gate catches.
@@ -56,6 +44,12 @@
   - **Depends on / blocked by:** Stable deterministic gate (V1) first.
 
 ## Completed
+
+- [x] **reviewed_ids must reflect surfaces ACTUALLY reviewed, not all selected** [P1 correctness]
+  - Done (v2.3.0): the reviewer now writes `reviewed.json` (ids actually covered); `bin/run-meta` takes a required `--reviewed` flag, gates the file (each id a unique member of the selected surfaces, abort exit 2 otherwise), and threads it into `run.json.reviewed_ids` — so `bin/record` stamps `last_reviewed`/`status` only for actually-reviewed entries. `selected` and `reviewed` are now independent counts. Cross-module test proves a K=3/reviewed=1 run stamps exactly one registry entry.
+
+- [x] **run-meta: verify survivors ⊆ proposed by identity, not just length** [P1 integrity]
+  - Done (v2.3.0): `buildRunMeta` matches every survivor to a proposed candidate by canonical `dedupe_key` string (reuses `dedupeKeyString` — the same canonicalization `bin/dedupe` uses; that settles the canonicalization decision) with multiset semantics, so duplicated survivor keys can't outnumber their proposed occurrences and substitution aborts the run before any durable write.
 
 - [x] **P1 spike — deterministic core (nightshift-vision §12 T1–T7)**
   - Done: built the TypeScript core under `plugins/nightshift/src/` shipped as bundled, node-runnable, zero-install `bin/*.mjs` + `hooks/guard.mjs` (E5 build step via esbuild; `scripts/build.mjs`).

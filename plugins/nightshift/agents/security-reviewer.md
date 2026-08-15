@@ -30,6 +30,7 @@ Your static frontmatter grants only `Read, Grep, Glob` — the lane is **stack-a
 3. **Establish preconditions.** A finding is only real under concrete preconditions. State exactly what role/session, tenant/account setup, and path are required, and what the impact is if they hold. If you cannot state honest preconditions, you do not have a finding.
 4. **(Optional) Failing invariant test.** If it sharpens the case, write a test that asserts the protective invariant and currently fails. Run it only via the scoped test command the orchestrator injected (if any); otherwise propose it as text. No payloads.
 5. **Propose — do not file.** Emit a proposed finding. **You never log anything yourself.** The independent `security-refuter` must clear it first. If the refuter rejects, the finding is dropped.
+6. **Report what you actually reviewed.** When your dispatch prompt names a `reviewed.json` path, write the ids of the surfaces you **fully reviewed** there as a JSON string array — never a surface you only skimmed or did not reach. The engine stamps `last_reviewed`/`status` from this list alone; over-reporting silently corrupts registry freshness, and any id outside the selected set aborts the run.
 
 ## Dedupe
 

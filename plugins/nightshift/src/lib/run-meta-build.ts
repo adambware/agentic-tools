@@ -23,6 +23,8 @@ export interface RunMetaBuildOpts {
   surfacesPath: string;
   proposedPath: string;
   survivorsPath: string;
+  /** reviewed.json — the surface ids the review phase ACTUALLY covered. */
+  reviewedPath: string;
   runId: string;
   lane: Lane;
   packDir: string;
@@ -84,6 +86,9 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
   }
   if (!existsSync(opts.survivorsPath)) {
     throw new Error(`survivors file not found: ${opts.survivorsPath}`);
+  }
+  if (!existsSync(opts.reviewedPath)) {
+    throw new Error(`reviewed file not found: ${opts.reviewedPath}`);
   }
 
   // --- Read surfaces.json ---
@@ -153,10 +158,35 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
   // therefore cannot know how many survivors will be suppressed vs
   // confirmed/recurring. bin/record derives it from its own counts.
 
-  // --- reviewed_ids from surfaces ---
-  const reviewed_ids = surfaces.map((s) => s.id);
+  // --- reviewed_ids from reviewed.json (surfaces ACTUALLY reviewed) ---
+  // Never assume all-selected: bin/record stamps last_reviewed/status=green for
+  // every id listed here, so listing an unreviewed surface silently corrupts
+  // registry freshness. The review phase writes the ids it actually covered;
+  // a selected-but-unreviewed surface stays stale and is re-selected next run.
+  // reviewed.json is model-written, so it is gated here: every id must be a
+  // unique member of the selected surfaces.
+  const reviewedRaw = readJson<unknown[]>(opts.reviewedPath);
+  if (!Array.isArray(reviewedRaw)) {
+    throw new Error(`reviewed.json must be a JSON array of surface ids: ${opts.reviewedPath}`);
+  }
+  const surfaceIds = new Set(surfaces.map((s) => s.id));
+  const reviewed_ids: string[] = [];
+  const seenReviewed = new Set<string>();
+  reviewedRaw.forEach((r, i) => {
+    if (typeof r !== "string" || r.length === 0) {
+      throw new Error(`reviewed.json [${i}] must be a non-empty string surface id`);
+    }
+    if (seenReviewed.has(r)) {
+      throw new Error(`reviewed.json [${i}] duplicate surface id: ${r}`);
+    }
+    if (!surfaceIds.has(r)) {
+      throw new Error(`reviewed.json [${i}] id not among the selected surfaces: ${r}`);
+    }
+    seenReviewed.add(r);
+    reviewed_ids.push(r);
+  });
   const reviewed = reviewed_ids.length;
-  const selected = reviewed_ids.length; // same in current scope (all selected = dispatched)
+  const selected = surfaces.length;
 
   // --- Timestamps ---
   const ts = opts.nowTs ?? new Date().toISOString();

@@ -7,6 +7,7 @@
 //   node bin/run-meta.mjs --surfaces <run-dir>/surfaces.json \
 //     --proposed <run-dir>/candidates.proposed.json \
 //     --survivors <run-dir>/candidates.json \
+//     --reviewed <run-dir>/reviewed.json \
 //     --run-id "$NIGHTSHIFT_RUN_ID" \
 //     --lane security \
 //     --pack .nightshift \
@@ -25,6 +26,7 @@ function main(): void {
       surfacesPath: requireArg(args, "surfaces"),
       proposedPath: requireArg(args, "proposed"),
       survivorsPath: requireArg(args, "survivors"),
+      reviewedPath: requireArg(args, "reviewed"),
       runId: requireArg(args, "run-id"),
       lane,
       packDir: args.pack ?? args.repo ?? process.cwd(),
@@ -33,7 +35,8 @@ function main(): void {
       nowTs: args.ts,
     });
     process.stderr.write(
-      `run-meta: run_id=${res.meta.run_id} lane=${lane} reviewed=${res.meta.reviewed} ` +
+      `run-meta: run_id=${res.meta.run_id} lane=${lane} ` +
+        `selected=${res.meta.selected} reviewed=${res.meta.reviewed} ` +
         `rejected_tier1=${res.meta.rejected_tier1} ` +
         `-> ${requireArg(args, "out")}\n`,
     );

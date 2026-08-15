@@ -20,6 +20,7 @@ Run working dir: `<repo>/.nightshift/.run/`.
 | `surfaces.json` | `bin/select` | reviewer agent (by index) | `surface` |
 | `candidates.proposed.json` | reviewer agent | `bin/validate` → refuter → `bin/run-meta` | `candidate-finding` |
 | `candidates.json` | refuter agent (survivors) | `bin/validate` → `bin/run-meta` → `bin/dedupe` | `candidate-finding` |
+| `reviewed.json` | reviewer agent | `bin/run-meta` | string[] of surface ids actually reviewed (⊆ `surfaces.json` ids, unique) |
 | `run.json` | `bin/run-meta` | `bin/record` | run metadata (`RunMeta`) |
 | `decisions.json` | `bin/dedupe` | `bin/record` | (internal) |
 | `metrics/runs/<YYYY-MM>.jsonl` | `bin/record` | `bin/rollup`, digest | `run-metrics` |
@@ -36,8 +37,18 @@ reviewer never logs anything itself. `bin/validate --schema candidate-finding` M
 pass on **both** files before the stateful path consumes them — a malformed candidate
 in either fails validation and **aborts** the run. `bin/run-meta` reads both so the
 pre-refute count survives the refute step: `rejected_tier1 = proposed_count −
-survivors_count`, the false-positive-rate denominator. `bin/dedupe`/`bin/record` then
-consume only `candidates.json` (the survivors).
+survivors_count`, the false-positive-rate denominator — and additionally enforces
+**survivor identity**: every survivor must match a proposed candidate by canonical
+`dedupe_key` (multiset ⊆), so a refuter can remove candidates but never substitute
+different ones at the same count. `bin/dedupe`/`bin/record` then consume only
+`candidates.json` (the survivors).
+
+The reviewer also writes `reviewed.json` — the surface ids it **actually** reviewed,
+never all-selected. `bin/run-meta` gates it (every id unique and ⊆ the selected
+surfaces, abort otherwise) and copies it into `run.json` as `reviewed_ids`;
+`bin/record` stamps `last_reviewed`/`status` for those ids **only**, so a
+selected-but-unreviewed surface (K > 1) stays stale and is re-selected next run
+instead of being silently marked fresh.
 
 ## E4 — Thin-shell rule
 

@@ -7473,6 +7473,9 @@ function buildRunMeta(opts) {
   if (!existsSync2(opts.survivorsPath)) {
     throw new Error(`survivors file not found: ${opts.survivorsPath}`);
   }
+  if (!existsSync2(opts.reviewedPath)) {
+    throw new Error(`reviewed file not found: ${opts.reviewedPath}`);
+  }
   const surfaces = readJson(opts.surfacesPath);
   if (!Array.isArray(surfaces)) {
     throw new Error(`surfaces.json must be a JSON array: ${opts.surfacesPath}`);
@@ -7514,9 +7517,28 @@ function buildRunMeta(opts) {
   const survivors_count = survivors.length;
   const rejected_tier1 = proposed_count - survivors_count;
   const rejected_tier2 = 0;
-  const reviewed_ids = surfaces.map((s) => s.id);
+  const reviewedRaw = readJson(opts.reviewedPath);
+  if (!Array.isArray(reviewedRaw)) {
+    throw new Error(`reviewed.json must be a JSON array of surface ids: ${opts.reviewedPath}`);
+  }
+  const surfaceIds = new Set(surfaces.map((s) => s.id));
+  const reviewed_ids = [];
+  const seenReviewed = /* @__PURE__ */ new Set();
+  reviewedRaw.forEach((r, i) => {
+    if (typeof r !== "string" || r.length === 0) {
+      throw new Error(`reviewed.json [${i}] must be a non-empty string surface id`);
+    }
+    if (seenReviewed.has(r)) {
+      throw new Error(`reviewed.json [${i}] duplicate surface id: ${r}`);
+    }
+    if (!surfaceIds.has(r)) {
+      throw new Error(`reviewed.json [${i}] id not among the selected surfaces: ${r}`);
+    }
+    seenReviewed.add(r);
+    reviewed_ids.push(r);
+  });
   const reviewed = reviewed_ids.length;
-  const selected = reviewed_ids.length;
+  const selected = surfaces.length;
   const ts = opts.nowTs ?? (/* @__PURE__ */ new Date()).toISOString();
   const date = resolveToday(opts.args);
   const gitRevParse = opts.gitRevParse ?? defaultGitRevParse;
@@ -7549,6 +7571,7 @@ function main() {
       surfacesPath: requireArg(args, "surfaces"),
       proposedPath: requireArg(args, "proposed"),
       survivorsPath: requireArg(args, "survivors"),
+      reviewedPath: requireArg(args, "reviewed"),
       runId: requireArg(args, "run-id"),
       lane,
       packDir: args.pack ?? args.repo ?? process.cwd(),
@@ -7557,7 +7580,7 @@ function main() {
       nowTs: args.ts
     });
     process.stderr.write(
-      `run-meta: run_id=${res.meta.run_id} lane=${lane} reviewed=${res.meta.reviewed} rejected_tier1=${res.meta.rejected_tier1} -> ${requireArg(args, "out")}
+      `run-meta: run_id=${res.meta.run_id} lane=${lane} selected=${res.meta.selected} reviewed=${res.meta.reviewed} rejected_tier1=${res.meta.rejected_tier1} -> ${requireArg(args, "out")}
 `
     );
     process.exit(0);

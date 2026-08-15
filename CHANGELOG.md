@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.3.0] - 2026-08-15
+
+### Added
+
+- **`reviewed.json`** — new review-phase artifact: the reviewer records the surface ids it *actually* reviewed, and `bin/run-meta` (new required `--reviewed` flag) gates it deterministically — every id must be a unique member of the selected surfaces, abort (exit 2) otherwise — before copying it into `run.json` as `reviewed_ids`. `selected` and `reviewed` in the per-run metrics are now genuinely independent counts.
+- `bin/run-meta` survivor **identity** check: every Tier-1 survivor must match a proposed candidate by canonical `dedupe_key` (multiset subset, the same canonicalization `bin/dedupe` uses). The refuter may remove candidates but can no longer *substitute* different same-count findings that would pass schema validation and keep `rejected_tier1` (the FPR denominator) falsely low.
+
+### Fixed
+
+- With `window_budget_k > 1`, surfaces that were selected but never reviewed were stamped `last_reviewed`/`status: green` as if freshly reviewed (`reviewed_ids` assumed all-selected while the workflow reviews only index 0) — silent registry-freshness corruption that hid un-reviewed vectors. Registry stamping now covers only the ids in `reviewed.json`; unreviewed surfaces keep their state, stay stale, and re-select next run.
+
 ## [2.2.0] - 2026-06-22
 
 ### Added
