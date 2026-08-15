@@ -42,7 +42,8 @@ const RUN_ID_FILE = `${RUN}/run-id.txt`;
 // here: start the run with `NIGHTSHIFT_LANE_RUN=1 claude` so the env reaches the
 // hook subprocess. The workflow CANNOT self-arm — `process` is undefined in the
 // sandbox (an earlier `process.env.NIGHTSHIFT_LANE_RUN = "1"` on this line crashed
-// the run). The agentType tools-allowlist keeps judgment agents read-only anyway.
+// the run). Judgment agents carry Write ONLY for run artifacts (files-not-text);
+// the armed guard denies any write outside .nightshift/, keeping source read-only.
 
 // ── select (plumbing) ───────────────────────────────────────────────────────
 phase("select");
@@ -56,16 +57,23 @@ await agent(
 
 // ── review (judgment) ───────────────────────────────────────────────────────
 // One reviewer + one Tier-1 refuter (spike scope). The reviewer reads the top
-// surface from surfaces.json and writes its proposed candidates; the refuter tries
-// to kill them and rewrites survivors to candidates.json. Neither returns finding
-// data as text. Two-file convention: candidates.proposed.json (pre-refute count
-// preserved for run-meta) and candidates.json (post-refute survivors).
+// surface from surfaces.json, writes its proposed candidates, and records which
+// surface ids it ACTUALLY reviewed to reviewed.json — run-meta refuses ids not in
+// surfaces.json, and record stamps last_reviewed/green only for reviewed.json ids,
+// so selected-but-unreviewed surfaces stay stale (no silent freshness corruption
+// when K > 1). The refuter tries to kill the candidates and rewrites survivors to
+// candidates.json. Neither returns finding data as text. Artifact convention:
+// reviewed.json (ids covered), candidates.proposed.json (pre-refute count
+// preserved for run-meta), candidates.json (post-refute survivors).
 phase("review");
 await agent(
   `You are the nightshift security-reviewer. Read ${RUN}/surfaces.json and review the ` +
     `surface at index 0 against its mapped code (read-only). Write the proposed finding(s) ` +
-    `as a JSON array to ${RUN}/candidates.proposed.json in the candidate-finding schema. Do NOT ` +
-    `print the finding; return only "DONE" or a one-line error.`,
+    `as a JSON array to ${RUN}/candidates.proposed.json in the candidate-finding schema. ` +
+    `Then write the ids of the surfaces you ACTUALLY fully reviewed (here: the id of the ` +
+    `surface at index 0) as a JSON string array to ${RUN}/reviewed.json — never list a ` +
+    `surface you did not review. Do NOT print the finding; return only "DONE" or a ` +
+    `one-line error.`,
   { label: "security-reviewer", phase: "review", agentType: "security-reviewer" },
 );
 await agent(
@@ -88,6 +96,7 @@ await agent(
   `Run exactly this and nothing else, then return ONLY the process exit code and the last line of stderr:\n` +
     `node ${ENGINE}/bin/run-meta.mjs --surfaces ${RUN}/surfaces.json ` +
     `--proposed ${RUN}/candidates.proposed.json --survivors ${RUN}/candidates.json ` +
+    `--reviewed ${RUN}/reviewed.json ` +
     `--run-id "$(cat ${RUN_ID_FILE})" --lane security --pack ${PACK} --repo . --out ${RUN}/run.json`,
   { label: "plumbing:run-meta", phase: "record", model: "haiku", effort: "low" },
 );

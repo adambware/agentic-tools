@@ -1,7 +1,7 @@
 ---
 name: security-refuter
 description: Invoked by the nightshift qa (security) lane to independently refute a proposed security finding before it is logged. The Tier-1 always-on refuter — it runs on EVERY candidate and either confirms the finding (may be logged) or rejects it with a reason (dropped; counts toward rejected_tier1). Reducing the false-positive rate is its north star.
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, Write
 model: haiku
 maxTurns: 8
 ---

@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import type { Lane, RunMeta } from "./types.js";
 import { readJson, writeJson } from "./io.js";
 import { resolveToday } from "./args.js";
+import { dedupeKeyString } from "./dedupekey.js";
 
 // Re-export the canonical type so callers can import from this module as before.
 export type { RunMeta };
@@ -22,6 +23,8 @@ export interface RunMetaBuildOpts {
   surfacesPath: string;
   proposedPath: string;
   survivorsPath: string;
+  /** reviewed.json — the surface ids the review phase ACTUALLY covered. */
+  reviewedPath: string;
   runId: string;
   lane: Lane;
   packDir: string;
@@ -36,6 +39,22 @@ export interface RunMetaBuildOpts {
 
 export interface RunMetaBuildResult {
   meta: RunMeta;
+}
+
+/**
+ * Canonical dedupe_key string for a candidate, or null if it lacks a
+ * well-formed `dedupe_key {surface, symptom, root_cause}` (all strings).
+ * Identity here is the SAME canonicalization bin/dedupe uses (dedupeKeyString):
+ * strict equality on the string triple.
+ */
+function candidateKey(x: unknown): string | null {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
+  const dk = (x as Record<string, unknown>).dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return null;
+  const { surface, symptom, root_cause } = dk as Record<string, unknown>;
+  if (typeof surface !== "string" || typeof symptom !== "string" || typeof root_cause !== "string")
+    return null;
+  return dedupeKeyString({ surface, symptom, root_cause });
 }
 
 /** Default git rev-parse runner. Falls back to 'no-git' on any error. */
@@ -68,6 +87,9 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
   if (!existsSync(opts.survivorsPath)) {
     throw new Error(`survivors file not found: ${opts.survivorsPath}`);
   }
+  if (!existsSync(opts.reviewedPath)) {
+    throw new Error(`reviewed file not found: ${opts.reviewedPath}`);
+  }
 
   // --- Read surfaces.json ---
   const surfaces = readJson<MinimalSurface[]>(opts.surfacesPath);
@@ -97,6 +119,36 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
     );
   }
 
+  // Identity, not just count: every survivor must BE one of the proposed
+  // candidates, matched by canonical dedupe_key — multiset semantics, so a
+  // duplicated survivor key cannot outnumber its proposed occurrences. The
+  // length guard alone would let a buggy/hostile refuter SUBSTITUTE different
+  // same-count findings: they'd pass schema validation, get durably logged,
+  // and keep rejected_tier1 (the FPR denominator) falsely low. Malformed
+  // proposed entries contribute no key here; bin/validate rejects them before
+  // any durable write, so being lenient on that side changes nothing.
+  const proposedKeys = new Map<string, number>();
+  for (const c of proposed) {
+    const k = candidateKey(c);
+    if (k !== null) proposedKeys.set(k, (proposedKeys.get(k) ?? 0) + 1);
+  }
+  survivors.forEach((s, i) => {
+    const k = candidateKey(s);
+    if (k === null) {
+      throw new Error(
+        `survivor [${i}] has no well-formed dedupe_key {surface, symptom, root_cause}`,
+      );
+    }
+    const remaining = proposedKeys.get(k) ?? 0;
+    if (remaining === 0) {
+      throw new Error(
+        `survivor [${i}] dedupe_key ${k} does not match any proposed candidate: ` +
+          `the Tier-1 refuter must only remove candidates, never substitute them`,
+      );
+    }
+    proposedKeys.set(k, remaining - 1);
+  });
+
   // --- Derive counts ---
   const proposed_count = proposed.length;
   const survivors_count = survivors.length;
@@ -106,10 +158,35 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
   // therefore cannot know how many survivors will be suppressed vs
   // confirmed/recurring. bin/record derives it from its own counts.
 
-  // --- reviewed_ids from surfaces ---
-  const reviewed_ids = surfaces.map((s) => s.id);
+  // --- reviewed_ids from reviewed.json (surfaces ACTUALLY reviewed) ---
+  // Never assume all-selected: bin/record stamps last_reviewed/status=green for
+  // every id listed here, so listing an unreviewed surface silently corrupts
+  // registry freshness. The review phase writes the ids it actually covered;
+  // a selected-but-unreviewed surface stays stale and is re-selected next run.
+  // reviewed.json is model-written, so it is gated here: every id must be a
+  // unique member of the selected surfaces.
+  const reviewedRaw = readJson<unknown[]>(opts.reviewedPath);
+  if (!Array.isArray(reviewedRaw)) {
+    throw new Error(`reviewed.json must be a JSON array of surface ids: ${opts.reviewedPath}`);
+  }
+  const surfaceIds = new Set(surfaces.map((s) => s.id));
+  const reviewed_ids: string[] = [];
+  const seenReviewed = new Set<string>();
+  reviewedRaw.forEach((r, i) => {
+    if (typeof r !== "string" || r.length === 0) {
+      throw new Error(`reviewed.json [${i}] must be a non-empty string surface id`);
+    }
+    if (seenReviewed.has(r)) {
+      throw new Error(`reviewed.json [${i}] duplicate surface id: ${r}`);
+    }
+    if (!surfaceIds.has(r)) {
+      throw new Error(`reviewed.json [${i}] id not among the selected surfaces: ${r}`);
+    }
+    seenReviewed.add(r);
+    reviewed_ids.push(r);
+  });
   const reviewed = reviewed_ids.length;
-  const selected = reviewed_ids.length; // same in current scope (all selected = dispatched)
+  const selected = surfaces.length;
 
   // --- Timestamps ---
   const ts = opts.nowTs ?? new Date().toISOString();

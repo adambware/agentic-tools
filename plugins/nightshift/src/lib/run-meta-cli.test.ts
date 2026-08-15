@@ -42,12 +42,19 @@ function writeSurvivors(): string {
   return p;
 }
 
+function writeReviewed(): string {
+  const p = join(dir, "reviewed.json");
+  writeFileSync(p, JSON.stringify(["s1"]) + "\n");
+  return p;
+}
+
 /** Full valid args except for the one under test. */
 function fullArgs(overrides: Record<string, string | undefined> = {}): string[] {
   const defaults: Record<string, string> = {
     "--surfaces": writeSurfaces(),
     "--proposed": writeProposed(),
     "--survivors": writeSurvivors(),
+    "--reviewed": writeReviewed(),
     "--run-id": "ns-2026-06-21-sec-test",
     "--lane": "security",
     "--pack": dir,
@@ -92,6 +99,13 @@ describe("bin/run-meta argv exit-2 paths", () => {
     const { code, stderr } = runCli(argv);
     expect(code).toBe(2);
     expect(stderr).toMatch(/surfaces/);
+  });
+
+  it("exits 2 and names --reviewed in stderr when --reviewed is missing", () => {
+    const argv = fullArgs({ "--reviewed": undefined });
+    const { code, stderr } = runCli(argv);
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/reviewed/);
   });
 
   it("exits 0 with all required flags present and valid files", () => {

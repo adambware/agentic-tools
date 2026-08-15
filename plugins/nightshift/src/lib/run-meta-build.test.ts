@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   rmSync,
   writeFileSync,
+  readFileSync,
   existsSync,
   readdirSync,
 } from "node:fs";
@@ -33,6 +34,11 @@ function writeJsonFile(name: string, value: unknown): string {
   return p;
 }
 
+/** Write reviewed.json (the ids the review phase actually covered). */
+function writeReviewed(ids: unknown): string {
+  return writeJsonFile("reviewed.json", ids);
+}
+
 /** Stub gitRevParse that returns 'no-git' (simulates non-git directory). */
 const noGitRevParse = (_packDir: string): string => "no-git";
 
@@ -57,12 +63,14 @@ describe("happy path", () => {
     const survivorsPath = writeJsonFile("candidates.json", [
       { dedupe_key: { surface: "s", symptom: "a", root_cause: "b" } },
     ]);
+    const reviewedPath = writeReviewed(["surface-id-1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -87,12 +95,14 @@ describe("clean review (zero candidates)", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("surface-id-1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["surface-id-1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -120,12 +130,14 @@ describe("all rejected", () => {
       { dedupe_key: { surface: "s", symptom: "e", root_cause: "f" } },
     ]);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["surface-id-1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -151,12 +163,14 @@ describe("multiple surfaces", () => {
     ]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["surf-A", "surf-B", "surf-C"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -172,6 +186,160 @@ describe("multiple surfaces", () => {
   });
 });
 
+// ─── reviewed.json (surfaces ACTUALLY reviewed) ──────────────────────────────
+// reviewed_ids must come from the review phase's reviewed.json, never from
+// "all selected": bin/record stamps last_reviewed/status=green for every
+// reviewed id, so assuming all-selected silently marks unreviewed surfaces
+// fresh whenever K > 1. The file is model-written, so every id is gated:
+// non-empty string, unique, and a member of the selected surfaces.
+
+describe("reviewed.json gate", () => {
+  function buildWithReviewed(reviewed: unknown, surfaceIds = ["surf-A", "surf-B", "surf-C"]) {
+    const surfacesPath = writeJsonFile("surfaces.json", surfaceIds.map(makeSurface));
+    const proposedPath = writeJsonFile("candidates.proposed.json", []);
+    const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath =
+      reviewed === undefined ? join(dir, "no-reviewed.json") : writeReviewed(reviewed);
+    const outPath = join(dir, "run.json");
+    return () =>
+      buildRunMeta({
+        surfacesPath,
+        proposedPath,
+        survivorsPath,
+        reviewedPath,
+        runId: RUN_ID,
+        lane: "security",
+        packDir: dir,
+        outPath,
+        args: { today: FIXED_DATE },
+        nowTs: FIXED_TS,
+        gitRevParse: noGitRevParse,
+      });
+  }
+
+  it("partial review: selected=3 but reviewed=1 when reviewed.json lists one id (K>1)", () => {
+    const { meta } = buildWithReviewed(["surf-B"])();
+    expect(meta.selected).toBe(3);
+    expect(meta.reviewed).toBe(1);
+    expect(meta.reviewed_ids).toEqual(["surf-B"]);
+  });
+
+  it("empty reviewed.json is honest: reviewed=0, nothing stamped, selected preserved", () => {
+    const { meta } = buildWithReviewed([])();
+    expect(meta.selected).toBe(3);
+    expect(meta.reviewed).toBe(0);
+    expect(meta.reviewed_ids).toEqual([]);
+  });
+
+  it("throws when reviewed.json is missing", () => {
+    expect(buildWithReviewed(undefined)).toThrow(/reviewed file not found/);
+  });
+
+  it("throws when reviewed.json is not an array", () => {
+    expect(buildWithReviewed({ reviewed: ["surf-A"] })).toThrow(
+      /reviewed\.json must be a JSON array/,
+    );
+  });
+
+  it("throws on a non-string or empty-string id", () => {
+    expect(buildWithReviewed([42])).toThrow(/\[0\] must be a non-empty string surface id/);
+    expect(buildWithReviewed(["surf-A", ""])).toThrow(
+      /\[1\] must be a non-empty string surface id/,
+    );
+  });
+
+  it("throws on a duplicate id", () => {
+    expect(buildWithReviewed(["surf-A", "surf-A"])).toThrow(/\[1\] duplicate surface id: surf-A/);
+  });
+
+  it("throws when an id is not among the selected surfaces", () => {
+    expect(buildWithReviewed(["surf-A", "not-selected"])).toThrow(
+      /\[1\] id not among the selected surfaces: not-selected/,
+    );
+  });
+});
+
+// ─── cross-module: only ACTUALLY-reviewed ids get stamped in the registry ─────
+// The P1 staleness-corruption bug: with K>1 and a review phase that covered
+// only one surface, record must stamp last_reviewed/status on that surface
+// alone — the unreviewed selected surfaces stay stale and reselect next run.
+
+describe("cross-module registry stamping (run-meta → record)", () => {
+  it("stamps last_reviewed only for reviewed.json ids, not all selected", () => {
+    const surfacesPath = writeJsonFile("surfaces.json", [
+      makeSurface("surf-A"),
+      makeSurface("surf-B"),
+      makeSurface("surf-C"),
+    ]);
+    const proposedPath = writeJsonFile("candidates.proposed.json", []);
+    const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["surf-B"]);
+    const outPath = join(dir, "run.json");
+    const registryPath = join(dir, "vectors.yml");
+    writeFileSync(
+      registryPath,
+      [
+        "vectors:",
+        "  - id: surf-A",
+        "    title: A",
+        "  - id: surf-B",
+        "    title: B",
+        "  - id: surf-C",
+        "    title: C",
+        "",
+      ].join("\n"),
+    );
+
+    const { meta } = buildRunMeta({
+      surfacesPath,
+      proposedPath,
+      survivorsPath,
+      reviewedPath,
+      runId: RUN_ID,
+      lane: "security",
+      packDir: dir,
+      outPath,
+      args: { today: FIXED_DATE },
+      nowTs: FIXED_TS,
+      gitRevParse: noGitRevParse,
+    });
+
+    runRecord({
+      decisions: {
+        run_id: meta.run_id,
+        lane: "security",
+        date: meta.date,
+        decisions: [],
+        counts: { confirmed: 0, recurring: 0, suppressed: 0 },
+      },
+      metricsDir: join(dir, "metrics"),
+      registryPath,
+      reviewedIds: meta.reviewed_ids,
+      runId: meta.run_id,
+      lane: meta.lane,
+      date: meta.date,
+      ts: meta.ts,
+      packSha: meta.pack_sha,
+      selected: meta.selected,
+      reviewed: meta.reviewed,
+      rejectedTier1: meta.rejected_tier1,
+      rejectedTier2: meta.rejected_tier2,
+      usageByModel: meta.usage_by_model,
+      usageSpent: 0,
+      elapsed: 0,
+    });
+
+    const registry = readFileSync(registryPath, "utf8");
+    // Exactly ONE entry stamped — the actually-reviewed surf-B.
+    expect(registry.match(/last_reviewed/g)).toHaveLength(1);
+    expect(registry).toMatch(/id: surf-B[\s\S]*?last_reviewed: 2025-01-15/);
+    expect(registry).toMatch(/id: surf-B[\s\S]*?status: green/);
+    // surf-A and surf-C blocks are byte-identical to the seed — no stamp added.
+    expect(registry).toContain("- id: surf-A\n    title: A\n  - id: surf-B");
+    expect(registry.trimEnd().endsWith("title: C")).toBe(true);
+  });
+});
+
 // ─── injected date and ts ────────────────────────────────────────────────────
 
 describe("injected date and ts", () => {
@@ -179,12 +347,14 @@ describe("injected date and ts", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -209,12 +379,14 @@ describe("NIGHTSHIFT_TODAY env var", () => {
       const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
       const proposedPath = writeJsonFile("candidates.proposed.json", []);
       const survivorsPath = writeJsonFile("candidates.json", []);
+      const reviewedPath = writeReviewed(["s1"]);
       const outPath = join(dir, "run.json");
 
       const { meta } = buildRunMeta({
         surfacesPath,
         proposedPath,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -244,6 +416,7 @@ describe("no-git pack_sha fallback", () => {
       const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
       const proposedPath = writeJsonFile("candidates.proposed.json", []);
       const survivorsPath = writeJsonFile("candidates.json", []);
+      const reviewedPath = writeReviewed(["s1"]);
       const outPath = join(dir, "run.json");
 
       // Use the real defaultGitRevParse (no stub) — nonGitDir has no .git
@@ -251,6 +424,7 @@ describe("no-git pack_sha fallback", () => {
         surfacesPath,
         proposedPath,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: nonGitDir,
@@ -297,6 +471,7 @@ describe("valid git pack_sha", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     // packDir is the test file's own dir (inside the repo) and NO gitRevParse
@@ -305,6 +480,7 @@ describe("valid git pack_sha", () => {
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: TEST_DIR,
@@ -325,6 +501,7 @@ describe("run_id passthrough", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     const customRunId = "ns-2026-06-21-sec-123456";
@@ -332,6 +509,7 @@ describe("run_id passthrough", () => {
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: customRunId,
       lane: "security",
       packDir: dir,
@@ -351,6 +529,7 @@ describe("missing --surfaces (file not found)", () => {
   it("throws with 'surfaces file not found' when the file does not exist", () => {
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed([]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -358,6 +537,7 @@ describe("missing --surfaces (file not found)", () => {
         surfacesPath: join(dir, "does-not-exist.json"),
         proposedPath,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -376,6 +556,7 @@ describe("missing candidates.proposed.json", () => {
   it("throws with 'proposed candidates file not found' when missing", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -383,6 +564,7 @@ describe("missing candidates.proposed.json", () => {
         surfacesPath,
         proposedPath: join(dir, "missing-proposed.json"),
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -401,6 +583,7 @@ describe("missing candidates.json (survivors)", () => {
   it("throws with 'survivors file not found' when the survivors file is missing", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -408,6 +591,7 @@ describe("missing candidates.json (survivors)", () => {
         surfacesPath,
         proposedPath,
         survivorsPath: join(dir, "missing-survivors.json"),
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -428,6 +612,7 @@ describe("malformed candidates.proposed.json", () => {
     const p = join(dir, "candidates.proposed.json");
     writeFileSync(p, JSON.stringify({ not: "an array" }) + "\n");
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -435,6 +620,7 @@ describe("malformed candidates.proposed.json", () => {
         surfacesPath,
         proposedPath: p,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -455,6 +641,7 @@ describe("malformed candidates.json (survivors)", () => {
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const p = join(dir, "candidates.json");
     writeFileSync(p, JSON.stringify({ not: "an array" }) + "\n");
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -462,6 +649,7 @@ describe("malformed candidates.json (survivors)", () => {
         surfacesPath,
         proposedPath,
         survivorsPath: p,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -481,12 +669,14 @@ describe("ts default (no nowTs injected)", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -511,6 +701,7 @@ describe("malformed surfaces.json", () => {
     writeFileSync(p, JSON.stringify({ not: "an array" }) + "\n");
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed([]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -518,6 +709,7 @@ describe("malformed surfaces.json", () => {
         surfacesPath: p,
         proposedPath,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -537,12 +729,14 @@ describe("output written atomically", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -567,12 +761,14 @@ describe("run.json shape matches RunMeta interface", () => {
       { dedupe_key: { surface: "s", symptom: "a", root_cause: "b" } },
     ]);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: "ns-2026-06-21-sec-999",
       lane: "security",
       packDir: dir,
@@ -625,12 +821,14 @@ describe("lane field", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "design",
       packDir: dir,
@@ -651,6 +849,7 @@ describe("blank run_id", () => {
     const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     for (const blank of ["", "   "]) {
@@ -659,6 +858,7 @@ describe("blank run_id", () => {
           surfacesPath,
           proposedPath,
           survivorsPath,
+          reviewedPath,
           runId: blank,
           lane: "security",
           packDir: dir,
@@ -683,6 +883,7 @@ describe("survivors exceed proposed", () => {
       { dedupe_key: {} },
       { dedupe_key: {} },
     ]);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     expect(() =>
@@ -690,6 +891,7 @@ describe("survivors exceed proposed", () => {
         surfacesPath,
         proposedPath,
         survivorsPath,
+        reviewedPath,
         runId: RUN_ID,
         lane: "security",
         packDir: dir,
@@ -704,6 +906,73 @@ describe("survivors exceed proposed", () => {
   });
 });
 
+// ─── survivor identity (refuter may remove, never substitute) ─────────────────
+// The length guard alone would let a refuter swap proposed candidates for
+// DIFFERENT same-count findings — corrupting rejected_tier1 (the FPR
+// denominator) with valid-looking data. Identity = canonical dedupe_key string
+// (same canonicalization as bin/dedupe), multiset semantics.
+
+describe("survivor identity check", () => {
+  function build(proposed: unknown[], survivors: unknown[]) {
+    const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
+    const proposedPath = writeJsonFile("candidates.proposed.json", proposed);
+    const survivorsPath = writeJsonFile("candidates.json", survivors);
+    const reviewedPath = writeReviewed(["s1"]);
+    const outPath = join(dir, "run.json");
+    return {
+      outPath,
+      run: () =>
+        buildRunMeta({
+          surfacesPath,
+          proposedPath,
+          survivorsPath,
+          reviewedPath,
+          runId: RUN_ID,
+          lane: "security" as const,
+          packDir: dir,
+          outPath,
+          args: { today: FIXED_DATE },
+          nowTs: FIXED_TS,
+          gitRevParse: noGitRevParse,
+        }),
+    };
+  }
+  const key = (symptom: string) => ({
+    dedupe_key: { surface: "s", symptom, root_cause: "rc" },
+  });
+
+  it("throws when a survivor's dedupe_key matches no proposed candidate (substitution)", () => {
+    const { outPath, run } = build([key("proposed-a")], [key("swapped-in")]);
+    expect(run).toThrow(/does not match any proposed candidate/);
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws when a duplicated survivor key outnumbers its proposed occurrences", () => {
+    const { run } = build([key("a"), key("b")], [key("a"), key("a")]);
+    expect(run).toThrow(/does not match any proposed candidate/);
+  });
+
+  it("throws when a survivor lacks a well-formed dedupe_key", () => {
+    const { run } = build([key("a")], [{ dedupe_key: {} }]);
+    expect(run).toThrow(/survivor \[0\] has no well-formed dedupe_key/);
+  });
+
+  it("allows duplicate keys when proposed carries the same duplicates", () => {
+    const { run } = build([key("a"), key("a")], [key("a"), key("a")]);
+    const { meta } = run();
+    expect(meta.rejected_tier1).toBe(0);
+  });
+
+  it("differing severity on a matching dedupe_key still matches (identity is the key alone)", () => {
+    const { run } = build(
+      [{ ...key("a"), severity: "low" }],
+      [{ ...key("a"), severity: "critical" }],
+    );
+    const { meta } = run();
+    expect(meta.rejected_tier1).toBe(0);
+  });
+});
+
 // ─── empty surfaces (zero surfaces selected) ──────────────────────────────────
 
 describe("empty surfaces", () => {
@@ -711,12 +980,14 @@ describe("empty surfaces", () => {
     const surfacesPath = writeJsonFile("surfaces.json", []);
     const proposedPath = writeJsonFile("candidates.proposed.json", []);
     const survivorsPath = writeJsonFile("candidates.json", []);
+    const reviewedPath = writeReviewed([]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
@@ -766,12 +1037,14 @@ describe("cross-module findings_created identity (run-meta → record)", () => {
       candFinding("ND-SEC-A"),
       candFinding("ND-SEC-B"),
     ]);
+    const reviewedPath = writeReviewed(["s1"]);
     const outPath = join(dir, "run.json");
 
     const { meta } = buildRunMeta({
       surfacesPath,
       proposedPath,
       survivorsPath,
+      reviewedPath,
       runId: RUN_ID,
       lane: "security",
       packDir: dir,
