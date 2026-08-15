@@ -67,8 +67,9 @@ Three independent levers to reduce cost without touching the registry:
 
 ### Scoped tool grant (de-hardcoded, injected at dispatch)
 
-The reviewer agents grant only `Read, Grep, Glob`. The orchestrator injects the
-stack-specific grant at dispatch from the pack manifest:
+The reviewer agents grant `Read, Grep, Glob`, plus `Write` for run artifacts under
+`.nightshift/.run` (the read-only guard denies writes outside the pack). The
+orchestrator injects the stack-specific grant at dispatch from the pack manifest:
 
 - **security** → `manifest.stack_adapter.test`
 - **design** → `manifest.stack_adapter.browser`

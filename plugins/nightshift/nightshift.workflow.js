@@ -42,7 +42,8 @@ const RUN_ID_FILE = `${RUN}/run-id.txt`;
 // here: start the run with `NIGHTSHIFT_LANE_RUN=1 claude` so the env reaches the
 // hook subprocess. The workflow CANNOT self-arm — `process` is undefined in the
 // sandbox (an earlier `process.env.NIGHTSHIFT_LANE_RUN = "1"` on this line crashed
-// the run). The agentType tools-allowlist keeps judgment agents read-only anyway.
+// the run). Judgment agents carry Write ONLY for run artifacts (files-not-text);
+// the armed guard denies any write outside .nightshift/, keeping source read-only.
 
 // ── select (plumbing) ───────────────────────────────────────────────────────
 phase("select");
