@@ -26,6 +26,7 @@ Run working dir: `<repo>/.nightshift/.run/`.
 | `metrics/runs/<YYYY-MM>.jsonl` | `bin/record` | `bin/rollup`, digest | `run-metrics` |
 | `metrics/findings/<YYYY-MM>.jsonl` | `bin/record` | dedupe, digest | `finding` |
 | `metrics/daily.jsonl` | `bin/rollup` | trends | `daily-metrics` |
+| `metrics/costs.jsonl` | `bin/record-cost` | `bin/rollup`, dashboard | `cost-record` |
 
 ## E3 — Judgment-agent artifact contract
 

@@ -3,11 +3,12 @@
 // it is fully unit-testable. The CLI shell (src/bin/rollup.ts) only parses args.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { DailyMetrics, Lane, RunMetrics } from "./types.js";
+import type { CostRecord, DailyMetrics, Lane, RunMetrics } from "./types.js";
 import { readYaml, readJsonl, appendJsonl } from "./io.js";
 import { extractEntries } from "./registry.js";
 import { openFindings } from "./findings-store.js";
 import { computeDailyRollup } from "./rollup-run.js";
+import { COSTS_FILENAME } from "./record-cost-run.js";
 
 export interface RollupOpts {
   registryPath: string;
@@ -46,6 +47,9 @@ export function runRollup(opts: RollupOpts): DailyMetrics {
   // Open findings count (all lanes — no per-lane field on findings)
   const openFindingsCount = openFindings(opts.metricsDir).length;
 
+  // Cost records (v3 A2) — costs.jsonl is optional; missing file -> [].
+  const costRecords = readJsonl<CostRecord>(join(opts.metricsDir, COSTS_FILENAME));
+
   // Compute rollup
   const rollup = computeDailyRollup({
     date,
@@ -54,6 +58,7 @@ export function runRollup(opts: RollupOpts): DailyMetrics {
     entries,
     openFindingsCount,
     runRecords: laneRunRecords,
+    costRecords,
     today: opts.today,
   });
 

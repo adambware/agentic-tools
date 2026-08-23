@@ -61,10 +61,10 @@ none: it turns every reading into a false alarm or a missed one.
 
 ## Tasks
 
-- [ ] **T7 (P1)** — `bin/record-cost` — gate on `is_error`
+- [x] **T7 (P1)** — `bin/record-cost` — gate on `is_error`
   - Files: new `src/lib/record-cost-run.ts`, `schemas/cost-record.yml`, `src/lib/rollup-run.ts`
   - Verify: error-envelope fixture writes `status:"error"`, excluded from the 30d average
-- [ ] costs.jsonl schema + rollup extension + NovuDesk cost lines (WS2 core, above)
+- [x] costs.jsonl schema + rollup extension + NovuDesk cost lines (WS2 core, above)
 
 ## Reuse
 

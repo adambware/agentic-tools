@@ -2376,9 +2376,9 @@ var require_stringifyNumber = __commonJS({
     function stringifyNumber({ format, minFractionDigits, tag, value }) {
       if (typeof value === "bigint")
         return String(value);
-      const num = typeof value === "number" ? value : Number(value);
-      if (!isFinite(num))
-        return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
+      const num2 = typeof value === "number" ? value : Number(value);
+      if (!isFinite(num2))
+        return isNaN(num2) ? ".nan" : num2 < 0 ? "-.inf" : ".inf";
       let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
       if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
         let i = n.indexOf(".");
@@ -2418,8 +2418,8 @@ var require_float = __commonJS({
       test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
       resolve: (str) => parseFloat(str),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -2858,8 +2858,8 @@ var require_float2 = __commonJS({
       test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
       resolve: (str) => parseFloat(str.replace(/_/g, "")),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -3061,23 +3061,23 @@ var require_timestamp = __commonJS({
     function parseSexagesimal(str, asBigInt) {
       const sign = str[0];
       const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
-      const num = (n) => asBigInt ? BigInt(n) : Number(n);
-      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
-      return sign === "-" ? num(-1) * res : res;
+      const num2 = (n) => asBigInt ? BigInt(n) : Number(n);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num2(60) + num2(p), num2(0));
+      return sign === "-" ? num2(-1) * res : res;
     }
     function stringifySexagesimal(node) {
       let { value } = node;
-      let num = (n) => n;
+      let num2 = (n) => n;
       if (typeof value === "bigint")
-        num = (n) => BigInt(n);
+        num2 = (n) => BigInt(n);
       else if (isNaN(value) || !isFinite(value))
         return stringifyNumber.stringifyNumber(node);
       let sign = "";
       if (value < 0) {
         sign = "-";
-        value *= num(-1);
+        value *= num2(-1);
       }
-      const _60 = num(60);
+      const _60 = num2(60);
       const parts = [value % _60];
       if (value < 60) {
         parts.unshift(0);
@@ -7360,6 +7360,9 @@ var require_dist = __commonJS({
   }
 });
 
+// src/bin/record-cost.ts
+import { existsSync as existsSync2 } from "node:fs";
+
 // src/lib/args.ts
 function parseArgs(argv) {
   const out = {};
@@ -7393,10 +7396,6 @@ function resolveToday(args) {
   return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 }
 
-// src/lib/rollup-cli.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
-
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
 import {
@@ -7415,196 +7414,13 @@ function appendJsonl(path, record) {
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, JSON.stringify(record) + "\n");
 }
-function readJsonl(path) {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(JSON.parse(trimmed));
-  }
-  return out;
-}
-function readYaml(path) {
+function readJson(path) {
   if (!existsSync(path)) return void 0;
-  return (0, import_yaml.parse)(readFileSync(path, "utf8"));
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
-// src/lib/registry.ts
-function extractEntries(doc, lane) {
-  if (doc === void 0 || doc === null) return [];
-  let list;
-  if (Array.isArray(doc)) {
-    list = doc;
-  } else if (typeof doc === "object") {
-    const o = doc;
-    list = o.vectors ?? o.flows ?? o.entries;
-    if (list === void 0) {
-      throw new Error("malformed registry: expected vectors|flows|entries list");
-    }
-  } else {
-    throw new Error("malformed registry: not a list or object");
-  }
-  if (!Array.isArray(list)) throw new Error("malformed registry: entries is not a list");
-  return list.filter((e) => !e.owner || e.owner === lane);
-}
-
-// src/lib/findings-store.ts
-import { existsSync as existsSync2, readdirSync } from "node:fs";
+// src/lib/record-cost-run.ts
 import { join as join2 } from "node:path";
-
-// src/lib/dedupekey.ts
-function dedupeKeyString(k) {
-  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
-}
-function isOpen(f) {
-  return !f.resolved_at;
-}
-
-// src/lib/findings-store.ts
-function readAllFindings(metricsDir) {
-  const dir = join2(metricsDir, "findings");
-  if (!existsSync2(dir)) return [];
-  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
-  const out = [];
-  for (const shard of shards) out.push(...readJsonl(join2(dir, shard)));
-  return out;
-}
-function foldFindings(findings) {
-  const byKey = /* @__PURE__ */ new Map();
-  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
-  return byKey;
-}
-function openFindings(metricsDir) {
-  return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
-}
-
-// src/lib/types.ts
-var DEFAULT_INTERVAL_DAYS = {
-  critical: 7,
-  high: 14,
-  medium: 30,
-  low: 90
-};
-
-// src/lib/staleness.ts
-var MAX_STALENESS = 1e9;
-function daysBetween(from, to) {
-  const a = Date.parse(`${from}T00:00:00Z`);
-  const b = Date.parse(`${to}T00:00:00Z`);
-  return Math.round((b - a) / 864e5);
-}
-function intervalDays(entry) {
-  const n = entry.interval_days;
-  if (typeof n === "number" && Number.isFinite(n) && n > 0) return n;
-  return DEFAULT_INTERVAL_DAYS[entry.weight];
-}
-function computeStaleness(entry, today) {
-  if (!entry.last_reviewed) return MAX_STALENESS;
-  const elapsed = daysBetween(entry.last_reviewed, today);
-  return elapsed / intervalDays(entry);
-}
-
-// src/lib/rollup-run.ts
-function median(values) {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) {
-    return sorted[mid] ?? 0;
-  }
-  const lo = sorted[mid - 1] ?? 0;
-  const hi = sorted[mid] ?? 0;
-  return (lo + hi) / 2;
-}
-function round(value, decimals) {
-  const factor = Math.pow(10, decimals);
-  return Math.round(value * factor) / factor;
-}
-function computeFpr(runs, endDate, windowDays) {
-  let created = 0;
-  let rejected = 0;
-  for (const r of runs) {
-    const d = daysBetween(r.date, endDate);
-    if (d >= 0 && d <= windowDays - 1) {
-      created += r.findings_created;
-      rejected += r.rejected_tier1 + r.rejected_tier2;
-    }
-  }
-  if (created === 0) return null;
-  return Math.round(rejected / created * 100);
-}
-function inWindow(recordDate, endDate, windowDays) {
-  const d = daysBetween(recordDate, endDate);
-  return d >= 0 && d <= windowDays - 1;
-}
-function costSum(costs, endDate, windowDays) {
-  let sum = 0;
-  for (const c of costs) {
-    if (inWindow(c.date, endDate, windowDays)) sum += c.usd;
-  }
-  return round(sum, 4);
-}
-function costAvgPerRun(costs, endDate, windowDays) {
-  let sum = 0;
-  let n = 0;
-  for (const c of costs) {
-    if (c.status !== "error" && inWindow(c.date, endDate, windowDays)) {
-      sum += c.usd;
-      n++;
-    }
-  }
-  if (n === 0) return null;
-  return round(sum / n, 4);
-}
-function computeDailyRollup(input) {
-  const { date, lane, ts, entries, openFindingsCount, runRecords, today } = input;
-  const runs = runRecords.filter((r) => r.date === date && r.lane === lane).length;
-  let surfaces_green = 0;
-  let surfaces_stale = 0;
-  let surfaces_overdue = 0;
-  const stalenessValues = [];
-  for (const entry of entries) {
-    const s = computeStaleness(entry, today);
-    stalenessValues.push(s);
-    if (s <= 1) {
-      surfaces_green++;
-    } else if (s <= 2) {
-      surfaces_stale++;
-    } else {
-      surfaces_overdue++;
-    }
-  }
-  const surfaces_total = entries.length;
-  const coverage_freshness_pct = surfaces_total === 0 ? 100 : round(surfaces_green / surfaces_total * 100, 1);
-  const median_staleness_ratio = round(median(stalenessValues), 2);
-  const laneRuns = runRecords.filter((r) => r.lane === lane);
-  const fpr_7d = computeFpr(laneRuns, date, 7);
-  const fpr_30d = computeFpr(laneRuns, date, 30);
-  const laneCosts = (input.costRecords ?? []).filter((c) => c.lane === lane);
-  const cost_usd_7d = costSum(laneCosts, date, 7);
-  const cost_usd_30d = costSum(laneCosts, date, 30);
-  const cost_usd_avg_per_run_30d = costAvgPerRun(laneCosts, date, 30);
-  return {
-    date,
-    lane,
-    ts,
-    runs,
-    surfaces_total,
-    surfaces_green,
-    surfaces_stale,
-    surfaces_overdue,
-    open_findings: openFindingsCount,
-    coverage_freshness_pct,
-    median_staleness_ratio,
-    fpr_7d,
-    fpr_30d,
-    cost_usd_7d,
-    cost_usd_30d,
-    cost_usd_avg_per_run_30d
-  };
-}
 
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
@@ -7792,65 +7608,124 @@ var VALIDATORS = {
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
 
 // src/lib/record-cost-run.ts
+function num(x) {
+  return typeof x === "number" && Number.isFinite(x) ? x : 0;
+}
+function buildCostRecord(envelope, meta) {
+  if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) {
+    throw new Error("envelope: not an object");
+  }
+  const e = envelope;
+  if (typeof e.is_error !== "boolean") {
+    throw new Error("envelope: is_error must be a boolean");
+  }
+  const usage = typeof e.usage === "object" && e.usage !== null ? e.usage : {};
+  const record = {
+    run_id: meta.runId,
+    lane: meta.lane,
+    date: meta.date,
+    ts: meta.ts,
+    usd: num(e.total_cost_usd),
+    input_tokens: num(usage.input_tokens),
+    output_tokens: num(usage.output_tokens),
+    cache_read_tokens: num(usage.cache_read_input_tokens),
+    cache_creation_tokens: num(usage.cache_creation_input_tokens),
+    source: "cli-json",
+    status: e.is_error === false ? "ok" : "error"
+  };
+  if (record.status === "error") {
+    record.terminal_reason = typeof e.terminal_reason === "string" && e.terminal_reason.length > 0 ? e.terminal_reason : "unknown";
+  }
+  return record;
+}
+function buildManualCostRecord(meta, usd, tokens) {
+  return {
+    run_id: meta.runId,
+    lane: meta.lane,
+    date: meta.date,
+    ts: meta.ts,
+    usd: num(usd),
+    input_tokens: num(tokens?.input_tokens),
+    output_tokens: num(tokens?.output_tokens),
+    cache_read_tokens: num(tokens?.cache_read_tokens),
+    cache_creation_tokens: num(tokens?.cache_creation_tokens),
+    source: "manual",
+    status: "ok"
+  };
+}
 var COSTS_FILENAME = "costs.jsonl";
-
-// src/lib/rollup-cli.ts
-function runRollup(opts) {
-  const date = opts.date ?? opts.today;
-  if (!existsSync3(opts.registryPath)) {
-    throw new Error(`registry not found: ${opts.registryPath}`);
+function runRecordCost(opts) {
+  let record;
+  if (opts.envelope !== void 0) {
+    record = buildCostRecord(opts.envelope, opts.meta);
+  } else if (opts.manualUsd !== void 0) {
+    record = buildManualCostRecord(opts.meta, opts.manualUsd, opts.manualTokens);
+  } else {
+    throw new Error("record-cost: need an envelope or a manual --usd");
   }
-  const doc = readYaml(opts.registryPath);
-  const entries = extractEntries(doc, opts.lane);
-  const runsDir = join3(opts.metricsDir, "runs");
-  const runRecords = [];
-  if (existsSync3(runsDir)) {
-    const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort();
-    for (const shard of shards) {
-      runRecords.push(...readJsonl(join3(runsDir, shard)));
-    }
+  const result = validateCostRecord(record);
+  if (!result.ok) {
+    throw new Error(`cost-record invalid: ${result.errors.join("; ")}`);
   }
-  const laneRunRecords = runRecords.filter((r) => r.lane === opts.lane);
-  const openFindingsCount = openFindings(opts.metricsDir).length;
-  const costRecords = readJsonl(join3(opts.metricsDir, COSTS_FILENAME));
-  const rollup = computeDailyRollup({
-    date,
-    lane: opts.lane,
-    ts: opts.ts,
-    entries,
-    openFindingsCount,
-    runRecords: laneRunRecords,
-    costRecords,
-    today: opts.today
-  });
-  const outPath = opts.outPath ?? join3(opts.metricsDir, "daily.jsonl");
-  appendJsonl(outPath, rollup);
-  return rollup;
+  appendJsonl(join2(opts.metricsDir, COSTS_FILENAME), record);
+  return record;
 }
 
-// src/bin/rollup.ts
+// src/bin/record-cost.ts
+function optNum(args, key) {
+  const raw = args[key];
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    process.stderr.write(`record-cost: --${key} must be a number, got "${raw}"
+`);
+    process.exit(2);
+  }
+  return n;
+}
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  const metricsDir = requireArg(args, "metrics-dir");
+  const runId = requireArg(args, "run-id");
   const lane = args.lane ?? "security";
-  const ts = args.ts ?? (/* @__PURE__ */ new Date()).toISOString();
   const today = resolveToday(args);
-  const date = args.date ?? today;
+  const meta = {
+    runId,
+    lane,
+    date: args.date ?? today,
+    ts: args.ts ?? (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (args.json !== void 0 && args.usd !== void 0) {
+    process.stderr.write("record-cost: --json and --usd are mutually exclusive\n");
+    process.exit(2);
+  }
   try {
-    const res = runRollup({
-      registryPath: requireArg(args, "registry"),
-      metricsDir: requireArg(args, "metrics-dir"),
-      lane,
-      today,
-      date,
-      ts
+    let envelope;
+    if (args.json !== void 0) {
+      if (!existsSync2(args.json)) {
+        throw new Error(`envelope not found: ${args.json}`);
+      }
+      envelope = readJson(args.json);
+    }
+    const record = runRecordCost({
+      metricsDir,
+      meta,
+      envelope,
+      manualUsd: optNum(args, "usd"),
+      manualTokens: {
+        input_tokens: optNum(args, "input-tokens"),
+        output_tokens: optNum(args, "output-tokens"),
+        cache_read_tokens: optNum(args, "cache-read-tokens"),
+        cache_creation_tokens: optNum(args, "cache-creation-tokens")
+      }
     });
     process.stderr.write(
-      `rollup: ${res.date} ${res.lane} freshness=${res.coverage_freshness_pct}% open=${res.open_findings}
+      `record-cost: ${record.run_id} ${record.status} usd=${record.usd} source=${record.source}
 `
     );
     process.exit(0);
   } catch (err) {
-    process.stderr.write(`rollup: ${err.message}
+    process.stderr.write(`record-cost: ${err.message}
 `);
     process.exit(2);
   }

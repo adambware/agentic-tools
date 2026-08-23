@@ -436,3 +436,98 @@ describe("runRollup (cli integration)", () => {
     ).toThrow(/registry not found/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cost windows (v3 A2) — cost_usd_7d / cost_usd_30d / cost_usd_avg_per_run_30d
+// ---------------------------------------------------------------------------
+
+function makeCost(
+  date: string,
+  usd: number,
+  status: "ok" | "error" = "ok",
+  lane: Lane = "security",
+): import("./types.js").CostRecord {
+  return {
+    run_id: `run-${date}-${lane}-${usd}`,
+    lane,
+    date,
+    ts: `${date}T07:00:00Z`,
+    usd,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status,
+    ...(status === "error" ? { terminal_reason: "api_error" } : {}),
+  };
+}
+
+describe("computeDailyRollup — cost windows", () => {
+  it("omitted costRecords yields zero sums and a null average (additive default)", () => {
+    const result = computeDailyRollup(baseInput());
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_30d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("windows are trailing and inclusive: day-6 is in the 7d window, day-7 is out", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-15", 1.0), // 6 days back -> in 7d
+          makeCost("2026-06-14", 2.0), // 7 days back -> out of 7d, in 30d
+          makeCost("2026-05-23", 4.0), // 29 days back -> in 30d
+          makeCost("2026-05-22", 8.0), // 30 days back -> out of 30d
+          makeCost("2026-06-22", 16.0), // future -> out of every window
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(7.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(7.0 / 3, 4);
+  });
+
+  it("error rows count in the sums but are excluded from the per-run average", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.5),
+          makeCost("2026-06-19", 0, "error"),
+          makeCost("2026-06-18", 2.5),
+        ],
+      }),
+    );
+    // Sums include the error row's usd (honest total spend).
+    expect(result.cost_usd_7d).toBeCloseTo(4.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(4.0, 4);
+    // Average is over ok rows only: (1.5 + 2.5) / 2 — the $0 error row must not
+    // drag it down to 1.33.
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(2.0, 4);
+  });
+
+  it("a window with only error rows averages to null, not 0", () => {
+    const result = computeDailyRollup(
+      baseInput({ date: "2026-06-21", costRecords: [makeCost("2026-06-20", 0, "error")] }),
+    );
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("filters cost records to the rollup's lane", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        lane: "security",
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.0, "ok", "security"),
+          makeCost("2026-06-20", 100.0, "ok", "design"),
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(1.0, 4);
+  });
+});

@@ -7524,6 +7524,33 @@ function validateDailyMetrics(x) {
   for (const k of ["fpr_7d", "fpr_30d"])
     if (x[k] !== null && typeof x[k] !== "number")
       errors.push(`daily-metrics: ${k} must be a number or null`);
+  for (const k of ["cost_usd_7d", "cost_usd_30d"])
+    if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number`);
+  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && typeof x.cost_usd_avg_per_run_30d !== "number")
+    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a number or null");
+  return finish(errors);
+}
+function validateCostRecord(x) {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["cost-record: not an object"]);
+  reqStr(x, "run_id", errors, "cost-record");
+  reqEnum(x, "lane", LANES, errors, "cost-record");
+  reqDate(x, "date", errors, "cost-record");
+  reqStr(x, "ts", errors, "cost-record");
+  for (const k of [
+    "usd",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens"
+  ])
+    reqNum(x, k, errors, "cost-record");
+  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
+  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
+  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
+  if (x.status === "ok" && x.terminal_reason !== void 0)
+    errors.push("cost-record: terminal_reason only allowed when status=error");
   return finish(errors);
 }
 function validateSurface(x) {
@@ -7544,7 +7571,8 @@ var VALIDATORS = {
   suppression: validateSuppression,
   "run-metrics": validateRunMetrics,
   "daily-metrics": validateDailyMetrics,
-  surface: validateSurface
+  surface: validateSurface,
+  "cost-record": validateCostRecord
 };
 function validateArtifact(schema, data) {
   const fn = VALIDATORS[schema];

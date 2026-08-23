@@ -1,6 +1,6 @@
 // Pure computation for the daily metrics rollup (run-loop.md step 5c).
 // No I/O — fully unit-testable.
-import type { DailyMetrics, Lane, RegistryEntry, RunMetrics } from "./types.js";
+import type { CostRecord, DailyMetrics, Lane, RegistryEntry, RunMetrics } from "./types.js";
 import { computeStaleness, daysBetween, MAX_STALENESS } from "./staleness.js";
 
 export interface RollupInput {
@@ -10,6 +10,8 @@ export interface RollupInput {
   entries: RegistryEntry[];
   openFindingsCount: number;
   runRecords: RunMetrics[];
+  // Cost lines for THIS lane from metrics/costs.jsonl (v3 A2, additive).
+  costRecords?: CostRecord[];
   today: string;
 }
 
@@ -55,6 +57,41 @@ function computeFpr(
   return Math.round((rejected / created) * 100);
 }
 
+function inWindow(recordDate: string, endDate: string, windowDays: number): boolean {
+  const d = daysBetween(recordDate, endDate);
+  return d >= 0 && d <= windowDays - 1;
+}
+
+/** Total spend over a trailing window. Error rows are included: a failed run's
+ *  recorded usd (typically 0) is still honest spend, and excluding it would hide
+ *  partial burn. Only the per-run AVERAGE excludes error rows (plan A2). */
+function costSum(costs: CostRecord[], endDate: string, windowDays: number): number {
+  let sum = 0;
+  for (const c of costs) {
+    if (inWindow(c.date, endDate, windowDays)) sum += c.usd;
+  }
+  return round(sum, 4);
+}
+
+/** Average usd per successful run over a trailing window. Error rows are
+ *  excluded from numerator AND denominator; null when no ok rows in window. */
+function costAvgPerRun(
+  costs: CostRecord[],
+  endDate: string,
+  windowDays: number,
+): number | null {
+  let sum = 0;
+  let n = 0;
+  for (const c of costs) {
+    if (c.status !== "error" && inWindow(c.date, endDate, windowDays)) {
+      sum += c.usd;
+      n++;
+    }
+  }
+  if (n === 0) return null;
+  return round(sum / n, 4);
+}
+
 export function computeDailyRollup(input: RollupInput): DailyMetrics {
   const { date, lane, ts, entries, openFindingsCount, runRecords, today } = input;
 
@@ -96,6 +133,12 @@ export function computeDailyRollup(input: RollupInput): DailyMetrics {
   const fpr_7d = computeFpr(laneRuns, date, 7);
   const fpr_30d = computeFpr(laneRuns, date, 30);
 
+  // Cost windows — filter cost records to this lane only (v3 A2, additive).
+  const laneCosts = (input.costRecords ?? []).filter((c) => c.lane === lane);
+  const cost_usd_7d = costSum(laneCosts, date, 7);
+  const cost_usd_30d = costSum(laneCosts, date, 30);
+  const cost_usd_avg_per_run_30d = costAvgPerRun(laneCosts, date, 30);
+
   return {
     date,
     lane,
@@ -110,5 +153,8 @@ export function computeDailyRollup(input: RollupInput): DailyMetrics {
     median_staleness_ratio,
     fpr_7d,
     fpr_30d,
+    cost_usd_7d,
+    cost_usd_30d,
+    cost_usd_avg_per_run_30d,
   };
 }
