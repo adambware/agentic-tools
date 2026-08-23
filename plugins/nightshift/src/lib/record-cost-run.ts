@@ -16,6 +16,7 @@ import { validateCostRecord } from "./validate.js";
 export interface CliJsonEnvelope {
   is_error: boolean;
   total_cost_usd?: number;
+  modelUsage?: Record<string, { costUSD?: number }>;
   terminal_reason?: string;
   usage?: {
     input_tokens?: number;
@@ -34,6 +35,37 @@ export interface CostMeta {
 
 function num(x: unknown): number {
   return typeof x === "number" && Number.isFinite(x) ? x : 0;
+}
+
+/**
+ * What the run actually cost: the greater of the envelope's own `total_cost_usd`
+ * and the sum of its per-model `modelUsage[*].costUSD`.
+ *
+ * WHY NOT JUST total_cost_usd. It undercounts when the session ends before work
+ * it started has finished. Measured on a real run: the session answered as soon
+ * as the Workflow tool handed back a task id, and the envelope reported
+ * `total_cost_usd: 0.3633` while its own `modelUsage` summed to `$4.4681813` —
+ * $4.10 of real spend that would never have reached costs.jsonl, in the ledger
+ * whose entire job is making spend visible. On a run that completes normally the
+ * two agree to floating-point noise ($4.652074950000001 vs $4.652074949999999),
+ * so taking the max costs nothing in the normal case.
+ *
+ * The max, not the sum, and not a replacement: `total_cost_usd` stays the
+ * primary figure and this can only ever revise it UPWARD. Under-reporting spend
+ * is the failure that matters — a cost trend that quietly reads low sets a
+ * budget expectation the system then breaks.
+ */
+function envelopeUsd(e: Record<string, unknown>): number {
+  const reported = num(e.total_cost_usd);
+  const mu = e.modelUsage;
+  if (typeof mu !== "object" || mu === null || Array.isArray(mu)) return reported;
+  let summed = 0;
+  for (const entry of Object.values(mu as Record<string, unknown>)) {
+    if (typeof entry === "object" && entry !== null) {
+      summed += num((entry as Record<string, unknown>).costUSD);
+    }
+  }
+  return Math.max(reported, summed);
 }
 
 /** Build a cost record from a CLI JSON envelope. Gates on `is_error` ONLY. */
@@ -64,7 +96,7 @@ export function buildCostRecord(envelope: unknown, meta: CostMeta): CostRecord {
     lane: meta.lane,
     date: meta.date,
     ts: meta.ts,
-    usd: num(e.total_cost_usd),
+    usd: envelopeUsd(e),
     input_tokens: num(usage.input_tokens),
     output_tokens: num(usage.output_tokens),
     cache_read_tokens: num(usage.cache_read_input_tokens),

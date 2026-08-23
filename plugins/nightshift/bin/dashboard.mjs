@@ -7362,7 +7362,7 @@ var require_dist = __commonJS({
 
 // src/bin/dashboard.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/lib/args.ts
@@ -7400,7 +7400,8 @@ function resolveToday(args) {
 
 // src/lib/dashboard-cli.ts
 import { existsSync as existsSync3, lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute as isAbsolute2, join as join4, resolve as resolve2 } from "node:path";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7449,6 +7450,16 @@ function basename(path) {
   return i === -1 ? path : path.slice(i + 1);
 }
 
+// src/lib/ops-config.ts
+import { isAbsolute, join as join2, resolve } from "node:path";
+function expandPath(raw, home, base) {
+  const p = raw.trim();
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join2(home, p.slice(2));
+  if (isAbsolute(p)) return resolve(p);
+  return resolve(base, p);
+}
+
 // src/lib/registry.ts
 function extractEntries(doc, lane) {
   if (doc === void 0 || doc === null) return [];
@@ -7470,7 +7481,7 @@ function extractEntries(doc, lane) {
 
 // src/lib/findings-store.ts
 import { existsSync as existsSync2, readdirSync } from "node:fs";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // src/lib/dedupekey.ts
 function dedupeKeyString(k) {
@@ -7482,11 +7493,11 @@ function isOpen(f) {
 
 // src/lib/findings-store.ts
 function readAllFindings(metricsDir) {
-  const dir = join2(metricsDir, "findings");
+  const dir = join3(metricsDir, "findings");
   if (!existsSync2(dir)) return [];
   const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
   const out = [];
-  for (const shard of shards) out.push(...readJsonl(join2(dir, shard)));
+  for (const shard of shards) out.push(...readJsonl(join3(dir, shard)));
   return out;
 }
 function foldFindings(findings) {
@@ -8612,32 +8623,32 @@ function parseDigest(path, repo, runsSince, today) {
   };
 }
 function loadRunRecords(metricsDir) {
-  const runsDir = join3(metricsDir, "runs");
+  const runsDir = join4(metricsDir, "runs");
   const out = [];
   if (existsSync3(runsDir)) {
     for (const shard of readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort()) {
-      out.push(...readJsonl(join3(runsDir, shard)));
+      out.push(...readJsonl(join4(runsDir, shard)));
     }
   }
   return out;
 }
 function loadSuppressions(packDir, today) {
   const doc = readYaml(
-    join3(packDir, "findings", "suppressions.yml")
+    join4(packDir, "findings", "suppressions.yml")
   );
   return (doc?.suppressions ?? []).filter((s) => s.expires >= today);
 }
 function laneInput(packDir, lane, enabled) {
   if (!enabled) return { lane, state: "disabled", entries: [] };
-  const registryPath = join3(
+  const registryPath = join4(
     packDir,
     "registries",
     lane === "security" ? "vectors.yml" : "flows.yml"
   );
   const entries = existsSync3(registryPath) ? extractEntries(readYaml(registryPath), lane) : [];
   if (lane === "design") {
-    const personas = existsSync3(join3(packDir, "fixtures", "personas.yml"));
-    const manifest = readYaml(join3(packDir, "manifest.yml"));
+    const personas = existsSync3(join4(packDir, "fixtures", "personas.yml"));
+    const manifest = readYaml(join4(packDir, "manifest.yml"));
     const baseUrl = manifest?.stack_adapter?.browser?.base_url;
     if (!personas || !baseUrl) {
       const missing = [
@@ -8649,12 +8660,15 @@ function laneInput(packDir, lane, enabled) {
   }
   return { lane, state: "on", entries };
 }
+function repoRoot(cfg, opsHome) {
+  return expandPath(String(cfg.path ?? ""), homedir(), opsHome);
+}
 function loadRepo(cfg, opsHome, today) {
-  const packDir = join3(cfg.path, ".nightshift");
+  const packDir = join4(repoRoot(cfg, opsHome), ".nightshift");
   if (!existsSync3(packDir)) {
     return {
       name: repoName(cfg),
-      path: cfg.path,
+      path: repoRoot(cfg, opsHome),
       pack_present: false,
       lanes: [],
       findings: [],
@@ -8664,10 +8678,10 @@ function loadRepo(cfg, opsHome, today) {
       costs: []
     };
   }
-  const metricsDir = join3(packDir, "metrics");
+  const metricsDir = join4(packDir, "metrics");
   const run_records = loadRunRecords(metricsDir);
-  const costs = readJsonl(join3(metricsDir, COSTS_FILENAME));
-  const daily = readJsonl(join3(metricsDir, "daily.jsonl"));
+  const costs = readJsonl(join4(metricsDir, COSTS_FILENAME));
+  const daily = readJsonl(join4(metricsDir, "daily.jsonl"));
   const lanesByEntryOwner = /* @__PURE__ */ new Map();
   const lanes = LANES2.map((lane) => {
     const li = laneInput(packDir, lane, laneEnabled(cfg, lane));
@@ -8676,7 +8690,7 @@ function loadRepo(cfg, opsHome, today) {
   });
   const findings = openFindings(metricsDir).map((f) => {
     const evidence = f.evidence;
-    const evidencePath = evidence ? isAbsolute(evidence) ? evidence : join3(opsHome, evidence) : void 0;
+    const evidencePath = evidence ? isAbsolute2(evidence) ? evidence : join4(opsHome, evidence) : void 0;
     return {
       ...f,
       repo: repoName(cfg),
@@ -8688,7 +8702,7 @@ function loadRepo(cfg, opsHome, today) {
   });
   return {
     name: repoName(cfg),
-    path: cfg.path,
+    path: repoRoot(cfg, opsHome),
     pack_present: true,
     lanes,
     findings,
@@ -8702,10 +8716,10 @@ function scanOrphanRunDirs(repos, now) {
   const out = [];
   for (const { cfg, input } of repos) {
     if (!input.pack_present) continue;
-    const runDir = join3(cfg.path, ".nightshift", ".run");
+    const runDir = join4(cfg.path, ".nightshift", ".run");
     if (!existsSync3(runDir)) continue;
     for (const d of readdirSync2(runDir).sort()) {
-      const full = join3(runDir, d);
+      const full = join4(runDir, d);
       let age_days;
       try {
         age_days = Math.floor((now.getTime() - statSync(full).mtime.getTime()) / 864e5);
@@ -8720,7 +8734,7 @@ function scanOrphanRunDirs(repos, now) {
   return out;
 }
 function evidenceStats(opsHome, referenced) {
-  const evDir = join3(opsHome, "evidence");
+  const evDir = join4(opsHome, "evidence");
   if (!existsSync3(evDir)) return void 0;
   let files = 0, bytes = 0, unreferenced = 0;
   const walk = (dir, rel) => {
@@ -8731,7 +8745,7 @@ function evidenceStats(opsHome, referenced) {
       return;
     }
     for (const name of names) {
-      const full = join3(dir, name);
+      const full = join4(dir, name);
       const relPath = `${rel}${name}`;
       let st;
       try {
@@ -8755,7 +8769,7 @@ function runDashboard(opts) {
   if (!existsSync3(opts.configPath)) {
     throw new Error(`config not found: ${opts.configPath}`);
   }
-  const opsHome = dirname2(resolve(opts.configPath));
+  const opsHome = dirname2(resolve2(opts.configPath));
   const config = readYaml(opts.configPath) ?? {};
   const repoCfgs = config.repos ?? [];
   const loaded = repoCfgs.filter((cfg) => repoEnabled(cfg)).map((cfg) => {
@@ -8766,7 +8780,7 @@ function runDashboard(opts) {
         cfg,
         input: {
           name: repoName(cfg),
-          path: cfg.path,
+          path: repoRoot(cfg, opsHome),
           pack_present: true,
           read_error: err instanceof Error ? err.message : String(err),
           lanes: [],
@@ -8781,7 +8795,7 @@ function runDashboard(opts) {
   });
   const digests = [];
   for (const { cfg, input: input2 } of loaded) {
-    const digestPath = join3(opsHome, "digests", `${repoName(cfg)}.md`);
+    const digestPath = join4(opsHome, "digests", `${repoName(cfg)}.md`);
     const digest = parseDigest(
       digestPath,
       repoName(cfg),
@@ -8817,7 +8831,7 @@ function runsSinceDigest(digestPath, runs) {
 // src/bin/dashboard.ts
 function defaultEngineVersion() {
   try {
-    const pkgPath = join4(dirname3(fileURLToPath(import.meta.url)), "..", "package.json");
+    const pkgPath = join5(dirname3(fileURLToPath(import.meta.url)), "..", "package.json");
     const pkg = JSON.parse(readFileSync3(pkgPath, "utf8"));
     return pkg.version ?? "unknown";
   } catch {

@@ -319,3 +319,66 @@ describe("NovuDesk round-trip (cost join)", () => {
     expect(rollup.cost_usd_avg_per_run_30d).toBeCloseTo(1.08, 4);
   });
 });
+
+describe("regression: an early-returning session under-reported its own cost by $4.10", () => {
+  // Measured, not hypothetical. A real run's session answered as soon as the
+  // Workflow tool handed back a task id; the envelope reported total_cost_usd
+  // 0.3633 while its own modelUsage summed to 4.4681813. The ledger whose entire
+  // job is making spend visible would have recorded the smaller number.
+  const meta = { runId: "R1", lane: "security" as const, date: "2026-08-23", ts: "2026-08-23T20:26:58.525Z" };
+
+  it("records the modelUsage sum when total_cost_usd is smaller", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 0.3633,
+        modelUsage: {
+          "claude-haiku-4-5-20251001": { costUSD: 0.33057804999999996 },
+          "claude-opus-5[1m]": { costUSD: 4.13760325 },
+        },
+      },
+      meta,
+    );
+    expect(rec.usd).toBeCloseTo(4.4681813, 6);
+  });
+
+  it("leaves a normal run alone — the two agree to floating-point noise", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 4.652074950000001,
+        modelUsage: { "claude-opus-5[1m]": { costUSD: 4.652074949999999 } },
+      },
+      meta,
+    );
+    expect(rec.usd).toBe(4.652074950000001);
+  });
+
+  it("only ever revises UPWARD: a larger total_cost_usd wins", () => {
+    // total_cost_usd stays the primary figure. This is a floor-raiser, not a
+    // replacement — it must never talk a reported cost down.
+    const rec = buildCostRecord(
+      { is_error: false, total_cost_usd: 9, modelUsage: { a: { costUSD: 1 } } },
+      meta,
+    );
+    expect(rec.usd).toBe(9);
+  });
+
+  it("tolerates a missing, empty, or malformed modelUsage", () => {
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5 }, meta).usd).toBe(1.5);
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5, modelUsage: {} }, meta).usd).toBe(1.5);
+    const junk = { is_error: false, total_cost_usd: 1.5, modelUsage: [1, 2] } as unknown;
+    expect(buildCostRecord(junk, meta).usd).toBe(1.5);
+    const junk2 = { is_error: false, total_cost_usd: 1.5, modelUsage: { a: null, b: { costUSD: "x" } } } as unknown;
+    expect(buildCostRecord(junk2, meta).usd).toBe(1.5);
+  });
+
+  it("still gates status on is_error alone — this changes the amount, never the verdict", () => {
+    const rec = buildCostRecord(
+      { is_error: true, total_cost_usd: 0, modelUsage: { a: { costUSD: 3 } } },
+      meta,
+    );
+    expect(rec.status).toBe("error");
+    expect(rec.usd).toBe(3);
+  });
+});

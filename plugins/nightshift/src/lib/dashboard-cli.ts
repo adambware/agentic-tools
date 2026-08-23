@@ -4,9 +4,11 @@
 // $OPS/digests/<repo>.md when present, then hand the assembled DashboardInput
 // to the pure renderer and atomically write the HTML. Pure of process.argv.
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CostRecord, DailyMetrics, Finding, Lane, RunMetrics, Suppression } from "./types.js";
 import { readYaml, readJsonl, atomicWrite } from "./io.js";
+import { expandPath } from "./ops-config.js";
 import { extractEntries } from "./registry.js";
 import { openFindings } from "./findings-store.js";
 import { COSTS_FILENAME } from "./record-cost-run.js";
@@ -154,12 +156,34 @@ function laneInput(packDir: string, lane: Lane, enabled: boolean): LaneInput {
   return { lane, state: "on", entries };
 }
 
+/**
+ * The repo root as every OTHER bin resolves it.
+ *
+ * `config.yml` paths are operator-written and the documented, templated form is
+ * `~/code/my-project`. `join("~/code/x", ".nightshift")` is a RELATIVE path that
+ * resolves against the dashboard process's cwd, so it never exists — and this
+ * function's own not-found branch then renders the repo as "pack missing /
+ * Cannot read this repo".
+ *
+ * Found on the first real bring-up, by a verifier reading the generated page:
+ * the dashboard showed the one onboarded repo as missing, with no runs and no
+ * cost, minutes after a successful run of that exact repo — while `ns status`,
+ * which goes through `readOpsConfig`, read the same pack perfectly. A living
+ * document that reports a healthy repo as absent is worse than a stale one.
+ *
+ * `expandPath` is the shared, tested resolver `ops-config` uses: leading `~`
+ * against home, relative against the config file's own directory (never cwd).
+ */
+function repoRoot(cfg: ConfigRepo, opsHome: string): string {
+  return expandPath(String(cfg.path ?? ""), homedir(), opsHome);
+}
+
 function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
-  const packDir = join(cfg.path, ".nightshift");
+  const packDir = join(repoRoot(cfg, opsHome), ".nightshift");
   if (!existsSync(packDir)) {
     return {
       name: repoName(cfg),
-      path: cfg.path,
+      path: repoRoot(cfg, opsHome),
       pack_present: false,
       lanes: [],
       findings: [],
@@ -198,7 +222,7 @@ function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
   });
   return {
     name: repoName(cfg),
-    path: cfg.path,
+    path: repoRoot(cfg, opsHome),
     pack_present: true,
     lanes,
     findings,
@@ -305,7 +329,7 @@ export function runDashboard(opts: DashboardOpts): { html: string; outPath: stri
           cfg,
           input: {
             name: repoName(cfg),
-            path: cfg.path,
+            path: repoRoot(cfg, opsHome),
             pack_present: true,
             read_error: err instanceof Error ? err.message : String(err),
             lanes: [],

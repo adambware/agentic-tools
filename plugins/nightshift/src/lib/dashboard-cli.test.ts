@@ -373,3 +373,82 @@ describe("evidence scan is symlink-safe", () => {
     expect(() => runDashboard(baseOpts(configPath, outPath))).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: the config path forms an operator actually writes
+// ---------------------------------------------------------------------------
+
+describe("regression: a `~/…` or relative repo path rendered as 'pack missing'", () => {
+  // Every other test here writes an ABSOLUTE path, which is why this survived to
+  // the first real bring-up. The TEMPLATE config ships `path: ~/code/my-project`,
+  // and `join("~/code/x", ".nightshift")` is a RELATIVE path resolved against the
+  // dashboard process's cwd — so it never exists, and the not-found branch
+  // rendered the one onboarded repo as "pack missing / Cannot read this repo",
+  // with no runs and no cost, minutes after a successful run of that repo.
+  // `ns status` was fine the whole time: it goes through readOpsConfig, which
+  // expands. A living document reporting a healthy repo as absent is worse than
+  // a stale one.
+  function opsWith(pathLine: string, repoParent: string): { configPath: string; outPath: string } {
+    const dir = makeTmpDir("ns-dashboard-path-");
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir, { recursive: true });
+    cpSync(NOVUDESK_PACK, join(repoParent, "novudesk", ".nightshift"), { recursive: true });
+    const configPath = join(opsDir, "config.yml");
+    writeFileSync(
+      configPath,
+      ["repos:", "  - name: novudesk", `    path: "${pathLine}"`, "    lanes:", "      security: true", ""].join("\n"),
+    );
+    return { configPath, outPath: join(opsDir, "dashboard.html") };
+  }
+
+  it("expands a leading ~ instead of reporting the pack missing", () => {
+    const fakeHome = makeTmpDir("ns-home-");
+    const realHome = process.env.HOME;
+    try {
+      process.env.HOME = fakeHome;
+      const { configPath, outPath } = opsWith("~/novudesk", fakeHome);
+      const { html } = runDashboard(baseOpts(configPath, outPath));
+      expect(html).not.toMatch(/pack missing/);
+      expect(html).not.toMatch(/Cannot read this repo/);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+    }
+  });
+
+  it("resolves a relative path against the CONFIG's directory, not the cwd", () => {
+    // "next to my config" is the documented meaning (ops-config.expandPath), and
+    // it must not depend on where the operator happened to run `ns`.
+    const dir = makeTmpDir("ns-dashboard-rel-");
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir, { recursive: true });
+    cpSync(NOVUDESK_PACK, join(opsDir, "novudesk", ".nightshift"), { recursive: true });
+    const configPath = join(opsDir, "config.yml");
+    writeFileSync(
+      configPath,
+      ["repos:", "  - name: novudesk", '    path: "novudesk"', "    lanes:", "      security: true", ""].join("\n"),
+    );
+    const outPath = join(opsDir, "dashboard.html");
+    const cwd = process.cwd();
+    try {
+      process.chdir(makeTmpDir("ns-elsewhere-"));
+      const { html } = runDashboard(baseOpts(configPath, outPath));
+      expect(html).not.toMatch(/pack missing/);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("still reports pack missing when the pack really IS gone (the check is not vacuous)", () => {
+    const dir = makeTmpDir("ns-dashboard-gone-");
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir, { recursive: true });
+    const configPath = join(opsDir, "config.yml");
+    writeFileSync(
+      configPath,
+      ["repos:", "  - name: novudesk", '    path: "novudesk"', "    lanes:", "      security: true", ""].join("\n"),
+    );
+    const { html } = runDashboard(baseOpts(configPath, join(opsDir, "dashboard.html")));
+    expect(html).toMatch(/pack missing/);
+  });
+});

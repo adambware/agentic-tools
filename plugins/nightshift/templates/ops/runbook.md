@@ -124,6 +124,16 @@ A cost row with `status: error` and `usd: 0` is a **floor, not a measurement** �
 envelope that would have carried the real figure is the thing that went missing.
 Exclude those rows when you average.
 
+And the converse trap: `status: ok` means **the envelope was fine**, never that the run did
+its job. A run can spend real money, exit cleanly, and review nothing. The signals for that
+are a cost row whose `run_id` has no matching row in `metrics/runs/`, or a run row with
+`reviewed: 0` against a non-zero `selected`. `ns` refuses to call either a success, but when
+you are reading `costs.jsonl` by hand, join it to `runs/` before you trust a row.
+
+Note also that `clean` deletes the run dir on success, and the CLI envelope
+(`result.json`) lives there — so a successful run leaves the cost row as the only record of
+its own cost.
+
 Quarterly model-fleet check: run `npm test` in the engine and read the `MODEL_BY_BAND`
 snapshot. If the fleet has moved on, that snapshot is where you update it.
 
@@ -137,18 +147,31 @@ commands (`node -e`, python, rsync all pass) and is documented as defense in dep
 **The scoped tool grant, not the guard, is the real perimeter.** Decide the flag set on
 that basis.
 
-- Current default: `Workflow,Read,Glob,Grep,Bash,Write,Agent`
+- Current default: `Workflow,TaskOutput,Read,Glob,Grep,Bash,Write,Agent`
 - Override: `export NIGHTSHIFT_ALLOWED_TOOLS=...`
-- **Validated working set: TBD** — record what actually worked on your first run here,
-  and change the default in `bin/ns` if it needs to differ.
 
-Empirical questions to answer on the first real runs and record here:
+`TaskOutput` is the one that is easy to leave out and must not be. The Workflow tool
+returns a **task id, not a result**, and the workflow is **killed if the session ends
+before it finishes** — so without a way to block, a session can answer as soon as it has
+the id and cut off its own review mid-flight. `bin/ns`'s prompt makes the wait the task and
+names the blocking call.
 
-1. Workflow billing on subscription (headless) — TBD
-2. Does the guard fire inside Workflow `agent()` subagents? — TBD
-3. Per-agent context cost — TBD
-4. The exact `--allowedTools` set that works — TBD
-5. Does the `mcp__playwright__*` frontmatter wildcard resolve at runtime? — TBD
+This is the **session's** grant. It is not what the subagents get: subagent tools come from
+agent-file frontmatter only, and no dispatch API accepts a tools list.
+
+**The guard fires inside Workflow `agent()` subagents — confirmed on real runs.** The armed
+`NIGHTSHIFT_LANE_RUN=1` reaches subagent Bash calls. Two things to expect: it reads
+`2>/dev/null` and `2>&1` as writes outside the pack and blocks them (harmless, but it costs
+turns), and it does not stop reads at all — a confused subagent can read anything the user
+can, secrets included. For reads the perimeter is the scoped grant and the prompt.
+
+Questions to answer on YOUR first runs and record here:
+
+1. Workflow billing on subscription (headless) — the envelope's `total_cost_usd` includes
+   the workflow's subagents; confirm on your plan.
+2. Per-agent context cost for your repo — TBD
+3. Does the `mcp__playwright__*` frontmatter wildcard resolve at runtime? — TBD
+   (unanswered: the design lane has not been run yet. Do not assume it resolves.)
 
 ## 9. Troubleshooting
 
@@ -161,6 +184,9 @@ Empirical questions to answer on the first real runs and record here:
 | Guard denials in the log | the guard blocked a write outside `.nightshift/` | Expected. If it blocked something legitimate, the agent's frontmatter is wrong, not the guard. |
 | A cost row with `status: error`, `usd: 0` | the headless envelope never arrived | The run failed; the row is a marker, not a measurement. |
 | `dashboard regeneration FAILED` | the living document is now stale | This is the one message that must never be ignored. Check the log. |
+| `exited 0 but left NO run row` | the session finished without completing the record chain | The run is a FAILURE and the run dir was kept. Read it. A clean CLI exit is not a completed run. |
+| `reviewed 0 of N selected` | every reviewer was cut off before writing | Raise the band's `maxTurns` (`src/lib/dispatch.ts`) or the refuter's (agent frontmatter), or narrow the surface's `area`. |
+| `missing bin/lane-plan.mjs (run npm run build)` from a working checkout | suspect the `ns` symlink, not the build | `ns` resolves its engine by following the link. |
 
 ## 10. Sentinel
 

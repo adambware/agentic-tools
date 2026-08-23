@@ -7650,6 +7650,18 @@ var SCHEMA_NAMES = Object.keys(VALIDATORS);
 function num(x) {
   return typeof x === "number" && Number.isFinite(x) ? x : 0;
 }
+function envelopeUsd(e) {
+  const reported = num(e.total_cost_usd);
+  const mu = e.modelUsage;
+  if (typeof mu !== "object" || mu === null || Array.isArray(mu)) return reported;
+  let summed = 0;
+  for (const entry of Object.values(mu)) {
+    if (typeof entry === "object" && entry !== null) {
+      summed += num(entry.costUSD);
+    }
+  }
+  return Math.max(reported, summed);
+}
 function buildCostRecord(envelope, meta) {
   if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) {
     throw new Error("envelope: not an object");
@@ -7667,7 +7679,7 @@ function buildCostRecord(envelope, meta) {
     lane: meta.lane,
     date: meta.date,
     ts: meta.ts,
-    usd: num(e.total_cost_usd),
+    usd: envelopeUsd(e),
     input_tokens: num(usage.input_tokens),
     output_tokens: num(usage.output_tokens),
     cache_read_tokens: num(usage.cache_read_input_tokens),
