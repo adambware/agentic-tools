@@ -588,8 +588,13 @@ cmd_digest() {
 cmd_cost_add() {
   require_engine
   resolve_ops
-  [ -n "$NS_ARG2" ] && [ -n "$NS_ARG3" ] && [ -n "$NS_ARG4" ] && [ -n "$NS_ARG5" ] ||
+  # A plain if, not `A && B || C`: under `A && B || C` the C branch also runs when
+  # A succeeds and B fails, which for a usage guard means the error message can
+  # fire on a perfectly valid invocation. (shellcheck SC2015, reported by 0.9.0
+  # in CI; 0.11.0 no longer flags it, which is how it reached a push.)
+  if [ -z "$NS_ARG2" ] || [ -z "$NS_ARG3" ] || [ -z "$NS_ARG4" ] || [ -z "$NS_ARG5" ]; then
     die "usage: ns cost add <repo> <lane> <run_id> <usd>"
+  fi
   _sh="${TMPDIR:-/tmp}/ns-cost.$$.sh"
   node "$ENGINE/bin/ops-target.mjs" \
     --config "$OPS_CONFIG" --repo "$NS_ARG2" --lane "$NS_ARG3" --format sh >"$_sh" || exit 2
