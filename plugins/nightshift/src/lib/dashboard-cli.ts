@@ -19,7 +19,7 @@ import {
   type OpenFinding,
   type RepoInput,
 } from "./dashboard-run.js";
-import { daysBetween } from "./staleness.js";
+import { daysBetween, tsNewer } from "./staleness.js";
 
 const LANES: Lane[] = ["security", "design"];
 
@@ -356,5 +356,5 @@ export function runDashboard(opts: DashboardOpts): { html: string; outPath: stri
 function runsSinceDigest(digestPath: string, runs: RunMetrics[]): number {
   if (!existsSync(digestPath)) return 0;
   const mtime = statSync(digestPath).mtime.toISOString();
-  return runs.filter((r) => r.ts > mtime).length;
+  return runs.filter((r) => tsNewer(r.ts, mtime)).length;
 }

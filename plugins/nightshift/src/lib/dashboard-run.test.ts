@@ -677,6 +677,17 @@ describe("maxTsDaily", () => {
     expect(out.map((l) => l.runs)).toEqual([9]);
   });
 
+  // The rollup that rewrites a day stamps toISOString() milliseconds; the line
+  // it supersedes may sit at second precision. '.' sorts below 'Z', so a string
+  // compare reads the rewrite as OLDER and every trend keeps the stale day.
+  it("picks the later instant when the two lines differ in ts precision", () => {
+    const out = maxTsDaily([
+      row("2026-08-20", "security", "2026-08-20T18:00:00Z", 1),
+      row("2026-08-20", "security", "2026-08-20T18:00:00.500Z", 9),
+    ]);
+    expect(out.map((l) => l.runs)).toEqual([9]);
+  });
+
   it("keys on (date, lane) together — same date, different lane stays separate", () => {
     const out = maxTsDaily([
       row("2026-08-20", "security", "2026-08-20T06:00:00Z", 1),

@@ -631,6 +631,23 @@ describe("computeDailyRollup — duplicate run_id (retry replay)", () => {
     expect(result.cost_usd_7d).toBeCloseTo(9, 4);
   });
 
+  // A retry stamped by bin/record-cost carries toISOString() milliseconds; the
+  // row it corrects may have been written at second precision. Lexicographically
+  // "…:00.500Z" < "…:00Z" ('.' sorts below 'Z'), so a string compare picks the
+  // SUPERSEDED amount and the corrected spend never lands in the window.
+  it("keeps the max-ts row when the two rows differ in timestamp precision", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME", ts: "2026-06-20T18:00:00Z" },
+          { ...makeCost("2026-06-20", 9), run_id: "SAME", ts: "2026-06-20T18:00:00.500Z" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(9, 4);
+  });
+
   it("distinct run_ids on the same day still both count", () => {
     const result = computeDailyRollup(
       baseInput({

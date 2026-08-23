@@ -1,7 +1,7 @@
 // Pure computation for the daily metrics rollup (run-loop.md step 5c).
 // No I/O — fully unit-testable.
 import type { CostRecord, DailyMetrics, Lane, RegistryEntry, RunMetrics } from "./types.js";
-import { computeStaleness, daysBetween, MAX_STALENESS } from "./staleness.js";
+import { computeStaleness, daysBetween, MAX_STALENESS, tsNewer } from "./staleness.js";
 
 export interface RollupInput {
   date: string;
@@ -65,7 +65,7 @@ function dedupeByRunId(costs: CostRecord[]): CostRecord[] {
   const best = new Map<string, CostRecord>();
   for (const c of costs) {
     const cur = best.get(c.run_id);
-    if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+    if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
   }
   return [...best.values()];
 }

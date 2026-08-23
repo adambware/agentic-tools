@@ -22,7 +22,7 @@ import type {
   DedupeKey,
 } from "./types.js";
 import { WEIGHT_MULTIPLIER } from "./types.js";
-import { computeStaleness, daysBetween, intervalDays } from "./staleness.js";
+import { computeStaleness, daysBetween, intervalDays, tsNewer } from "./staleness.js";
 
 /* ---------- input model (assembled by dashboard-cli, or a test fixture) ---------- */
 
@@ -349,17 +349,17 @@ function latestFailedRuns(repo: RepoInput): CostRecord[] {
   const byLane = new Map<Lane, CostRecord>();
   for (const c of repo.costs) {
     const cur = byLane.get(c.lane);
-    if (!cur || c.ts > cur.ts) byLane.set(c.lane, c);
+    if (!cur || tsNewer(c.ts, cur.ts)) byLane.set(c.lane, c);
   }
   const newestRunByLane = new Map<Lane, string>();
   for (const r of repo.run_records) {
     const cur = newestRunByLane.get(r.lane);
-    if (!cur || r.ts > cur) newestRunByLane.set(r.lane, r.ts);
+    if (!cur || tsNewer(r.ts, cur)) newestRunByLane.set(r.lane, r.ts);
   }
   return [...byLane.values()].filter((c) => {
     if (c.status !== "error") return false;
     const newestRun = newestRunByLane.get(c.lane);
-    return !(newestRun && newestRun > c.ts);
+    return !(newestRun && tsNewer(newestRun, c.ts));
   });
 }
 
@@ -580,15 +580,15 @@ function repoRunLine(repo: RepoInput): string {
     }
     const laneCosts = repo.costs.filter((c) => c.lane === lane.lane);
     const latest = laneCosts.reduce<CostRecord | null>(
-      (a, c) => (!a || c.ts > a.ts ? c : a),
+      (a, c) => (!a || tsNewer(c.ts, a.ts) ? c : a),
       null,
     );
     const laneRuns = repo.run_records.filter((r) => r.lane === lane.lane);
     const latestRun = laneRuns.reduce<RunMetrics | null>(
-      (a, r) => (!a || r.ts > a.ts ? r : a),
+      (a, r) => (!a || tsNewer(r.ts, a.ts) ? r : a),
       null,
     );
-    if (latest && latest.status === "error" && (!latestRun || latest.ts > latestRun.ts)) {
+    if (latest && latest.status === "error" && (!latestRun || tsNewer(latest.ts, latestRun.ts))) {
       parts.push(
         `<span class="fail">${esc(lane.lane)} FAILED ${esc(fmtTs(latest.ts))} (${esc(latest.terminal_reason ?? "unknown")})</span>`,
       );
@@ -616,7 +616,7 @@ export function maxTsDaily(lines: DailyMetrics[]): DailyMetrics[] {
   for (const l of lines) {
     const k = `${l.date}|${l.lane}`;
     const cur = best.get(k);
-    if (!cur || l.ts > cur.ts) best.set(k, l);
+    if (!cur || tsNewer(l.ts, cur.ts)) best.set(k, l);
   }
   return [...best.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
@@ -1146,7 +1146,7 @@ function dedupeCostsByRunId(input: DashboardInput): DashboardInput {
       const best = new Map<string, (typeof r.costs)[number]>();
       for (const c of r.costs) {
         const cur = best.get(c.run_id);
-        if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+        if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
       }
       return { ...r, costs: [...best.values()] };
     }),
