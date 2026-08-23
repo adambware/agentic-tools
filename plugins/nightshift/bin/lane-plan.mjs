@@ -7462,6 +7462,11 @@ var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
 function isSafeId(id) {
   return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
 }
+function isSafeAgentType(id) {
+  const parts = id.split(":");
+  if (parts.length > 2) return false;
+  return parts.every((p) => isSafeId(p));
+}
 function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
@@ -7683,6 +7688,10 @@ var REGISTRY_BY_LANE = {
   design: "registries/flows.yml"
 };
 var SECURITY_REVIEWER = "security-reviewer";
+var AGENT_PLUGIN = "nightshift";
+function qualify(agentType) {
+  return `${AGENT_PLUGIN}:${agentType}`;
+}
 var AGENTS_BY_LANE = {
   security: {
     reviewer: SECURITY_REVIEWER,
@@ -7967,9 +7976,9 @@ function buildLanePlan(opts) {
       lane,
       registry: registryPath,
       agents: {
-        reviewer: design.reviewer,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
+        reviewer: qualify(design.reviewer),
+        refuter_tier1: qualify(laneAgents.refuter_tier1),
+        refuter_tier2: qualify(laneAgents.refuter_tier2)
       },
       browser: design.browser,
       personas: design.personas
@@ -7979,9 +7988,9 @@ function buildLanePlan(opts) {
       lane,
       registry: registryPath,
       agents: {
-        reviewer: SECURITY_REVIEWER,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
+        reviewer: qualify(SECURITY_REVIEWER),
+        refuter_tier1: qualify(laneAgents.refuter_tier1),
+        refuter_tier2: qualify(laneAgents.refuter_tier2)
       }
     };
   }
@@ -7990,7 +7999,7 @@ function buildLanePlan(opts) {
     return refuse(`registry file name "${registryFile}" is not path-segment safe (lane "${lane}")`);
   }
   for (const [role, agentType] of Object.entries(plan.agents)) {
-    if (!isSafeId(agentType)) {
+    if (!isSafeAgentType(agentType)) {
       return refuse(
         `agent id for ${role} ("${agentType}") is not path-segment safe \u2014 agent types cross into args as control-plane data`
       );

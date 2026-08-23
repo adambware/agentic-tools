@@ -37,6 +37,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,6 +103,29 @@ function writeClaudeStub(path: string): void {
       "if (mode === \"sleep\") { const until = Date.now() + 30000; while (Date.now() < until) { try { require('node:child_process').execFileSync('sleep', ['0.2']); } catch (e) { break; } } }",
       'if (mode === "fail") process.exit(1);',
       'if (mode === "badjson") { process.stdout.write(\'{"is_error\'); process.exit(1); }',
+      "// A REAL successful session leaves a run row: bin/record appends exactly one",
+      "// to metrics/runs/<YYYY-MM>.jsonl at the end of the chain, and that row — not",
+      "// this process's exit code — is what `ns` now reads to decide the outcome. The",
+      "// stub therefore has to leave one, or it is modelling an exit code rather than",
+      "// a run. Mode `hollow` is the same session WITHOUT the row: exits 0, emits a",
+      "// clean envelope, reviewed nothing. That is not a hypothetical — it is what the",
+      "// first real run did.",
+      'if (mode !== "hollow") {',
+      '  const runsDir = process.env.NS_STUB_RUNS_DIR;',
+      '  if (runsDir) {',
+      '    fs.mkdirSync(runsDir, { recursive: true });',
+      '    const month = String(process.env.NIGHTSHIFT_TODAY || "").slice(0, 7) || "1970-01";',
+      '    fs.appendFileSync(runsDir + "/" + month + ".jsonl", JSON.stringify({',
+      '      run_id: process.env.NIGHTSHIFT_RUN_ID,',
+      '      ts: new Date(0).toISOString(),',
+      '      date: process.env.NIGHTSHIFT_TODAY,',
+      '      lane: process.env.NS_STUB_LANE || "security",',
+      '      pack_sha: "stub", selected: 2, reviewed: 2, findings_created: 0,',
+      '      confirmed: 0, rejected_tier1: 0, rejected_tier2: 0, suppressed: 0,',
+      '      usage_by_model: {}, usage_spent: 0, elapsed: 0,',
+      '    }) + "\\n");',
+      '  }',
+      '}',
       "process.stdout.write(JSON.stringify({",
       "  is_error: false,",
       '  subtype: "success",',
@@ -176,6 +200,7 @@ function runNs(
       NIGHTSHIFT_CLAUDE: fx.claudeStub,
       NIGHTSHIFT_TODAY: TODAY,
       NS_PROBE_LOG: fx.probeLog,
+      NS_STUB_RUNS_DIR: join(fx.packDir, "metrics", "runs"),
       ...env,
     },
   });
@@ -464,6 +489,38 @@ describe("launcher obligations", () => {
     // real perimeter (plan §9.12).
     expect(argv).not.toContain("*");
   });
+
+  it("OBLIGATION 4: the session loads the ENGINE'S OWN plugin, not whatever is installed", () => {
+    // The bins come from $ENGINE, but the agents the workflow dispatches to and
+    // the PreToolUse guard come from the resolved nightshift PLUGIN — globally
+    // installed, at whatever version was last installed. Found on the first real
+    // bring-up: the engine under test was 3.0 while the installed plugin was
+    // 2.1.0, so the run would have used 2.1's reviewer frontmatter and 2.1's
+    // guard. --plugin-dir is session-scoped: it installs nothing.
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"]);
+    const argv = claudeCalls(fx)[0]!.argv;
+    expect(argv[argv.indexOf("--plugin-dir") + 1]).toBe(PLUGIN_ROOT);
+  });
+
+  it("OBLIGATION 4 holds for the interactive and digest sessions too", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--interactive", "--no-open"]);
+    const argv = claudeCalls(fx)[0]!.argv;
+    expect(argv[argv.indexOf("--plugin-dir") + 1]).toBe(PLUGIN_ROOT);
+  });
+
+  it("--plugin-dir grants no tools — the scoped --allowedTools is still the perimeter", () => {
+    // Loading the plugin makes its AGENTS and its GUARD resolvable. It does not
+    // widen the session's grant, and agent tools still come from agent-file
+    // frontmatter only.
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"]);
+    const argv = claudeCalls(fx)[0]!.argv;
+    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe(
+      "Workflow,TaskOutput,Read,Glob,Grep,Bash,Write,Agent",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -484,7 +541,9 @@ describe("T11: the args handed to the workflow are chunked by the config cap", (
       "surface_chunks",
     ]);
     expect(args.lane).toBe("security");
-    expect(args.agents.reviewer).toBe("security-reviewer");
+    // Plugin-qualified: `ns` loads the engine's own plugin (obligation 4), and a
+    // plugin agent is addressable by its qualified name.
+    expect(args.agents.reviewer).toBe("nightshift:security-reviewer");
   });
 
   it("chunks by max_concurrent_reviewers: cap 1 serializes, cap 99 is one chunk", () => {
@@ -721,6 +780,7 @@ describe("regression: a RELATIVE ops home still works after the run cd's to the 
         NIGHTSHIFT_CLAUDE: fx.claudeStub,
         NIGHTSHIFT_TODAY: TODAY,
         NS_PROBE_LOG: fx.probeLog,
+        NS_STUB_RUNS_DIR: join(fx.packDir, "metrics", "runs"),
       },
     });
     expect(res.status).toBe(0);
@@ -766,6 +826,187 @@ describe("regression: an interactive session's status follows the session", () =
   it("a successful --interactive run still cleans up", () => {
     const fx = setup();
     expect(runNs(fx, ["run", "novudesk", "security", "--interactive", "--no-open"]).code).toBe(0);
+    expect(runDirs(fx)).toEqual([]);
+  });
+});
+
+describe("regression: the documented symlink install left `ns` unable to find its engine", () => {
+  // The runbook's own install step is `ln -s <checkout>/plugins/nightshift/bin/ns
+  // ~/bin/ns` — a symlink, never a copy, so `ns` stays versioned with the engine
+  // it launches. Every probe above passes NIGHTSHIFT_ENGINE explicitly, so none
+  // of them ever exercised the default derivation, and the very first real
+  // bring-up hit it: `dirname $0` of the LINK made ENGINE the PATH directory's
+  // parent. Worse than a clean failure — because ~/bin exists, the `bin/` check
+  // passed and the operator got "missing bin/lane-plan.mjs (run npm run build)",
+  // blaming the engine build for a link that was never followed.
+  function linkNs(dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    const link = join(dir, "ns");
+    symlinkSync(NS, link);
+    return link;
+  }
+
+  /** Runs a launcher path with NIGHTSHIFT_ENGINE DELIBERATELY unset. */
+  function runUnhinted(bin: string, args: string[], fx: Fixture) {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      NIGHTSHIFT_OPS: fx.opsDir,
+      NIGHTSHIFT_CLAUDE: fx.claudeStub,
+      NIGHTSHIFT_TODAY: TODAY,
+      NS_PROBE_LOG: fx.probeLog,
+      NS_STUB_RUNS_DIR: join(fx.packDir, "metrics", "runs"),
+    };
+    delete env.NIGHTSHIFT_ENGINE;
+    const res = spawnSync(bin, args, { encoding: "utf8", cwd: fx.root, env });
+    return { code: res.status ?? -1, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  }
+
+  it("resolves the engine through a one-hop symlink on PATH", () => {
+    const fx = setup();
+    const link = linkNs(join(fx.root, "bin"));
+    const { code, stdout } = runUnhinted(link, ["--version"], fx);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/nightshift engine \d/);
+    expect(stdout).not.toMatch(/unknown/);
+  });
+
+  it("resolves through a CHAIN of symlinks and through a relative link", () => {
+    const fx = setup();
+    const first = linkNs(join(fx.root, "bin"));
+    const second = join(fx.root, "bin2");
+    mkdirSync(second, { recursive: true });
+    // A relative link, the form `ln -s ../bin/ns` produces — resolved against
+    // the LINK's directory, not the cwd.
+    symlinkSync(join("..", "bin", "ns"), join(second, "ns"));
+    const { code, stdout } = runUnhinted(join(second, "ns"), ["--version"], fx);
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/nightshift engine \d/);
+    void first;
+  });
+
+  it("a full run works through the symlink — not just --version", () => {
+    // --version alone would pass even with a half-resolved ENGINE, because it
+    // swallows its own failure and prints "unknown". This is the assertion that
+    // actually covers the operator's first command.
+    const fx = setup();
+    const link = linkNs(join(fx.root, "bin"));
+    const { code } = runUnhinted(link, ["run", "novudesk", "security", "--no-open"], fx);
+    expect(code).toBe(0);
+    expect(existsSync(join(fx.opsDir, "dashboard.html"))).toBe(true);
+    expect(claudeCalls(fx).length).toBe(1);
+  });
+
+  it("NIGHTSHIFT_ENGINE still overrides the derivation", () => {
+    const fx = setup();
+    const link = linkNs(join(fx.root, "bin"));
+    const res = spawnSync(link, ["status"], {
+      encoding: "utf8",
+      cwd: fx.root,
+      env: { ...process.env, NIGHTSHIFT_ENGINE: "/nonexistent-engine", NIGHTSHIFT_OPS: fx.opsDir },
+    });
+    expect(res.status).toBe(2);
+    expect(res.stderr).toMatch(/engine bin\/ not found/);
+  });
+});
+
+describe("regression: the session must BLOCK on the workflow, which dies with it", () => {
+  // The Workflow tool returns a task id immediately; the workflow itself runs in
+  // the background and is killed when the session ends. The second real run
+  // answered as soon as it had the id ("The workflow is running in the
+  // background (task ...). I'll report its status when it returns."), `claude -p`
+  // exited 0, and a review that had already completed a surface and gated Tier-2
+  // was cut off mid-flight. The launcher cannot make the model wait, but it can
+  // grant the blocking call and make waiting the stated task.
+  it("grants TaskOutput — without it the session has no way to block", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"]);
+    const argv = claudeCalls(fx)[0]!.argv;
+    expect(argv[argv.indexOf("--allowedTools") + 1]!.split(",")).toContain("TaskOutput");
+  });
+
+  it("the prompt names the blocking call and forbids answering while the task runs", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"]);
+    const prompt = claudeCalls(fx)[0]!.argv.find((a) => a.includes("nightshift lane review"))!;
+    expect(prompt).toMatch(/TaskOutput/);
+    expect(prompt).toMatch(/block=true/);
+    expect(prompt).toMatch(/killed if this session ends before it finishes/);
+    expect(prompt).toMatch(/Do not answer, summarise, or end your turn while the task is still running/);
+  });
+
+  it("and if the session answers early anyway, the run row is missing and ns calls it a failure", () => {
+    // The belt to the prompt's braces: prompts are not guarantees, so the
+    // outcome is still decided by durable state. `hollow` IS the early-answer
+    // session — exits 0, clean envelope, no record chain.
+    const fx = setup();
+    const { code } = runNs(fx, ["run", "novudesk", "security", "--no-open"], {
+      NS_STUB_MODE: "hollow",
+    });
+    expect(code).not.toBe(0);
+  });
+});
+
+describe("regression: a session that exited 0 having reviewed NOTHING was called a success", () => {
+  // The first real run, exactly. The session invoked the workflow; every reviewer
+  // dispatch failed ("agent type not found") and every plumbing bin failed
+  // (MODULE_NOT_FOUND, because ${CLAUDE_PLUGIN_ROOT} expanded to nothing); the
+  // workflow still returned {"status":"complete"} because its LAST stages ran,
+  // and the CLI exited 0. `ns` wrote a status:"ok" cost row, DELETED the run dir
+  // holding the only evidence, and refreshed the living document to say all was
+  // well. Nothing had been reviewed and nothing was stamped.
+  //
+  // The fix is not to trust a different model-authored status line. It is to read
+  // the durable state: bin/record leaves a run row, or the run did not happen.
+  it("a hollow success is a FAILURE — no run row means the record chain never ran", () => {
+    const fx = setup();
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "security", "--no-open"], {
+      NS_STUB_MODE: "hollow",
+    });
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/exited 0 but left NO run row/);
+  });
+
+  it("...so the run dir is KEPT, not deleted as a success", () => {
+    // The old behaviour destroyed the evidence: clean's success policy deleted
+    // the one directory that could have explained what went wrong.
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "hollow" });
+    expect(runDirs(fx).length).toBe(1);
+  });
+
+  it("...and the spend is STILL recorded, as an ORPHAN row with no run to join to", () => {
+    // The money was really spent, so the cost row has to exist — and it keeps
+    // status "ok", because A2's rule is that a cost row's status gates on the
+    // envelope's `is_error` and NOTHING else (plan §9.7). Coupling it to the
+    // record chain here would quietly relitigate that.
+    //
+    // The unreviewed-ness is visible where it belongs: the cost row has no run
+    // row to join to. That orphan pair — spend with no run — is the signal, and
+    // it is only detectable because the cost row was written.
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "hollow" });
+    const rows = costLines(fx).filter((c) => String(c.run_id).startsWith("2026"));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.status).toBe("ok");
+    const runsDir = join(fx.packDir, "metrics", "runs");
+    const recorded = existsSync(runsDir)
+      ? readdirSync(runsDir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .flatMap((f) => readFileSync(join(runsDir, f), "utf8").split("\n"))
+          .filter((l) => l.includes(String(rows[0]!.run_id)))
+      : [];
+    expect(recorded).toEqual([]);
+  });
+
+  it("...and the dashboard still regenerates (T22 holds on this path too)", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "hollow" });
+    expect(existsSync(fx.dashboard)).toBe(true);
+  });
+
+  it("the check is non-vacuous: the same session WITH a run row is still a success", () => {
+    const fx = setup();
+    expect(runNs(fx, ["run", "novudesk", "security", "--no-open"]).code).toBe(0);
     expect(runDirs(fx)).toEqual([]);
   });
 });

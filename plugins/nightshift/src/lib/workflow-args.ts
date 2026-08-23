@@ -46,7 +46,7 @@
 // reason and a headless run that burns its budget writing garbage.
 import type { Dispatch, Lane, Surface } from "./types.js";
 import type { LanePlan } from "./lane-plan.js";
-import { isSafeId } from "./validate.js";
+import { isSafeAgentType, isSafeId } from "./validate.js";
 
 /** The exact object `nightshift.workflow.js` reads as its global `args`. */
 export interface WorkflowArgs {
@@ -230,7 +230,7 @@ export function buildWorkflowArgs(opts: BuildWorkflowArgsOpts): BuildWorkflowArg
           `agentType, and an absent value dispatches every ${role} to an agent that does not exist`,
       );
     }
-    if (!isSafeId(value.trim())) {
+    if (!isSafeAgentType(value.trim())) {
       return refuse(
         `lane plan agents.${role} "${value}" is not a safe agent id — agentTypes cross into the ` +
           `sandbox as control-plane data`,

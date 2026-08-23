@@ -4,12 +4,20 @@
 // write anything into the pack. Pattern mirrors select-run.test.ts (tmpdir +
 // literal YAML fixtures written by the test, not depend on examples/*).
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  statSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildLanePlan, isLoopbackHost, NON_PRODUCTION_ENVIRONMENTS } from "./lane-plan.js";
-import { isSafeId } from "./validate.js";
+import { isSafeAgentType, isSafeId } from "./validate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // <plugin-root>/examples/novudesk/.nightshift and <plugin-root>/templates/.nightshift
@@ -442,9 +450,9 @@ describe("buildLanePlan happy paths", () => {
     if (!res.ok) return;
     expect(res.plan.registry).toBe(join(dir, "registries", "vectors.yml"));
     expect(res.plan.agents).toEqual({
-      reviewer: "security-reviewer",
-      refuter_tier1: "security-refuter",
-      refuter_tier2: "security-refuter-2",
+      reviewer: "nightshift:security-reviewer",
+      refuter_tier1: "nightshift:security-refuter",
+      refuter_tier2: "nightshift:security-refuter-2",
     });
     expect(res.plan.browser).toBeUndefined();
     expect(res.plan.personas).toBeUndefined();
@@ -457,9 +465,9 @@ describe("buildLanePlan happy paths", () => {
     if (!res.ok) return;
     expect(res.plan.registry).toBe(join(dir, "registries", "flows.yml"));
     expect(res.plan.agents).toEqual({
-      reviewer: "ux-reviewer-playwright",
-      refuter_tier1: "ux-refuter",
-      refuter_tier2: "ux-refuter-2",
+      reviewer: "nightshift:ux-reviewer-playwright",
+      refuter_tier1: "nightshift:ux-refuter",
+      refuter_tier2: "nightshift:ux-refuter-2",
     });
     expect(res.plan.browser).toEqual({
       tool: "playwright-mcp",
@@ -474,7 +482,7 @@ describe("buildLanePlan happy paths", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.plan.lane).toBe("design");
-    expect(res.plan.agents.reviewer).toBe("ux-reviewer-playwright");
+    expect(res.plan.agents.reviewer).toBe("nightshift:ux-reviewer-playwright");
     expect(res.plan.browser?.tool).toBe("playwright-mcp");
     expect(res.plan.personas).toBe(join(NOVUDESK_PACK, "fixtures", "personas.yml"));
   });
@@ -560,6 +568,55 @@ describe("buildLanePlan read-only guarantee", () => {
   });
 });
 
+describe("agent types are PLUGIN-QUALIFIED (regression: the first real run dispatched bare names)", () => {
+  // The agents ship in the nightshift plugin and `bin/ns` hands every session
+  // `--plugin-dir $ENGINE`, so the run's agents come from the same tree as its
+  // bins. A plugin agent is addressable by its qualified name; the bare name
+  // resolves only if something ELSE in the session also provides one. The first
+  // real run dispatched the bare names: every reviewer came back "agent type not
+  // found", and the workflow still returned {"status":"complete"}.
+  it("the security lane emits nightshift:-qualified agent types", () => {
+    seedSecurityPack(dir);
+    const res = buildLanePlan({ packDir: dir, lane: "security" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.plan.agents).toEqual({
+      reviewer: "nightshift:security-reviewer",
+      refuter_tier1: "nightshift:security-refuter",
+      refuter_tier2: "nightshift:security-refuter-2",
+    });
+  });
+
+  it("the design lane qualifies its per-adapter reviewer too", () => {
+    seedDesignPack(dir);
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.plan.agents.reviewer).toBe("nightshift:ux-reviewer-playwright");
+    expect(res.plan.agents.refuter_tier1).toBe("nightshift:ux-refuter");
+    expect(res.plan.agents.refuter_tier2).toBe("nightshift:ux-refuter-2");
+  });
+
+  it("every qualified type names an agent file that actually exists on disk", () => {
+    // The tables stay BARE precisely so this check is possible: strip the one
+    // qualifier and the remainder is the agents/<name>.md filename.
+    seedSecurityPack(dir);
+    seedDesignPack(dir);
+    for (const lane of ["security", "design"] as const) {
+      const res = buildLanePlan({ packDir: dir, lane });
+      if (!res.ok) continue;
+      for (const agentType of Object.values(res.plan.agents)) {
+        const [plugin, name] = agentType.split(":");
+        expect(plugin).toBe("nightshift");
+        expect(
+          existsSync(join(PLUGIN_ROOT, "agents", `${name}.md`)),
+          `agents/${name}.md is missing but ${agentType} is dispatched to it`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
 describe("buildLanePlan emitted-id safety", () => {
   it("emits agentType strings and a registry path that pass isSafeId / stay inside packDir", () => {
     seedDesignPack(dir);
@@ -567,7 +624,11 @@ describe("buildLanePlan emitted-id safety", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     for (const agentType of Object.values(res.plan.agents)) {
-      expect(isSafeId(agentType)).toBe(true);
+      expect(isSafeAgentType(agentType)).toBe(true);
+      // The qualifier is the ONLY thing that may carry a colon: strip it and the
+      // remainder is still a path-segment-safe id, because the same charset is
+      // what protects the surface dirs downstream.
+      expect(isSafeId(agentType.split(":").pop()!)).toBe(true);
     }
     // The registry path is inside packDir and its basename is a safe id.
     expect(res.plan.registry.startsWith(dir)).toBe(true);

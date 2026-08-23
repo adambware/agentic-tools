@@ -6,9 +6,17 @@
 // never a silent drift.
 import type { Band, Dispatch } from "./types.js";
 
+// maxTurns for the two opus bands was raised from 40/32 by the first real runs
+// (v3 A7 Part 2). A critical surface on a real codebase is 7-10 area globs across
+// services, middleware, repositories and SQL migrations; at 40 turns BOTH
+// reviewers of a two-surface run were still reading when the budget ran out, and
+// neither ever reached the Write that produces its artifacts. The run then
+// completed correctly and recorded `reviewed: 0` — a chain that worked perfectly
+// and reviewed nothing, for $4.12. A budget that cannot reach the write is not a
+// cheaper review, it is a run with no output at all.
 export const MODEL_BY_BAND: Record<Band, Dispatch> = {
-  critical: { model: "opus", effort: "high", maxTurns: 40 },
-  high: { model: "opus", effort: "medium", maxTurns: 32 },
+  critical: { model: "opus", effort: "high", maxTurns: 80 },
+  high: { model: "opus", effort: "medium", maxTurns: 64 },
   medium: { model: "sonnet", effort: "medium", maxTurns: 24 },
   low: { model: "haiku", effort: "low", maxTurns: 16 },
 };

@@ -45,6 +45,30 @@ export function isSafeId(id: string): boolean {
   return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
 }
 
+/**
+ * An agent type is safe iff it is a safe id, optionally prefixed by ONE plugin
+ * qualifier: `nightshift:security-reviewer`.
+ *
+ * Why the qualifier exists at all: the agents live in the nightshift PLUGIN, and
+ * `bin/ns` hands every session `--plugin-dir $ENGINE` so the run's agents come
+ * from the same tree as its bins. Plugin-supplied agents register under their
+ * qualified name; the bare name resolves only when something ELSE also happens
+ * to provide it. The first real run proved the difference the expensive way —
+ * every reviewer dispatch came back "agent type not found" and the run still
+ * reported complete.
+ *
+ * Why not just widen isSafeId: agent types cross into the workflow as
+ * control-plane data and land in `agent()` options, while ids from the same
+ * charset also become PATH SEGMENTS (surface dirs). Exactly one colon, and only
+ * between two otherwise-safe ids, keeps the qualifier expressible without
+ * loosening the charset for anything that is used as a path segment.
+ */
+export function isSafeAgentType(id: string): boolean {
+  const parts = id.split(":");
+  if (parts.length > 2) return false;
+  return parts.every((p) => isSafeId(p));
+}
+
 type Obj = Record<string, unknown>;
 
 function v(): { errors: string[]; out: ValidationResult } {

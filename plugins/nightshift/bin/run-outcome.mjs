@@ -546,7 +546,7 @@ var require_toJS = __commonJS({
     var identity = require_identity();
     function toJS(value, arg, ctx) {
       if (Array.isArray(value))
-        return value.map((v2, i) => toJS(v2, String(i), ctx));
+        return value.map((v, i) => toJS(v, String(i), ctx));
       if (value && typeof value.toJSON === "function") {
         if (!ctx || !identity.hasAnchor(value))
           return value.toJSON(arg, ctx);
@@ -839,18 +839,18 @@ var require_Collection = __commonJS({
     var identity = require_identity();
     var Node = require_Node();
     function collectionFromPath(schema, path, value) {
-      let v2 = value;
+      let v = value;
       for (let i = path.length - 1; i >= 0; --i) {
         const k = path[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
-          a[k] = v2;
-          v2 = a;
+          a[k] = v;
+          v = a;
         } else {
-          v2 = /* @__PURE__ */ new Map([[k, v2]]);
+          v = /* @__PURE__ */ new Map([[k, v]]);
         }
       }
-      return createNode.createNode(v2, void 0, {
+      return createNode.createNode(v, void 0, {
         aliasDuplicateObjects: false,
         keepUndefined: false,
         onAnchor: () => {
@@ -1823,8 +1823,8 @@ var require_Pair = __commonJS({
     var identity = require_identity();
     function createPair(key, value, ctx) {
       const k = createNode.createNode(key, void 0, ctx);
-      const v2 = createNode.createNode(value, void 0, ctx);
-      return new Pair(k, v2);
+      const v = createNode.createNode(value, void 0, ctx);
+      return new Pair(k, v);
     }
     var Pair = class _Pair {
       constructor(key, value = null) {
@@ -3496,7 +3496,7 @@ var require_Document = __commonJS({
           value = replacer.call({ "": value }, "", value);
           _replacer = replacer;
         } else if (Array.isArray(replacer)) {
-          const keyToStr = (v2) => typeof v2 === "number" || v2 instanceof String || v2 instanceof Number;
+          const keyToStr = (v) => typeof v === "number" || v instanceof String || v instanceof Number;
           const asStr = replacer.filter(keyToStr).map(String);
           if (asStr.length > 0)
             replacer = replacer.concat(asStr);
@@ -3532,8 +3532,8 @@ var require_Document = __commonJS({
        */
       createPair(key, value, options = {}) {
         const k = this.createNode(key, null, options);
-        const v2 = this.createNode(value, null, options);
-        return new Pair.Pair(k, v2);
+        const v = this.createNode(value, null, options);
+        return new Pair.Pair(k, v);
       }
       /**
        * Removes a value from the document.
@@ -7388,8 +7388,11 @@ function requireArg(args, key) {
   return val;
 }
 
+// src/lib/run-outcome.ts
+import { existsSync as existsSync2, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 // src/lib/io.ts
-var import_yaml = __toESM(require_dist(), 1);
 import {
   openSync,
   writeSync,
@@ -7401,422 +7404,76 @@ import {
   mkdirSync,
   appendFileSync
 } from "node:fs";
-import { dirname, join } from "node:path";
-var tmpSeq = 0;
-function atomicWrite(path, data) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
-  const fd = openSync(tmp, "w");
-  try {
-    writeSync(fd, data);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-}
-function readJson(path) {
-  if (!existsSync(path)) return void 0;
-  return JSON.parse(readFileSync(path, "utf8"));
-}
-function writeJson(path, value) {
-  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
-}
-function basename(path) {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? path : path.slice(i + 1);
-}
-
-// src/lib/validate.ts
-var WEIGHTS = ["critical", "high", "medium", "low"];
-var SEVERITIES = WEIGHTS;
-var CONFIDENCES = ["low", "medium", "high"];
-var LANES = ["security", "design"];
-var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
-var EFFORTS = ["low", "medium", "high"];
-var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
-function isSafeId(id) {
-  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
-}
-function isSafeAgentType(id) {
-  const parts = id.split(":");
-  if (parts.length > 2) return false;
-  return parts.every((p) => isSafeId(p));
-}
-function v() {
-  const errors = [];
-  return { errors, out: { ok: true, errors } };
-}
-function isObj(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-function reqStr(o, k, errors, where) {
-  if (typeof o[k] !== "string" || o[k].length === 0)
-    errors.push(`${where}: ${k} must be a non-empty string`);
-}
-function reqEnum(o, k, allowed, errors, where) {
-  if (typeof o[k] !== "string" || !allowed.includes(o[k]))
-    errors.push(`${where}: ${k} must be one of ${allowed.join("|")}`);
-}
-function reqBool(o, k, errors, where) {
-  if (typeof o[k] !== "boolean") errors.push(`${where}: ${k} must be a boolean`);
-}
-function reqNum(o, k, errors, where) {
-  if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
-    errors.push(`${where}: ${k} must be a finite number`);
-}
-function isRealDate(s) {
-  if (!DATE_RE.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
-}
-function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !isRealDate(o[k]))
-    errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
-}
-function reqSafeId(o, k, errors, where) {
-  const val = o[k];
-  if (typeof val !== "string" || val.length === 0) return;
-  if (!isSafeId(val))
-    errors.push(
-      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
-    );
-}
-function reqDedupeKey(o, errors, where) {
-  const dk = o.dedupe_key;
-  if (!isObj(dk)) {
-    errors.push(`${where}: dedupe_key must be an object {surface,symptom,root_cause}`);
-    return;
-  }
-  reqStr(dk, "surface", errors, `${where}.dedupe_key`);
-  reqStr(dk, "symptom", errors, `${where}.dedupe_key`);
-  reqStr(dk, "root_cause", errors, `${where}.dedupe_key`);
-}
-function finish(errors) {
-  return { ok: errors.length === 0, errors };
-}
-function validateRegistryEntry(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["registry-entry: not an object"]);
-  reqStr(x, "id", errors, "registry-entry");
-  reqSafeId(x, "id", errors, "registry-entry");
-  reqStr(x, "title", errors, "registry-entry");
-  reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
-  if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
-    errors.push("registry-entry: area must be a non-empty string[]");
-  reqEnum(x, "weight", WEIGHTS, errors, "registry-entry");
-  reqNum(x, "interval_days", errors, "registry-entry");
-  reqEnum(x, "owner", LANES, errors, "registry-entry");
-  if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
-  return finish(errors);
-}
-function validateCandidateFinding(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["finding: not an object"]);
-  reqDedupeKey(x, errors, "finding");
-  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
-  reqEnum(x, "severity", SEVERITIES, errors, "finding");
-  reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
-  reqBool(x, "needs_human_verification", errors, "finding");
-  if ((x.severity === "critical" || x.severity === "high") && x.needs_human_verification !== true)
-    errors.push("finding: critical/high requires needs_human_verification=true");
-  if (x.anchor !== void 0) reqEnum(x, "anchor", ANCHORS, errors, "finding");
-  return finish(errors);
-}
-function validateFinding(x) {
-  const base = validateCandidateFinding(x);
-  const errors = [...base.errors];
-  if (isObj(x)) {
-    reqDate(x, "first_seen", errors, "finding");
-    reqDate(x, "last_seen", errors, "finding");
-    reqStr(x, "run_id", errors, "finding");
-    if (x.resolved_at !== void 0) reqDate(x, "resolved_at", errors, "finding");
-  }
-  return finish(errors);
-}
-function validateSuppression(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["suppression: not an object"]);
-  reqDedupeKey(x, errors, "suppression");
-  reqStr(x, "reason", errors, "suppression");
-  reqDate(x, "expires", errors, "suppression");
-  reqStr(x, "approved_by", errors, "suppression");
-  return finish(errors);
-}
-function validateRunMetrics(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["run-metrics: not an object"]);
-  reqStr(x, "run_id", errors, "run-metrics");
-  reqStr(x, "ts", errors, "run-metrics");
-  reqDate(x, "date", errors, "run-metrics");
-  reqEnum(x, "lane", LANES, errors, "run-metrics");
-  reqStr(x, "pack_sha", errors, "run-metrics");
-  for (const k of [
-    "selected",
-    "reviewed",
-    "findings_created",
-    "confirmed",
-    "rejected_tier1",
-    "rejected_tier2",
-    "suppressed"
-  ])
-    reqNum(x, k, errors, "run-metrics");
-  if (!isObj(x.usage_by_model)) errors.push("run-metrics: usage_by_model must be an object");
-  return finish(errors);
-}
-function validateDailyMetrics(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["daily-metrics: not an object"]);
-  reqDate(x, "date", errors, "daily-metrics");
-  reqEnum(x, "lane", LANES, errors, "daily-metrics");
-  reqStr(x, "ts", errors, "daily-metrics");
-  for (const k of [
-    "runs",
-    "surfaces_total",
-    "surfaces_green",
-    "surfaces_stale",
-    "surfaces_overdue",
-    "open_findings",
-    "coverage_freshness_pct",
-    "median_staleness_ratio"
-  ])
-    reqNum(x, k, errors, "daily-metrics");
-  for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number or null`);
-  for (const k of ["cost_usd_7d", "cost_usd_30d"])
-    if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
-  return finish(errors);
-}
-function validateCostRecord(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["cost-record: not an object"]);
-  reqStr(x, "run_id", errors, "cost-record");
-  reqEnum(x, "lane", LANES, errors, "cost-record");
-  reqDate(x, "date", errors, "cost-record");
-  reqStr(x, "ts", errors, "cost-record");
-  reqNum(x, "usd", errors, "cost-record");
-  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
-    errors.push("cost-record: usd must be >= 0");
-  for (const k of [
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens"
-  ]) {
-    reqNum(x, k, errors, "cost-record");
-    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
-      const n = x[k];
-      if (n < 0 || !Number.isInteger(n))
-        errors.push(`cost-record: ${k} must be a nonnegative integer`);
-    }
-  }
-  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
-  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
-  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
-  if (x.status === "ok" && x.terminal_reason !== void 0)
-    errors.push("cost-record: terminal_reason only allowed when status=error");
-  return finish(errors);
-}
-function validateSurface(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["surface: not an object"]);
-  reqStr(x, "id", errors, "surface");
-  reqSafeId(x, "id", errors, "surface");
-  reqEnum(x, "weight", WEIGHTS, errors, "surface");
-  reqNum(x, "staleness", errors, "surface");
-  reqNum(x, "score", errors, "surface");
-  if (x.change_flag !== 0 && x.change_flag !== 1)
-    errors.push("surface: change_flag must be 0 or 1");
-  if (x.dispatch !== void 0) {
-    if (!isObj(x.dispatch)) {
-      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
-    } else {
-      reqStr(x.dispatch, "model", errors, "surface.dispatch");
-      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
-      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
-    }
-  }
-  return finish(errors);
-}
-var VALIDATORS = {
-  "registry-entry": validateRegistryEntry,
-  "candidate-finding": validateCandidateFinding,
-  finding: validateFinding,
-  suppression: validateSuppression,
-  "run-metrics": validateRunMetrics,
-  "daily-metrics": validateDailyMetrics,
-  surface: validateSurface,
-  "cost-record": validateCostRecord
-};
-var SCHEMA_NAMES = Object.keys(VALIDATORS);
-
-// src/lib/workflow-args.ts
-var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
-function refuse(reason) {
-  return { ok: false, kind: "refuse", reason };
-}
-function filled(x) {
-  return typeof x === "string" && x.trim() !== "";
-}
-function chunk(items, size) {
+var import_yaml = __toESM(require_dist(), 1);
+function readJsonl(path) {
+  if (!existsSync(path)) return [];
+  const text = readFileSync(path, "utf8");
   const out = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    out.push(JSON.parse(trimmed));
   }
   return out;
 }
-var SHELL_SAFE_PATH_RE = /^[A-Za-z0-9._/-]+$/;
-var DISPATCH_KEYS = ["model", "effort", "maxTurns"];
-function checkDispatch(d, surfaceId) {
-  if (d === void 0) {
-    return `surface "${surfaceId}" has no \`dispatch\` \u2014 bin/select derives it from \`band\` via MODEL_BY_BAND and the workflow spreads it into agent() verbatim. A surface without one would review at whatever the harness defaults to, silently discarding the model/effort/turn budget this run was sized for. Re-run bin/select with the current engine build`;
-  }
-  if (!filled(d.model)) return `surface "${surfaceId}" has a dispatch with no \`model\``;
-  if (d.effort !== "low" && d.effort !== "medium" && d.effort !== "high") {
-    return `surface "${surfaceId}" has dispatch.effort "${String(d.effort)}" (expected low|medium|high)`;
-  }
-  if (!Number.isInteger(d.maxTurns) || d.maxTurns < 1) {
-    return `surface "${surfaceId}" has dispatch.maxTurns "${String(d.maxTurns)}" (expected a positive integer)`;
-  }
-  const extra = Object.keys(d).filter((k) => !DISPATCH_KEYS.includes(k));
-  if (extra.length > 0) {
-    return `surface "${surfaceId}" has dispatch key(s) ${extra.map((k) => `"${k}"`).join(", ")} outside {${DISPATCH_KEYS.join(", ")}} \u2014 the workflow spreads dispatch LAST into agent(), so an extra key OVERRIDES the option the shell just set (an "agentType" here would replace the lane's reviewer with whatever the registry chose)`;
+
+// src/lib/run-outcome.ts
+function findRunRow(metricsDir, runId) {
+  const runsDir = join(metricsDir, "runs");
+  if (!existsSync2(runsDir)) return void 0;
+  for (const shard of readdirSync(runsDir).filter((f) => f.endsWith(".jsonl"))) {
+    for (const row of readJsonl(join(runsDir, shard))) {
+      if (row.run_id === runId) return row;
+    }
   }
   return void 0;
 }
-function buildWorkflowArgs(opts) {
-  const { runId, lanePlan, surfaces, maxConcurrentReviewers } = opts;
-  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
-    return refuse(
-      `run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and is not "." or "..") \u2014 it becomes this run's scratch directory name and is interpolated into every bin/ command line the workflow issues`
-    );
+function runOutcome(metricsDir, runId) {
+  if (typeof runId !== "string" || runId.trim() === "") {
+    return { recorded: false, run_id: String(runId), reason: "no run id given" };
   }
-  if (!Number.isInteger(maxConcurrentReviewers) || maxConcurrentReviewers < 1) {
-    return refuse(
-      `max_concurrent_reviewers must be an integer >= 1, got "${String(maxConcurrentReviewers)}" \u2014 it caps how many reviewer+refuter pairs are in flight at once (set it in $OPS/config.yml)`
-    );
-  }
-  if (lanePlan === null || typeof lanePlan !== "object") {
-    return refuse(`lane plan did not parse to an object \u2014 bin/lane-plan writes a JSON object`);
-  }
-  if (lanePlan.lane !== "security" && lanePlan.lane !== "design") {
-    return refuse(
-      `lane plan has lane "${String(lanePlan.lane)}" (expected "security" or "design") \u2014 the workflow interpolates it into run-meta/dedupe/rollup command lines and into every judgment prompt, so an absent or unknown lane becomes the literal text there`
-    );
-  }
-  if (!filled(lanePlan.registry)) {
-    return refuse(
-      `lane plan has no \`registry\` \u2014 record and rollup stamp coverage freshness into exactly that file, and an absent value reaches them as "--registry undefined"`
-    );
-  }
-  if (!SHELL_SAFE_PATH_RE.test(lanePlan.registry)) {
-    return refuse(
-      `lane plan registry "${lanePlan.registry}" is not a plain path (allowed: letters, digits, "." "_" "-" "/") \u2014 the workflow interpolates it UNQUOTED into the record and rollup command lines, so a space, quote, newline or shell metacharacter there is command injection, not a bad path`
-    );
-  }
-  const agents = lanePlan.agents;
-  if (agents === null || typeof agents !== "object") {
-    return refuse(`lane plan has no \`agents\` object (reviewer, refuter_tier1, refuter_tier2)`);
-  }
-  for (const role of ["reviewer", "refuter_tier1", "refuter_tier2"]) {
-    const value = agents[role];
-    if (!filled(value)) {
-      return refuse(
-        `lane plan has no \`agents.${role}\` \u2014 the workflow passes it straight to agent() as agentType, and an absent value dispatches every ${role} to an agent that does not exist`
-      );
-    }
-    if (!isSafeAgentType(value.trim())) {
-      return refuse(
-        `lane plan agents.${role} "${value}" is not a safe agent id \u2014 agentTypes cross into the sandbox as control-plane data`
-      );
-    }
-  }
-  if (!Array.isArray(surfaces)) {
-    return refuse(`surfaces.json did not parse to an array \u2014 bin/select writes a JSON array`);
-  }
-  if (surfaces.length === 0) {
+  const run = findRunRow(metricsDir, runId);
+  if (run === void 0) {
     return {
-      ok: false,
-      kind: "nothing-to-review",
-      reason: `bin/select picked 0 surfaces for lane "${lanePlan.lane}" \u2014 nothing is stale enough or changed enough to review. This is a quiet night, not a failure`
+      recorded: false,
+      run_id: runId,
+      reason: `no run row for "${runId}" in ${metricsDir}/runs/ \u2014 the record chain did not complete, so nothing was reviewed and nothing was stamped, whatever the session reported`
     };
   }
-  const seen = /* @__PURE__ */ new Set();
-  for (const s of surfaces) {
-    if (s === null || typeof s !== "object") {
-      return refuse(`surfaces.json contains a non-object entry \u2014 bin/select writes Surface records`);
-    }
-    if (!filled(s.id)) {
-      return refuse(`a surface in surfaces.json has no \`id\` \u2014 every surface must name its registry entry`);
-    }
-    if (s.id === "." || s.id === ".." || !RUN_ID_RE.test(s.id)) {
-      return refuse(
-        `surface id "${s.id}" is not filename-safe (matches ${RUN_ID_RE} and is not "." or "..") \u2014 it becomes a directory name under the run dir and is quoted into the reviewer's prompt; fix the \`id\` of that entry in the lane registry`
-      );
-    }
-    if (seen.has(s.id)) {
-      return refuse(
-        `surface id "${s.id}" appears twice in surfaces.json \u2014 two reviewers would write the same artifact paths and race each other; fix the duplicate \`id\` in the lane registry`
-      );
-    }
-    seen.add(s.id);
-    const dispatchProblem = checkDispatch(s.dispatch, s.id);
-    if (dispatchProblem !== void 0) return refuse(dispatchProblem);
+  if (run.selected > 0 && run.reviewed === 0) {
+    return {
+      recorded: false,
+      run_id: runId,
+      run,
+      reason: `run row exists but reviewed 0 of ${run.selected} selected \u2014 every reviewer was cut off before writing its artifacts, so nothing was stamped and the run was paid for nothing (raise the band's maxTurns, or narrow the surface)`
+    };
   }
   return {
-    ok: true,
-    args: {
-      run_id: runId,
-      lane: lanePlan.lane,
-      surface_chunks: chunk(surfaces, maxConcurrentReviewers),
-      registry: lanePlan.registry,
-      agents: {
-        reviewer: lanePlan.agents.reviewer,
-        refuter_tier1: lanePlan.agents.refuter_tier1,
-        refuter_tier2: lanePlan.agents.refuter_tier2
-      }
-    },
-    chunks: Math.ceil(surfaces.length / maxConcurrentReviewers)
+    recorded: true,
+    run_id: runId,
+    run,
+    reason: `recorded: reviewed ${run.reviewed} of ${run.selected} selected, ${run.findings_created} finding(s) created, ${run.confirmed} confirmed`
   };
 }
 
-// src/bin/workflow-args.ts
+// src/bin/run-outcome.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  let outcome;
   try {
-    const plan = readJson(requireArg(args, "plan"));
-    if (plan === void 0) throw new Error(`lane plan not found or empty: ${args.plan}`);
-    const surfaces = readJson(requireArg(args, "surfaces"));
-    if (surfaces === void 0) throw new Error(`surfaces not found or empty: ${args.surfaces}`);
-    const maxConcurrentRaw = requireArg(args, "max-concurrent");
-    const res = buildWorkflowArgs({
-      runId: requireArg(args, "run-id"),
-      lanePlan: plan,
-      surfaces,
-      maxConcurrentReviewers: Number(maxConcurrentRaw)
-    });
-    if (!res.ok) {
-      process.stderr.write(`workflow-args: ${res.reason}
-`);
-      process.exitCode = res.kind === "nothing-to-review" ? 3 : 2;
-      return;
-    }
-    if (args.out !== void 0) writeJson(args.out, res.args);
-    process.stdout.write(JSON.stringify(res.args, null, 2) + "\n");
-    process.stderr.write(
-      `workflow-args: lane=${res.args.lane} surfaces=${surfaces.length} chunks=${res.chunks} cap=${maxConcurrentRaw}
-`
-    );
+    outcome = runOutcome(requireArg(args, "metrics-dir"), requireArg(args, "run-id"));
   } catch (err) {
-    process.stderr.write(`workflow-args: ${err.message}
+    process.stderr.write(`run-outcome: ${err.message}
 `);
     process.exitCode = 2;
+    return;
   }
+  if (args.json !== void 0) {
+    process.stdout.write(`${JSON.stringify(outcome, null, 2)}
+`);
+  }
+  process.stderr.write(`run-outcome: ${outcome.reason}
+`);
+  process.exitCode = outcome.recorded ? 0 : 1;
 }
 main();

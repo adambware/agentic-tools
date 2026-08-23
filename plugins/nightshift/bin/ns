@@ -20,8 +20,8 @@
 # a shell is actually good at. A9's sentinel reuses bin/due.mjs rather than
 # reimplementing due-detection, for exactly the same reason.
 #
-# THREE LAUNCHER OBLIGATIONS THE WORKFLOW CANNOT MEET ITSELF (its ARGS CONTRACT
-# header states all three; the sandbox has no `process` and no fs):
+# FOUR LAUNCHER OBLIGATIONS THE WORKFLOW CANNOT MEET ITSELF (its ARGS CONTRACT
+# header states the first three; the sandbox has no `process` and no fs):
 #
 #   1. --pack .nightshift WITH CWD AT THE REPO ROOT. bin/lane-plan carries --pack
 #      through verbatim (absolute in, absolute out) while the workflow's PACK/RUN
@@ -31,7 +31,17 @@
 #      the literal `.nightshift` — never an absolute path, never from elsewhere.
 #   2. ARM THE GUARD. NIGHTSHIFT_LANE_RUN=1 + NIGHTSHIFT_RUN_ID are exported here
 #      because the PreToolUse guard cannot self-arm from inside the run.
-#   3. PIN THE DATE, MINT THE RUN ID. NIGHTSHIFT_TODAY is exported ONCE per
+#   3. LOAD THE ENGINE'S OWN PLUGIN. The bins come from $ENGINE, but the AGENTS
+#      the workflow dispatches to and the PreToolUse guard come from whatever
+#      nightshift plugin the session resolves — which is the globally INSTALLED
+#      one, at whatever version was last installed. That is the same version
+#      skew the symlink rule exists to prevent, one layer up: a 3.0 engine
+#      dispatching to 2.1's reviewer frontmatter, with 2.1's guard armed. So
+#      every session `ns` starts is given `--plugin-dir "$ENGINE"` (session-
+#      scoped, nothing installed), and the bins, the agents and the guard are
+#      then one tree. Note this grants NO tools: agent tools come from agent-file
+#      frontmatter only, and the session's grant is still `--allowedTools`.
+#   4. PIN THE DATE, MINT THE RUN ID. NIGHTSHIFT_TODAY is exported ONCE per
 #      invocation: run-meta and dedupe resolve "today" in separate agent turns,
 #      and a run straddling UTC midnight would otherwise abort at record's
 #      provenance date assert. The run id is minted FRESH for every attempt,
@@ -69,16 +79,6 @@
 set -eu
 
 
-# ── locations ───────────────────────────────────────────────────────────────
-ns_script_dir() {
-  # POSIX dirname of $0 without `readlink -f` (absent on macOS).
-  _d=$(dirname -- "$0")
-  (cd -- "$_d" && pwd)
-}
-ENGINE=${NIGHTSHIFT_ENGINE:-$(cd -- "$(ns_script_dir)/.." && pwd)}
-CLAUDE_BIN=${NIGHTSHIFT_CLAUDE:-claude}
-ALLOWED_TOOLS=${NIGHTSHIFT_ALLOWED_TOOLS:-Workflow,Read,Glob,Grep,Bash,Write,Agent}
-
 die() {
   printf 'ns: %s\n' "$*" >&2
   exit 2
@@ -87,6 +87,46 @@ die() {
 info() {
   printf 'ns: %s\n' "$*" >&2
 }
+
+# ── locations ───────────────────────────────────────────────────────────────
+# The DOCUMENTED install is a SYMLINK onto PATH (`ln -s <checkout>/plugins/
+# nightshift/bin/ns ~/bin/ns`) — never a copy, because `ns` must stay versioned
+# with the engine it launches. So $0 is normally a link, and the engine is found
+# by resolving it: a plain `dirname $0` would make ENGINE the PATH directory's
+# parent ($HOME for ~/bin/ns), and because $HOME/bin exists, require_engine's
+# first check PASSES and the run dies on "missing bin/lane-plan.mjs (run npm run
+# build)" — an error blaming the engine build for a link the launcher never
+# followed. `readlink -f` would do this in one call but is GNU-only (absent on
+# macOS), so walk the chain one link at a time.
+ns_script_dir() {
+  _p=$0
+  _hops=0
+  while [ -L "$_p" ]; do
+    _hops=$((_hops + 1))
+    [ "$_hops" -lt 64 ] || die "symlink loop resolving $0"
+    _link=$(readlink -- "$_p")
+    case $_link in
+      /*) _p=$_link ;;
+      *) _p=$(dirname -- "$_p")/$_link ;;
+    esac
+  done
+  _d=$(dirname -- "$_p")
+  (cd -- "$_d" && pwd)
+}
+ENGINE=${NIGHTSHIFT_ENGINE:-$(cd -- "$(ns_script_dir)/.." && pwd)}
+CLAUDE_BIN=${NIGHTSHIFT_CLAUDE:-claude}
+# VALIDATED ON REAL RUNS (A7 Part 2, empirical question 4), not guessed:
+#   Workflow    launch the run.
+#   TaskOutput  BLOCK on it. Workflow returns a task id and the workflow dies
+#               with the session, so without this the session can answer early
+#               and kill its own review. Not optional.
+#   Bash        every plumbing stage is `node bin/<name>.mjs`.
+#   Read Glob Grep Write   what the reviewer/refuter subagents need to read the
+#               surface and write their artifacts.
+#   Agent       reserved for the dispatch path; harmless and cheap to keep.
+# This is the SESSION's grant. It is not what the subagents get: agent tools come
+# from agent-file frontmatter only, and no dispatch API here accepts a tool list.
+ALLOWED_TOOLS=${NIGHTSHIFT_ALLOWED_TOOLS:-Workflow,TaskOutput,Read,Glob,Grep,Bash,Write,Agent}
 
 # Read one top-level string field out of a JSON file. Not a decision — a field
 # read, kept here so the shell never has to parse JSON itself.
@@ -134,7 +174,7 @@ resolve_ops() {
 # discovering it three steps into a headless run wastes the whole attempt.
 require_engine() {
   [ -d "$ENGINE/bin" ] || die "engine bin/ not found at $ENGINE/bin (set NIGHTSHIFT_ENGINE)"
-  for _b in lane-plan select workflow-args record-cost retain clean dashboard ops-target due; do
+  for _b in lane-plan select workflow-args record-cost retain clean dashboard ops-target due run-outcome; do
     [ -f "$ENGINE/bin/$_b.mjs" ] || die "engine incomplete: missing bin/$_b.mjs (run npm run build)"
   done
   [ -f "$ENGINE/nightshift.workflow.js" ] || die "engine incomplete: missing nightshift.workflow.js"
@@ -296,9 +336,22 @@ run_lane() {
 
   # ARM THE GUARD + PIN THE RUN. Exported for the headless session and every
   # bin/ command it spawns; the sandboxed workflow can do none of this itself.
+  #
+  # CLAUDE_PLUGIN_ROOT is exported for the same reason and is just as load-
+  # bearing. nightshift.workflow.js builds its plumbing commands from the LITERAL
+  # text `${CLAUDE_PLUGIN_ROOT}` and relies on the SHELL to expand it when the
+  # Bash tool runs them — the workflow sandbox has no `process`, so it cannot
+  # interpolate a real path itself. That variable is NOT set inside a Workflow
+  # agent()'s Bash environment: the first real run proved it (`echo
+  # "CLAUDE_PLUGIN_ROOT: ${CLAUDE_PLUGIN_ROOT}"` came back empty), so every
+  # plumbing bin ran as `node /bin/<name>.mjs` and died MODULE_NOT_FOUND — while
+  # the workflow still returned {"status":"complete"}. Exporting it here makes
+  # the expansion resolve to the same $ENGINE the launcher used, with no edit to
+  # the workflow (which stays conditional-free and A4/A5-owned).
   NIGHTSHIFT_RUN_ID=$NS_RUN_ID
   NIGHTSHIFT_LANE_RUN=1
-  export NIGHTSHIFT_RUN_ID NIGHTSHIFT_LANE_RUN NIGHTSHIFT_TODAY
+  CLAUDE_PLUGIN_ROOT=$ENGINE
+  export NIGHTSHIFT_RUN_ID NIGHTSHIFT_LANE_RUN NIGHTSHIFT_TODAY CLAUDE_PLUGIN_ROOT
 
   info "run $NS_RUN_ID: $NS_REPO_NAME/$NS_LANE (today=$NIGHTSHIFT_TODAY, cap=$NS_MAX_CONCURRENT)"
   printf 'run_id=%s\nrepo=%s\nlane=%s\ntoday=%s\nengine=%s\nallowed_tools=%s\n' \
@@ -358,14 +411,26 @@ run_lane() {
     return 2
   fi
 
+  # THE WORKFLOW RUNS IN THE BACKGROUND, AND IT DIES WITH THE SESSION. The
+  # Workflow tool returns a task id immediately, not a result. A session that
+  # answers as soon as it has that id ends the turn, `claude -p` exits 0 having
+  # said something perfectly reasonable, and the whole review is killed
+  # mid-flight — the second real run got as far as reviewing a surface and
+  # gating Tier-2 before it was cut off. So the prompt makes the WAIT the task,
+  # names the blocking call that does it, and states the finishing condition in
+  # terms of durable state rather than in terms of anything the model believes.
+  # TaskOutput is granted for exactly this (it is otherwise unused).
   _prompt="Run the nightshift lane review for this repository.
-Invoke the Workflow tool ONCE with scriptPath \"$ENGINE/nightshift.workflow.js\" and, as \`args\`, the exact parsed JSON contents of $NS_RUN_DIR/args.json (read that file first; pass it as a JSON value, not as a string).
-Change nothing in this repository yourself and run no other command. When the workflow returns, reply with its status and nothing else."
+Step 1. Read $NS_RUN_DIR/args.json.
+Step 2. Invoke the Workflow tool ONCE with scriptPath \"$ENGINE/nightshift.workflow.js\" and, as \`args\`, the exact parsed JSON contents of that file (pass it as a JSON value, not as a string).
+Step 3. The Workflow tool returns a task id, NOT a result, and the workflow is killed if this session ends before it finishes. So you MUST now block: call TaskOutput with that task_id, block=true and timeout=600000, and keep calling it until it reports the task is no longer running. Do not answer, summarise, or end your turn while the task is still running — a reply at this point cancels the review.
+Step 4. Only once the task has completed, reply with its final status and nothing else.
+Change nothing in this repository yourself and run no other command."
 
   if [ "$NS_INTERACTIVE" = "1" ]; then
     info "interactive mode: foreground session (add the cost afterwards with \`ns cost add\`)"
     set +e
-    "$CLAUDE_BIN" --allowedTools "$ALLOWED_TOOLS" "$_prompt"
+    "$CLAUDE_BIN" --allowedTools "$ALLOWED_TOOLS" --plugin-dir "$ENGINE" "$_prompt"
     _rc=$?
     set -e
     # Status must follow the session, not the fact that one was started: a debug
@@ -387,11 +452,27 @@ Change nothing in this repository yourself and run no other command. When the wo
   # stdin is not this session's input either, and a headless CLI that blocks on
   # an inherited pipe hangs the whole night.
   "$CLAUDE_BIN" -p "$_prompt" --output-format json --allowedTools "$ALLOWED_TOOLS" \
+    --plugin-dir "$ENGINE" \
     </dev/null >"$NS_RUN_DIR/result.json" 2>>"$NS_LOG"
   _rc=$?
   set -e
   if [ "$_rc" != "0" ]; then
     info "headless run exited $_rc — recording the failure and refreshing the dashboard"
+    return 1
+  fi
+
+  # THE CLI EXITING 0 IS NOT THE RUN SUCCEEDING. A session can invoke the
+  # workflow, have every reviewer dispatch and every plumbing bin fail, get back
+  # {"status":"complete"} because the last stages ran, and exit 0 — which is
+  # exactly what the first real run did. Calling that a success wrote a
+  # status:"ok" cost row, DELETED the run dir that held the evidence, and
+  # refreshed the living document to say all was well while nothing had been
+  # reviewed. The predicate lives in bin/run-outcome (tested): a run succeeded
+  # iff bin/record left its row in the metrics, which only happens after
+  # validate and dedupe passed under A1's lock. Nothing the model said counts.
+  if ! node "$ENGINE/bin/run-outcome.mjs" \
+    --metrics-dir "$NS_METRICS_DIR" --run-id "$NS_RUN_ID" >>"$NS_LOG" 2>&1; then
+    info "the session exited 0 but left NO run row — treating this as a FAILURE (see $NS_LOG)"
     return 1
   fi
   NS_STATUS=success
@@ -499,7 +580,7 @@ cmd_digest() {
   # would block the one write this command exists to make. Scope, not the guard,
   # is the perimeter (plan §9.12).
   "$CLAUDE_BIN" -p "Produce the weekly nightshift digest for the .nightshift pack in this repository using the nightshift digest skill, and write it to the file path \"$_out\" (that exact path, nothing appended). Read only — change nothing in this repository." \
-    --allowedTools "Read,Glob,Grep,Write" </dev/null >/dev/null
+    --allowedTools "Read,Glob,Grep,Write" --plugin-dir "$ENGINE" </dev/null >/dev/null
   [ -f "$_out" ] || die "digest session finished but wrote no file at $_out"
   info "digest: $_out"
 }

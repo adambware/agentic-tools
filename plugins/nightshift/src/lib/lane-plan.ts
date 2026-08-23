@@ -44,7 +44,7 @@ import { join, resolve, sep } from "node:path";
 import type { Lane, RegistryEntry } from "./types.js";
 import { readYaml } from "./io.js";
 import { extractEntries } from "./registry.js";
-import { isSafeId } from "./validate.js";
+import { isSafeAgentType, isSafeId } from "./validate.js";
 
 export interface LanePlan {
   lane: Lane;
@@ -120,6 +120,29 @@ export interface LaneAgentTable {
 // stack-adapted through the manifest's `test` command, which is a prompt input,
 // not a tool grant). Named once so the plan and the table cannot drift.
 const SECURITY_REVIEWER = "security-reviewer";
+
+/**
+ * The plugin the agent files ship in. Every agentType handed to the workflow is
+ * qualified with it.
+ *
+ * `bin/ns` gives every session it starts `--plugin-dir $ENGINE`, so the agents
+ * the workflow dispatches to come from the same tree as the bins — and a
+ * plugin-supplied agent is addressable by its QUALIFIED name. The bare name
+ * resolves only if something else in the session also provides an agent by that
+ * name, which is not a thing to depend on: the first real run dispatched the
+ * bare names, every reviewer came back "agent type not found", and the workflow
+ * still returned `{"status":"complete"}` because the post-processing stages ran.
+ *
+ * The tables below stay BARE on purpose — those strings are also the agent FILE
+ * names under agents/, and a test asserts each one exists on disk. Qualifying
+ * happens once, here, on the way out.
+ */
+const AGENT_PLUGIN = "nightshift";
+
+/** `security-reviewer` -> `nightshift:security-reviewer`. */
+function qualify(agentType: string): string {
+  return `${AGENT_PLUGIN}:${agentType}`;
+}
 
 /**
  * The three agent types each lane dispatches.
@@ -659,9 +682,9 @@ export function buildLanePlan(opts: BuildLanePlanOpts): LanePlanResult {
       lane,
       registry: registryPath,
       agents: {
-        reviewer: design.reviewer,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2,
+        reviewer: qualify(design.reviewer),
+        refuter_tier1: qualify(laneAgents.refuter_tier1),
+        refuter_tier2: qualify(laneAgents.refuter_tier2),
       },
       browser: design.browser,
       personas: design.personas,
@@ -671,9 +694,9 @@ export function buildLanePlan(opts: BuildLanePlanOpts): LanePlanResult {
       lane,
       registry: registryPath,
       agents: {
-        reviewer: SECURITY_REVIEWER,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2,
+        reviewer: qualify(SECURITY_REVIEWER),
+        refuter_tier1: qualify(laneAgents.refuter_tier1),
+        refuter_tier2: qualify(laneAgents.refuter_tier2),
       },
     };
   }
@@ -688,7 +711,7 @@ export function buildLanePlan(opts: BuildLanePlanOpts): LanePlanResult {
     return refuse(`registry file name "${registryFile}" is not path-segment safe (lane "${lane}")`);
   }
   for (const [role, agentType] of Object.entries(plan.agents)) {
-    if (!isSafeId(agentType)) {
+    if (!isSafeAgentType(agentType)) {
       return refuse(
         `agent id for ${role} ("${agentType}") is not path-segment safe — agent types ` +
           `cross into args as control-plane data`,

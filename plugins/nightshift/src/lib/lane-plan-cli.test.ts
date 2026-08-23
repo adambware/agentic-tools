@@ -172,9 +172,9 @@ describe("bin/lane-plan success", () => {
     const plan = JSON.parse(stdout);
     expect(plan.lane).toBe("security");
     expect(plan.registry).toBe(join(dir, "registries", "vectors.yml"));
-    expect(plan.agents.reviewer).toBe("security-reviewer");
+    expect(plan.agents.reviewer).toBe("nightshift:security-reviewer");
     expect(stderr).toMatch(
-      /^lane-plan: lane=security registry=.*vectors\.yml reviewer=security-reviewer/,
+      /^lane-plan: lane=security registry=.*vectors\.yml reviewer=nightshift:security-reviewer/,
     );
   });
 
@@ -261,7 +261,7 @@ describe("bin/lane-plan design-lane success", () => {
     expect(code).toBe(0);
     const plan = JSON.parse(stdout);
     expect(plan.lane).toBe("design");
-    expect(plan.agents.reviewer).toBe("ux-reviewer-playwright");
+    expect(plan.agents.reviewer).toBe("nightshift:ux-reviewer-playwright");
     expect(stderr).toMatch(/^lane-plan: lane=design/);
   });
 });
