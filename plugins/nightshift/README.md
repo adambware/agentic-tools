@@ -55,7 +55,7 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 | Command | What it does |
 |---------|--------------|
 | `/nightshift:security` | **Security/assurance review run.** Execute **one** bounded run for the security lane: select stalest/changed vectors within the manifest budget (**K**), fan out the security-reviewer subagent, run the mandatory refuter gate, dedupe, log findings, update state, emit per-run metrics, apply severity gates. |
-| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated — refuses to run until the pack has a staging browser adapter (`stack_adapter.browser.base_url`) **and** seeded `fixtures/personas.yml`. Fails fast with a clear reason rather than half-running. Shares the bounded run-loop with `/nightshift:security`. |
+| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated launcher-side by `bin/lane-plan` — refuses to run unless the pack names a **supported** browser adapter (`stack_adapter.browser.tool`, resolved to a concrete per-adapter reviewer agent), a staging `stack_adapter.browser.base_url`, and seeded `fixtures/personas.yml` whose personas every selected flow's `persona:` reference actually resolves to. Fails fast with the specific reason rather than half-running. Shares the bounded run-loop with `/nightshift:security`. |
 | `/nightshift:onboard` | Onboard a codebase as a pack: detect the stack, batch-confirm deltas, seed a draft `vectors.yml` from the base taxonomy, run a human-reviewed seed + gate pass, then write the pack. Interactive + mutating. |
 | `/nightshift:digest` | Produce the **weekly digest** — the management signal: new critical/high, repeated themes, overdue surfaces, false-positive rate, proposed entries awaiting approval, and the top human decisions needed. Read-only; the one skill left model-invocable. |
 | `/nightshift:garden` | Weekly **registry gardening**: does each recent change map to an entry? If not, *propose* one (humans approve). Flags orphaned entries and stale `area` mappings — the only defense against permanent blind spots. |
@@ -67,7 +67,10 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 | `security-reviewer` | Defensive review of a vector's code surface ("is this adequately protected?"). Proposes — never files — a finding with `preconditions` and an optional failing invariant test. **Assurance, not a pentest:** no exploit payloads or offensive tooling. (Opus 5, `maxTurns 24`.) |
 | `security-refuter` | **Tier-1, always.** Mandatory independent re-read of **every** candidate — given the full proposed finding but instructed to ignore the reviewer's narrative and re-read source itself. Must *refute* before a finding survives; rejections count toward `rejected_tier1`. (Haiku 4.5, `maxTurns 10`, low effort.) |
 | `security-refuter-2` | **Tier-2, conditional.** Runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A second, harder pass; rejections count toward `rejected_tier2`. (Opus 5/high, `maxTurns 16`.) |
-| `ux-reviewer` | Designer friction & a11y auditor for the design lane. Requires seeded `fixtures/` personas; drives flows via the manifest browser adapter. Every ticket requires an objective `anchor`. (Opus 5, `maxTurns 24`.) |
+| `ux-reviewer` | Designer friction & a11y auditor for the design lane — the **base spec**, never dispatched directly. Requires seeded `fixtures/` personas; every ticket requires an objective `anchor`. (Opus 5, `maxTurns 24`.) |
+| `ux-reviewer-<adapter>` | The dispatchable per-adapter build of `ux-reviewer` (e.g. `ux-reviewer-playwright`), whose own frontmatter grants that browser adapter's tools. `bin/lane-plan` resolves it from `manifest.stack_adapter.browser.tool`; an unknown adapter is a refusal, never a fallback. (Opus 5, `maxTurns 24`.) |
+| `ux-refuter` | **Tier-1, always.** The design lane's mandatory independent re-read of **every** UX candidate — same gate as `security-refuter`, same "no Tier-1 refute → no log"; rejections count toward `rejected_tier1`. (Haiku 4.5, `maxTurns 10`, low effort.) |
+| `ux-refuter-2` | **Tier-2, conditional.** Runs **only** when a Tier-1 UX survivor is critical/high severity **OR** `confidence == low` (the same union predicate); rejections count toward `rejected_tier2`. (Opus 5/high, `maxTurns 16`.) |
 
 ## How a run works (the bounded loop)
 
@@ -76,17 +79,24 @@ The core is strictly **two-lane** — `security` and `design`.
 1. Compute `staleness = (today - last_reviewed)/interval_days`; force-flag entries whose `area` changed in git since `last_reviewed`.
 2. Sort by `max(staleness, change_flag) * weight`; take the top **K** (the manifest's `window_budget_k[<lane>]`).
 3. Fan out the lane reviewer subagent per selected entry (parallelize 3–5 at a time **inside K**).
-4. Run the **two-stage refuter gate** (security lane — see below).
+4. Run the **two-stage refuter gate** — **both lanes**, same shape (see below).
 5. **Dedupe** against open findings by `dedupe_key`; honor active **suppressions**.
 6. Append confirmed findings (with `first_seen`/`last_seen`/`run_id`); update `last_reviewed`/`status`; write the per-run metrics record.
 7. Apply **severity gates** (critical/high → surface for human Linear filing; medium → only if reproducible/recurring/customer-facing; low → digest; taste → never without an anchor).
 
-### The two-stage refuter gate (security lane)
+### The two-stage refuter gate (both lanes)
 
-> **North-star guarantee:** Security never logs an unrefuted finding. **No Tier-1 refute → no log.**
+> **North-star guarantee:** Nightshift never logs an unrefuted finding, in **either** lane.
+> **No Tier-1 refute → no log.**
 
-- **Tier-1 (`security-refuter`, always):** runs on **every** candidate. An unrefuted candidate is never logged.
-- **Tier-2 (`security-refuter-2`, conditional):** runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A cheap first pass kills most candidates; the expensive pass is spent only where it earns its cost.
+Both lanes run the identical gate, applied by the same `bin/tier2-gate` predicate; only the
+agents differ:
+
+- **Tier-1 (always)** — `security-refuter` / `ux-refuter`: runs on **every** candidate. An unrefuted candidate is never logged; rejections count toward `rejected_tier1`.
+- **Tier-2 (conditional)** — `security-refuter-2` / `ux-refuter-2`: runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A cheap first pass kills most candidates; the expensive pass is spent only where it earns its cost; rejections count toward `rejected_tier2`.
+
+In the design lane the mandatory `anchor` is **complementary** noise control layered on top of
+this gate, never a substitute for it.
 
 ### Three budget dials
 
@@ -133,15 +143,19 @@ deterministic core, the Workflow orchestrator, and the judgment agents are pinne
 [`CONTRACTS.md`](CONTRACTS.md).
 
 ```
-bin/select    read registry + git diff → top-K stalest/changed → surfaces.json
-bin/validate  schema-gate any artifact (aborts the run on failure)
-bin/run-meta  assemble run.json from surfaces + reviewed (ids actually covered) + candidates.proposed + candidates (survivors)
-bin/dedupe    candidates → new | recurring | suppressed (decisions.json)
-bin/record    append per-run record + finding lines; update registry state (atomic)
-bin/rollup    recompute + append the daily rollup (freshness / median / FPR / cost windows)
-bin/record-cost  append one validated cost line per run (gates on is_error, never subtype)
-bin/dashboard    render the self-contained HTML living document across every onboarded repo
-hooks/guard   PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
+bin/lane-plan         resolve one lane's registry file + three agentTypes (+ the design lane's browser adapter and seeded personas) → plan JSON, or refuse (exit 2) before the run starts
+bin/select            read registry + git diff → top-K stalest/changed → surfaces.json
+bin/validate          schema-gate any artifact (aborts the run on failure)
+bin/merge-candidates  fold the K per-surface review artifacts into the run-level reviewed + candidates.proposed + candidates (asserts candidate ↔ surface binding)
+bin/tier2-gate        apply the Tier-2 union predicate to the Tier-1 survivors, then assemble the post-Tier-2 survivor set
+bin/run-meta          assemble run.json from surfaces + reviewed (ids actually covered) + candidates.proposed + candidates (survivors)
+bin/dedupe            candidates → new | recurring | suppressed (decisions.json)
+bin/record            append per-run record + finding lines; update registry state (atomic)
+bin/rollup            recompute + append the daily rollup (freshness / median / FPR / cost windows)
+bin/clean             end-of-run housekeeping — drop a successful run's scratch dir, keep a failed one, then time-prune .run/
+bin/record-cost       append one validated cost line per run (gates on is_error, never subtype)
+bin/dashboard         render the self-contained HTML living document across every onboarded repo
+hooks/guard           PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
 ```
 
 The orchestrator is [`nightshift.workflow.js`](nightshift.workflow.js) — a thin

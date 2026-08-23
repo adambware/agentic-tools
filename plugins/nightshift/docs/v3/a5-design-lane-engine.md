@@ -52,7 +52,46 @@ its artifacts.
 
 ## Tasks
 
-- [ ] **T3 (P1)** — `agents/` — per-adapter ux-reviewer + `Write`
+- [x] **T3 (P1)** — `agents/` — per-adapter ux-reviewer + `Write`
   - Files: `agents/ux-reviewer.md`, new `agents/ux-reviewer-playwright.md`
   - Verify: design dispatch resolves a browser tool; ux-reviewer can write its artifacts
-- [ ] Lane parameterization + onboard design branch (spec above)
+  - Landed: `agents/ux-reviewer.md` (base spec, +`Write`, false dispatch-time-grant promise
+    removed), `agents/ux-reviewer-playwright.md` (concrete adapter, `mcp__playwright__*`,
+    self-contained), plus `agents/ux-refuter.md` / `agents/ux-refuter-2.md` — the v3
+    orchestrator runs the two-tier refute gate for EVERY lane, so the design lane needed its
+    own refuters rather than borrowing the security ones (see "Open for the next session").
+- [x] Lane parameterization + onboard design branch (spec above)
+  - `args` gains `registry` + `agents{reviewer,refuter_tier1,refuter_tier2}`; the workflow
+    reads them as plain member accesses and stays at ZERO conditionals.
+  - `src/lib/lane-plan.ts` + `bin/lane-plan.mjs` own the lane -> data tables
+    (`REGISTRY_BY_LANE`, `AGENTS_BY_LANE`, `UX_REVIEWER_BY_ADAPTER`) and the design-lane
+    prerequisite gate. `skills/design/SKILL.md` RUNS the binary and refuses on exit 2 —
+    until `ns` exists (A7) the skill is the launcher, so a prose-only gate would have been
+    dead code.
+  - Gate evidence: probe pack missing `stack_adapter.browser` and probe pack missing
+    `fixtures/personas.yml` both -> exit 2, empty stdout, specific reason, pack tree
+    byte-identical, no `--out` file. Fully seeded pack -> exit 0 naming
+    `ux-reviewer-playwright`. Security lane on a browser-less pack -> exit 0 (no leakage).
+
+## Open for the next session (found by A5's adversarial round, NOT fixed here)
+
+- **The mandatory `anchor` is prose-only.** `schemas/candidate-finding.yml` lists `anchor`
+  as optional ("if present, in the enum"), so `bin/validate` passes an anchorless design
+  candidate straight through both refuter tiers into `bin/record`. "No anchor -> not a
+  ticket" is stated in three agent files and enforced nowhere. Fixing it needs a routing
+  decision (drop vs. route to digest, per "no objective anchor -> digest, never a ticket")
+  and touches `bin/dedupe` (which already takes `--lane`), so it was left out of A5 rather
+  than half-built.
+- **`manifest.allowlist` is documented as if it grants tools to agents** (`schemas/manifest.yml:40`,
+  `templates/.nightshift/manifest.yml:46`, `skills/onboard/reference/onboard-mechanics.md:65`).
+  It cannot: subagent tools come from frontmatter. Same false-promise family A5 killed
+  elsewhere, but correcting it is a pack-schema change (onboard + templates + examples).
+- **`--out` with no value writes a file named `true`** — `src/lib/args.ts` maps a valueless
+  flag to `"true"`; shared by every bin, so out of A5's bounds.
+- **`mcp__playwright__*` frontmatter wildcard is unverified at runtime.** If it is not
+  honored, the resolved design reviewer holds no browser tool; `ux-reviewer-playwright.md`
+  now self-refuses (`reviewed.json = []`) in that case, but A8's first real run should
+  confirm the grant actually resolves.
+- **Pack containment in `lane-plan` is lexical, not physical.** A symlinked
+  `fixtures/personas.yml` pointing outside the pack is accepted. The pack is operator-owned,
+  so this is documented rather than hardened (`contain.ts` stays A4's).

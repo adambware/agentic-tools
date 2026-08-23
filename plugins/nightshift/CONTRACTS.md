@@ -101,6 +101,24 @@ merge (partial-failure union), the Tier-2 predicate, and Tier-2 assembly are all
 `maxTurns`) is computed by `bin/select` (`MODEL_BY_BAND`) and passed through the
 workflow verbatim as data.
 
+**Lane parameterization is data, not a branch.** The registry path and the three
+judgment `agentType`s (reviewer, Tier-1 refuter, Tier-2 refuter) are likewise computed
+launcher-side by a vitest-covered command — `bin/lane-plan` (tables `REGISTRY_BY_LANE`,
+`AGENTS_BY_LANE`, `UX_REVIEWER_BY_ADAPTER`) — and arrive as `args.registry` /
+`args.agents.*`, exactly like `MODEL_BY_BAND`. There is no lane lookup table and no
+lane conditional in the sandbox: the workflow reads those members and interpolates
+`args.lane` into prompts, nothing more. `bin/lane-plan` doubles as the fail-fast lane
+gate (design refuses without a browser adapter, `base_url`, and seeded personas), so a
+misconfigured pack never reaches Claude.
+
+**Load-bearing constraint:** *no* dispatch API accepts a tools list. A subagent's tools
+come from its agent-file frontmatter and nowhere else. A per-adapter tool grant is
+therefore expressed as a per-adapter **concrete agent file** (`agents/ux-reviewer-<adapter>.md`,
+selected by `bin/lane-plan` from `manifest.stack_adapter.browser.tool`) — never as a
+grant made at dispatch. Any wording anywhere in this repo that says the orchestrator
+injects, scopes, or grants a tool at dispatch describes a capability that does not
+exist and is a bug to be fixed.
+
 ## E6 — Atomic writes + abort-on-validate-failure
 
 All `bin/` writes are atomic (temp + fsync + rename, `src/lib/io.ts#atomicWrite`) or
@@ -129,5 +147,6 @@ denominator — a retry needs a fresh run_id and run dir.
 | union per-surface artifacts, bind candidates to surfaces (`bin/merge-candidates`) | Tier-2 deeper re-read of a gated survivor |
 | Tier-2 union predicate + assembly (`bin/tier2-gate`) | |
 | band → dispatch `{model, effort, maxTurns}` (`bin/select`, `MODEL_BY_BAND`) | |
+| lane → registry + judgment agentTypes, design-lane prerequisite gate (`bin/lane-plan`) | |
 
 The model never executes deterministic logic. It calls scripts and reviews code.
