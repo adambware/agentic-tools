@@ -46,10 +46,10 @@ var require_identity = __commonJS({
     var NODE_TYPE = Symbol.for("yaml.node.type");
     var isAlias = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === ALIAS;
     var isDocument = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === DOC;
-    var isMap2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
+    var isMap = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
     var isPair = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === PAIR;
     var isScalar = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SCALAR;
-    var isSeq2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
+    var isSeq = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
     function isCollection(node) {
       if (node && typeof node === "object")
         switch (node[NODE_TYPE]) {
@@ -82,11 +82,11 @@ var require_identity = __commonJS({
     exports.isAlias = isAlias;
     exports.isCollection = isCollection;
     exports.isDocument = isDocument;
-    exports.isMap = isMap2;
+    exports.isMap = isMap;
     exports.isNode = isNode;
     exports.isPair = isPair;
     exports.isScalar = isScalar;
-    exports.isSeq = isSeq2;
+    exports.isSeq = isSeq;
   }
 });
 
@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep3) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep3 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep3 + cb;
+              sep3 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep3 += source;
               hasSpace = true;
               break;
             default:
@@ -4192,9 +4192,9 @@ var require_resolve_flow_collection = __commonJS({
     var blockMsg = "Block collections are not allowed within flow collections";
     var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
     function resolveFlowCollection({ composeNode, composeEmptyNode }, ctx, fc, onError, tag) {
-      const isMap2 = fc.start.source === "{";
-      const fcName = isMap2 ? "flow map" : "flow sequence";
-      const NodeClass = tag?.nodeClass ?? (isMap2 ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
+      const isMap = fc.start.source === "{";
+      const fcName = isMap ? "flow map" : "flow sequence";
+      const NodeClass = tag?.nodeClass ?? (isMap ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
       const coll = new NodeClass(ctx.schema);
       coll.flow = true;
       const atRoot = ctx.atRoot;
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep3 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4230,7 +4230,7 @@ var require_resolve_flow_collection = __commonJS({
             offset = props.end;
             continue;
           }
-          if (!isMap2 && ctx.options.strict && utilContainsNewline.containsNewline(key))
+          if (!isMap && ctx.options.strict && utilContainsNewline.containsNewline(key))
             onError(
               key,
               // checked by containsNewline()
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap2 && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep3 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4293,9 +4293,9 @@ var require_resolve_flow_collection = __commonJS({
             startOnNewline: false
           });
           if (valueProps.found) {
-            if (!isMap2 && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+            if (!isMap && !props.found && ctx.options.strict) {
+              if (sep3)
+                for (const st of sep3) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4325,7 +4325,7 @@ var require_resolve_flow_collection = __commonJS({
           const pair = new Pair.Pair(keyNode, valueNode);
           if (ctx.options.keepSourceTokens)
             pair.srcToken = collItem;
-          if (isMap2) {
+          if (isMap) {
             const map = coll;
             if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
               onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
@@ -4341,7 +4341,7 @@ var require_resolve_flow_collection = __commonJS({
           offset = valueNode ? valueNode.range[2] : valueProps.end;
         }
       }
-      const expectedEnd = isMap2 ? "}" : "]";
+      const expectedEnd = isMap ? "}" : "]";
       const [ce, ...ee] = fc.end;
       let cePos = offset;
       if (ce?.source === expectedEnd)
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep3 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep3 === " ")
+            sep3 = "\n";
+          else if (!prevMoreIndented && sep3 === "\n")
+            sep3 = "\n\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep3 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep3 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep3 + content;
+          sep3 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep = " ";
+      let sep3 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep3 === "\n")
+            res += sep3;
           else
-            sep = "\n";
+            sep3 = "\n";
         } else {
-          res += sep + match[1];
-          sep = " ";
+          res += sep3 + match[1];
+          sep3 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep3 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep3, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep3)
+        for (const st of sep3)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep3;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep3 = scalar.end;
+            sep3.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep3 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep3 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep3 = it.sep;
+                  sep3.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep3 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep3 = fc.end.splice(1, fc.end.length);
+            sep3.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep3 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7241,7 +7241,7 @@ var require_public_api = __commonJS({
         return docs;
       return Object.assign([], { empty: true }, composer$1.streamInfo());
     }
-    function parseDocument2(source, options = {}) {
+    function parseDocument(source, options = {}) {
       const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options);
       const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
       const composer$1 = new composer.Composer(options);
@@ -7267,7 +7267,7 @@ var require_public_api = __commonJS({
       } else if (options === void 0 && reviver && typeof reviver === "object") {
         options = reviver;
       }
-      const doc = parseDocument2(src, options);
+      const doc = parseDocument(src, options);
       if (!doc)
         return null;
       doc.warnings.forEach((warning) => log.warn(doc.options.logLevel, warning));
@@ -7303,7 +7303,7 @@ var require_public_api = __commonJS({
     }
     exports.parse = parse;
     exports.parseAllDocuments = parseAllDocuments;
-    exports.parseDocument = parseDocument2;
+    exports.parseDocument = parseDocument;
     exports.stringify = stringify;
   }
 });
@@ -7360,9 +7360,6 @@ var require_dist = __commonJS({
   }
 });
 
-// src/bin/record.ts
-import { existsSync as existsSync5 } from "node:fs";
-
 // src/lib/args.ts
 function parseArgs(argv) {
   const out = {};
@@ -7391,428 +7388,140 @@ function requireArg(args, key) {
   return val;
 }
 
+// src/lib/clean-run.ts
+import { existsSync as existsSync2, rmSync as rmSync2 } from "node:fs";
+import { resolve, sep as sep2 } from "node:path";
+
+// src/lib/prune.ts
+import { existsSync, lstatSync, readdirSync, rmdirSync, rmSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
-import {
-  openSync,
-  writeSync,
-  fsyncSync,
-  closeSync,
-  renameSync,
-  readFileSync,
-  existsSync,
-  mkdirSync,
-  appendFileSync
-} from "node:fs";
-import { dirname, join } from "node:path";
-var tmpSeq = 0;
-function atomicWrite(path, data) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
-  const fd = openSync(tmp, "w");
-  try {
-    writeSync(fd, data);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-}
-function appendJsonl(path, record) {
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, JSON.stringify(record) + "\n");
-}
-function readJsonl(path) {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(JSON.parse(trimmed));
-  }
-  return out;
-}
-function readJson(path) {
-  if (!existsSync(path)) return void 0;
-  return JSON.parse(readFileSync(path, "utf8"));
-}
-function basename(path) {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? path : path.slice(i + 1);
-}
 
-// src/lib/record-run.ts
-import { join as join3 } from "node:path";
-import { existsSync as existsSync4, readdirSync as readdirSync2, mkdirSync as mkdirSync3, openSync as openSync2, writeSync as writeSync2, closeSync as closeSync2 } from "node:fs";
-
-// src/lib/findings-store.ts
-import { existsSync as existsSync2, readdirSync } from "node:fs";
-import { join as join2 } from "node:path";
-
-// src/lib/dedupekey.ts
-function dedupeKeyString(k) {
-  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
-}
-function isOpen(f) {
-  return !f.resolved_at;
-}
-
-// src/lib/findings-store.ts
-function readAllFindings(metricsDir) {
-  const dir = join2(metricsDir, "findings");
-  if (!existsSync2(dir)) return [];
-  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
-  const out = [];
-  for (const shard of shards) out.push(...readJsonl(join2(dir, shard)));
-  return out;
-}
-function foldFindings(findings) {
-  const byKey = /* @__PURE__ */ new Map();
-  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
-  return byKey;
-}
-function openFindings(metricsDir) {
-  return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
-}
-
-// src/lib/registry-write.ts
-var import_yaml2 = __toESM(require_dist(), 1);
-import { readFileSync as readFileSync2, existsSync as existsSync3 } from "node:fs";
-function updateRegistryState(path, updates) {
-  if (!existsSync3(path) || updates.size === 0) return;
-  const doc = (0, import_yaml2.parseDocument)(readFileSync2(path, "utf8"));
-  let seq = doc.get("vectors") ?? doc.get("flows") ?? doc.get("entries");
-  if (!(0, import_yaml2.isSeq)(seq) && (0, import_yaml2.isSeq)(doc.contents)) seq = doc.contents;
-  if (!(0, import_yaml2.isSeq)(seq)) return;
-  for (const item of seq.items) {
-    if (!(0, import_yaml2.isMap)(item)) continue;
-    const id = item.get("id");
-    if (typeof id !== "string") continue;
-    const upd = updates.get(id);
-    if (!upd) continue;
-    if (upd.last_reviewed !== void 0) item.set("last_reviewed", upd.last_reviewed);
-    if (upd.status !== void 0) item.set("status", upd.status);
-  }
-  atomicWrite(path, String(doc));
-}
-
-// src/lib/lock.ts
-import { writeFileSync, readFileSync as readFileSync3, unlinkSync, renameSync as renameSync2, linkSync, mkdirSync as mkdirSync2 } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { dirname as dirname2 } from "node:path";
-var DEFAULT_STALE_MS = 30 * 6e4;
-var DEFAULT_TIMEOUT_MS = 6e4;
-var DEFAULT_POLL_MS = 200;
-var RECOVERY_MUTEX_STALE_MS = 5e3;
-function defaultIsPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-function defaultSleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-var MISSING = { text: void 0, record: void 0 };
-function observeLock(path) {
-  let text;
-  try {
-    text = readFileSync3(path, "utf8");
-  } catch {
-    return MISSING;
-  }
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed.pid !== "number" || typeof parsed.nonce !== "string" || typeof parsed.acquired_at_ms !== "number") {
-      return { text, record: void 0 };
+// src/lib/prune.ts
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+function prune(dir, policy, opts) {
+  if (!existsSync(dir)) return { removed: [], kept: [] };
+  if (policy.kind === "lifecycle") return pruneLifecycle(dir, policy.retain);
+  const now = opts?.now ?? Date.now;
+  const entries = readdirSync(dir);
+  const keepSet = computeTimeKeepSet(dir, entries, policy, now());
+  const removed = [];
+  const kept = [];
+  for (const name of entries) {
+    if (keepSet.has(name)) {
+      kept.push(name);
+    } else {
+      rmSync(join(dir, name), { recursive: true, force: true });
+      removed.push(name);
     }
-    return { text, record: { pid: parsed.pid, nonce: parsed.nonce, acquired_at_ms: parsed.acquired_at_ms } };
-  } catch {
-    return { text, record: void 0 };
   }
+  return { removed, kept };
 }
-function sameBytes(a, b) {
-  return a.text !== void 0 && a.text === b.text;
+function computeTimeKeepSet(dir, entries, policy, now) {
+  const withMtime = entries.map((name) => ({
+    name,
+    mtimeMs: lstatSync(join(dir, name)).mtimeMs
+  }));
+  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keepSet = /* @__PURE__ */ new Set();
+  withMtime.forEach(({ name, mtimeMs }, rank) => {
+    const ageDays = (now - mtimeMs) / MS_PER_DAY;
+    if (rank < policy.keep && ageDays <= policy.maxAgeDays) keepSet.add(name);
+  });
+  return keepSet;
 }
-function isStale(observed, nowMs, staleMs, isPidAlive) {
-  const record = observed.record;
-  if (record === void 0) return true;
-  if (!isPidAlive(record.pid)) return true;
-  return nowMs - record.acquired_at_ms >= staleMs;
-}
-function unlinkQuiet(path) {
-  try {
-    unlinkSync(path);
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-  }
-}
-function acquireLock(lockPath, opts = {}) {
-  const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
-  const now = opts.now ?? Date.now;
-  const sleep = opts.sleep ?? defaultSleep;
-  const pid = opts.pid ?? process.pid;
-  const isPidAlive = opts.isPidAlive ?? defaultIsPidAlive;
-  mkdirSync2(dirname2(lockPath), { recursive: true });
-  const nonce = randomBytes(12).toString("hex");
-  const tmpPath = `${lockPath}.${pid}.${nonce}.tmp`;
-  const deadline = now() + timeoutMs;
-  for (; ; ) {
-    const record = { pid, nonce, acquired_at_ms: now() };
-    let created = false;
-    try {
-      writeFileSync(tmpPath, JSON.stringify(record));
-      try {
-        linkSync(tmpPath, lockPath);
-        created = true;
-      } catch (err) {
-        if (err.code !== "EEXIST") throw err;
+function pruneLifecycle(dir, retain) {
+  const removed = [];
+  const kept = [];
+  const walk = (current) => {
+    for (const name of readdirSync(current)) {
+      const abs = join(current, name);
+      if (lstatSync(abs).isDirectory()) {
+        walk(abs);
+        continue;
       }
-    } finally {
-      unlinkQuiet(tmpPath);
-    }
-    const observed = observeLock(lockPath);
-    if (observed.record?.nonce === nonce) return makeHandle(lockPath, nonce, pid);
-    if (created) continue;
-    if (isStale(observed, now(), staleMs, isPidAlive)) {
-      const acted = recoverStale(lockPath, tmpPath, record, observed, pid, nonce, now, opts.onRecoverySubstitute);
-      if (acted) continue;
-    }
-    if (now() >= deadline) {
-      const ownerPid = observeLock(lockPath).record?.pid ?? observed.record?.pid ?? "unknown";
-      throw new Error(`nightshift: timed out waiting for lock at ${lockPath} (held by pid ${ownerPid})`);
-    }
-    sleep(pollMs);
-  }
-}
-function recoverStale(lockPath, tmpPath, record, observed, pid, nonce, now, onSubstitute) {
-  const mutexPath = `${lockPath}.recovery`;
-  if (!tryAcquireRecoveryMutex(mutexPath, pid, nonce, now)) return false;
-  try {
-    if (!sameBytes(observeLock(lockPath), observed)) return true;
-    try {
-      writeFileSync(tmpPath, JSON.stringify(record));
-      renameSync2(tmpPath, lockPath);
-      onSubstitute?.();
-    } finally {
-      unlinkQuiet(tmpPath);
-    }
-    return true;
-  } finally {
-    releaseRecoveryMutex(mutexPath, nonce);
-  }
-}
-function tryAcquireRecoveryMutex(mutexPath, pid, nonce, now) {
-  const tmp = `${mutexPath}.${pid}.${nonce}.tmp`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let linked = false;
-    try {
-      writeFileSync(tmp, JSON.stringify({ pid, nonce, acquired_at_ms: now() }));
-      try {
-        linkSync(tmp, mutexPath);
-        linked = true;
-      } catch (err) {
-        if (err.code !== "EEXIST") throw err;
-      }
-    } finally {
-      unlinkQuiet(tmp);
-    }
-    if (linked) return true;
-    const holder = observeLock(mutexPath).record;
-    const age = holder === void 0 ? Number.NaN : now() - holder.acquired_at_ms;
-    const fresh = holder !== void 0 && age >= 0 && age < RECOVERY_MUTEX_STALE_MS;
-    if (fresh) return false;
-    unlinkQuiet(mutexPath);
-  }
-  return false;
-}
-function releaseRecoveryMutex(mutexPath, nonce) {
-  const record = observeLock(mutexPath).record;
-  if (record === void 0 || record.nonce !== nonce) return;
-  unlinkQuiet(mutexPath);
-}
-function makeHandle(lockPath, nonce, pid) {
-  return {
-    release() {
-      const record = observeLock(lockPath).record;
-      if (record === void 0 || record.nonce !== nonce) return;
-      unlinkQuiet(lockPath);
-    },
-    assertHeld() {
-      const record = observeLock(lockPath).record;
-      if (record === void 0 || record.nonce !== nonce) {
-        const holder = record === void 0 ? "no one" : `pid ${record.pid}`;
-        throw new Error(
-          `nightshift: lock at ${lockPath} lost by pid ${pid} (now held by ${holder}); aborting before any further durable write`
-        );
+      const relPath = toPosixRelative(dir, abs);
+      const relNfc = relPath.normalize("NFC");
+      const nameNfc = name.normalize("NFC");
+      if (retain.has(relNfc) || retain.has(nameNfc) || underRetainedDir(retain, relNfc)) {
+        kept.push(relPath);
+      } else {
+        rmSync(abs, { force: true });
+        removed.push(relPath);
       }
     }
   };
+  walk(dir);
+  removeEmptyDirs(dir);
+  return { removed, kept };
 }
-
-// src/lib/record-run.ts
-function monthOf(date) {
-  return date.slice(0, 7);
-}
-var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
-function assertValidDate(date, field) {
-  if (!DATE_RE.test(date)) {
-    throw new Error(`${field} "${date}" must match YYYY-MM-DD`);
-  }
-}
-function assertValidRunId(runId) {
-  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
-    throw new Error(`run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and not "." or "..")`);
-  }
-}
-function findExistingRunId(metricsDir, runId) {
-  const runsDir = join3(metricsDir, "runs");
-  if (!existsSync4(runsDir)) return false;
-  const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl"));
-  for (const shard of shards) {
-    const records = readJsonl(join3(runsDir, shard));
-    if (records.some((r) => r.run_id === runId)) return true;
+function underRetainedDir(retain, relPath) {
+  for (let i = relPath.indexOf("/"); i !== -1; i = relPath.indexOf("/", i + 1)) {
+    if (retain.has(relPath.slice(0, i))) return true;
   }
   return false;
 }
-function runRecord(opts) {
-  if (opts.decisions.run_id !== opts.runId) {
-    throw new Error(
-      `decisions.run_id "${opts.decisions.run_id}" does not match run-meta run_id "${opts.runId}"`
-    );
-  }
-  if (opts.decisions.lane !== opts.lane) {
-    throw new Error(
-      `decisions.lane "${opts.decisions.lane}" does not match run-meta lane "${opts.lane}"`
-    );
-  }
-  if (opts.decisions.date !== opts.date) {
-    throw new Error(
-      `decisions.date "${opts.decisions.date}" does not match run-meta date "${opts.date}"`
-    );
-  }
-  assertValidDate(opts.date, "date");
-  assertValidDate(opts.decisions.date, "decisions.date");
-  assertValidRunId(opts.runId);
-  const lockPath = opts.lockPath ?? join3(opts.metricsDir, ".lock");
-  const lock = acquireLock(lockPath, opts.lock);
-  try {
-    if (findExistingRunId(opts.metricsDir, opts.runId)) {
-      throw new Error(`run_id already recorded: ${opts.runId}`);
-    }
-    const claimsDir = join3(opts.metricsDir, "runs", ".claims");
-    mkdirSync3(claimsDir, { recursive: true });
-    const claimPath = join3(claimsDir, opts.runId);
-    try {
-      const fd = openSync2(claimPath, "wx");
-      try {
-        writeSync2(fd, JSON.stringify({ ts: opts.ts, date: opts.date, lane: opts.lane }) + "\n");
-      } finally {
-        closeSync2(fd);
-      }
-    } catch (err) {
-      if (err.code === "EEXIST") {
-        throw new Error(`run_id already recorded (claim exists): ${opts.runId}`);
-      }
-      throw err;
-    }
-    lock.assertHeld();
-    const month = monthOf(opts.date);
-    const findingsPath = join3(opts.metricsDir, "findings", `${month}.jsonl`);
-    const runsPath = join3(opts.metricsDir, "runs", `${month}.jsonl`);
-    let findingsAppended = 0;
-    let recurringBumped = 0;
-    for (const d of opts.decisions.decisions) {
-      if (d.decision === "suppressed") continue;
-      const first_seen = d.decision === "recurring" ? d.first_seen : opts.date;
-      const finding = {
-        ...d.finding,
-        first_seen,
-        last_seen: opts.date,
-        run_id: opts.runId
-      };
-      appendJsonl(findingsPath, finding);
-      if (d.decision === "new") findingsAppended++;
-      else recurringBumped++;
-    }
-    const findings_created = opts.decisions.counts.confirmed + opts.decisions.counts.recurring + opts.rejectedTier1 + opts.rejectedTier2;
-    const runRecordRow = {
-      run_id: opts.runId,
-      ts: opts.ts,
-      date: opts.date,
-      lane: opts.lane,
-      pack_sha: opts.packSha,
-      selected: opts.selected,
-      reviewed: opts.reviewed,
-      findings_created,
-      confirmed: opts.decisions.counts.confirmed,
-      rejected_tier1: opts.rejectedTier1,
-      rejected_tier2: opts.rejectedTier2,
-      suppressed: opts.decisions.counts.suppressed,
-      usage_by_model: opts.usageByModel,
-      usage_spent: opts.usageSpent,
-      elapsed: opts.elapsed
-    };
-    appendJsonl(runsPath, runRecordRow);
-    if (opts.registryPath && opts.reviewedIds.length > 0) {
-      const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
-      const updates = /* @__PURE__ */ new Map();
-      for (const id of opts.reviewedIds) {
-        updates.set(id, {
-          last_reviewed: opts.date,
-          status: openSurfaces.has(id) ? "open-findings" : "green"
-        });
-      }
-      lock.assertHeld();
-      updateRegistryState(opts.registryPath, updates);
-    }
-    return { runRecord: runRecordRow, findingsAppended, recurringBumped };
-  } finally {
-    lock.release();
+function toPosixRelative(base, abs) {
+  return relative(base, abs).split(sep).join("/");
+}
+function removeEmptyDirs(dir) {
+  for (const name of readdirSync(dir)) {
+    const abs = join(dir, name);
+    if (!lstatSync(abs).isDirectory()) continue;
+    removeEmptyDirs(abs);
+    if (readdirSync(abs).length === 0) rmdirSync(abs);
   }
 }
 
-// src/bin/record.ts
+// src/lib/clean-run.ts
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
+var KEEP = 5;
+var MAX_AGE_DAYS = 7;
+function runClean(opts) {
+  if (opts.runRoot.trim() === "") {
+    throw new Error("runRoot must not be empty");
+  }
+  if (!RUN_ID_RE.test(opts.runId)) {
+    throw new Error(`invalid run id: ${opts.runId}`);
+  }
+  const rootResolved = resolve(opts.runRoot);
+  const runDir = resolve(opts.runRoot, opts.runId);
+  if (!runDir.startsWith(rootResolved + sep2)) {
+    throw new Error(`run id escapes run root: ${opts.runId}`);
+  }
+  let deletedRunDir = false;
+  if (opts.status === "success") {
+    deletedRunDir = existsSync2(runDir);
+    if (deletedRunDir) rmSync2(runDir, { recursive: true, force: true });
+  }
+  const pruned = prune(
+    opts.runRoot,
+    { kind: "time", keep: KEEP, maxAgeDays: MAX_AGE_DAYS },
+    { now: opts.now }
+  );
+  return { deletedRunDir, pruned };
+}
+
+// src/bin/clean.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
   try {
-    const decisionsPath = requireArg(args, "decisions");
-    const runMetaPath = requireArg(args, "run-meta");
-    if (!existsSync5(decisionsPath)) throw new Error(`decisions not found: ${decisionsPath}`);
-    if (!existsSync5(runMetaPath)) throw new Error(`run-meta not found: ${runMetaPath}`);
-    const decisions = readJson(decisionsPath);
-    const m = readJson(runMetaPath);
-    const res = runRecord({
-      decisions,
-      metricsDir: requireArg(args, "metrics-dir"),
-      registryPath: args.registry,
-      reviewedIds: m.reviewed_ids ?? [],
-      runId: m.run_id,
-      lane: m.lane,
-      date: m.date,
-      ts: m.ts,
-      packSha: m.pack_sha,
-      selected: m.selected,
-      reviewed: m.reviewed,
-      rejectedTier1: m.rejected_tier1,
-      rejectedTier2: m.rejected_tier2,
-      usageByModel: m.usage_by_model ?? {},
-      usageSpent: m.usage_spent ?? 0,
-      elapsed: m.elapsed ?? 0
-    });
+    const runRoot = requireArg(args, "run-root");
+    const runId = requireArg(args, "run-id");
+    const status = requireArg(args, "status");
+    if (status !== "success" && status !== "failure") {
+      throw new Error(`--status must be 'success' or 'failure', got '${status}'`);
+    }
+    const res = runClean({ runRoot, runId, status });
     process.stderr.write(
-      `record: logged=${res.findingsAppended} recurring=${res.recurringBumped} run=${m.run_id}
+      `clean: run=${runId} deleted=${res.deletedRunDir} pruned=${res.pruned.removed.length}
 `
     );
     process.exit(0);
   } catch (err) {
-    process.stderr.write(`record: ${err.message}
+    process.stderr.write(`clean: ${err.message}
 `);
     process.exit(2);
   }

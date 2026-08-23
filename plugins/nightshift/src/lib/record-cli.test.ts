@@ -25,8 +25,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Write a valid decisions.json and return its path. */
-function writeDecisions(): string {
+/** Write a valid decisions.json (optionally overriding provenance fields) and return its path. */
+function writeDecisions(over: Record<string, string> = {}): string {
   const p = join(dir, "decisions.json");
   writeFileSync(
     p,
@@ -34,6 +34,7 @@ function writeDecisions(): string {
       run_id: "ns-2026-06-21-sec-test",
       lane: "security",
       date: "2026-06-21",
+      ...over,
       decisions: [
         {
           decision: "new",
@@ -77,9 +78,15 @@ function writeRunMeta(): string {
 
 /** Full valid args except for caller overrides (undefined drops the flag). */
 function fullArgs(overrides: Record<string, string | undefined> = {}): string[] {
+  // NOTE: writeDecisions()/writeRunMeta() always write to the same fixed path
+  // (dir/decisions.json, dir/run.json), so defaults must be built lazily —
+  // only when the caller hasn't already written its own content to that path
+  // via an override — or the eagerly-evaluated default write here would
+  // clobber a file the caller (e.g. writeDecisions({ run_id: ... })) already
+  // wrote before fullArgs was even invoked.
   const defaults: Record<string, string> = {
-    "--decisions": writeDecisions(),
-    "--run-meta": writeRunMeta(),
+    "--decisions": "--decisions" in overrides ? overrides["--decisions"]! : writeDecisions(),
+    "--run-meta": "--run-meta" in overrides ? overrides["--run-meta"]! : writeRunMeta(),
     "--metrics-dir": join(dir, "metrics"),
   };
   const merged = { ...defaults, ...overrides };
@@ -133,5 +140,24 @@ describe("bin/record argv + exit-code contract", () => {
     expect(code).toBe(0);
     expect(stderr).toMatch(/logged=1/);
     expect(stderr).toMatch(/run=ns-2026-06-21-sec-test/);
+  });
+
+  it("exits 2 with 'run_id' in stderr when decisions.run_id does not match run-meta run_id", () => {
+    const argv = fullArgs({ "--decisions": writeDecisions({ run_id: "ns-FORGED-OTHER" }) });
+    const { code, stderr } = runCli(argv);
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/run_id/);
+  });
+
+  it("exits 2 on a second invocation with the same run_id (already recorded)", () => {
+    const argv = fullArgs();
+    const first = runCli(argv);
+    expect(first.code).toBe(0);
+
+    // Retry with a fresh decisions/run-meta pair carrying the SAME run_id.
+    const retryArgv = fullArgs();
+    const second = runCli(retryArgv);
+    expect(second.code).toBe(2);
+    expect(second.stderr).toMatch(/already recorded/);
   });
 });

@@ -7410,9 +7410,10 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
+var tmpSeq = 0;
 function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);

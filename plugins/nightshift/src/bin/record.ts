@@ -1,7 +1,9 @@
 // bin/record — consume decisions.json + a run-meta file and durably write the
 // stateful path (per-run record, finding lines, registry state). Thin argv shell
-// over lib/record-run (E4). Exit 0 ok, 2 on error (workflow aborts; state stays
-// at last good).
+// over lib/record-run (E4). Exit 0 ok, 2 on error (workflow aborts). See
+// lib/record-run.ts for the actual durability guarantee: nothing is written
+// before provenance + format validation + the run_id claim succeed; a failure
+// after that point is a diagnosable partial write, not "state at last good".
 //
 // Usage:
 //   node bin/record.mjs --decisions <decisions.json> --run-meta <run.json> \
