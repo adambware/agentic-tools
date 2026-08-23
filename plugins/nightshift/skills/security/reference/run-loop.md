@@ -40,6 +40,10 @@ id) and takes the top **K = `manifest.window_budget_k[<lane>]`**, writing `surfa
 if many entries are overdue. Surplus overdue entries are a **digest signal** (overdue
 registry areas) that routes to the digest/trend, not a reason to review more this run.
 
+K sizing is **pack-side**: a pack that wants a bigger window raises its own
+`window_budget_k` in its `.nightshift/manifest.yml`; the engine's default pack template
+stays modest. (Sizing K to the repo is legitimate; raising it mid-backlog is not.)
+
 ### Fan-out budget table (score band → compute allocation)
 
 The selection `score = max(staleness, change_flag) * weight` doubles as a
@@ -47,9 +51,16 @@ compute-allocation key. Allocate per selected entry by band:
 
 | Band | Reviewers | Reads | Refuter |
 |---|---|---|---|
-| **low / medium** | 1 | ~5–8 | Tier-1 only |
-| **high** | 1 | ~8–10 | Tier-1 |
-| **critical** (or `change_flag` on a critical/high entry) | 1 | ~10–12 | Tier-1 + conditional Tier-2 |
+| **low / medium** | 1 | ~10–15 | Tier-1 only |
+| **high** | 1 | ~15–20 | Tier-1 |
+| **critical** (or `change_flag` on a critical/high entry) | 1 | ~20–30 | Tier-1 + conditional Tier-2 |
+
+**v3 model refresh — loosen the reviewer, keep the gate.** The reviewers and the Tier-2
+refuter run on **Opus 5** with roughly doubled read budgets (the table above); Tier-1
+stays cheap on **Haiku 4.5**. Everything gate-shaped is **unchanged**: Tier-1 runs on
+every candidate, the Tier-2 union predicate, no-refute-no-log, `bin/validate` on every
+model-written artifact, dedupe + suppressions, the severity gates — and
+`CLAUDE_CODE_SUBAGENT_MODEL` remains the global downshift lever.
 
 ### Parallelism (inside K, never beyond it)
 
@@ -83,14 +94,15 @@ lane is not locked to one stack.
 
 Per selected vector, dispatch the reviewer then run the **two-stage refuter gate**:
 
-1. **Reviewer** — `${CLAUDE_PLUGIN_ROOT}/agents/security-reviewer.md`. Reviews the
+1. **Reviewer** — `${CLAUDE_PLUGIN_ROOT}/agents/security-reviewer.md`
+   (**Opus 5, `maxTurns: 24`**; dispatch effort `high`, `xhigh` on the critical band). Reviews the
    mapped `area` defensively: *is this surface adequately protected?* Produces a candidate
    write-up with: `asvs_ref`, `location`, `why_abusable_under_preconditions`, and
    `preconditions: {required_role/session, tenant/account setup, affected path, impact,
    confidence}`.
 
 2. **Tier-1 refuter (ALWAYS)** — `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter.md`
-   (**haiku, `maxTurns: 8`, low effort**). An independent second reviewer given the full
+   (**Haiku 4.5, `maxTurns: 10`, dispatch effort `low`**). An independent second reviewer given the full
    proposed finding, but instructed to ignore the reviewer's narrative and re-read the
    source code itself. Must actively **refute** the candidate. Runs on **every** candidate. If it cannot refute (the finding
    survives), the candidate advances to the Tier-2 predicate. If it refutes, the candidate
@@ -98,7 +110,8 @@ Per selected vector, dispatch the reviewer then run the **two-stage refuter gate
    **No Tier-1 refute ⇒ no finding may be logged.**
 
 3. **Tier-2 refuter (CONDITIONAL)** — `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter-2.md`
-   (**sonnet/high, `maxTurns: 12`**). Runs **only** on a Tier-1 survivor that is
+   (**Opus 5, `maxTurns: 16`**; dispatch effort `high`, `xhigh` for critical/high
+   survivors). Runs **only** on a Tier-1 survivor that is
    **critical/high severity OR `confidence == low`** (union predicate). It re-reads
    independently; if it refutes, the candidate is dropped and counted in `rejected_tier2`.
    A Tier-1 survivor that does not meet the predicate skips Tier-2 and proceeds to dedupe.
@@ -109,7 +122,8 @@ exploit payloads or offensive tooling. This is assurance, not a pentest.
 
 ### Design
 
-`${CLAUDE_PLUGIN_ROOT}/agents/ux-reviewer.md` drives each stale/changed flow through the
+`${CLAUDE_PLUGIN_ROOT}/agents/ux-reviewer.md` (**Opus 5, `maxTurns: 24`**, dispatch
+effort `high`) drives each stale/changed flow through the
 manifest's `stack_adapter.browser` adapter (injected as the scoped grant — see step 2),
 against a seeded `fixtures/` persona (`{account_type, plan, permissions, data_seed,
 feature_flags, credentials_ref, success_criteria}`). Record steps-to-complete,

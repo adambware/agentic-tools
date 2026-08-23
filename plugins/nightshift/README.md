@@ -65,10 +65,10 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 
 | Agent | Role |
 |-------|------|
-| `security-reviewer` | Defensive review of a vector's code surface ("is this adequately protected?"). Proposes — never files — a finding with `preconditions` and an optional failing invariant test. **Assurance, not a pentest:** no exploit payloads or offensive tooling. |
-| `security-refuter` | **Tier-1, always.** Mandatory independent re-read of **every** candidate — given the full proposed finding but instructed to ignore the reviewer's narrative and re-read source itself. Must *refute* before a finding survives; rejections count toward `rejected_tier1`. (haiku, `maxTurns 8`, low effort.) |
-| `security-refuter-2` | **Tier-2, conditional.** Runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A second, harder pass; rejections count toward `rejected_tier2`. (sonnet/high, `maxTurns 12`.) |
-| `ux-reviewer` | Designer friction & a11y auditor for the design lane. Requires seeded `fixtures/` personas; drives flows via the manifest browser adapter. Every ticket requires an objective `anchor`. |
+| `security-reviewer` | Defensive review of a vector's code surface ("is this adequately protected?"). Proposes — never files — a finding with `preconditions` and an optional failing invariant test. **Assurance, not a pentest:** no exploit payloads or offensive tooling. (Opus 5, `maxTurns 24`.) |
+| `security-refuter` | **Tier-1, always.** Mandatory independent re-read of **every** candidate — given the full proposed finding but instructed to ignore the reviewer's narrative and re-read source itself. Must *refute* before a finding survives; rejections count toward `rejected_tier1`. (Haiku 4.5, `maxTurns 10`, low effort.) |
+| `security-refuter-2` | **Tier-2, conditional.** Runs **only** when a Tier-1 survivor is critical/high severity **OR** `confidence == low` (union predicate). A second, harder pass; rejections count toward `rejected_tier2`. (Opus 5/high, `maxTurns 16`.) |
+| `ux-reviewer` | Designer friction & a11y auditor for the design lane. Requires seeded `fixtures/` personas; drives flows via the manifest browser adapter. Every ticket requires an objective `anchor`. (Opus 5, `maxTurns 24`.) |
 
 ## How a run works (the bounded loop)
 
