@@ -50,12 +50,12 @@ Intersect these paths with each vector's `area` globs to drive `change_flag` in 
    scoped to that vector's `area` (parallelize reviewers 3–5 at a time inside K):
    - **Reviewer** — dispatch `${CLAUDE_PLUGIN_ROOT}/agents/security-reviewer.md`.
    - **Tier-1 refuter (ALWAYS)** — dispatch
-     `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter.md` (haiku, `maxTurns: 8`, low effort)
+     `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter.md` (Haiku 4.5, `maxTurns: 10`, low effort)
      on **every** candidate. It must actively refute; a survivor proceeds, a refuted
      candidate is dropped and counted in `rejected_tier1`.
      **No Tier-1 refute → no log.**
    - **Tier-2 refuter (CONDITIONAL)** — dispatch
-     `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter-2.md` (sonnet/high, `maxTurns: 12`)
+     `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter-2.md` (Opus 5/high, `maxTurns: 16`)
      **only** when a Tier-1 survivor is **critical/high severity OR `confidence == low`**
      (union predicate). A Tier-2 refutation drops the candidate and counts in
      `rejected_tier2`. critical/high survivors get `needs_human_verification: true`.

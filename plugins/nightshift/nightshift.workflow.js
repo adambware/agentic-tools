@@ -3,8 +3,9 @@
 // THIN-SHELL RULE (E4): this file carries ZERO decision logic. No `if`, no score,
 // no threshold, no selection — every such branch lives in a vitest-covered bin/
 // command. The workflow only SEQUENCES: plumbing (free Bash → bin/*.mjs) and
-// judgment (subscription agents). LOC ceiling ~60; any new conditional here must
-// instead become a bin/ command with a test.
+// judgment (subscription agents). The invariant is ZERO conditionals — no line
+// count proxy; any new conditional here must instead become a bin/ command with
+// a test.
 //
 // FILES-NOT-TEXT (E2/E3): plumbing agents only invoke a script and return its exit
 // code / stderr tail. Judgment agents read/write schema'd files on disk

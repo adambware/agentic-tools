@@ -16,8 +16,11 @@ export interface GuardDecision {
 }
 
 // Env var that arms the guard. The guard is defense-in-depth for a lane run —
-// outside one it must be inert so normal interactive work is unaffected. A
-// dedicated/overnight lane session exports this; the workflow self-arms it.
+// outside one it must be inert so normal interactive work is unaffected. Arming
+// is LAUNCHER-SIDE: the launching session exports this (e.g.
+// `NIGHTSHIFT_LANE_RUN=1 claude`) so the env reaches the hook subprocess. The
+// workflow cannot self-arm — the Workflow sandbox has no `process` (see
+// nightshift.workflow.js).
 export const LANE_RUN_ENV = "NIGHTSHIFT_LANE_RUN";
 
 // The guard only enforces while a lane run is active. Active = LANE_RUN_ENV set
