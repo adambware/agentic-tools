@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep3) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep3 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep3 + cb;
+              sep3 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep3 += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep3 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep3 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep3)
+                for (const st of sep3) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep3 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep3 === " ")
+            sep3 = "\n";
+          else if (!prevMoreIndented && sep3 === "\n")
+            sep3 = "\n\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep3 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep3 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep3 + content;
+          sep3 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep = " ";
+      let sep3 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep3 === "\n")
+            res += sep3;
           else
-            sep = "\n";
+            sep3 = "\n";
         } else {
-          res += sep + match[1];
-          sep = " ";
+          res += sep3 + match[1];
+          sep3 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep3 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep3, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep3)
+        for (const st of sep3)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep3;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep3 = scalar.end;
+            sep3.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep3 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep3 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep3 = it.sep;
+                  sep3.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep3 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep3 = fc.end.splice(1, fc.end.length);
+            sep3.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep3 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7360,6 +7360,9 @@ var require_dist = __commonJS({
   }
 });
 
+// src/bin/merge-candidates.ts
+import { join as join3 } from "node:path";
+
 // src/lib/args.ts
 function parseArgs(argv) {
   const out = {};
@@ -7388,8 +7391,48 @@ function requireArg(args, key) {
   return val;
 }
 
-// src/lib/validate-cli.ts
-import { existsSync as existsSync2 } from "node:fs";
+// src/lib/merge-candidates-run.ts
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join2, resolve as resolve2, sep as sep2 } from "node:path";
+
+// src/lib/io.ts
+var import_yaml = __toESM(require_dist(), 1);
+import {
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  renameSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  appendFileSync
+} from "node:fs";
+import { dirname, join } from "node:path";
+var tmpSeq = 0;
+function atomicWrite(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+function readJson(path) {
+  if (!existsSync(path)) return void 0;
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+function writeJson(path, value) {
+  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
+}
+function basename(path) {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? path : path.slice(i + 1);
+}
 
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
@@ -7425,14 +7468,8 @@ function reqNum(o, k, errors, where) {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
-function isRealDate(s) {
-  if (!DATE_RE.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
-}
 function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !isRealDate(o[k]))
+  if (typeof o[k] !== "string" || !DATE_RE.test(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqSafeId(o, k, errors, where) {
@@ -7543,43 +7580,8 @@ function validateDailyMetrics(x) {
   ])
     reqNum(x, k, errors, "daily-metrics");
   for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number or null`);
-  for (const k of ["cost_usd_7d", "cost_usd_30d"])
-    if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
-  return finish(errors);
-}
-function validateCostRecord(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["cost-record: not an object"]);
-  reqStr(x, "run_id", errors, "cost-record");
-  reqEnum(x, "lane", LANES, errors, "cost-record");
-  reqDate(x, "date", errors, "cost-record");
-  reqStr(x, "ts", errors, "cost-record");
-  reqNum(x, "usd", errors, "cost-record");
-  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
-    errors.push("cost-record: usd must be >= 0");
-  for (const k of [
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens"
-  ]) {
-    reqNum(x, k, errors, "cost-record");
-    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
-      const n = x[k];
-      if (n < 0 || !Number.isInteger(n))
-        errors.push(`cost-record: ${k} must be a nonnegative integer`);
-    }
-  }
-  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
-  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
-  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
-  if (x.status === "ok" && x.terminal_reason !== void 0)
-    errors.push("cost-record: terminal_reason only allowed when status=error");
+    if (x[k] !== null && typeof x[k] !== "number")
+      errors.push(`daily-metrics: ${k} must be a number or null`);
   return finish(errors);
 }
 function validateSurface(x) {
@@ -7610,124 +7612,219 @@ var VALIDATORS = {
   suppression: validateSuppression,
   "run-metrics": validateRunMetrics,
   "daily-metrics": validateDailyMetrics,
-  surface: validateSurface,
-  "cost-record": validateCostRecord
+  surface: validateSurface
 };
-function validateArtifact(schema, data) {
-  const fn = VALIDATORS[schema];
-  if (!fn) return { ok: false, errors: [`unknown schema: ${schema}`] };
-  if (Array.isArray(data)) {
-    const errors = [];
-    data.forEach((item, i) => {
-      const r = fn(item);
-      if (!r.ok) errors.push(...r.errors.map((e) => `[${i}] ${e}`));
-    });
-    return finish(errors);
-  }
-  return fn(data);
-}
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
 
-// src/lib/io.ts
-import {
-  openSync,
-  writeSync,
-  fsyncSync,
-  closeSync,
-  renameSync,
-  readFileSync,
-  existsSync,
-  mkdirSync,
-  appendFileSync
-} from "node:fs";
-var import_yaml = __toESM(require_dist(), 1);
-function readJsonl(path) {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(JSON.parse(trimmed));
+// src/lib/contain.ts
+import { existsSync as existsSync2, lstatSync, realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
   }
-  return out;
 }
-function readYaml(path) {
-  if (!existsSync(path)) return void 0;
-  return (0, import_yaml.parse)(readFileSync(path, "utf8"));
+function assertNotSymlink(path, where) {
+  const st = lstatOrNull(path);
+  if (st !== null && st.isSymbolicLink()) {
+    throw new Error(
+      `${where}: ${path} is a symlink \u2014 refusing (containment cannot be verified through links)`
+    );
+  }
 }
-function readJson(path) {
-  if (!existsSync(path)) return void 0;
-  return JSON.parse(readFileSync(path, "utf8"));
+function containedSurfaceDir(runDir, sid, where) {
+  const rootResolved = resolve(runDir);
+  const surfacesDir = resolve(runDir, "surfaces");
+  const dir = resolve(surfacesDir, sid);
+  if (!dir.startsWith(rootResolved + sep)) {
+    throw new Error(`${where}: surface id escapes the run dir: ${sid}`);
+  }
+  for (const p of [surfacesDir, dir]) {
+    const st = lstatOrNull(p);
+    if (st !== null && st.isSymbolicLink()) {
+      throw new Error(
+        `${where}: ${p} is a symlink \u2014 refusing (containment cannot be verified through links)`
+      );
+    }
+  }
+  if (existsSync2(dir)) {
+    const realDir = realpathSync(dir);
+    const realRoot = realpathSync(rootResolved);
+    if (!realDir.startsWith(realRoot + sep)) {
+      throw new Error(
+        `${where}: surfaces/${sid} physically resolves outside the run dir (${realDir}) \u2014 refusing`
+      );
+    }
+  }
+  return dir;
+}
+function assertNoCaseFoldCollision(seenFolded, id, where) {
+  const folded = id.toLowerCase();
+  const prior = seenFolded.get(folded);
+  if (prior !== void 0 && prior !== id) {
+    throw new Error(
+      `${where}: surface ids "${prior}" and "${id}" collide case-insensitively \u2014 they map to one directory on a case-insensitive filesystem`
+    );
+  }
+  seenFolded.set(folded, id);
 }
 
-// src/lib/validate-cli.ts
-var KNOWN_LIST_KEYS = ["vectors", "flows", "suppressions", "entries"];
-function inferFormat(filePath) {
-  if (filePath.endsWith(".jsonl")) return "jsonl";
-  if (filePath.endsWith(".yml") || filePath.endsWith(".yaml")) return "yaml";
-  return "json";
+// src/lib/merge-candidates-run.ts
+function candidateSurface(x) {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
+  const dk = x.dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return null;
+  const surface = dk.surface;
+  return typeof surface === "string" ? surface : null;
 }
-function maybeUnwrap(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return value;
-  }
-  const obj = value;
-  const keys = Object.keys(obj);
-  if (keys.length !== 1) return value;
-  const key = keys[0];
-  if (key === void 0) return value;
-  if (KNOWN_LIST_KEYS.includes(key)) {
-    return obj[key];
-  }
-  return value;
-}
-function runValidate(opts) {
-  if (!existsSync2(opts.filePath)) {
-    throw new Error(`file not found: ${opts.filePath}`);
-  }
-  const format = opts.format ?? inferFormat(opts.filePath);
+function readArrayOrIncomplete(path) {
   let data;
-  if (format === "jsonl") {
-    data = readJsonl(opts.filePath);
-  } else if (format === "yaml") {
-    data = maybeUnwrap(readYaml(opts.filePath));
-  } else {
-    data = maybeUnwrap(readJson(opts.filePath));
+  try {
+    data = readJson(path);
+  } catch {
+    return null;
   }
-  const count = Array.isArray(data) ? data.length : 1;
-  const result = validateArtifact(opts.schema, data);
-  return { ok: result.ok, errors: result.errors, count };
+  if (!Array.isArray(data)) return null;
+  return data;
+}
+function runMergeCandidates(opts) {
+  if (opts.runDir.trim() === "") {
+    throw new Error("runDir must not be empty");
+  }
+  if (!existsSync3(opts.surfacesPath)) {
+    throw new Error(`surfaces file not found: ${opts.surfacesPath}`);
+  }
+  const surfaces = readJson(opts.surfacesPath);
+  if (!Array.isArray(surfaces)) {
+    throw new Error(`surfaces.json must be a JSON array: ${opts.surfacesPath}`);
+  }
+  const runDirResolved = resolve2(opts.runDir);
+  const ids = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  const seenFolded = /* @__PURE__ */ new Map();
+  surfaces.forEach((s, i) => {
+    if (typeof s !== "object" || s === null || Array.isArray(s)) {
+      throw new Error(`surfaces.json [${i}] must be an object with a string id`);
+    }
+    const id = s.id;
+    if (typeof id !== "string" || id.length === 0) {
+      throw new Error(`surfaces.json [${i}] id must be a non-empty string`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`surfaces.json [${i}] duplicate surface id: ${id}`);
+    }
+    seenIds.add(id);
+    assertNoCaseFoldCollision(seenFolded, id, `surfaces.json [${i}]`);
+    if (!isSafeId(id)) {
+      throw new Error(
+        `surfaces.json [${i}] unsafe surface id "${id}": must match ${SAFE_ID_RE.source} and not be "." or ".."`
+      );
+    }
+    const dir = resolve2(opts.runDir, "surfaces", id);
+    if (!dir.startsWith(runDirResolved + sep2)) {
+      throw new Error(`surfaces.json [${i}] surface id escapes the run dir: ${id}`);
+    }
+    ids.push(id);
+  });
+  const merged = [];
+  const skipped = [];
+  const reviewed = [];
+  const reviewedSeen = /* @__PURE__ */ new Set();
+  const proposed = [];
+  const survivors = [];
+  for (const sid of ids) {
+    const dir = containedSurfaceDir(opts.runDir, sid, `surfaces/${sid}`);
+    const reviewedPath = join2(dir, "reviewed.json");
+    const proposedPath = join2(dir, "candidates.proposed.json");
+    const survivorsPath = join2(dir, "candidates.json");
+    if (!existsSync3(reviewedPath) || !existsSync3(proposedPath) || !existsSync3(survivorsPath)) {
+      skipped.push(sid);
+      continue;
+    }
+    assertNotSymlink(reviewedPath, `surfaces/${sid}/reviewed.json`);
+    assertNotSymlink(proposedPath, `surfaces/${sid}/candidates.proposed.json`);
+    assertNotSymlink(survivorsPath, `surfaces/${sid}/candidates.json`);
+    const reviewedRaw = readArrayOrIncomplete(reviewedPath);
+    const proposedRaw = readArrayOrIncomplete(proposedPath);
+    const survivorsRaw = readArrayOrIncomplete(survivorsPath);
+    if (reviewedRaw === null || proposedRaw === null || survivorsRaw === null) {
+      skipped.push(sid);
+      continue;
+    }
+    reviewedRaw.forEach((r, i) => {
+      if (typeof r !== "string" || r.length === 0) {
+        throw new Error(`surfaces/${sid}/reviewed.json [${i}] must be a non-empty string id`);
+      }
+      if (r !== sid) {
+        throw new Error(
+          `surfaces/${sid}/reviewed.json [${i}] claims surface "${r}": a surface dir may only claim its own id "${sid}"`
+        );
+      }
+      if (reviewedSeen.has(r)) {
+        throw new Error(`reviewed union: duplicate surface id: ${r}`);
+      }
+      reviewedSeen.add(r);
+      reviewed.push(r);
+    });
+    proposedRaw.forEach((c, i) => {
+      const surface = candidateSurface(c);
+      if (surface === null) {
+        throw new Error(
+          `surfaces/${sid}/candidates.proposed.json [${i}] has no well-formed dedupe_key.surface string: it cannot be bound to a surface`
+        );
+      }
+      if (surface !== sid) {
+        throw new Error(
+          `surfaces/${sid}/candidates.proposed.json [${i}] dedupe_key.surface "${surface}" does not match its surface dir "${sid}"`
+        );
+      }
+    });
+    survivorsRaw.forEach((c, i) => {
+      const surface = candidateSurface(c);
+      if (surface === null) {
+        throw new Error(
+          `surfaces/${sid}/candidates.json [${i}] has no well-formed dedupe_key.surface string: it cannot be bound to a surface`
+        );
+      }
+      if (surface !== sid) {
+        throw new Error(
+          `surfaces/${sid}/candidates.json [${i}] dedupe_key.surface "${surface}" does not match its surface dir "${sid}"`
+        );
+      }
+    });
+    proposed.push(...proposedRaw);
+    survivors.push(...survivorsRaw);
+    merged.push(sid);
+  }
+  writeJson(join2(opts.runDir, "reviewed.json"), reviewed);
+  writeJson(join2(opts.runDir, "candidates.proposed.json"), proposed);
+  writeJson(join2(opts.runDir, "candidates.json"), survivors);
+  return {
+    merged,
+    skipped,
+    reviewedCount: reviewed.length,
+    proposedCount: proposed.length,
+    survivorsCount: survivors.length
+  };
 }
 
-// src/bin/validate.ts
+// src/bin/merge-candidates.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const schema = requireArg(args, "schema");
-  const filePath = requireArg(args, "file");
-  if (!SCHEMA_NAMES.includes(schema)) {
+  try {
+    const runDir = requireArg(args, "run-dir");
+    const surfacesPath = args.surfaces ?? join3(runDir, "surfaces.json");
+    const res = runMergeCandidates({ runDir, surfacesPath });
+    const skipped = res.skipped.length > 0 ? ` [${res.skipped.join(",")}]` : "";
     process.stderr.write(
-      `validate: unknown schema '${schema}' (expected: ${SCHEMA_NAMES.join("|")})
+      `merge-candidates: merged=${res.merged.length} skipped=${res.skipped.length}${skipped} proposed=${res.proposedCount} survivors=${res.survivorsCount} -> ${runDir}
 `
     );
-    process.exit(2);
-  }
-  const format = args.format;
-  try {
-    const res = runValidate({ schema, filePath, format });
-    if (res.ok) {
-      process.stderr.write(`validate: OK ${res.count} record(s) [${schema}]
-`);
-      process.exit(0);
-    } else {
-      for (const err of res.errors) {
-        process.stderr.write(`validate: ${err}
-`);
-      }
-      process.exit(1);
-    }
+    process.exit(0);
   } catch (err) {
-    process.stderr.write(`validate: ${err.message}
+    process.stderr.write(`merge-candidates: ${err.message}
 `);
     process.exit(2);
   }

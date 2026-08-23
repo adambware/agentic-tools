@@ -661,3 +661,51 @@ describe("computeDailyRollup — duplicate run_id (retry replay)", () => {
     expect(result.cost_usd_7d).toBeCloseTo(10, 4);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tier-2 rejections MOVE the FPR (A4/T2)
+// ---------------------------------------------------------------------------
+// rejected_tier2 was hard-coded to 0 before run-meta gained --tier2, so it was
+// possible for the field to be plumbed everywhere and still be inert. These
+// tests pin the actual arithmetic: a Tier-2 rejection changes fpr_7d.
+//
+// WHY findings_created moves together with rejected_tier2: bin/record does not
+// take findings_created as an input, it DERIVES it as
+//   confirmed + recurring + rejected_tier1 + rejected_tier2
+// (= proposed_count - suppressed). So a run that rejects one more candidate at
+// Tier-2 also created one more finding — the denominator grows with the
+// numerator. Holding findings_created fixed while incrementing rejected_tier2
+// would be a state bin/record can never emit, and would overstate the movement.
+
+describe("Tier-2 rejections move the FPR", () => {
+  it("fpr_7d differs between two otherwise-identical runs when one rejects at Tier-2", () => {
+    // Baseline: 4 findings created, 1 rejected at Tier-1, none at Tier-2.
+    const withoutTier2 = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 4, 1, 0)] }),
+    );
+    // Same run plus one Tier-2 rejection: findings_created 4 -> 5 (record's
+    // derivation), rejected_tier2 0 -> 1. Everything else identical.
+    const withTier2 = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 5, 1, 1)] }),
+    );
+
+    expect(withoutTier2.fpr_7d).toBe(25); // 1 / 4
+    expect(withTier2.fpr_7d).toBe(40); // (1 + 1) / 5
+    expect(withTier2.fpr_7d).not.toBe(withoutTier2.fpr_7d);
+    // Same movement in the 30-day window (single run, both windows cover it).
+    expect(withoutTier2.fpr_30d).toBe(25);
+    expect(withTier2.fpr_30d).toBe(40);
+  });
+
+  it("a Tier-2-only rejection lifts the FPR off zero", () => {
+    // No Tier-1 rejections at all: the whole FPR comes from Tier-2.
+    const clean = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 3, 0, 0)] }),
+    );
+    const tier2Only = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 4, 0, 1)] }),
+    );
+    expect(clean.fpr_7d).toBe(0); // 0 / 3
+    expect(tier2Only.fpr_7d).toBe(25); // 1 / 4
+  });
+});

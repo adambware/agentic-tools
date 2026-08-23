@@ -7495,6 +7495,17 @@ function anyGlobMatch(globs, paths) {
   return paths.some((p) => res.some((r) => r.test(p)));
 }
 
+// src/lib/dispatch.ts
+var MODEL_BY_BAND = {
+  critical: { model: "opus", effort: "high", maxTurns: 40 },
+  high: { model: "opus", effort: "medium", maxTurns: 32 },
+  medium: { model: "sonnet", effort: "medium", maxTurns: 24 },
+  low: { model: "haiku", effort: "low", maxTurns: 16 }
+};
+function dispatchForBand(band) {
+  return { ...MODEL_BY_BAND[band] };
+}
+
 // src/lib/staleness.ts
 var MAX_STALENESS = 1e9;
 function daysBetween(from, to) {
@@ -7526,6 +7537,7 @@ function selectSurfaces(entries, opts) {
     const changed = changedFilesFor(entry);
     const change_flag = anyGlobMatch(entry.area, changed) ? 1 : 0;
     const score = computeScore(staleness, change_flag, entry.weight);
+    const band = computeBand(entry.weight, change_flag);
     return {
       id: entry.id,
       title: entry.title,
@@ -7534,7 +7546,8 @@ function selectSurfaces(entries, opts) {
       staleness,
       change_flag,
       score,
-      band: computeBand(entry.weight, change_flag),
+      band,
+      dispatch: dispatchForBand(band),
       ...entry.asvs_ref ? { asvs_ref: entry.asvs_ref } : {},
       ...entry.persona ? { persona: entry.persona } : {}
     };

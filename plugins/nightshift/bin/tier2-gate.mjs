@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep = " ";
+      let sep2 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res += sep + match[1];
-          sep = " ";
+          res += sep2 + match[1];
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7388,8 +7388,53 @@ function requireArg(args, key) {
   return val;
 }
 
-// src/lib/validate-cli.ts
-import { existsSync as existsSync2 } from "node:fs";
+// src/lib/tier2-gate-run.ts
+import { existsSync as existsSync3 } from "node:fs";
+import { join as join2 } from "node:path";
+
+// src/lib/io.ts
+var import_yaml = __toESM(require_dist(), 1);
+import {
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  renameSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  appendFileSync
+} from "node:fs";
+import { dirname, join } from "node:path";
+var tmpSeq = 0;
+function atomicWrite(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+}
+function readJson(path) {
+  if (!existsSync(path)) return void 0;
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+function writeJson(path, value) {
+  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
+}
+function basename(path) {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? path : path.slice(i + 1);
+}
+
+// src/lib/dedupekey.ts
+function dedupeKeyString(k) {
+  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
+}
 
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
@@ -7425,14 +7470,8 @@ function reqNum(o, k, errors, where) {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
-function isRealDate(s) {
-  if (!DATE_RE.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
-}
 function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !isRealDate(o[k]))
+  if (typeof o[k] !== "string" || !DATE_RE.test(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqSafeId(o, k, errors, where) {
@@ -7543,43 +7582,8 @@ function validateDailyMetrics(x) {
   ])
     reqNum(x, k, errors, "daily-metrics");
   for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number or null`);
-  for (const k of ["cost_usd_7d", "cost_usd_30d"])
-    if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
-  return finish(errors);
-}
-function validateCostRecord(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["cost-record: not an object"]);
-  reqStr(x, "run_id", errors, "cost-record");
-  reqEnum(x, "lane", LANES, errors, "cost-record");
-  reqDate(x, "date", errors, "cost-record");
-  reqStr(x, "ts", errors, "cost-record");
-  reqNum(x, "usd", errors, "cost-record");
-  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
-    errors.push("cost-record: usd must be >= 0");
-  for (const k of [
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens"
-  ]) {
-    reqNum(x, k, errors, "cost-record");
-    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
-      const n = x[k];
-      if (n < 0 || !Number.isInteger(n))
-        errors.push(`cost-record: ${k} must be a nonnegative integer`);
-    }
-  }
-  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
-  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
-  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
-  if (x.status === "ok" && x.terminal_reason !== void 0)
-    errors.push("cost-record: terminal_reason only allowed when status=error");
+    if (x[k] !== null && typeof x[k] !== "number")
+      errors.push(`daily-metrics: ${k} must be a number or null`);
   return finish(errors);
 }
 function validateSurface(x) {
@@ -7610,124 +7614,258 @@ var VALIDATORS = {
   suppression: validateSuppression,
   "run-metrics": validateRunMetrics,
   "daily-metrics": validateDailyMetrics,
-  surface: validateSurface,
-  "cost-record": validateCostRecord
+  surface: validateSurface
 };
-function validateArtifact(schema, data) {
-  const fn = VALIDATORS[schema];
-  if (!fn) return { ok: false, errors: [`unknown schema: ${schema}`] };
-  if (Array.isArray(data)) {
-    const errors = [];
-    data.forEach((item, i) => {
-      const r = fn(item);
-      if (!r.ok) errors.push(...r.errors.map((e) => `[${i}] ${e}`));
-    });
-    return finish(errors);
-  }
-  return fn(data);
-}
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
 
-// src/lib/io.ts
-import {
-  openSync,
-  writeSync,
-  fsyncSync,
-  closeSync,
-  renameSync,
-  readFileSync,
-  existsSync,
-  mkdirSync,
-  appendFileSync
-} from "node:fs";
-var import_yaml = __toESM(require_dist(), 1);
-function readJsonl(path) {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    out.push(JSON.parse(trimmed));
+// src/lib/contain.ts
+import { existsSync as existsSync2, lstatSync, realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
   }
-  return out;
 }
-function readYaml(path) {
-  if (!existsSync(path)) return void 0;
-  return (0, import_yaml.parse)(readFileSync(path, "utf8"));
+function assertNotSymlink(path, where) {
+  const st = lstatOrNull(path);
+  if (st !== null && st.isSymbolicLink()) {
+    throw new Error(
+      `${where}: ${path} is a symlink \u2014 refusing (containment cannot be verified through links)`
+    );
+  }
 }
-function readJson(path) {
-  if (!existsSync(path)) return void 0;
-  return JSON.parse(readFileSync(path, "utf8"));
+function containedSurfaceDir(runDir, sid, where) {
+  const rootResolved = resolve(runDir);
+  const surfacesDir = resolve(runDir, "surfaces");
+  const dir = resolve(surfacesDir, sid);
+  if (!dir.startsWith(rootResolved + sep)) {
+    throw new Error(`${where}: surface id escapes the run dir: ${sid}`);
+  }
+  for (const p of [surfacesDir, dir]) {
+    const st = lstatOrNull(p);
+    if (st !== null && st.isSymbolicLink()) {
+      throw new Error(
+        `${where}: ${p} is a symlink \u2014 refusing (containment cannot be verified through links)`
+      );
+    }
+  }
+  if (existsSync2(dir)) {
+    const realDir = realpathSync(dir);
+    const realRoot = realpathSync(rootResolved);
+    if (!realDir.startsWith(realRoot + sep)) {
+      throw new Error(
+        `${where}: surfaces/${sid} physically resolves outside the run dir (${realDir}) \u2014 refusing`
+      );
+    }
+  }
+  return dir;
+}
+function assertNoCaseFoldCollision(seenFolded, id, where) {
+  const folded = id.toLowerCase();
+  const prior = seenFolded.get(folded);
+  if (prior !== void 0 && prior !== id) {
+    throw new Error(
+      `${where}: surface ids "${prior}" and "${id}" collide case-insensitively \u2014 they map to one directory on a case-insensitive filesystem`
+    );
+  }
+  seenFolded.set(folded, id);
 }
 
-// src/lib/validate-cli.ts
-var KNOWN_LIST_KEYS = ["vectors", "flows", "suppressions", "entries"];
-function inferFormat(filePath) {
-  if (filePath.endsWith(".jsonl")) return "jsonl";
-  if (filePath.endsWith(".yml") || filePath.endsWith(".yaml")) return "yaml";
-  return "json";
+// src/lib/tier2-gate-run.ts
+function isSafeSurfaceId(id) {
+  return typeof id === "string" && isSafeId(id);
 }
-function maybeUnwrap(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return value;
+function needsTier2(c, where = "candidate") {
+  if (typeof c !== "object" || c === null || Array.isArray(c)) {
+    throw new Error(`${where}: must be an object with severity and confidence`);
   }
-  const obj = value;
-  const keys = Object.keys(obj);
-  if (keys.length !== 1) return value;
-  const key = keys[0];
-  if (key === void 0) return value;
-  if (KNOWN_LIST_KEYS.includes(key)) {
-    return obj[key];
+  const { severity, confidence } = c;
+  if (typeof severity !== "string") {
+    throw new Error(`${where}: severity must be a string (cannot classify for Tier-2)`);
   }
-  return value;
+  if (typeof confidence !== "string") {
+    throw new Error(`${where}: confidence must be a string (cannot classify for Tier-2)`);
+  }
+  return severity === "critical" || severity === "high" || confidence === "low";
 }
-function runValidate(opts) {
-  if (!existsSync2(opts.filePath)) {
-    throw new Error(`file not found: ${opts.filePath}`);
+function candidateKey(x) {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
+  const dk = x.dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return null;
+  const { surface, symptom, root_cause } = dk;
+  if (typeof surface !== "string" || typeof symptom !== "string" || typeof root_cause !== "string")
+    return null;
+  return dedupeKeyString({ surface, symptom, root_cause });
+}
+function surfaceOf(x) {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return void 0;
+  const dk = x.dedupe_key;
+  if (typeof dk !== "object" || dk === null || Array.isArray(dk)) return void 0;
+  const s = dk.surface;
+  return typeof s === "string" ? s : void 0;
+}
+function surfaceDir(runDir, sid, where) {
+  if (!isSafeSurfaceId(sid)) {
+    throw new Error(`${where}: unsafe surface id: ${JSON.stringify(sid)}`);
   }
-  const format = opts.format ?? inferFormat(opts.filePath);
-  let data;
-  if (format === "jsonl") {
-    data = readJsonl(opts.filePath);
-  } else if (format === "yaml") {
-    data = maybeUnwrap(readYaml(opts.filePath));
-  } else {
-    data = maybeUnwrap(readJson(opts.filePath));
+  return containedSurfaceDir(runDir, sid, where);
+}
+function splitSurvivors(runDir, survivorsPath) {
+  if (!existsSync3(survivorsPath)) {
+    throw new Error(`survivors file not found: ${survivorsPath}`);
   }
-  const count = Array.isArray(data) ? data.length : 1;
-  const result = validateArtifact(opts.schema, data);
-  return { ok: result.ok, errors: result.errors, count };
+  assertNotSymlink(survivorsPath, "survivors file");
+  const survivors = readJson(survivorsPath);
+  if (!Array.isArray(survivors)) {
+    throw new Error(`survivors file must be a JSON array: ${survivorsPath}`);
+  }
+  const pass = [];
+  const gatedBySurface = /* @__PURE__ */ new Map();
+  let gatedCount = 0;
+  survivors.forEach((c, i) => {
+    const where = `survivor [${i}]`;
+    if (!needsTier2(c, where)) {
+      pass.push(c);
+      return;
+    }
+    const sid = surfaceOf(c);
+    if (sid === void 0) {
+      throw new Error(`${where}: dedupe_key.surface must be a string to route Tier-2`);
+    }
+    surfaceDir(runDir, sid, where);
+    const bucket = gatedBySurface.get(sid);
+    if (bucket === void 0) {
+      gatedBySurface.set(sid, [c]);
+    } else {
+      bucket.push(c);
+    }
+    gatedCount++;
+  });
+  const gatedSurfaces = [...gatedBySurface.keys()].sort();
+  const seenFolded = /* @__PURE__ */ new Map();
+  for (const sid of gatedSurfaces) {
+    assertNoCaseFoldCollision(seenFolded, sid, "tier2 gate");
+  }
+  return { pass, gatedBySurface, gatedSurfaces, gatedCount };
+}
+function requireRunDir(runDir) {
+  if (!runDir || runDir.trim() === "") {
+    throw new Error("runDir must not be empty");
+  }
+}
+function runTier2Gate(opts) {
+  requireRunDir(opts.runDir);
+  const survivorsPath = opts.survivorsPath ?? join2(opts.runDir, "candidates.json");
+  const { pass, gatedBySurface, gatedSurfaces, gatedCount } = splitSurvivors(
+    opts.runDir,
+    survivorsPath
+  );
+  for (const sid of gatedSurfaces) {
+    const dir = surfaceDir(opts.runDir, sid, `tier2 surface ${sid}`);
+    writeJson(join2(dir, "tier2.pending.json"), gatedBySurface.get(sid) ?? []);
+  }
+  writeJson(join2(opts.runDir, "tier2.json"), gatedSurfaces);
+  writeJson(join2(opts.runDir, "tier2.pass.json"), pass);
+  return { gatedSurfaces, gatedCount, passCount: pass.length };
+}
+function runTier2Assemble(opts) {
+  requireRunDir(opts.runDir);
+  const survivorsSrc = opts.survivorsPath ?? join2(opts.runDir, "candidates.json");
+  const { pass, gatedBySurface, gatedSurfaces } = splitSurvivors(opts.runDir, survivorsSrc);
+  const tier2Path = join2(opts.runDir, "tier2.json");
+  if (!existsSync3(tier2Path)) {
+    throw new Error(`tier2.json not found: ${tier2Path} (run the gate before --assemble)`);
+  }
+  assertNotSymlink(tier2Path, "tier2.json");
+  const stored = readJson(tier2Path);
+  if (!Array.isArray(stored)) {
+    throw new Error(`tier2.json must be a JSON array of surface ids: ${tier2Path}`);
+  }
+  const same = stored.length === gatedSurfaces.length && stored.every((v2, i) => typeof v2 === "string" && v2 === gatedSurfaces[i]);
+  if (!same) {
+    throw new Error(
+      `tier2.json does not match the gate split recomputed from ${survivorsSrc}: expected ${JSON.stringify(gatedSurfaces)}, found ${JSON.stringify(stored)} \u2014 the control-plane list was altered after the gate; aborting before run-meta`
+    );
+  }
+  const out = [...pass];
+  let pendingTotal = 0;
+  let survivorTotal = 0;
+  gatedSurfaces.forEach((sid) => {
+    const where = `gated surface ${sid}`;
+    const dir = surfaceDir(opts.runDir, sid, where);
+    const survivorsPath = join2(dir, "tier2.survivors.json");
+    if (!existsSync3(survivorsPath)) {
+      throw new Error(
+        `tier2.survivors.json missing for gated surface ${sid}: ${survivorsPath} (the Tier-2 refuter did not complete; aborting before run-meta)`
+      );
+    }
+    assertNotSymlink(survivorsPath, `surfaces/${sid}/tier2.survivors.json`);
+    const survivors = readJson(survivorsPath);
+    if (!Array.isArray(survivors)) {
+      throw new Error(`tier2.survivors.json must be a JSON array: ${survivorsPath}`);
+    }
+    const pending = gatedBySurface.get(sid) ?? [];
+    const pendingKeys = /* @__PURE__ */ new Map();
+    for (const p of pending) {
+      const k = candidateKey(p);
+      if (k !== null) pendingKeys.set(k, (pendingKeys.get(k) ?? 0) + 1);
+    }
+    survivors.forEach((s, j) => {
+      const sSurface = surfaceOf(s);
+      if (sSurface !== sid) {
+        throw new Error(
+          `tier2 survivor [${j}] of surface ${sid} is bound to ${sSurface === void 0 ? "no surface" : sSurface}: dedupe_key.surface must equal ${sid}`
+        );
+      }
+      const k = candidateKey(s);
+      if (k === null) {
+        throw new Error(
+          `tier2 survivor [${j}] of surface ${sid} has no well-formed dedupe_key {surface, symptom, root_cause}`
+        );
+      }
+      const remaining = pendingKeys.get(k) ?? 0;
+      if (remaining === 0) {
+        throw new Error(
+          `tier2 survivor [${j}] of surface ${sid} dedupe_key ${k} does not match any pending candidate: the Tier-2 refuter must only remove candidates, never substitute them`
+        );
+      }
+      pendingKeys.set(k, remaining - 1);
+      out.push(s);
+    });
+    pendingTotal += pending.length;
+    survivorTotal += survivors.length;
+  });
+  writeJson(join2(opts.runDir, "candidates.tier2.json"), out);
+  return {
+    survivors: survivorTotal,
+    pass: pass.length,
+    rejectedTier2: pendingTotal - survivorTotal
+  };
 }
 
-// src/bin/validate.ts
+// src/bin/tier2-gate.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const schema = requireArg(args, "schema");
-  const filePath = requireArg(args, "file");
-  if (!SCHEMA_NAMES.includes(schema)) {
-    process.stderr.write(
-      `validate: unknown schema '${schema}' (expected: ${SCHEMA_NAMES.join("|")})
-`
-    );
-    process.exit(2);
-  }
-  const format = args.format;
   try {
-    const res = runValidate({ schema, filePath, format });
-    if (res.ok) {
-      process.stderr.write(`validate: OK ${res.count} record(s) [${schema}]
-`);
-      process.exit(0);
+    const runDir = requireArg(args, "run-dir");
+    if (args.assemble !== void 0) {
+      const res = runTier2Assemble({ runDir });
+      process.stderr.write(
+        `tier2-gate: assembled=${res.pass + res.survivors} (pass=${res.pass} tier2_survivors=${res.survivors}) rejected_tier2=${res.rejectedTier2}
+`
+      );
     } else {
-      for (const err of res.errors) {
-        process.stderr.write(`validate: ${err}
-`);
-      }
-      process.exit(1);
+      const res = runTier2Gate({ runDir, survivorsPath: args.survivors });
+      process.stderr.write(
+        `tier2-gate: gated=${res.gatedCount} surfaces=[${res.gatedSurfaces.join(",")}] pass=${res.passCount}
+`
+      );
     }
+    process.exit(0);
   } catch (err) {
-    process.stderr.write(`validate: ${err.message}
+    process.stderr.write(`tier2-gate: ${err.message}
 `);
     process.exit(2);
   }

@@ -113,22 +113,22 @@ Turning Tier-2 on means its accounting must move with it — today
 
 ## Tasks
 
-- [ ] **T1 (P1)** — `bin/select` — emit per-surface `dispatch`
+- [x] **T1 (P1)** — `bin/select` — emit per-surface `dispatch`
   - Files: `src/lib/types.ts`, `src/lib/select-run.ts`, `src/lib/select-run.test.ts`, `schemas/`
   - Verify: `npm run check`; snapshot asserts all 4 bands
-- [ ] **T12 (P2)** — `MODEL_BY_BAND` — pinned const + snapshot
+- [x] **T12 (P2)** — `MODEL_BY_BAND` — pinned const + snapshot
   - Files: `src/lib/` const + snapshot test
   - Verify: changing a tier fails the snapshot
-- [ ] **T2 (P1)** — Tier-2 — wire accounting end to end
+- [x] **T2 (P1)** — Tier-2 — wire accounting end to end
   - Files: `src/lib/run-meta-build.ts`, `src/bin/run-meta.ts`, `agents/security-refuter-2.md`, `CONTRACTS.md`
   - Verify: a Tier-2 rejection increments `rejected_tier2` and moves FPR in `bin/rollup`
-- [ ] **T6 (P0)** — `validate` — sanitize registry ids, assert containment
+- [x] **T6 (P0)** — `validate` — sanitize registry ids, assert containment
   - Files: `src/lib/validate.ts`, `src/lib/merge-candidates-run.ts`
   - Verify: `id: "../../x"` rejected; resolved surface paths asserted inside the run dir
-- [ ] **T9 (P1)** — `merge-candidates` — surface binding + partial-failure union
+- [x] **T9 (P1)** — `merge-candidates` — surface binding + partial-failure union
   - Files: new `src/lib/merge-candidates-run.ts` + tests
   - Verify: K=6 with surface 3 crashed stamps exactly 5; mismatched surface id aborts
-- [ ] Workflow v2 itself + `bin/tier2-gate` + CONTRACTS amendments (spec above)
+- [x] Workflow v2 itself + `bin/tier2-gate` + CONTRACTS amendments (spec above)
 
 ## Reuse
 

@@ -2,6 +2,14 @@
 // schema in schemas/*.yml; that YAML stays the human reference, these are the
 // machine check that gates every artifact before it enters the stateful path.
 // bin/validate is a thin CLI over `validateArtifact`.
+//
+// Identity safety (v3 plan §9.12): registry ids are human-seeded YAML and become
+// path segments downstream — the fan-out writes .run/<run_id>/surfaces/<sid>/...
+// and tier2-gate derives its per-surface paths from dedupe_key.surface. An id of
+// "../../x" would therefore escape the run dir (and, with a symlink or a
+// well-chosen relative path, the pack) while every schema field still typechecked
+// as a non-empty string. SAFE_ID_RE is the shared constraint; consumers pair it
+// with a resolve()-based containment check (never the regex alone).
 import type {
   RegistryEntry,
   CandidateFinding,
@@ -22,7 +30,20 @@ const SEVERITIES = WEIGHTS;
 const CONFIDENCES = ["low", "medium", "high"];
 const LANES = ["security", "design"];
 const ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+const EFFORTS = ["low", "medium", "high"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Filename-safe id charset: no separators, no NUL, no shell/glob metacharacters. */
+export const SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * An id is safe iff it matches SAFE_ID_RE and does not name the current or the
+ * parent directory. "." and ".." pass the charset (both are dot-only) but each
+ * collapses a path segment away, so they must be rejected explicitly.
+ */
+export function isSafeId(id: string): boolean {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
 
 type Obj = Record<string, unknown>;
 
@@ -63,6 +84,20 @@ function reqDate(o: Obj, k: string, errors: string[], where: string): void {
   if (typeof o[k] !== "string" || !isRealDate(o[k] as string))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
+/**
+ * Path-segment safety for an id field. Only fires when the value already IS a
+ * non-empty string: reqStr owns the "wrong type / empty" error, so a malformed
+ * value reports once, naming the constraint it actually broke.
+ */
+function reqSafeId(o: Obj, k: string, errors: string[], where: string): void {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." ` +
+        `(it is used as a path segment)`,
+    );
+}
 function reqDedupeKey(o: Obj, errors: string[], where: string): void {
   const dk = o.dedupe_key;
   if (!isObj(dk)) {
@@ -82,6 +117,9 @@ export function validateRegistryEntry(x: unknown): ValidationResult {
   const { errors } = v();
   if (!isObj(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
+  // The id reaches the filesystem as .run/<run_id>/surfaces/<id>/... — gate it
+  // here, at the point the human-seeded YAML enters the engine.
+  reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
   reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
   if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
@@ -97,6 +135,11 @@ export function validateCandidateFinding(x: unknown): ValidationResult {
   const { errors } = v();
   if (!isObj(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
+  // dedupe_key.surface is a registry id: bin/record stamps last_reviewed on the
+  // entry it names, and tier2-gate uses it as a path segment
+  // (.run/<run_id>/surfaces/<surface>/tier2.pending.json). Model-written, so it
+  // gets the same charset gate the registry side gets.
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -225,11 +268,25 @@ export function validateSurface(x: unknown): ValidationResult {
   const { errors } = v();
   if (!isObj(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
+  // surfaces.json drives the fan-out: each id becomes .run/<run_id>/surfaces/<id>.
+  reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
   reqNum(x, "staleness", errors, "surface");
   reqNum(x, "score", errors, "surface");
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
+  // dispatch is OPTIONAL — surfaces.json artifacts predating A4/T1 carry no
+  // dispatch and stay valid. When present it is handed verbatim to agent(), so
+  // every field is checked here rather than in the workflow sandbox (E4).
+  if (x.dispatch !== undefined) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
   return finish(errors);
 }
 
