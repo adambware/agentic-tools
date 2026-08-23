@@ -7695,11 +7695,35 @@ function buildManualCostRecord(meta, usd, tokens) {
     status: "ok"
   };
 }
+function buildFallbackErrorRecord(meta, reason) {
+  return {
+    run_id: meta.runId,
+    lane: meta.lane,
+    date: meta.date,
+    ts: meta.ts,
+    usd: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status: "error",
+    terminal_reason: reason
+  };
+}
 var COSTS_FILENAME = "costs.jsonl";
 function runRecordCost(opts) {
   let record;
   if (opts.envelope !== void 0) {
-    record = buildCostRecord(opts.envelope, opts.meta);
+    try {
+      record = buildCostRecord(opts.envelope, opts.meta);
+    } catch (err) {
+      if (opts.fallbackErrorReason === void 0) throw err;
+      record = buildFallbackErrorRecord(
+        opts.meta,
+        `${opts.fallbackErrorReason}: ${err.message}`
+      );
+    }
   } else if (opts.manualUsd !== void 0) {
     record = buildManualCostRecord(opts.meta, opts.manualUsd, opts.manualTokens);
   } else {
@@ -7742,18 +7766,27 @@ function main() {
     process.exit(2);
   }
   try {
+    const fallbackErrorReason = args["fallback-error-reason"];
     let envelope;
     if (args.json !== void 0) {
       if (!existsSync2(args.json)) {
-        throw new Error(`envelope not found: ${args.json}`);
+        if (fallbackErrorReason === void 0) throw new Error(`envelope not found: ${args.json}`);
+        envelope = null;
+      } else {
+        try {
+          envelope = readJson(args.json);
+        } catch (err) {
+          if (fallbackErrorReason === void 0) throw err;
+          envelope = null;
+        }
       }
-      envelope = readJson(args.json);
     }
     const record = runRecordCost({
       metricsDir,
       meta,
       envelope,
       manualUsd: optNum(args, "usd"),
+      ...fallbackErrorReason === void 0 ? {} : { fallbackErrorReason },
       manualTokens: {
         input_tokens: optNum(args, "input-tokens"),
         output_tokens: optNum(args, "output-tokens"),

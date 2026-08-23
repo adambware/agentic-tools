@@ -5,8 +5,9 @@
 # Each entry conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml; `area` is the
 # route(s) the flow drives.
 #
-# PHASE 2 — these are seeded but NOT yet active. The Designer lane needs a STAGING
-# environment (manifest.stack_adapter.browser.base_url) AND SEEDED PERSONAS
+# PHASE 2 — these are seeded but NOT yet active. The Designer lane needs a LOOPBACK dev
+# server (manifest.stack_adapter.browser.base_url) with the explicit
+# manifest.stack_adapter.browser.environment assertion, AND SEEDED PERSONAS
 # (fixtures/personas.example.yml) before runs are trustworthy; otherwise the reviewer
 # confuses environment drift with real friction. last_reviewed/status are (auto) and
 # remain unset until the lane goes live.

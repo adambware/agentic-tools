@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildCostRecord,
+  buildFallbackErrorRecord,
   buildManualCostRecord,
   runRecordCost,
   COSTS_FILENAME,
@@ -164,6 +165,94 @@ describe("runRecordCost", () => {
       runRecordCost({ metricsDir: dir, meta: badMeta, envelope: readJson(SUCCESS_ENVELOPE) }),
     ).toThrow(/cost-record invalid/);
     expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A7: fallbackErrorReason. A crashed headless run's envelope goes missing or
+// arrives unusable; without a fallback, `ns` had exactly two options — write no
+// cost row at all (the dashboard's verdict strip then reads "no run happened",
+// not "a run failed"), or let the shell synthesize one (decision logic §9.4
+// keeps out of `ns`). The opt-in keeps every pre-A7 caller's strict throw.
+// ---------------------------------------------------------------------------
+
+describe("buildFallbackErrorRecord", () => {
+  it("shape: usd/tokens 0, source cli-json, status error, terminal_reason set, meta passed through, and it validates", () => {
+    const record = buildFallbackErrorRecord(META, "envelope missing");
+    expect(record).toMatchObject({
+      run_id: META.runId,
+      lane: META.lane,
+      date: META.date,
+      ts: META.ts,
+      usd: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      source: "cli-json",
+      status: "error",
+      terminal_reason: "envelope missing",
+    });
+    // The whole point of a fallback row is that it is a LEGAL cost record, not a
+    // special case the rest of the pipeline (rollup, dashboard) has to know
+    // about. If this ever stops validating, the fallback becomes a second kind
+    // of malformed row instead of the uniform "error" row it is meant to be.
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+});
+
+describe("runRecordCost: fallbackErrorReason", () => {
+  it("unusable envelope + fallbackErrorReason set: appends ONE error row whose terminal_reason names both the caller's reason and the underlying failure", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: { is_error: "false" }, // is_error must be boolean -> buildCostRecord throws
+      fallbackErrorReason: "envelope unusable",
+    });
+    expect(record.status).toBe("error");
+    // Both halves must survive: the caller's own label (why record-cost was told
+    // to fall back) AND the actual parse/shape failure (what specifically broke).
+    // Losing either one turns every crashed-run row into the same opaque string.
+    expect(record.terminal_reason).toContain("envelope unusable");
+    expect(record.terminal_reason).toContain("is_error must be a boolean");
+    const lines = readJsonl<CostRecord>(join(dir, COSTS_FILENAME));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.status).toBe("error");
+  });
+
+  it("GOOD envelope + fallbackErrorReason set: records the real ok row, never masked by the fallback", () => {
+    // The fallback must be a last resort, not a shortcut that swallows a perfectly
+    // usable envelope. If this regressed, every successful run would file as an
+    // opaque error the moment a caller happened to pass the flag.
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(SUCCESS_ENVELOPE),
+      fallbackErrorReason: "should not be used",
+    });
+    expect(record.status).toBe("ok");
+    expect(record.usd).toBe(1.8421);
+    expect(record.terminal_reason).toBeUndefined();
+  });
+
+  it("unusable envelope WITHOUT fallbackErrorReason: still throws (pre-A7 strict path unweakened)", () => {
+    expect(() =>
+      runRecordCost({ metricsDir: dir, meta: META, envelope: { is_error: "false" } }),
+    ).toThrow(/is_error must be a boolean/);
+    expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
+  });
+
+  it("REGRESSION (restates the A2 rule): is_error:true + subtype:'success' still records status:'error' even with fallbackErrorReason set — subtype is never consulted, fallback or not", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(ERROR_ENVELOPE),
+      fallbackErrorReason: "should not be reached", // envelope IS usable; fallback must stay unused
+    });
+    expect(record.status).toBe("error");
+    expect(record.terminal_reason).toBe("api_error");
+    // Proof the fallback path was never entered: its reason string is absent.
+    expect(record.terminal_reason).not.toContain("should not be reached");
   });
 });
 

@@ -108,8 +108,28 @@ launcher-side by a vitest-covered command — `bin/lane-plan` (tables `REGISTRY_
 `args.agents.*`, exactly like `MODEL_BY_BAND`. There is no lane lookup table and no
 lane conditional in the sandbox: the workflow reads those members and interpolates
 `args.lane` into prompts, nothing more. `bin/lane-plan` doubles as the fail-fast lane
-gate (design refuses without a browser adapter, `base_url`, and seeded personas), so a
-misconfigured pack never reaches Claude.
+gate (design refuses without a browser adapter, a **loopback** `base_url`, an explicit
+non-production `browser.environment`, and seeded personas), so a misconfigured — or unsafe
+to drive — pack never reaches Claude.
+
+**The launcher carries three obligations the sandbox cannot meet (A7).** The Workflow
+sandbox has no `process` and no fs, so `bin/ns` — and any future launcher — MUST:
+
+1. invoke `bin/lane-plan` as `--pack .nightshift` **with cwd at the repo root**.
+   `bin/lane-plan` carries `--pack` through verbatim (absolute in, absolute out) while
+   the workflow's `PACK`/`RUN` are hardcoded repo-root-relative literals interpolated
+   into the SAME `record` and `rollup` command lines — so any other `--pack` silently
+   pairs one pack's registry with a different pack's metrics dir;
+2. **arm the read-only guard** by exporting `NIGHTSHIFT_LANE_RUN=1` and
+   `NIGHTSHIFT_RUN_ID` — the guard cannot self-arm from inside the run;
+3. export one `NIGHTSHIFT_TODAY` for the whole run (`run-meta` and `dedupe` resolve
+   "today" in separate agent turns, and a run straddling UTC midnight would abort at
+   `record`'s provenance date assert) and mint a **fresh run id per attempt, retries
+   included** (`merge-candidates` has no notion of artifact freshness, so a reused run
+   dir would resurrect a prior aborted attempt's artifacts as this run's coverage).
+
+The workflow's own ARGS CONTRACT header states all three, and
+`src/lib/ns-launcher.test.ts` probes each against the real launcher.
 
 **Load-bearing constraint:** *no* dispatch API accepts a tools list. A subagent's tools
 come from its agent-file frontmatter and nowhere else. A per-adapter tool grant is

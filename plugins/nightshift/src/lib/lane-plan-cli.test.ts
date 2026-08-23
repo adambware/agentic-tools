@@ -61,10 +61,13 @@ function seedSecurityPack(root: string): void {
 // lane-plan.test.ts's internals).
 // ---------------------------------------------------------------------------
 
+// A7/T8: a design-ready manifest now also needs a LOOPBACK base_url and an
+// explicit non-production `environment` assertion, or the CLI refuses.
 function manifestWithBrowser(): string {
   return (
     "pack_format: 1\nproject: probe\nstack_adapter:\n  browser:\n" +
-    '    tool: playwright-mcp\n    base_url: "https://staging.probe.example"\n'
+    '    tool: playwright-mcp\n    base_url: "http://localhost:3000"\n' +
+    "    environment: local\n"
   );
 }
 
@@ -269,7 +272,8 @@ describe("bin/lane-plan unsupported adapter", () => {
     writeFileSync(
       join(dir, "manifest.yml"),
       "pack_format: 1\nproject: probe\nstack_adapter:\n  browser:\n" +
-        '    tool: puppeteer-mcp\n    base_url: "https://staging.probe.example"\n',
+        '    tool: puppeteer-mcp\n    base_url: "http://localhost:3000"\n' +
+        "    environment: local\n",
     );
     const { code, stdout, stderr } = runCli(["--pack", dir, "--lane", "design"]);
     expect(code).toBe(2);
@@ -282,7 +286,8 @@ describe("bin/lane-plan unsupported adapter", () => {
     writeFileSync(
       join(dir, "manifest.yml"),
       "pack_format: 1\nproject: probe\nstack_adapter:\n  browser:\n" +
-        '    tool: constructor\n    base_url: "https://staging.probe.example"\n',
+        '    tool: constructor\n    base_url: "http://localhost:3000"\n' +
+        "    environment: local\n",
     );
     const { code, stdout, stderr } = runCli(["--pack", dir, "--lane", "design"]);
     expect(code).toBe(2);

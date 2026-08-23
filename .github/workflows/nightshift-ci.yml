@@ -158,6 +158,32 @@ jobs:
           [ "$failed" -eq 0 ] || exit 1
           echo "Sentinel smoke passed."
 
+      # (3b) Shellcheck every committed shell script in the plugin (A7/T4).
+      #      `bin/ns` is engine code — committed, versioned with the engine, and
+      #      held to the same bar as the TypeScript: its DECISION logic lives in
+      #      vitest-covered bin/ commands, and what remains here (sequencing,
+      #      environment, exit paths) is linted rather than trusted. ubuntu-latest
+      #      ships shellcheck; install it if a future runner image does not.
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+          shellcheck plugins/nightshift/bin/ns plugins/nightshift/scripts/check-example-hygiene.sh
+
+      # (3c) `bin/ns` must stay executable in the index — a launcher committed
+      #      644 is a launcher nobody can run without chmod'ing it first.
+      - name: bin/ns is committed executable
+        run: |
+          set -euo pipefail
+          mode="$(git ls-files -s plugins/nightshift/bin/ns | cut -d' ' -f1)"
+          if [ "$mode" != "100755" ]; then
+            echo "::error::plugins/nightshift/bin/ns is mode $mode — commit it 100755 (chmod +x)"
+            exit 1
+          fi
+
       # (4) Example-hygiene lint — the positive replacement for the leak grep.
       - name: example-hygiene
         run: bash plugins/nightshift/scripts/check-example-hygiene.sh

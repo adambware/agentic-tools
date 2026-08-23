@@ -107,6 +107,42 @@ export function buildManualCostRecord(
   };
 }
 
+/**
+ * A run whose result envelope never arrived, or arrived unusable (the CLI was
+ * killed, wrote nothing, wrote half a line, or reported no `is_error`).
+ *
+ * WHY THIS IS NOT A THROW (A7). Without it, `ns` has exactly two options after a
+ * crashed headless run: write no cost row at all, or make the shell synthesize
+ * one — and a shell that decides what a cost row says is precisely the decision
+ * logic §9.4 keeps out of `ns`. A missing row is worse than a $0 row: the
+ * dashboard's verdict strip reads cost rows, so a crash with no row renders as
+ * "no run happened" rather than "a run failed", which is the silent staleness
+ * the whole system exists to prevent.
+ *
+ * usd is 0 because the true figure is unknowable — the envelope that would have
+ * carried it is the thing that went missing. `source` stays "cli-json" because
+ * that IS the path this row came from (a headless run with --json); the
+ * terminal_reason says in words that the envelope was unusable, so nobody reads
+ * the zero as a measured cost. It is a floor, never an estimate, and the runbook
+ * says so next to the measured per-run figure (T15).
+ */
+export function buildFallbackErrorRecord(meta: CostMeta, reason: string): CostRecord {
+  return {
+    run_id: meta.runId,
+    lane: meta.lane,
+    date: meta.date,
+    ts: meta.ts,
+    usd: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status: "error",
+    terminal_reason: reason,
+  };
+}
+
 export interface RecordCostOpts {
   metricsDir: string;
   meta: CostMeta;
@@ -119,6 +155,13 @@ export interface RecordCostOpts {
       "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_creation_tokens"
     >
   >;
+  /**
+   * When set, an envelope that cannot be turned into a record becomes a
+   * status:"error" row carrying this reason instead of a throw. Opt-in: every
+   * pre-A7 caller keeps the strict behaviour, so a malformed envelope in a
+   * context that can actually fix it still fails loudly.
+   */
+  fallbackErrorReason?: string;
 }
 
 export const COSTS_FILENAME = "costs.jsonl";
@@ -127,7 +170,15 @@ export const COSTS_FILENAME = "costs.jsonl";
 export function runRecordCost(opts: RecordCostOpts): CostRecord {
   let record: CostRecord;
   if (opts.envelope !== undefined) {
-    record = buildCostRecord(opts.envelope, opts.meta);
+    try {
+      record = buildCostRecord(opts.envelope, opts.meta);
+    } catch (err) {
+      if (opts.fallbackErrorReason === undefined) throw err;
+      record = buildFallbackErrorRecord(
+        opts.meta,
+        `${opts.fallbackErrorReason}: ${(err as Error).message}`,
+      );
+    }
   } else if (opts.manualUsd !== undefined) {
     record = buildManualCostRecord(opts.meta, opts.manualUsd, opts.manualTokens);
   } else {

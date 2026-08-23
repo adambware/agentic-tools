@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep2) {
+          if (!keyProps.anchor && !keyProps.tag && !sep) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep2 = "";
+        let sep = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep2 + cb;
-              sep2 = "";
+                comment += sep + cb;
+              sep = "";
               break;
             }
             case "newline":
               if (comment)
-                sep2 += source;
+                sep += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep2 && !value) {
+          if (!props.anchor && !props.tag && !sep && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep2 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
+        if (!isMap && !sep && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep2)
-                for (const st of sep2) {
+              if (sep)
+                for (const st of sep) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep2 = "";
+      let sep = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep2 === " ")
-            sep2 = "\n";
-          else if (!prevMoreIndented && sep2 === "\n")
-            sep2 = "\n\n";
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          if (sep === " ")
+            sep = "\n";
+          else if (!prevMoreIndented && sep === "\n")
+            sep = "\n\n";
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep2 === "\n")
+          if (sep === "\n")
             value += "\n";
           else
-            sep2 = "\n";
+            sep = "\n";
         } else {
-          value += sep2 + content;
-          sep2 = " ";
+          value += sep + content;
+          sep = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep2 = " ";
+      let sep = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep2 === "\n")
-            res += sep2;
+          if (sep === "\n")
+            res += sep;
           else
-            sep2 = "\n";
+            sep = "\n";
         } else {
-          res += sep2 + match[1];
-          sep2 = " ";
+          res += sep + match[1];
+          sep = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep2 + (match?.[1] ?? "");
+      return res + sep + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep2, value }) {
+    function stringifyItem({ start, key, sep, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep2)
-        for (const st of sep2)
+      if (sep)
+        for (const st of sep)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep2;
+          let sep;
           if (scalar.end) {
-            sep2 = scalar.end;
-            sep2.push(this.sourceToken);
+            sep = scalar.end;
+            sep.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep2 = [this.sourceToken];
+            sep = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep2 }]
+            items: [{ start, key: scalar, sep }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep2 = it.sep;
-                  sep2.push(this.sourceToken);
+                  const sep = it.sep;
+                  sep.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep2 }]
+                    items: [{ start: start2, key, sep }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep2 = fc.end.splice(1, fc.end.length);
-            sep2.push(this.sourceToken);
+            const sep = fc.end.splice(1, fc.end.length);
+            sep.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep2 }]
+              items: [{ start, key: fc, sep }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7387,9 +7387,17 @@ function requireArg(args, key) {
   }
   return val;
 }
+function resolveToday(args) {
+  const explicit = args.today ?? process.env.NIGHTSHIFT_TODAY;
+  if (explicit) return explicit;
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+
+// src/lib/ops-config.ts
+import { existsSync as existsSync2, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 
 // src/lib/io.ts
-var import_yaml = __toESM(require_dist(), 1);
 import {
   openSync,
   writeSync,
@@ -7401,35 +7409,169 @@ import {
   mkdirSync,
   appendFileSync
 } from "node:fs";
-import { dirname, join } from "node:path";
-var tmpSeq = 0;
-function atomicWrite(path, data) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
-  const fd = openSync(tmp, "w");
-  try {
-    writeSync(fd, data);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+var import_yaml = __toESM(require_dist(), 1);
+function readJsonl(path) {
+  if (!existsSync(path)) return [];
+  const text = readFileSync(path, "utf8");
+  const out = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    out.push(JSON.parse(trimmed));
   }
-  renameSync(tmp, path);
+  return out;
 }
 function readYaml(path) {
   if (!existsSync(path)) return void 0;
   return (0, import_yaml.parse)(readFileSync(path, "utf8"));
 }
-function writeJson(path, value) {
-  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
+
+// src/lib/ops-config.ts
+var LANES = ["security", "design"];
+var DEFAULT_MAX_CONCURRENT_REVIEWERS = 3;
+function isObj(x) {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
 }
-function basename(path) {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? path : path.slice(i + 1);
+function filled(x) {
+  return typeof x === "string" && x.trim() !== "";
+}
+function expandPath(raw, home, base) {
+  const p = raw.trim();
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join(home, p.slice(2));
+  if (isAbsolute(p)) return resolve(p);
+  return resolve(base, p);
+}
+function basenameOf(path) {
+  const cleaned = path.replace(/[/\\]+$/, "");
+  const cut = Math.max(cleaned.lastIndexOf("/"), cleaned.lastIndexOf("\\"));
+  return cleaned.slice(cut + 1) || "unnamed";
+}
+function parseLanes(raw) {
+  if (Array.isArray(raw)) {
+    return LANES.filter((lane) => raw.some((v2) => filled(v2) && v2.trim() === lane));
+  }
+  if (isObj(raw)) {
+    return LANES.filter((lane) => {
+      const v2 = raw[lane];
+      return v2 === true || v2 === "on";
+    });
+  }
+  return [];
+}
+function parseBool(raw, fallback) {
+  if (typeof raw === "boolean") return raw;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return fallback;
+}
+function parsePositiveInt(raw, fallback) {
+  if (raw === void 0 || raw === null) return fallback;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < 1) return void 0;
+  return n;
+}
+function parseNonNegativeInt(raw, fallback) {
+  if (raw === void 0 || raw === null) return fallback;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < 0) return void 0;
+  return n;
+}
+function readOpsConfig(configPath, opts) {
+  const home = opts?.home ?? process.env.HOME ?? "";
+  if (!existsSync2(configPath)) {
+    return {
+      ok: false,
+      reason: `ops config not found: ${configPath} \u2014 create it (see a7-ops-launcher.md \xA7config.yml) or point --config / $NIGHTSHIFT_OPS at the ops home that holds it`
+    };
+  }
+  let doc;
+  try {
+    doc = readYaml(configPath);
+  } catch (err) {
+    return { ok: false, reason: `ops config is not valid YAML: ${configPath} \u2014 ${err.message}` };
+  }
+  if (!isObj(doc)) {
+    return {
+      ok: false,
+      reason: `ops config is not a YAML mapping: ${configPath} \u2014 expected top-level \`repos:\``
+    };
+  }
+  const rawRepos = doc.repos;
+  if (!Array.isArray(rawRepos)) {
+    return { ok: false, reason: `ops config has no \`repos:\` list: ${configPath}` };
+  }
+  if (rawRepos.length === 0) {
+    return {
+      ok: false,
+      reason: `ops config \`repos:\` is empty: ${configPath} \u2014 add at least one repo ({path, lanes: [security], enabled: true}) before running anything`
+    };
+  }
+  const base = resolve(configPath, "..");
+  const repos = [];
+  const seenNames = /* @__PURE__ */ new Set();
+  for (let i = 0; i < rawRepos.length; i++) {
+    const raw = rawRepos[i];
+    if (!isObj(raw)) {
+      return { ok: false, reason: `${configPath}: repos[${i}] is not a mapping` };
+    }
+    if (!filled(raw.path)) {
+      return { ok: false, reason: `${configPath}: repos[${i}] has no \`path:\`` };
+    }
+    const path = expandPath(raw.path, home, base);
+    const name = filled(raw.name) ? raw.name.trim() : basenameOf(path);
+    if (seenNames.has(name)) {
+      return {
+        ok: false,
+        reason: `${configPath}: two repos resolve to the display name "${name}" \u2014 evidence and digests are stored per name, so one would overwrite the other; give one an explicit \`name:\``
+      };
+    }
+    seenNames.add(name);
+    repos.push({ name, path, enabled: parseBool(raw.enabled, true), lanes: parseLanes(raw.lanes) });
+  }
+  const maxConcurrent = parsePositiveInt(doc.max_concurrent_reviewers, DEFAULT_MAX_CONCURRENT_REVIEWERS);
+  if (maxConcurrent === void 0) {
+    return {
+      ok: false,
+      reason: `${configPath}: max_concurrent_reviewers must be an integer >= 1, got "${String(doc.max_concurrent_reviewers)}"`
+    };
+  }
+  const dashboardRaw = isObj(doc.dashboard) ? doc.dashboard : {};
+  const sentinelRaw = isObj(doc.sentinel) ? doc.sentinel : {};
+  const hour = parseNonNegativeInt(sentinelRaw.hour, 7);
+  const cooldown = parseNonNegativeInt(sentinelRaw.cooldown_days, 2);
+  const weeklyFloor = parsePositiveInt(sentinelRaw.weekly_floor_days, 7);
+  if (hour === void 0 || hour > 23) {
+    return { ok: false, reason: `${configPath}: sentinel.hour must be an integer 0-23` };
+  }
+  if (cooldown === void 0) {
+    return { ok: false, reason: `${configPath}: sentinel.cooldown_days must be an integer >= 0` };
+  }
+  if (weeklyFloor === void 0) {
+    return { ok: false, reason: `${configPath}: sentinel.weekly_floor_days must be an integer >= 1` };
+  }
+  return {
+    ok: true,
+    config: {
+      repos,
+      dashboard: {
+        out: filled(dashboardRaw.out) ? dashboardRaw.out.trim() : "dashboard.html",
+        open_after_run: parseBool(dashboardRaw.open_after_run, true)
+      },
+      sentinel: {
+        enabled: parseBool(sentinelRaw.enabled, false),
+        hour,
+        cooldown_days: cooldown,
+        weekly_floor_days: weeklyFloor
+      },
+      max_concurrent_reviewers: maxConcurrent
+    }
+  };
 }
 
-// src/lib/lane-plan.ts
-import { existsSync as existsSync2, statSync } from "node:fs";
-import { join as join2, resolve, sep } from "node:path";
+// src/lib/due.ts
+import { existsSync as existsSync3, readdirSync } from "node:fs";
+import { join as join2 } from "node:path";
 
 // src/lib/registry.ts
 function extractEntries(doc, lane) {
@@ -7450,11 +7592,158 @@ function extractEntries(doc, lane) {
   return list.filter((e) => !e.owner || e.owner === lane);
 }
 
+// src/lib/types.ts
+var WEIGHT_MULTIPLIER = {
+  critical: 8,
+  high: 4,
+  medium: 2,
+  low: 1
+};
+var DEFAULT_INTERVAL_DAYS = {
+  critical: 7,
+  high: 14,
+  medium: 30,
+  low: 90
+};
+
+// src/lib/glob.ts
+function globToRegExp(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+function anyGlobMatch(globs, paths) {
+  if (globs.length === 0 || paths.length === 0) return false;
+  const res = globs.map(globToRegExp);
+  return paths.some((p) => res.some((r) => r.test(p)));
+}
+
+// src/lib/dispatch.ts
+var MODEL_BY_BAND = {
+  critical: { model: "opus", effort: "high", maxTurns: 40 },
+  high: { model: "opus", effort: "medium", maxTurns: 32 },
+  medium: { model: "sonnet", effort: "medium", maxTurns: 24 },
+  low: { model: "haiku", effort: "low", maxTurns: 16 }
+};
+function dispatchForBand(band) {
+  return { ...MODEL_BY_BAND[band] };
+}
+
+// src/lib/staleness.ts
+var MAX_STALENESS = 1e9;
+function daysBetween(from, to) {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  return Math.round((b - a) / 864e5);
+}
+function intervalDays(entry) {
+  const n = entry.interval_days;
+  if (typeof n === "number" && Number.isFinite(n) && n > 0) return n;
+  return DEFAULT_INTERVAL_DAYS[entry.weight];
+}
+function computeStaleness(entry, today) {
+  if (!entry.last_reviewed) return MAX_STALENESS;
+  const elapsed = daysBetween(entry.last_reviewed, today);
+  return elapsed / intervalDays(entry);
+}
+function computeBand(weight, changeFlag) {
+  if (changeFlag === 1 && (weight === "critical" || weight === "high")) return "critical";
+  return weight;
+}
+function computeScore(staleness, changeFlag, weight) {
+  return Math.max(staleness, changeFlag) * WEIGHT_MULTIPLIER[weight];
+}
+function selectSurfaces(entries, opts) {
+  const changedFilesFor = opts.changedFilesFor ?? (() => []);
+  const surfaces = entries.map((entry) => {
+    const staleness = computeStaleness(entry, opts.today);
+    const changed = changedFilesFor(entry);
+    const change_flag = anyGlobMatch(entry.area, changed) ? 1 : 0;
+    const score = computeScore(staleness, change_flag, entry.weight);
+    const band = computeBand(entry.weight, change_flag);
+    return {
+      id: entry.id,
+      title: entry.title,
+      weight: entry.weight,
+      area: entry.area,
+      staleness,
+      change_flag,
+      score,
+      band,
+      dispatch: dispatchForBand(band),
+      ...entry.asvs_ref ? { asvs_ref: entry.asvs_ref } : {},
+      ...entry.persona ? { persona: entry.persona } : {}
+    };
+  });
+  surfaces.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const wm = WEIGHT_MULTIPLIER[b.weight] - WEIGHT_MULTIPLIER[a.weight];
+    if (wm !== 0) return wm;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  if (opts.k <= 0) return [];
+  return surfaces.slice(0, opts.k);
+}
+function tsNewer(a, b) {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
+  return ta > tb;
+}
+
+// src/lib/git.ts
+import { execFileSync } from "node:child_process";
+function makeGitRunner(repo) {
+  const cache = /* @__PURE__ */ new Map();
+  return {
+    changedFilesSince(sinceDate) {
+      if (!sinceDate) return [];
+      const cached = cache.get(sinceDate);
+      if (cached) return cached;
+      let files = [];
+      try {
+        const commit = execFileSync(
+          "git",
+          ["-C", repo, "rev-list", "-1", `--before=${sinceDate}T23:59:59`, "HEAD"],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+        ).trim();
+        if (commit) {
+          const out = execFileSync(
+            "git",
+            ["-C", repo, "diff", "--name-only", `${commit}..HEAD`],
+            { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+          );
+          files = out.split("\n").map((s) => s.trim()).filter(Boolean);
+        }
+      } catch {
+        files = [];
+      }
+      cache.set(sinceDate, files);
+      return files;
+    }
+  };
+}
+
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
 var SEVERITIES = WEIGHTS;
 var CONFIDENCES = ["low", "medium", "high"];
-var LANES = ["security", "design"];
+var LANES2 = ["security", "design"];
 var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
 var EFFORTS = ["low", "medium", "high"];
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -7466,7 +7755,7 @@ function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
 }
-function isObj(x) {
+function isObj2(x) {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
 function reqStr(o, k, errors, where) {
@@ -7504,7 +7793,7 @@ function reqSafeId(o, k, errors, where) {
 }
 function reqDedupeKey(o, errors, where) {
   const dk = o.dedupe_key;
-  if (!isObj(dk)) {
+  if (!isObj2(dk)) {
     errors.push(`${where}: dedupe_key must be an object {surface,symptom,root_cause}`);
     return;
   }
@@ -7517,7 +7806,7 @@ function finish(errors) {
 }
 function validateRegistryEntry(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["registry-entry: not an object"]);
+  if (!isObj2(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
   reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
@@ -7526,15 +7815,15 @@ function validateRegistryEntry(x) {
     errors.push("registry-entry: area must be a non-empty string[]");
   reqEnum(x, "weight", WEIGHTS, errors, "registry-entry");
   reqNum(x, "interval_days", errors, "registry-entry");
-  reqEnum(x, "owner", LANES, errors, "registry-entry");
+  reqEnum(x, "owner", LANES2, errors, "registry-entry");
   if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
   return finish(errors);
 }
 function validateCandidateFinding(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["finding: not an object"]);
+  if (!isObj2(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
-  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
+  if (isObj2(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -7546,7 +7835,7 @@ function validateCandidateFinding(x) {
 function validateFinding(x) {
   const base = validateCandidateFinding(x);
   const errors = [...base.errors];
-  if (isObj(x)) {
+  if (isObj2(x)) {
     reqDate(x, "first_seen", errors, "finding");
     reqDate(x, "last_seen", errors, "finding");
     reqStr(x, "run_id", errors, "finding");
@@ -7556,7 +7845,7 @@ function validateFinding(x) {
 }
 function validateSuppression(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["suppression: not an object"]);
+  if (!isObj2(x)) return finish(["suppression: not an object"]);
   reqDedupeKey(x, errors, "suppression");
   reqStr(x, "reason", errors, "suppression");
   reqDate(x, "expires", errors, "suppression");
@@ -7565,11 +7854,11 @@ function validateSuppression(x) {
 }
 function validateRunMetrics(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["run-metrics: not an object"]);
+  if (!isObj2(x)) return finish(["run-metrics: not an object"]);
   reqStr(x, "run_id", errors, "run-metrics");
   reqStr(x, "ts", errors, "run-metrics");
   reqDate(x, "date", errors, "run-metrics");
-  reqEnum(x, "lane", LANES, errors, "run-metrics");
+  reqEnum(x, "lane", LANES2, errors, "run-metrics");
   reqStr(x, "pack_sha", errors, "run-metrics");
   for (const k of [
     "selected",
@@ -7581,14 +7870,14 @@ function validateRunMetrics(x) {
     "suppressed"
   ])
     reqNum(x, k, errors, "run-metrics");
-  if (!isObj(x.usage_by_model)) errors.push("run-metrics: usage_by_model must be an object");
+  if (!isObj2(x.usage_by_model)) errors.push("run-metrics: usage_by_model must be an object");
   return finish(errors);
 }
 function validateDailyMetrics(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["daily-metrics: not an object"]);
+  if (!isObj2(x)) return finish(["daily-metrics: not an object"]);
   reqDate(x, "date", errors, "daily-metrics");
-  reqEnum(x, "lane", LANES, errors, "daily-metrics");
+  reqEnum(x, "lane", LANES2, errors, "daily-metrics");
   reqStr(x, "ts", errors, "daily-metrics");
   for (const k of [
     "runs",
@@ -7613,9 +7902,9 @@ function validateDailyMetrics(x) {
 }
 function validateCostRecord(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["cost-record: not an object"]);
+  if (!isObj2(x)) return finish(["cost-record: not an object"]);
   reqStr(x, "run_id", errors, "cost-record");
-  reqEnum(x, "lane", LANES, errors, "cost-record");
+  reqEnum(x, "lane", LANES2, errors, "cost-record");
   reqDate(x, "date", errors, "cost-record");
   reqStr(x, "ts", errors, "cost-record");
   reqNum(x, "usd", errors, "cost-record");
@@ -7643,7 +7932,7 @@ function validateCostRecord(x) {
 }
 function validateSurface(x) {
   const { errors } = v();
-  if (!isObj(x)) return finish(["surface: not an object"]);
+  if (!isObj2(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
   reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
@@ -7652,7 +7941,7 @@ function validateSurface(x) {
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
   if (x.dispatch !== void 0) {
-    if (!isObj(x.dispatch)) {
+    if (!isObj2(x.dispatch)) {
       errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
     } else {
       reqStr(x.dispatch, "model", errors, "surface.dispatch");
@@ -7675,355 +7964,215 @@ var VALIDATORS = {
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
 
 // src/lib/lane-plan.ts
-function tableGet(table, key) {
-  return Object.hasOwn(table, key) ? table[key] : void 0;
-}
 var REGISTRY_BY_LANE = {
   security: "registries/vectors.yml",
   design: "registries/flows.yml"
 };
-var SECURITY_REVIEWER = "security-reviewer";
-var AGENTS_BY_LANE = {
-  security: {
-    reviewer: SECURITY_REVIEWER,
-    refuter_tier1: "security-refuter",
-    refuter_tier2: "security-refuter-2"
-  },
-  design: {
-    refuter_tier1: "ux-refuter",
-    refuter_tier2: "ux-refuter-2"
-  }
-};
-var UX_REVIEWER_BY_ADAPTER = {
-  "playwright-mcp": "ux-reviewer-playwright",
-  playwright: "ux-reviewer-playwright"
-};
-var PERSONAS_REL = "fixtures/personas.yml";
-var PERSONAS_EXAMPLE_REL = "fixtures/personas.example.yml";
-var MANIFEST_REL = "manifest.yml";
-var NON_PRODUCTION_ENVIRONMENTS = ["local", "dev", "test"];
-var NAMED_PRODUCTION_ENVIRONMENTS = [
-  "staging",
-  "stage",
-  "production",
-  "prod",
-  "live"
-];
-function isLoopbackHost(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h.endsWith(".localhost")) return true;
-  if (h === "::1" || /^(0*:)+0*1$/.test(h)) return true;
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4 === null) return false;
-  const octets = v4.slice(1).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  return octets[0] === 127;
-}
-function checkLoopbackBaseUrl(baseUrl, manifestPath) {
-  const advice = `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no filesystem guard can undo a browser action \u2014 point base_url at a local dev server (e.g. http://localhost:3000) and start it before the run`;
-  let url;
+
+// src/lib/due.ts
+function readK(packDir, lane) {
+  const manifestPath = join2(packDir, "manifest.yml");
+  if (!existsSync3(manifestPath)) return void 0;
+  let manifest;
   try {
-    url = new URL(baseUrl);
+    manifest = readYaml(manifestPath);
   } catch {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`
-    };
+    return void 0;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`
-    };
-  }
-  if (!isLoopbackHost(url.hostname)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`
-    };
-  }
-  return { ok: true };
+  const k = manifest?.window_budget_k?.[lane];
+  if (typeof k !== "number" || !Number.isInteger(k) || k < 0) return void 0;
+  return k;
 }
-function checkNonProductionAssertion(browser, manifestPath) {
-  const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
-  const raw = browser.environment;
-  if (!filled(raw)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`
-    };
-  }
-  const env = raw.trim().toLowerCase();
-  if (NON_PRODUCTION_ENVIRONMENTS.includes(env)) return { ok: true, environment: env };
-  if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`
-    };
-  }
-  return {
-    ok: false,
-    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`
-  };
-}
-function isObj2(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-function isLane(x) {
-  return x === "security" || x === "design";
-}
-function refuse(reason) {
-  return { ok: false, reason };
-}
-function filled(x) {
-  return typeof x === "string" && x.trim() !== "";
-}
-function insidePack(packDir, path) {
-  const root = resolve(packDir);
-  const p = resolve(path);
-  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-function readYamlSafe(path, what) {
-  try {
-    return { ok: true, doc: readYaml(path) };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `${what} is not valid YAML: ${path} \u2014 ${err.message}`
-    };
-  }
-}
-function entryLabel(entry, index) {
-  return filled(entry?.id) ? entry.id : `<entry #${index}>`;
-}
-function resolveDesignLane(input) {
-  const { packDir, manifest, manifestPath, registryPath, entries } = input;
-  const stackAdapter = isObj2(manifest.stack_adapter) ? manifest.stack_adapter : void 0;
-  const browser = stackAdapter !== void 0 && isObj2(stackAdapter.browser) ? stackAdapter.browser : void 0;
-  if (browser === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`
-    };
-  }
-  const tool = browser.tool;
-  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
-  if (!filled(tool)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`
-    };
-  }
-  const reviewer = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
-  if (reviewer === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`
-    };
-  }
-  const baseUrl = browser.base_url;
-  if (!filled(baseUrl)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`
-    };
-  }
-  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
-  if (!loopback.ok) return loopback;
-  const nonProd = checkNonProductionAssertion(browser, manifestPath);
-  if (!nonProd.ok) return nonProd;
-  const personasPath = join2(packDir, PERSONAS_REL);
-  if (!insidePack(packDir, personasPath)) {
-    return {
-      ok: false,
-      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`
-    };
-  }
-  if (!existsSync2(personasPath)) {
-    if (existsSync2(join2(packDir, PERSONAS_EXAMPLE_REL))) {
-      return {
-        ok: false,
-        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`
-      };
+function lastRunDate(metricsDir, lane) {
+  const runsDir = join2(metricsDir, "runs");
+  if (!existsSync3(runsDir)) return void 0;
+  let latest;
+  for (const shard of readdirSyncSafe(runsDir)) {
+    if (!shard.endsWith(".jsonl")) continue;
+    for (const rec of readJsonl(join2(runsDir, shard))) {
+      if (rec.lane !== lane) continue;
+      if (typeof rec.date !== "string" || rec.date === "") continue;
+      if (latest === void 0 || rec.date > latest) latest = rec.date;
     }
-    return {
-      ok: false,
-      reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`
-    };
   }
-  const personasRead = readYamlSafe(personasPath, "personas file");
-  if (!personasRead.ok) return personasRead;
-  const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
-  if (!Array.isArray(personasList)) {
-    return {
-      ok: false,
-      reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`
-    };
+  return latest;
+}
+function readdirSyncSafe(dir) {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
   }
-  if (personasList.length === 0) {
-    return {
-      ok: false,
-      reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`
-    };
+}
+function lastCost(metricsDir, lane) {
+  const p = join2(metricsDir, "costs.jsonl");
+  if (!existsSync3(p)) return void 0;
+  let latest;
+  for (const rec of readJsonl(p)) {
+    if (rec.lane !== lane) continue;
+    if (typeof rec.ts !== "string" || rec.ts === "") continue;
+    if (latest === void 0 || tsNewer(rec.ts, latest.ts)) latest = rec;
   }
-  const idless = [];
-  const seeded = /* @__PURE__ */ new Set();
-  personasList.forEach((p, i) => {
-    const id = isObj2(p) ? p.id : void 0;
-    if (filled(id)) seeded.add(id.trim());
-    else idless.push(i);
-  });
-  if (idless.length > 0) {
-    return {
-      ok: false,
-      reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``
-    };
-  }
-  const unresolved = [];
-  entries.forEach((entry, i) => {
-    const persona = entry?.persona;
-    if (filled(persona) && seeded.has(persona.trim())) return;
-    unresolved.push(
-      `${entryLabel(entry, i)} -> ${filled(persona) ? persona : "(no persona: set)"}`
-    );
-  });
-  if (unresolved.length > 0) {
-    return {
-      ok: false,
-      reason: `${registryPath} references personas that are not seeded in ${personasPath}: ${unresolved.join("; ")} \u2014 seed the missing personas or fix each flow's \`persona:\` field`
-    };
-  }
+  return latest;
+}
+function daysBetween2(from, to) {
+  return Math.round(
+    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5
+  );
+}
+function unrunnable(repo, lane, detail) {
   return {
-    ok: true,
-    reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
-    personas: personasPath
+    repo: repo.name,
+    lane,
+    due: false,
+    reason: "unrunnable",
+    detail,
+    selected: 0,
+    overdue: 0,
+    changed: 0
   };
 }
-function buildLanePlan(opts) {
-  const { packDir } = opts;
-  if (!isLane(opts.lane)) {
-    return refuse(
-      `unknown lane "${opts.lane}" \u2014 expected "security" or "design" (--lane selects the registry, the agent types, and the design-lane prerequisites)`
+function laneDue(repo, lane, opts) {
+  const { config, today } = opts;
+  const packDir = join2(repo.path, ".nightshift");
+  if (!existsSync3(packDir)) {
+    return unrunnable(repo, lane, `no .nightshift pack in ${repo.path} \u2014 run /nightshift:onboard there`);
+  }
+  const k = readK(packDir, lane);
+  if (k === void 0) {
+    return unrunnable(
+      repo,
+      lane,
+      `manifest.window_budget_k.${lane} is missing or not a non-negative integer in ${packDir}/manifest.yml`
     );
   }
-  const lane = opts.lane;
-  if (!existsSync2(packDir)) {
-    return refuse(
-      `pack directory not found: ${packDir} \u2014 run /nightshift:onboard in the target repo to create the .nightshift pack`
-    );
+  const registryPath = join2(packDir, REGISTRY_BY_LANE[lane]);
+  if (!existsSync3(registryPath)) {
+    return unrunnable(repo, lane, `registry not found: ${registryPath}`);
   }
-  if (!statSync(packDir).isDirectory()) {
-    return refuse(`pack path is not a directory: ${packDir} \u2014 --pack must name the .nightshift pack dir`);
-  }
-  const manifestPath = join2(packDir, MANIFEST_REL);
-  if (!existsSync2(manifestPath)) {
-    return refuse(
-      `manifest not found: ${manifestPath} \u2014 every pack needs a manifest.yml (re-run /nightshift:onboard, which writes it from the template)`
-    );
-  }
-  const manifestRead = readYamlSafe(manifestPath, "manifest");
-  if (!manifestRead.ok) return refuse(manifestRead.reason);
-  if (!isObj2(manifestRead.doc)) {
-    return refuse(
-      `manifest is not a YAML mapping: ${manifestPath} \u2014 expected top-level keys (pack_format, project, repos, stack_adapter, ...)`
-    );
-  }
-  const manifest = manifestRead.doc;
-  const registryRel = tableGet(REGISTRY_BY_LANE, lane);
-  const laneAgents = tableGet(AGENTS_BY_LANE, lane);
-  if (registryRel === void 0 || laneAgents === void 0) {
-    return refuse(
-      `lane "${lane}" has no complete row in the lane tables (REGISTRY_BY_LANE: ${registryRel === void 0 ? "missing" : "ok"}, AGENTS_BY_LANE: ${laneAgents === void 0 ? "missing" : "ok"}) \u2014 every lane needs a row in both tables in src/lib/lane-plan.ts`
-    );
-  }
-  const registryPath = join2(packDir, registryRel);
-  if (!insidePack(packDir, registryPath)) {
-    return refuse(`resolved registry path escapes the pack: ${registryPath} is not inside ${packDir}`);
-  }
-  if (!existsSync2(registryPath)) {
-    return refuse(
-      `registry not found: ${registryPath} \u2014 lane "${lane}" reads ${registryRel}; seed it (or re-run /nightshift:onboard, which writes it from the template)`
-    );
-  }
-  const registryRead = readYamlSafe(registryPath, "registry");
-  if (!registryRead.ok) return refuse(registryRead.reason);
   let entries;
   try {
-    entries = extractEntries(registryRead.doc, lane);
+    entries = extractEntries(readYaml(registryPath), lane);
   } catch (err) {
-    return refuse(`registry ${registryPath} is malformed: ${err.message}`);
+    return unrunnable(repo, lane, `registry ${registryPath} is malformed: ${err.message}`);
   }
-  if (entries.length === 0) {
-    return refuse(
-      `registry ${registryPath} has no entries for lane "${lane}" \u2014 a run that would review nothing is an operator error; add at least one entry with owner: ${lane}`
-    );
+  const git = (opts.gitFor ?? ((r) => makeGitRunner(r.path)))(repo);
+  let surfaces;
+  try {
+    surfaces = selectSurfaces(entries, {
+      today,
+      k,
+      changedFilesFor: (e) => git.changedFilesSince(e.last_reviewed)
+    });
+  } catch (err) {
+    return unrunnable(repo, lane, `selection failed for ${registryPath}: ${err.message}`);
   }
-  let plan;
-  if (lane === "design") {
-    const design = resolveDesignLane({ packDir, manifest, manifestPath, registryPath, entries });
-    if (!design.ok) return refuse(design.reason);
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: design.reviewer,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      },
-      browser: design.browser,
-      personas: design.personas
+  const overdue = surfaces.filter((s) => s.staleness >= 1).length;
+  const changed = surfaces.filter((s) => s.change_flag === 1).length;
+  const metricsDir = join2(packDir, "metrics");
+  const last = lastRunDate(metricsDir, lane);
+  const sinceRun = last === void 0 ? void 0 : daysBetween2(last, today);
+  const cost = lastCost(metricsDir, lane);
+  const base = {
+    repo: repo.name,
+    lane,
+    selected: surfaces.length,
+    overdue,
+    changed,
+    ...last === void 0 ? {} : { last_run_date: last, days_since_run: sinceRun },
+    ...cost === void 0 ? {} : { last_run_usd: cost.usd, last_run_status: cost.status }
+  };
+  if (sinceRun !== void 0 && sinceRun < config.sentinel.cooldown_days) {
+    return {
+      ...base,
+      due: false,
+      reason: "cooldown",
+      detail: `last run ${last} (${sinceRun}d ago) is inside the ${config.sentinel.cooldown_days}d cooldown \u2014 run it explicitly with \`ns run\` to override`
     };
-  } else {
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: SECURITY_REVIEWER,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      }
+  }
+  if (surfaces.length === 0) {
+    return {
+      ...base,
+      due: false,
+      reason: "nothing-selected",
+      detail: k === 0 ? `window_budget_k.${lane} is 0 \u2014 the lane is budgeted to review nothing` : `no entries selected from ${registryPath} \u2014 seed the registry`
     };
   }
-  const registryFile = registryRel.slice(registryRel.lastIndexOf("/") + 1);
-  if (!isSafeId(registryFile)) {
-    return refuse(`registry file name "${registryFile}" is not path-segment safe (lane "${lane}")`);
+  if (last === void 0) {
+    return { ...base, due: true, reason: "never-run", detail: `no run recorded for this lane yet` };
   }
-  for (const [role, agentType] of Object.entries(plan.agents)) {
-    if (!isSafeId(agentType)) {
-      return refuse(
-        `agent id for ${role} ("${agentType}") is not path-segment safe \u2014 agent types cross into args as control-plane data`
-      );
+  if (overdue > 0) {
+    return {
+      ...base,
+      due: true,
+      reason: "overdue",
+      detail: `${overdue} of ${surfaces.length} selected surface(s) past their interval`
+    };
+  }
+  if (changed > 0) {
+    return {
+      ...base,
+      due: true,
+      reason: "changed",
+      detail: `${changed} of ${surfaces.length} selected surface(s) intersect the working diff`
+    };
+  }
+  if (sinceRun !== void 0 && sinceRun >= config.sentinel.weekly_floor_days) {
+    return {
+      ...base,
+      due: true,
+      reason: "weekly-floor",
+      detail: `nothing overdue or changed, but the last run was ${sinceRun}d ago (floor: ${config.sentinel.weekly_floor_days}d)`
+    };
+  }
+  return {
+    ...base,
+    due: false,
+    reason: "not-due",
+    detail: `nothing overdue, nothing changed; ${config.sentinel.weekly_floor_days - (sinceRun ?? 0)}d until the weekly floor fires`
+  };
+}
+function dueSweep(opts) {
+  const out = [];
+  for (const repo of opts.config.repos) {
+    if (!repo.enabled) continue;
+    for (const lane of repo.lanes) {
+      out.push(laneDue(repo, lane, opts));
     }
   }
-  return { ok: true, plan };
+  return out;
 }
 
-// src/bin/lane-plan.ts
+// src/bin/due.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  try {
-    const res = buildLanePlan({
-      packDir: requireArg(args, "pack"),
-      lane: requireArg(args, "lane")
-    });
-    if (!res.ok) {
-      process.stderr.write(`lane-plan: ${res.reason}
-`);
-      process.exitCode = 2;
-      return;
-    }
-    const plan = res.plan;
-    if (args.out !== void 0) writeJson(args.out, plan);
-    process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
-    process.stderr.write(
-      `lane-plan: lane=${plan.lane} registry=${plan.registry} reviewer=${plan.agents.reviewer}
-`
-    );
-  } catch (err) {
-    process.stderr.write(`lane-plan: ${err.message}
+  const cfg = readOpsConfig(requireArg(args, "config"));
+  if (!cfg.ok) {
+    process.stderr.write(`due: ${cfg.reason}
 `);
     process.exitCode = 2;
+    return;
   }
+  let verdicts;
+  try {
+    verdicts = dueSweep({ config: cfg.config, today: resolveToday(args) });
+  } catch (err) {
+    process.stderr.write(`due: ${err.message}
+`);
+    process.exitCode = 2;
+    return;
+  }
+  const shown = args.all !== void 0 ? verdicts : verdicts.filter((v2) => v2.due);
+  if (args.format === "sh") {
+    for (const v2 of verdicts.filter((x) => x.due)) {
+      process.stdout.write(`${v2.repo} ${v2.lane}
+`);
+    }
+    return;
+  }
+  process.stdout.write(JSON.stringify(shown, null, 2) + "\n");
+  const dueCount = verdicts.filter((v2) => v2.due).length;
+  process.stderr.write(`due: ${dueCount} of ${verdicts.length} configured repo/lane pair(s) due
+`);
 }
 main();

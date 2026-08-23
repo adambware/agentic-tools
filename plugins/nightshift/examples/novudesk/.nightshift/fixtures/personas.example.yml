@@ -1,7 +1,7 @@
 # .nightshift/fixtures/personas.yml — NovuDesk seeded test personas
 # =================================================================
 #
-# Seeded, non-production personas the Designer lane drives flows AS, against the staging
+# Seeded, non-production personas the Designer lane drives flows AS, against the loopback
 # base_url in manifest.yml. They make Designer runs deterministic so the reviewer
 # measures real friction, not environment drift. Persona schema (spec Designer prereq):
 #   account_type, plan, permissions, data_seed, feature_flags, credentials_ref,

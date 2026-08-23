@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, readdirSync } 
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLanePlan } from "./lane-plan.js";
+import { buildLanePlan, isLoopbackHost, NON_PRODUCTION_ENVIRONMENTS } from "./lane-plan.js";
 import { isSafeId } from "./validate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -31,12 +31,21 @@ afterEach(() => {
 
 const MANIFEST_NO_BROWSER = `pack_format: 1\nproject: probe\n`;
 
-function manifestWithBrowser(opts: { tool?: string; base_url?: string } = {}): string {
+function manifestWithBrowser(
+  opts: { tool?: string; base_url?: string; environment?: string } = {},
+): string {
   const tool = opts.tool === undefined ? "playwright-mcp" : opts.tool;
-  const baseUrl = opts.base_url === undefined ? "https://staging.probe.example" : opts.base_url;
+  // A7/T8: the default fixture is what a design-ready pack now looks like — a
+  // LOOPBACK base_url plus an explicit non-production assertion. Every pre-T8
+  // case below keeps passing through this builder, so a regression that dropped
+  // either gate would show up as those cases silently going green on a manifest
+  // that names a remote host.
+  const baseUrl = opts.base_url === undefined ? "http://localhost:3000" : opts.base_url;
+  const environment = opts.environment === undefined ? "local" : opts.environment;
   const toolLine = tool === "" ? "" : `    tool: ${tool}\n`;
   const urlLine = baseUrl === "" ? "" : `    base_url: "${baseUrl}"\n`;
-  return `pack_format: 1\nproject: probe\nstack_adapter:\n  browser:\n${toolLine}${urlLine}`;
+  const envLine = environment === "" ? "" : `    environment: ${environment}\n`;
+  return `pack_format: 1\nproject: probe\nstack_adapter:\n  browser:\n${toolLine}${urlLine}${envLine}`;
 }
 
 function vectorsYaml(ids: string[]): string {
@@ -245,6 +254,112 @@ describe("buildLanePlan design-lane refusals", () => {
     if (!res.ok) expect(res.reason).toMatch(/browser\.base_url is missing or blank/);
   });
 
+  // ── T8 (A7): environment safety ───────────────────────────────────────────
+  // Two INDEPENDENT gates, both mandatory. Each block below holds the other
+  // half of the manifest valid, so a passing test proves the named gate fired
+  // on its own rather than riding on the other one's refusal.
+
+  it("refuses a non-loopback base_url even though the non-prod assertion is present", () => {
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({ base_url: "https://staging.probe.example", environment: "local" }),
+    );
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toMatch(/is not a LOOPBACK host/);
+    expect(res.reason).toContain("staging.probe.example");
+  });
+
+  it("refuses a base_url whose loopback-looking text is only userinfo (browser resolves the real host)", () => {
+    // http://localhost@prod.example/ CONTAINS "localhost" but a browser drives
+    // prod.example. A substring check would pass this; hostname parsing must not.
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({ base_url: "http://localhost@prod.probe.example/app" }),
+    );
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toMatch(/is not a LOOPBACK host/);
+    expect(res.reason).toContain('resolved host: "prod.probe.example"');
+  });
+
+  it("refuses 0.0.0.0 — the unspecified address is not loopback", () => {
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ base_url: "http://0.0.0.0:3000" }));
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/is not a LOOPBACK host/);
+  });
+
+  it("refuses a base_url that is not an absolute URL", () => {
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ base_url: "localhost:3000/app" }));
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/is not an absolute URL|only http\/https are drivable/);
+  });
+
+  it("refuses a non-http scheme", () => {
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({ base_url: "file:///Users/probe/app/index.html" }),
+    );
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/only http\/https are drivable/);
+  });
+
+  it("refuses when environment is absent even though base_url IS loopback", () => {
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({ base_url: "http://127.0.0.1:3000", environment: "" }),
+    );
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toMatch(/browser\.environment is missing/);
+    expect(res.reason).toMatch(/local, dev, test/);
+  });
+
+  it('refuses environment: staging BY NAME — the "up but shared" failure mode', () => {
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "staging" }));
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toContain("staging");
+    expect(res.reason).toMatch(/not yours to submit forms against/);
+  });
+
+  it("refuses environment: production BY NAME", () => {
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "production" }));
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/not yours to submit forms against/);
+  });
+
+  it("refuses an unrecognized environment value rather than assuming it is safe", () => {
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "sandbox" }));
+    const res = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toMatch(/is not a recognized non-production environment/);
+    expect(res.reason).toMatch(/asserts nothing/);
+  });
+
+  it("does NOT refuse the security lane on the same unsafe manifest (T8 is design-only)", () => {
+    // The security lane never drives a browser, so an unsafe browser block must
+    // not become a reason to refuse it — that would be scope creep with a
+    // side effect nobody asked for.
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({ base_url: "https://prod.probe.example", environment: "production" }),
+    );
+    mkdirSync(join(dir, "registries"), { recursive: true });
+    writeFileSync(join(dir, "registries", "vectors.yml"), vectorsYaml(["V-01"]));
+    const res = buildLanePlan({ packDir: dir, lane: "security" });
+    expect(res.ok).toBe(true);
+  });
+
   it("refuses when personas.yml is missing but personas.example.yml exists, naming the template", () => {
     writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser());
     mkdirSync(join(dir, "fixtures"), { recursive: true });
@@ -348,7 +463,8 @@ describe("buildLanePlan happy paths", () => {
     });
     expect(res.plan.browser).toEqual({
       tool: "playwright-mcp",
-      base_url: "https://staging.probe.example",
+      base_url: "http://localhost:3000",
+      environment: "local",
     });
     expect(res.plan.personas).toBe(join(dir, "fixtures", "personas.yml"));
   });
@@ -362,6 +478,54 @@ describe("buildLanePlan happy paths", () => {
     expect(res.plan.browser?.tool).toBe("playwright-mcp");
     expect(res.plan.personas).toBe(join(NOVUDESK_PACK, "fixtures", "personas.yml"));
   });
+});
+
+describe("T8 accepted loopback + environment forms", () => {
+  for (const url of [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.2:8080",
+    "http://probe.localhost:3000",
+    "https://localhost:8443/app",
+    "http://[::1]:3000",
+  ]) {
+    it(`accepts base_url ${url}`, () => {
+      seedDesignPack(dir);
+      writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ base_url: url }));
+      const res = buildLanePlan({ packDir: dir, lane: "design" });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.plan.browser?.base_url).toBe(url);
+    });
+  }
+
+  for (const env of ["local", "dev", "test", "LOCAL", "  Dev  "]) {
+    it(`accepts environment "${env}" and normalizes it to lower case`, () => {
+      seedDesignPack(dir);
+      writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: `"${env}"` }));
+      const res = buildLanePlan({ packDir: dir, lane: "design" });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.plan.browser?.environment).toBe(env.trim().toLowerCase());
+    });
+  }
+});
+
+describe("NON_PRODUCTION_ENVIRONMENTS is the published allow-list", () => {
+  it("is exactly the set the refusal reasons and the manifest schema name", () => {
+    expect([...NON_PRODUCTION_ENVIRONMENTS]).toEqual(["local", "dev", "test"]);
+  });
+});
+
+describe("isLoopbackHost", () => {
+  for (const host of ["localhost", "LOCALHOST", "app.localhost", "127.0.0.1", "127.255.255.254", "::1", "[::1]", "0:0:0:0:0:0:0:1"]) {
+    it(`treats "${host}" as loopback`, () => {
+      expect(isLoopbackHost(host)).toBe(true);
+    });
+  }
+  for (const host of ["0.0.0.0", "example.com", "localhost.example.com", "128.0.0.1", "127.0.0.256", "::2", "10.0.0.1", ""]) {
+    it(`treats "${host}" as NOT loopback`, () => {
+      expect(isLoopbackHost(host)).toBe(false);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------

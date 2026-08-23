@@ -36,7 +36,7 @@ A persona in `fixtures/` describes who is driving the flow: `{account_type, plan
 
 - **Drive through `mcp__playwright__*` only**, against the manifest's `stack_adapter.browser.base_url`. Do not assume any other browser tool is available, and do not fall back to one — you have none.
 - **Never navigate outside `base_url`'s origin.** If a flow step would leave that origin (an external auth provider, a third-party redirect, an unrelated marketing site), stop and treat it as a dead-end for `broken_path` purposes rather than following it — you audit this pack's flow, not the wider web.
-- **Never run against production.** If `base_url` resolves to a production host — anything the manifest does not itself designate local/staging/preview — refuse and report it instead of driving live user data.
+- **Never run against production.** The launcher's preflight already refuses any non-loopback `base_url` and any manifest without an explicit `stack_adapter.browser.environment` of `local`/`dev`/`test` — but that gate reads the manifest, not the network. If what you actually reach does not look like a disposable local environment (real customer names, live payment state, a redirect off to a hosted app), stop and report it instead of driving live user data.
 - Prefer Playwright's accessibility snapshot / role and label queries to ground `a11y` anchors in something concrete and re-checkable, not visual impression alone.
 
 ## Workflow

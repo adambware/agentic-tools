@@ -34,7 +34,7 @@ rationale only.
 | Model ceiling | **Opus 5** for judgment (reviewer, Tier-2, UX); **Haiku 4.5** for Tier-1 + plumbing; no Fable |
 | Orchestration | Dynamic Workflow (`nightshift.workflow.js`), full-K dispatch |
 | Living document | One local HTML file in the ops home, regenerated per run, all repos |
-| Ops home | Fresh directory outside all repos (`$OPS` until named — open question 1) |
+| Ops home | Fresh directory outside all repos, named **`agentic-nightshift`** (A7). `$OPS` stays the placeholder in prose — the absolute path is operator-specific and uncommitted |
 | Runbook | `$OPS/runbook.md`, never committed |
 
 ## Target architecture
@@ -150,7 +150,12 @@ files are the tracker; the checklist in the original plan §14 is frozen.
 
 ## Open questions for the operator
 
-1. **Ops home name** — recommendation `~/code/nightshift-ops`. Placeholder `$OPS` until chosen.
+1. ~~**Ops home name**~~ — **DECIDED (A7): `agentic-nightshift`**, created alongside the
+   operator's repo checkouts rather than inside any of them. The name sorts immediately
+   before `agentic-tools`, so the ops home sits next to the engine it drives; it
+   deliberately does NOT start with `agentic-tools-`, because that prefix already means
+   "a git worktree of the engine" and the ops home is not a git repo at all. `$OPS` stays
+   the placeholder in prose — the absolute path is operator-specific and uncommitted.
 2. **K budgets for novudesk** — proposal: security 6, design 4 (pack manifest, adjustable anytime).
 3. **Dashboard auto-open** — `open_after_run: true` default, or rely on `ns dashboard`?
 4. **Digest cadence** — manual (`ns digest`) in phase 1, or auto-refresh each run? The

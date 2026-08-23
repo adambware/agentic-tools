@@ -1,0 +1,50 @@
+# Ops Config Schema — $OPS/config.yml (the operator's home, NEVER committed)
+# =========================================================================
+#
+# This file is the ANNOTATED SCHEMA / reference for the one hand-written file in
+# the ops home. The real config.yml lives on the operator's machine alongside
+# runbook.md, dashboard.html, digests/, evidence/ and logs/ — none of which are
+# ever committed. `ns` and `bin/dashboard` both read it; src/lib/ops-config.ts is
+# the tested reader and the authority on every default and refusal below.
+#
+# WHY IT IS NOT IN THE PACK. The pack (<repo>/.nightshift/) answers "how do you
+# review THIS repo" and travels with the code. This file answers "which repos do
+# I, the operator, review from THIS machine, and how wide" — a fact about a
+# person and a laptop, not about a codebase. Committing it would leak local
+# paths and make one operator's fleet everyone's.
+# ---------------------------------------------------------------------------
+
+repos:            # list[object], REQUIRED, non-empty. One entry per onboarded repo.
+  - path:         # string, REQUIRED. Repo root. A leading ~ or ~/ is expanded;
+                  #   a relative path resolves against THIS FILE's directory (not
+                  #   the cwd `ns` happened to run from). "~user" is NOT expanded.
+    lanes:        # list[string]. Lanes enabled for this repo: [security, design].
+                  #   A lane absent from the list is not "not due" — it is not
+                  #   part of this system's job and is skipped entirely.
+                  #   The map spelling ({security: true}) is also accepted.
+    enabled:      # bool, default TRUE. `false` opts the whole repo out.
+    name:         # string, optional. Display name; defaults to the path basename.
+                  #   Two repos may not resolve to the same name — evidence and
+                  #   digests are stored per name, so one would overwrite the other.
+
+dashboard:        # object, optional.
+  out:            # string, default "dashboard.html". Written inside the ops home.
+  open_after_run: # bool, default TRUE. `ns run --no-open` overrides it per run.
+
+sentinel:         # object, optional. Read by due-detection today; A9 adds the
+                  #   scheduler that acts on it. `ns run --due` is the manual form
+                  #   of exactly the same predicate (src/lib/due.ts).
+  enabled:        # bool, default FALSE.
+  hour:           # int 0-23, default 7. The hour A9's sentinel wakes up.
+  cooldown_days:  # int >= 0, default 2. A run this recent BLOCKS a new one —
+                  #   it outranks even a fresh diff, or a working tree that stays
+                  #   dirty would re-trigger on every single invocation.
+  weekly_floor_days: # int >= 1, default 7. Nothing overdue and nothing changed
+                  #   still earns a run this often: coverage freshness decays on a
+                  #   quiet repo, and a lane that only ever fires on change reports
+                  #   "all clear" for surfaces it has not looked at in months.
+
+max_concurrent_reviewers:  # int >= 1, default 3. How many reviewer+refuter pairs
+                  #   may be in flight at once. The launcher chunks the selected
+                  #   surfaces by this number and the workflow iterates the chunks,
+                  #   so this value IS the concurrency policy (A7/T11).

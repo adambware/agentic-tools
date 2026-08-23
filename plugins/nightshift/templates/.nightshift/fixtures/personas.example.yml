@@ -2,7 +2,7 @@
 # ===========================================================================
 #
 # Seeded test personas are the design-lane PREREQUISITE. The reviewer drives each
-# stale/changed flow AS one of these personas against the staging base_url. Without a
+# stale/changed flow AS one of these personas against the loopback base_url. Without a
 # stable, seeded persona+data set the reviewer confuses environment drift with real
 # friction — so this file gates the design lane.
 #

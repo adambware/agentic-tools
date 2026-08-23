@@ -546,7 +546,7 @@ var require_toJS = __commonJS({
     var identity = require_identity();
     function toJS(value, arg, ctx) {
       if (Array.isArray(value))
-        return value.map((v2, i) => toJS(v2, String(i), ctx));
+        return value.map((v, i) => toJS(v, String(i), ctx));
       if (value && typeof value.toJSON === "function") {
         if (!ctx || !identity.hasAnchor(value))
           return value.toJSON(arg, ctx);
@@ -839,18 +839,18 @@ var require_Collection = __commonJS({
     var identity = require_identity();
     var Node = require_Node();
     function collectionFromPath(schema, path, value) {
-      let v2 = value;
+      let v = value;
       for (let i = path.length - 1; i >= 0; --i) {
         const k = path[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
-          a[k] = v2;
-          v2 = a;
+          a[k] = v;
+          v = a;
         } else {
-          v2 = /* @__PURE__ */ new Map([[k, v2]]);
+          v = /* @__PURE__ */ new Map([[k, v]]);
         }
       }
-      return createNode.createNode(v2, void 0, {
+      return createNode.createNode(v, void 0, {
         aliasDuplicateObjects: false,
         keepUndefined: false,
         onAnchor: () => {
@@ -1823,8 +1823,8 @@ var require_Pair = __commonJS({
     var identity = require_identity();
     function createPair(key, value, ctx) {
       const k = createNode.createNode(key, void 0, ctx);
-      const v2 = createNode.createNode(value, void 0, ctx);
-      return new Pair(k, v2);
+      const v = createNode.createNode(value, void 0, ctx);
+      return new Pair(k, v);
     }
     var Pair = class _Pair {
       constructor(key, value = null) {
@@ -3496,7 +3496,7 @@ var require_Document = __commonJS({
           value = replacer.call({ "": value }, "", value);
           _replacer = replacer;
         } else if (Array.isArray(replacer)) {
-          const keyToStr = (v2) => typeof v2 === "number" || v2 instanceof String || v2 instanceof Number;
+          const keyToStr = (v) => typeof v === "number" || v instanceof String || v instanceof Number;
           const asStr = replacer.filter(keyToStr).map(String);
           if (asStr.length > 0)
             replacer = replacer.concat(asStr);
@@ -3532,8 +3532,8 @@ var require_Document = __commonJS({
        */
       createPair(key, value, options = {}) {
         const k = this.createNode(key, null, options);
-        const v2 = this.createNode(value, null, options);
-        return new Pair.Pair(k, v2);
+        const v = this.createNode(value, null, options);
+        return new Pair.Pair(k, v);
       }
       /**
        * Removes a value from the document.
@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep2) {
+          if (!keyProps.anchor && !keyProps.tag && !sep3) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep2 = "";
+        let sep3 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep2 + cb;
-              sep2 = "";
+                comment += sep3 + cb;
+              sep3 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep2 += source;
+                sep3 += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep: sep3, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep3?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep2 && !value) {
+          if (!props.anchor && !props.tag && !sep3 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep2 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
+        if (!isMap && !sep3 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep2)
-                for (const st of sep2) {
+              if (sep3)
+                for (const st of sep3) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep2 = "";
+      let sep3 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep2 === " ")
-            sep2 = "\n";
-          else if (!prevMoreIndented && sep2 === "\n")
-            sep2 = "\n\n";
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          if (sep3 === " ")
+            sep3 = "\n";
+          else if (!prevMoreIndented && sep3 === "\n")
+            sep3 = "\n\n";
+          value += sep3 + indent.slice(trimIndent) + content;
+          sep3 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep2 === "\n")
+          if (sep3 === "\n")
             value += "\n";
           else
-            sep2 = "\n";
+            sep3 = "\n";
         } else {
-          value += sep2 + content;
-          sep2 = " ";
+          value += sep3 + content;
+          sep3 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep2 = " ";
+      let sep3 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep2 === "\n")
-            res += sep2;
+          if (sep3 === "\n")
+            res += sep3;
           else
-            sep2 = "\n";
+            sep3 = "\n";
         } else {
-          res += sep2 + match[1];
-          sep2 = " ";
+          res += sep3 + match[1];
+          sep3 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep2 + (match?.[1] ?? "");
+      return res + sep3 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep2, value }) {
+    function stringifyItem({ start, key, sep: sep3, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep2)
-        for (const st of sep2)
+      if (sep3)
+        for (const st of sep3)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep2;
+          let sep3;
           if (scalar.end) {
-            sep2 = scalar.end;
-            sep2.push(this.sourceToken);
+            sep3 = scalar.end;
+            sep3.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep2 = [this.sourceToken];
+            sep3 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep2 }]
+            items: [{ start, key: scalar, sep: sep3 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep2 = it.sep;
-                  sep2.push(this.sourceToken);
+                  const sep3 = it.sep;
+                  sep3.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep2 }]
+                    items: [{ start: start2, key, sep: sep3 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep2 = fc.end.splice(1, fc.end.length);
-            sep2.push(this.sourceToken);
+            const sep3 = fc.end.splice(1, fc.end.length);
+            sep3.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep2 }]
+              items: [{ start, key: fc, sep: sep3 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7388,8 +7388,31 @@ function requireArg(args, key) {
   return val;
 }
 
+// src/lib/retain.ts
+import {
+  copyFileSync,
+  existsSync as existsSync4,
+  lstatSync as lstatSync2,
+  mkdirSync as mkdirSync2,
+  readdirSync as readdirSync3,
+  readFileSync as readFileSync2
+} from "node:fs";
+import { createHash } from "node:crypto";
+import { extname, join as join3, resolve, sep as sep2 } from "node:path";
+
+// src/lib/dedupekey.ts
+function dedupeKeyString(k) {
+  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
+}
+function isOpen(f) {
+  return !f.resolved_at;
+}
+
+// src/lib/findings-store.ts
+import { existsSync as existsSync2, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 // src/lib/io.ts
-var import_yaml = __toESM(require_dist(), 1);
 import {
   openSync,
   writeSync,
@@ -7401,627 +7424,297 @@ import {
   mkdirSync,
   appendFileSync
 } from "node:fs";
-import { dirname, join } from "node:path";
-var tmpSeq = 0;
-function atomicWrite(path, data) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
-  const fd = openSync(tmp, "w");
-  try {
-    writeSync(fd, data);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+var import_yaml = __toESM(require_dist(), 1);
+function readJsonl(path) {
+  if (!existsSync(path)) return [];
+  const text = readFileSync(path, "utf8");
+  const out = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    out.push(JSON.parse(trimmed));
   }
-  renameSync(tmp, path);
-}
-function readYaml(path) {
-  if (!existsSync(path)) return void 0;
-  return (0, import_yaml.parse)(readFileSync(path, "utf8"));
-}
-function writeJson(path, value) {
-  atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
-}
-function basename(path) {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? path : path.slice(i + 1);
+  return out;
 }
 
-// src/lib/lane-plan.ts
-import { existsSync as existsSync2, statSync } from "node:fs";
-import { join as join2, resolve, sep } from "node:path";
+// src/lib/findings-store.ts
+function readAllFindings(metricsDir) {
+  const dir = join(metricsDir, "findings");
+  if (!existsSync2(dir)) return [];
+  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
+  const out = [];
+  for (const shard of shards) out.push(...readJsonl(join(dir, shard)));
+  return out;
+}
+function foldFindings(findings) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
+  return byKey;
+}
 
-// src/lib/registry.ts
-function extractEntries(doc, lane) {
-  if (doc === void 0 || doc === null) return [];
-  let list;
-  if (Array.isArray(doc)) {
-    list = doc;
-  } else if (typeof doc === "object") {
-    const o = doc;
-    list = o.vectors ?? o.flows ?? o.entries;
-    if (list === void 0) {
-      throw new Error("malformed registry: expected vectors|flows|entries list");
+// src/lib/prune.ts
+import { existsSync as existsSync3, lstatSync, readdirSync as readdirSync2, rmdirSync, rmSync } from "node:fs";
+import { join as join2, relative, sep } from "node:path";
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+function prune(dir, policy, opts) {
+  if (!existsSync3(dir)) return { removed: [], kept: [] };
+  if (policy.kind === "lifecycle") return pruneLifecycle(dir, policy.retain);
+  const now = opts?.now ?? Date.now;
+  const entries = readdirSync2(dir);
+  const keepSet = computeTimeKeepSet(dir, entries, policy, now());
+  const removed = [];
+  const kept = [];
+  for (const name of entries) {
+    if (keepSet.has(name)) {
+      kept.push(name);
+    } else {
+      rmSync(join2(dir, name), { recursive: true, force: true });
+      removed.push(name);
     }
-  } else {
-    throw new Error("malformed registry: not a list or object");
   }
-  if (!Array.isArray(list)) throw new Error("malformed registry: entries is not a list");
-  return list.filter((e) => !e.owner || e.owner === lane);
+  return { removed, kept };
 }
-
-// src/lib/validate.ts
-var WEIGHTS = ["critical", "high", "medium", "low"];
-var SEVERITIES = WEIGHTS;
-var CONFIDENCES = ["low", "medium", "high"];
-var LANES = ["security", "design"];
-var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
-var EFFORTS = ["low", "medium", "high"];
-var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
-function isSafeId(id) {
-  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+function computeTimeKeepSet(dir, entries, policy, now) {
+  const withMtime = entries.map((name) => ({
+    name,
+    mtimeMs: lstatSync(join2(dir, name)).mtimeMs
+  }));
+  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keepSet = /* @__PURE__ */ new Set();
+  withMtime.forEach(({ name, mtimeMs }, rank) => {
+    const ageDays = (now - mtimeMs) / MS_PER_DAY;
+    if (rank < policy.keep && ageDays <= policy.maxAgeDays) keepSet.add(name);
+  });
+  return keepSet;
 }
-function v() {
-  const errors = [];
-  return { errors, out: { ok: true, errors } };
+function pruneLifecycle(dir, retain) {
+  const removed = [];
+  const kept = [];
+  const walk = (current) => {
+    for (const name of readdirSync2(current)) {
+      const abs = join2(current, name);
+      if (lstatSync(abs).isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      const relPath = toPosixRelative(dir, abs);
+      const relNfc = relPath.normalize("NFC");
+      const nameNfc = name.normalize("NFC");
+      if (retain.has(relNfc) || retain.has(nameNfc) || underRetainedDir(retain, relNfc)) {
+        kept.push(relPath);
+      } else {
+        rmSync(abs, { force: true });
+        removed.push(relPath);
+      }
+    }
+  };
+  walk(dir);
+  removeEmptyDirs(dir);
+  return { removed, kept };
 }
-function isObj(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
+function underRetainedDir(retain, relPath) {
+  for (let i = relPath.indexOf("/"); i !== -1; i = relPath.indexOf("/", i + 1)) {
+    if (retain.has(relPath.slice(0, i))) return true;
+  }
+  return false;
 }
-function reqStr(o, k, errors, where) {
-  if (typeof o[k] !== "string" || o[k].length === 0)
-    errors.push(`${where}: ${k} must be a non-empty string`);
+function toPosixRelative(base, abs) {
+  return relative(base, abs).split(sep).join("/");
 }
-function reqEnum(o, k, allowed, errors, where) {
-  if (typeof o[k] !== "string" || !allowed.includes(o[k]))
-    errors.push(`${where}: ${k} must be one of ${allowed.join("|")}`);
+function removeEmptyDirs(dir) {
+  for (const name of readdirSync2(dir)) {
+    const abs = join2(dir, name);
+    if (!lstatSync(abs).isDirectory()) continue;
+    removeEmptyDirs(abs);
+    if (readdirSync2(abs).length === 0) rmdirSync(abs);
+  }
 }
-function reqBool(o, k, errors, where) {
-  if (typeof o[k] !== "boolean") errors.push(`${where}: ${k} must be a boolean`);
+function openEvidenceRetainSet(metricsDir, opts) {
+  if (!existsSync3(metricsDir) || !existsSync3(join2(metricsDir, "findings"))) {
+    throw new Error(`openEvidenceRetainSet: metrics dir not found: ${metricsDir}`);
+  }
+  const evidenceDirName = opts?.evidenceDirName ?? "evidence";
+  const allLines = readAllFindings(metricsDir);
+  const openKeys = new Set(
+    [...foldFindings(allLines).values()].filter(isOpen).map((f) => dedupeKeyString(f.dedupe_key))
+  );
+  const out = /* @__PURE__ */ new Set();
+  for (const f of allLines) {
+    if (!f.evidence) continue;
+    if (!openKeys.has(dedupeKeyString(f.dedupe_key))) continue;
+    addRetainForms(out, f.evidence, evidenceDirName);
+  }
+  return out;
 }
-function reqNum(o, k, errors, where) {
-  if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
-    errors.push(`${where}: ${k} must be a finite number`);
-}
-function isRealDate(s) {
-  if (!DATE_RE.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
-}
-function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !isRealDate(o[k]))
-    errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
-}
-function reqSafeId(o, k, errors, where) {
-  const val = o[k];
-  if (typeof val !== "string" || val.length === 0) return;
-  if (!isSafeId(val))
-    errors.push(
-      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
-    );
-}
-function reqDedupeKey(o, errors, where) {
-  const dk = o.dedupe_key;
-  if (!isObj(dk)) {
-    errors.push(`${where}: dedupe_key must be an object {surface,symptom,root_cause}`);
+function addRetainForms(out, evidencePath, evidenceDirName) {
+  const isAbsolute = /^[/\\]|^[A-Za-z]:/.test(evidencePath);
+  const segments = canonicalSegments(evidencePath);
+  if (segments.length === 0) return;
+  const leaf = segments[segments.length - 1];
+  if (isAbsolute) {
+    const anchor = segments.lastIndexOf(evidenceDirName);
+    if (anchor !== -1 && anchor < segments.length - 1) out.add(segments.slice(anchor + 1).join("/"));
+    out.add(leaf);
     return;
   }
-  reqStr(dk, "surface", errors, `${where}.dedupe_key`);
-  reqStr(dk, "symptom", errors, `${where}.dedupe_key`);
-  reqStr(dk, "root_cause", errors, `${where}.dedupe_key`);
+  const relForm = segments.join("/");
+  out.add(relForm);
+  if (segments[0] === evidenceDirName && segments.length > 1) out.add(segments.slice(1).join("/"));
+  out.add(leaf);
 }
-function finish(errors) {
-  return { ok: errors.length === 0, errors };
-}
-function validateRegistryEntry(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["registry-entry: not an object"]);
-  reqStr(x, "id", errors, "registry-entry");
-  reqSafeId(x, "id", errors, "registry-entry");
-  reqStr(x, "title", errors, "registry-entry");
-  reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
-  if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
-    errors.push("registry-entry: area must be a non-empty string[]");
-  reqEnum(x, "weight", WEIGHTS, errors, "registry-entry");
-  reqNum(x, "interval_days", errors, "registry-entry");
-  reqEnum(x, "owner", LANES, errors, "registry-entry");
-  if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
-  return finish(errors);
-}
-function validateCandidateFinding(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["finding: not an object"]);
-  reqDedupeKey(x, errors, "finding");
-  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
-  reqEnum(x, "severity", SEVERITIES, errors, "finding");
-  reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
-  reqBool(x, "needs_human_verification", errors, "finding");
-  if ((x.severity === "critical" || x.severity === "high") && x.needs_human_verification !== true)
-    errors.push("finding: critical/high requires needs_human_verification=true");
-  if (x.anchor !== void 0) reqEnum(x, "anchor", ANCHORS, errors, "finding");
-  return finish(errors);
-}
-function validateFinding(x) {
-  const base = validateCandidateFinding(x);
-  const errors = [...base.errors];
-  if (isObj(x)) {
-    reqDate(x, "first_seen", errors, "finding");
-    reqDate(x, "last_seen", errors, "finding");
-    reqStr(x, "run_id", errors, "finding");
-    if (x.resolved_at !== void 0) reqDate(x, "resolved_at", errors, "finding");
-  }
-  return finish(errors);
-}
-function validateSuppression(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["suppression: not an object"]);
-  reqDedupeKey(x, errors, "suppression");
-  reqStr(x, "reason", errors, "suppression");
-  reqDate(x, "expires", errors, "suppression");
-  reqStr(x, "approved_by", errors, "suppression");
-  return finish(errors);
-}
-function validateRunMetrics(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["run-metrics: not an object"]);
-  reqStr(x, "run_id", errors, "run-metrics");
-  reqStr(x, "ts", errors, "run-metrics");
-  reqDate(x, "date", errors, "run-metrics");
-  reqEnum(x, "lane", LANES, errors, "run-metrics");
-  reqStr(x, "pack_sha", errors, "run-metrics");
-  for (const k of [
-    "selected",
-    "reviewed",
-    "findings_created",
-    "confirmed",
-    "rejected_tier1",
-    "rejected_tier2",
-    "suppressed"
-  ])
-    reqNum(x, k, errors, "run-metrics");
-  if (!isObj(x.usage_by_model)) errors.push("run-metrics: usage_by_model must be an object");
-  return finish(errors);
-}
-function validateDailyMetrics(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["daily-metrics: not an object"]);
-  reqDate(x, "date", errors, "daily-metrics");
-  reqEnum(x, "lane", LANES, errors, "daily-metrics");
-  reqStr(x, "ts", errors, "daily-metrics");
-  for (const k of [
-    "runs",
-    "surfaces_total",
-    "surfaces_green",
-    "surfaces_stale",
-    "surfaces_overdue",
-    "open_findings",
-    "coverage_freshness_pct",
-    "median_staleness_ratio"
-  ])
-    reqNum(x, k, errors, "daily-metrics");
-  for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number or null`);
-  for (const k of ["cost_usd_7d", "cost_usd_30d"])
-    if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
-      errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
-  return finish(errors);
-}
-function validateCostRecord(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["cost-record: not an object"]);
-  reqStr(x, "run_id", errors, "cost-record");
-  reqEnum(x, "lane", LANES, errors, "cost-record");
-  reqDate(x, "date", errors, "cost-record");
-  reqStr(x, "ts", errors, "cost-record");
-  reqNum(x, "usd", errors, "cost-record");
-  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
-    errors.push("cost-record: usd must be >= 0");
-  for (const k of [
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens"
-  ]) {
-    reqNum(x, k, errors, "cost-record");
-    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
-      const n = x[k];
-      if (n < 0 || !Number.isInteger(n))
-        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+function canonicalSegments(path) {
+  const stack = [];
+  for (const raw of path.split(/[\\/]+/)) {
+    const seg = raw.normalize("NFC");
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      stack.pop();
+      continue;
     }
+    stack.push(seg);
   }
-  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
-  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
-  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
-  if (x.status === "ok" && x.terminal_reason !== void 0)
-    errors.push("cost-record: terminal_reason only allowed when status=error");
-  return finish(errors);
-}
-function validateSurface(x) {
-  const { errors } = v();
-  if (!isObj(x)) return finish(["surface: not an object"]);
-  reqStr(x, "id", errors, "surface");
-  reqSafeId(x, "id", errors, "surface");
-  reqEnum(x, "weight", WEIGHTS, errors, "surface");
-  reqNum(x, "staleness", errors, "surface");
-  reqNum(x, "score", errors, "surface");
-  if (x.change_flag !== 0 && x.change_flag !== 1)
-    errors.push("surface: change_flag must be 0 or 1");
-  if (x.dispatch !== void 0) {
-    if (!isObj(x.dispatch)) {
-      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
-    } else {
-      reqStr(x.dispatch, "model", errors, "surface.dispatch");
-      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
-      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
-    }
-  }
-  return finish(errors);
-}
-var VALIDATORS = {
-  "registry-entry": validateRegistryEntry,
-  "candidate-finding": validateCandidateFinding,
-  finding: validateFinding,
-  suppression: validateSuppression,
-  "run-metrics": validateRunMetrics,
-  "daily-metrics": validateDailyMetrics,
-  surface: validateSurface,
-  "cost-record": validateCostRecord
-};
-var SCHEMA_NAMES = Object.keys(VALIDATORS);
-
-// src/lib/lane-plan.ts
-function tableGet(table, key) {
-  return Object.hasOwn(table, key) ? table[key] : void 0;
-}
-var REGISTRY_BY_LANE = {
-  security: "registries/vectors.yml",
-  design: "registries/flows.yml"
-};
-var SECURITY_REVIEWER = "security-reviewer";
-var AGENTS_BY_LANE = {
-  security: {
-    reviewer: SECURITY_REVIEWER,
-    refuter_tier1: "security-refuter",
-    refuter_tier2: "security-refuter-2"
-  },
-  design: {
-    refuter_tier1: "ux-refuter",
-    refuter_tier2: "ux-refuter-2"
-  }
-};
-var UX_REVIEWER_BY_ADAPTER = {
-  "playwright-mcp": "ux-reviewer-playwright",
-  playwright: "ux-reviewer-playwright"
-};
-var PERSONAS_REL = "fixtures/personas.yml";
-var PERSONAS_EXAMPLE_REL = "fixtures/personas.example.yml";
-var MANIFEST_REL = "manifest.yml";
-var NON_PRODUCTION_ENVIRONMENTS = ["local", "dev", "test"];
-var NAMED_PRODUCTION_ENVIRONMENTS = [
-  "staging",
-  "stage",
-  "production",
-  "prod",
-  "live"
-];
-function isLoopbackHost(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h.endsWith(".localhost")) return true;
-  if (h === "::1" || /^(0*:)+0*1$/.test(h)) return true;
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4 === null) return false;
-  const octets = v4.slice(1).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  return octets[0] === 127;
-}
-function checkLoopbackBaseUrl(baseUrl, manifestPath) {
-  const advice = `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no filesystem guard can undo a browser action \u2014 point base_url at a local dev server (e.g. http://localhost:3000) and start it before the run`;
-  let url;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`
-    };
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`
-    };
-  }
-  if (!isLoopbackHost(url.hostname)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`
-    };
-  }
-  return { ok: true };
-}
-function checkNonProductionAssertion(browser, manifestPath) {
-  const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
-  const raw = browser.environment;
-  if (!filled(raw)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`
-    };
-  }
-  const env = raw.trim().toLowerCase();
-  if (NON_PRODUCTION_ENVIRONMENTS.includes(env)) return { ok: true, environment: env };
-  if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`
-    };
-  }
-  return {
-    ok: false,
-    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`
-  };
-}
-function isObj2(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-function isLane(x) {
-  return x === "security" || x === "design";
-}
-function refuse(reason) {
-  return { ok: false, reason };
-}
-function filled(x) {
-  return typeof x === "string" && x.trim() !== "";
-}
-function insidePack(packDir, path) {
-  const root = resolve(packDir);
-  const p = resolve(path);
-  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-function readYamlSafe(path, what) {
-  try {
-    return { ok: true, doc: readYaml(path) };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `${what} is not valid YAML: ${path} \u2014 ${err.message}`
-    };
-  }
-}
-function entryLabel(entry, index) {
-  return filled(entry?.id) ? entry.id : `<entry #${index}>`;
-}
-function resolveDesignLane(input) {
-  const { packDir, manifest, manifestPath, registryPath, entries } = input;
-  const stackAdapter = isObj2(manifest.stack_adapter) ? manifest.stack_adapter : void 0;
-  const browser = stackAdapter !== void 0 && isObj2(stackAdapter.browser) ? stackAdapter.browser : void 0;
-  if (browser === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`
-    };
-  }
-  const tool = browser.tool;
-  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
-  if (!filled(tool)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`
-    };
-  }
-  const reviewer = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
-  if (reviewer === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`
-    };
-  }
-  const baseUrl = browser.base_url;
-  if (!filled(baseUrl)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`
-    };
-  }
-  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
-  if (!loopback.ok) return loopback;
-  const nonProd = checkNonProductionAssertion(browser, manifestPath);
-  if (!nonProd.ok) return nonProd;
-  const personasPath = join2(packDir, PERSONAS_REL);
-  if (!insidePack(packDir, personasPath)) {
-    return {
-      ok: false,
-      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`
-    };
-  }
-  if (!existsSync2(personasPath)) {
-    if (existsSync2(join2(packDir, PERSONAS_EXAMPLE_REL))) {
-      return {
-        ok: false,
-        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`
-      };
-    }
-    return {
-      ok: false,
-      reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`
-    };
-  }
-  const personasRead = readYamlSafe(personasPath, "personas file");
-  if (!personasRead.ok) return personasRead;
-  const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
-  if (!Array.isArray(personasList)) {
-    return {
-      ok: false,
-      reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`
-    };
-  }
-  if (personasList.length === 0) {
-    return {
-      ok: false,
-      reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`
-    };
-  }
-  const idless = [];
-  const seeded = /* @__PURE__ */ new Set();
-  personasList.forEach((p, i) => {
-    const id = isObj2(p) ? p.id : void 0;
-    if (filled(id)) seeded.add(id.trim());
-    else idless.push(i);
-  });
-  if (idless.length > 0) {
-    return {
-      ok: false,
-      reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``
-    };
-  }
-  const unresolved = [];
-  entries.forEach((entry, i) => {
-    const persona = entry?.persona;
-    if (filled(persona) && seeded.has(persona.trim())) return;
-    unresolved.push(
-      `${entryLabel(entry, i)} -> ${filled(persona) ? persona : "(no persona: set)"}`
-    );
-  });
-  if (unresolved.length > 0) {
-    return {
-      ok: false,
-      reason: `${registryPath} references personas that are not seeded in ${personasPath}: ${unresolved.join("; ")} \u2014 seed the missing personas or fix each flow's \`persona:\` field`
-    };
-  }
-  return {
-    ok: true,
-    reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
-    personas: personasPath
-  };
-}
-function buildLanePlan(opts) {
-  const { packDir } = opts;
-  if (!isLane(opts.lane)) {
-    return refuse(
-      `unknown lane "${opts.lane}" \u2014 expected "security" or "design" (--lane selects the registry, the agent types, and the design-lane prerequisites)`
-    );
-  }
-  const lane = opts.lane;
-  if (!existsSync2(packDir)) {
-    return refuse(
-      `pack directory not found: ${packDir} \u2014 run /nightshift:onboard in the target repo to create the .nightshift pack`
-    );
-  }
-  if (!statSync(packDir).isDirectory()) {
-    return refuse(`pack path is not a directory: ${packDir} \u2014 --pack must name the .nightshift pack dir`);
-  }
-  const manifestPath = join2(packDir, MANIFEST_REL);
-  if (!existsSync2(manifestPath)) {
-    return refuse(
-      `manifest not found: ${manifestPath} \u2014 every pack needs a manifest.yml (re-run /nightshift:onboard, which writes it from the template)`
-    );
-  }
-  const manifestRead = readYamlSafe(manifestPath, "manifest");
-  if (!manifestRead.ok) return refuse(manifestRead.reason);
-  if (!isObj2(manifestRead.doc)) {
-    return refuse(
-      `manifest is not a YAML mapping: ${manifestPath} \u2014 expected top-level keys (pack_format, project, repos, stack_adapter, ...)`
-    );
-  }
-  const manifest = manifestRead.doc;
-  const registryRel = tableGet(REGISTRY_BY_LANE, lane);
-  const laneAgents = tableGet(AGENTS_BY_LANE, lane);
-  if (registryRel === void 0 || laneAgents === void 0) {
-    return refuse(
-      `lane "${lane}" has no complete row in the lane tables (REGISTRY_BY_LANE: ${registryRel === void 0 ? "missing" : "ok"}, AGENTS_BY_LANE: ${laneAgents === void 0 ? "missing" : "ok"}) \u2014 every lane needs a row in both tables in src/lib/lane-plan.ts`
-    );
-  }
-  const registryPath = join2(packDir, registryRel);
-  if (!insidePack(packDir, registryPath)) {
-    return refuse(`resolved registry path escapes the pack: ${registryPath} is not inside ${packDir}`);
-  }
-  if (!existsSync2(registryPath)) {
-    return refuse(
-      `registry not found: ${registryPath} \u2014 lane "${lane}" reads ${registryRel}; seed it (or re-run /nightshift:onboard, which writes it from the template)`
-    );
-  }
-  const registryRead = readYamlSafe(registryPath, "registry");
-  if (!registryRead.ok) return refuse(registryRead.reason);
-  let entries;
-  try {
-    entries = extractEntries(registryRead.doc, lane);
-  } catch (err) {
-    return refuse(`registry ${registryPath} is malformed: ${err.message}`);
-  }
-  if (entries.length === 0) {
-    return refuse(
-      `registry ${registryPath} has no entries for lane "${lane}" \u2014 a run that would review nothing is an operator error; add at least one entry with owner: ${lane}`
-    );
-  }
-  let plan;
-  if (lane === "design") {
-    const design = resolveDesignLane({ packDir, manifest, manifestPath, registryPath, entries });
-    if (!design.ok) return refuse(design.reason);
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: design.reviewer,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      },
-      browser: design.browser,
-      personas: design.personas
-    };
-  } else {
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: SECURITY_REVIEWER,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      }
-    };
-  }
-  const registryFile = registryRel.slice(registryRel.lastIndexOf("/") + 1);
-  if (!isSafeId(registryFile)) {
-    return refuse(`registry file name "${registryFile}" is not path-segment safe (lane "${lane}")`);
-  }
-  for (const [role, agentType] of Object.entries(plan.agents)) {
-    if (!isSafeId(agentType)) {
-      return refuse(
-        `agent id for ${role} ("${agentType}") is not path-segment safe \u2014 agent types cross into args as control-plane data`
-      );
-    }
-  }
-  return { ok: true, plan };
+  return stack;
 }
 
-// src/bin/lane-plan.ts
+// src/lib/retain.ts
+var LOG_KEEP = 20;
+var LOG_MAX_AGE_DAYS = 14;
+var HASH_CHARS = 16;
+function openEvidenceValues(metricsDir) {
+  const all = readAllFindings(metricsDir);
+  const openKeys = new Set(
+    [...foldFindings(all).values()].filter(isOpen).map((f) => dedupeKeyString(f.dedupe_key))
+  );
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const f of all) {
+    if (!f.evidence) continue;
+    if (!openKeys.has(dedupeKeyString(f.dedupe_key))) continue;
+    if (seen.has(f.evidence)) continue;
+    seen.add(f.evidence);
+    out.push(f.evidence);
+  }
+  return out;
+}
+function inside(parent, child) {
+  const p = resolve(parent);
+  const c = resolve(child);
+  return c.startsWith(p.endsWith(sep2) ? p : p + sep2);
+}
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync2(path)).digest("hex");
+}
+function retainEvidence(opts) {
+  const { runDir, repoRoot, metricsDir, evidenceRoot, repoName } = opts;
+  const repoEvidenceDir = join3(evidenceRoot, repoName);
+  const copied = [];
+  const skipped = [];
+  for (const recorded of openEvidenceValues(metricsDir)) {
+    const candidates = [resolve(repoRoot, recorded), resolve(runDir, recorded)];
+    const source = candidates.find((c) => inside(runDir, c) && existsSync4(c));
+    if (source === void 0) {
+      skipped.push({
+        recorded,
+        reason: `no readable file inside ${runDir} \u2014 either already copied by an earlier run, or the reviewer wrote it outside this run's evidence dir`
+      });
+      continue;
+    }
+    const st = lstatSync2(source);
+    if (st.isSymbolicLink()) {
+      skipped.push({ recorded, reason: `refused: ${source} is a symlink` });
+      continue;
+    }
+    if (!st.isFile()) {
+      skipped.push({ recorded, reason: `refused: ${source} is not a regular file` });
+      continue;
+    }
+    const digest = sha256File(source).slice(0, HASH_CHARS);
+    const stored = `${digest}${extname(source).toLowerCase()}`;
+    const dest = join3(repoEvidenceDir, stored);
+    const deduped = existsSync4(dest);
+    if (!deduped) {
+      mkdirSync2(repoEvidenceDir, { recursive: true });
+      copyFileSync(source, dest);
+    }
+    copied.push({
+      recorded,
+      from: source,
+      stored: `${repoName}/${stored}`,
+      bytes: st.size,
+      deduped
+    });
+  }
+  const retain = new Set(openEvidenceRetainSet(metricsDir));
+  for (const c of copied) {
+    retain.add(c.stored);
+    retain.add(c.stored.slice(repoName.length + 1));
+  }
+  const pruned = prune(repoEvidenceDir, { kind: "lifecycle", retain });
+  return { copied, skipped, pruned };
+}
+function retainLogs(logsDir, opts) {
+  return prune(
+    logsDir,
+    { kind: "time", keep: opts?.keep ?? LOG_KEEP, maxAgeDays: opts?.maxAgeDays ?? LOG_MAX_AGE_DAYS },
+    { now: opts?.now }
+  );
+}
+function evidenceBytes(dir) {
+  if (!existsSync4(dir)) return 0;
+  let total = 0;
+  const walk = (d) => {
+    for (const name of readdirSync3(d)) {
+      const abs = join3(d, name);
+      const st = lstatSync2(abs);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(abs);
+      else total += st.size;
+    }
+  };
+  walk(dir);
+  return total;
+}
+
+// src/bin/retain.ts
+import { join as join4 } from "node:path";
 function main() {
   const args = parseArgs(process.argv.slice(2));
   try {
-    const res = buildLanePlan({
-      packDir: requireArg(args, "pack"),
-      lane: requireArg(args, "lane")
-    });
-    if (!res.ok) {
-      process.stderr.write(`lane-plan: ${res.reason}
-`);
-      process.exitCode = 2;
-      return;
-    }
-    const plan = res.plan;
-    if (args.out !== void 0) writeJson(args.out, plan);
-    process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
-    process.stderr.write(
-      `lane-plan: lane=${plan.lane} registry=${plan.registry} reviewer=${plan.agents.reviewer}
+    const summary = {};
+    if (args["run-dir"] !== void 0) {
+      const evidenceRoot = requireArg(args, "evidence-root");
+      const repoName = requireArg(args, "repo");
+      const res = retainEvidence({
+        runDir: args["run-dir"],
+        repoRoot: requireArg(args, "repo-root"),
+        metricsDir: requireArg(args, "metrics-dir"),
+        evidenceRoot,
+        repoName
+      });
+      summary.evidence = {
+        copied: res.copied.length,
+        deduped: res.copied.filter((c) => c.deduped).length,
+        skipped: res.skipped,
+        pruned: res.pruned.removed.length,
+        bytes: evidenceBytes(join4(evidenceRoot, repoName))
+      };
+      process.stderr.write(
+        `retain: evidence copied=${res.copied.length} skipped=${res.skipped.length} pruned=${res.pruned.removed.length}
 `
-    );
+      );
+    }
+    if (args.logs !== void 0) {
+      const pruned = retainLogs(args.logs);
+      summary.logs = { pruned: pruned.removed.length, kept: pruned.kept.length };
+      process.stderr.write(`retain: logs pruned=${pruned.removed.length} kept=${pruned.kept.length}
+`);
+    }
+    if (Object.keys(summary).length === 0) {
+      throw new Error("nothing to do \u2014 pass --run-dir (evidence) and/or --logs");
+    }
+    process.stdout.write(JSON.stringify(summary, null, 2) + "\n");
   } catch (err) {
-    process.stderr.write(`lane-plan: ${err.message}
+    process.stderr.write(`retain: ${err.message}
 `);
     process.exitCode = 2;
   }

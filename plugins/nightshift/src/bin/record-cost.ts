@@ -5,7 +5,13 @@
 //
 // Usage (cli-json — the normal `ns` path):
 //   node bin/record-cost.mjs --metrics-dir <.nightshift/metrics> --run-id <id> \
-//     --lane security --json <result-envelope.json> [--date YYYY-MM-DD] [--ts <iso>]
+//     --lane security --json <result-envelope.json> [--date YYYY-MM-DD] [--ts <iso>] \
+//     [--fallback-error-reason <text>]
+//
+// --fallback-error-reason makes a missing/unparseable/unusable envelope a
+// status:"error" cost row carrying that reason, instead of exiting 2. `ns` uses
+// it so a crashed headless run still leaves a row for the dashboard's verdict
+// strip to read — "a run failed" rather than "no run happened" (A7 / T22).
 //
 // Usage (manual — `ns cost add` / interactive runs without JSON output):
 //   node bin/record-cost.mjs --metrics-dir <.nightshift/metrics> --run-id <id> \
@@ -47,18 +53,31 @@ function main(): void {
   }
 
   try {
+    const fallbackErrorReason = args["fallback-error-reason"];
     let envelope: unknown;
     if (args.json !== undefined) {
       if (!existsSync(args.json)) {
-        throw new Error(`envelope not found: ${args.json}`);
+        if (fallbackErrorReason === undefined) throw new Error(`envelope not found: ${args.json}`);
+        // `null` is deliberately NOT undefined: it takes runRecordCost down the
+        // envelope branch, where buildCostRecord rejects it and the fallback
+        // turns the rejection into the status:"error" row. A crashed headless
+        // run that wrote no file must still leave a cost row (A7 / T22).
+        envelope = null;
+      } else {
+        try {
+          envelope = readJson(args.json);
+        } catch (err) {
+          if (fallbackErrorReason === undefined) throw err;
+          envelope = null;
+        }
       }
-      envelope = readJson(args.json);
     }
     const record = runRecordCost({
       metricsDir,
       meta,
       envelope,
       manualUsd: optNum(args, "usd"),
+      ...(fallbackErrorReason === undefined ? {} : { fallbackErrorReason }),
       manualTokens: {
         input_tokens: optNum(args, "input-tokens"),
         output_tokens: optNum(args, "output-tokens"),

@@ -50,8 +50,13 @@ export interface LanePlan {
   lane: Lane;
   registry: string;
   agents: { reviewer: string; refuter_tier1: string; refuter_tier2: string };
-  /** Design lane only — the adapter the ux-reviewer agent was chosen for. */
-  browser?: { tool: string; base_url: string };
+  /**
+   * Design lane only — the adapter the ux-reviewer agent was chosen for, plus
+   * the environment assertion T8 gated on (normalized to lower case). `ns` echoes
+   * `environment` into the run log so the record of WHAT WAS DRIVEN survives the
+   * run, not just the fact that a gate passed.
+   */
+  browser?: { tool: string; base_url: string; environment: string };
   /** Design lane only — path to the seeded personas the flows are driven as. */
   personas?: string;
 }
@@ -155,6 +160,161 @@ const PERSONAS_EXAMPLE_REL = "fixtures/personas.example.yml";
 
 const MANIFEST_REL = "manifest.yml";
 
+/**
+ * T8 (A7) — DESIGN-LANE ENVIRONMENT SAFETY. Two independent assertions, both
+ * REQUIRED, both refusals (never a warn-and-proceed):
+ *
+ *   1. `base_url` names a LOOPBACK host.
+ *   2. `environment` explicitly declares a non-production environment.
+ *
+ * WHY BOTH, AND WHY HERE. A curl reachability check proves something answers on
+ * that URL; it proves nothing about whether it is safe to drive. The design
+ * reviewer does not read a page — it SUBMITS FORMS AND CHANGES STATE as a seeded
+ * persona, and browser actions never touch the read-only filesystem guard (the
+ * guard gates Write/Edit/Bash, not an MCP browser click). So the only thing
+ * standing between "design lane enabled" and "an agent filling in and submitting
+ * forms against real customers" is this gate.
+ *
+ * Loopback alone is not enough: an operator can port-forward or /etc/hosts a
+ * production database behind 127.0.0.1, and a tunnel makes `localhost:3000` a
+ * remote environment. A machine-checkable network fact cannot answer "is this
+ * data real?" — only a human can, so the manifest must SAY SO, in a field whose
+ * only purpose is to say so. `environment` is that assertion.
+ *
+ * An explicit assertion alone is not enough either: it is one hand-typed line
+ * that stays true only until the base_url beside it is edited. Loopback is the
+ * mechanical check that catches the stale assertion.
+ *
+ * Neither check is a substitute for the other and neither is advisory. Missing
+ * `environment` refuses (silence is not consent); `environment: staging` and
+ * `environment: production` refuse BY NAME, because "staging" is the exact
+ * failure mode in a7-ops-launcher.md's table — a dev server that is up, answers,
+ * and holds data that is not yours to submit forms against.
+ */
+export const NON_PRODUCTION_ENVIRONMENTS: readonly string[] = ["local", "dev", "test"];
+
+/** Environments named here refuse with a specific reason instead of the generic one. */
+const NAMED_PRODUCTION_ENVIRONMENTS: readonly string[] = [
+  "staging",
+  "stage",
+  "production",
+  "prod",
+  "live",
+];
+
+/**
+ * True iff `host` is a loopback address by name or by literal.
+ *
+ * Accepts `localhost` and any `*.localhost` name (RFC 6761 reserves the whole
+ * .localhost TLD to loopback), the IPv6 loopback in any spelling node's URL
+ * parser can hand back, and the WHOLE 127.0.0.0/8 block (127.0.0.1 is the
+ * convention, but a dev server bound to 127.0.0.2 is just as local).
+ *
+ * Deliberately NOT accepted: `0.0.0.0` and `[::]` — the unspecified address
+ * means "bind every interface", i.e. the opposite of loopback; a browser
+ * driving it reaches whatever that host is reachable as from the network.
+ */
+export function isLoopbackHost(host: string): boolean {
+  // node's URL keeps IPv6 literals bracketed in `hostname`; strip for comparison.
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "::1" || /^(0*:)+0*1$/.test(h)) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4 === null) return false;
+  const octets = v4.slice(1).map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  return octets[0] === 127;
+}
+
+/**
+ * The base_url half of the gate. Parses with node's URL so credentials and
+ * other authority-section tricks resolve the way a browser would resolve them:
+ * `http://localhost@prod.example/` has hostname `prod.example`, and is refused
+ * on exactly that hostname rather than on the literal text "localhost" the
+ * string appears to contain.
+ */
+function checkLoopbackBaseUrl(
+  baseUrl: string,
+  manifestPath: string,
+): { ok: true } | { ok: false; reason: string } {
+  const advice =
+    `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no ` +
+    `filesystem guard can undo a browser action — point base_url at a local dev ` +
+    `server (e.g. http://localhost:3000) and start it before the run`;
+
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return {
+      ok: false,
+      reason:
+        `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an ` +
+        `absolute URL — ${advice}`,
+    };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return {
+      ok: false,
+      reason:
+        `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses ` +
+        `scheme "${url.protocol}" — only http/https are drivable; ${advice}`,
+    };
+  }
+  if (!isLoopbackHost(url.hostname)) {
+    return {
+      ok: false,
+      reason:
+        `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a ` +
+        `LOOPBACK host (resolved host: "${url.hostname}") — the design lane refuses any ` +
+        `remote environment, staging included; ${advice}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The explicit-assertion half of the gate. A missing field is a refusal, not a
+ * default: nobody has stated that this environment is safe to mutate.
+ */
+function checkNonProductionAssertion(
+  browser: Obj,
+  manifestPath: string,
+): { ok: true; environment: string } | { ok: false; reason: string } {
+  const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
+  const raw = browser.environment;
+  if (!filled(raw)) {
+    return {
+      ok: false,
+      reason:
+        `manifest.stack_adapter.browser.environment is missing in ${manifestPath} — the ` +
+        `design lane requires an EXPLICIT non-production assertion before it will drive a ` +
+        `browser that submits forms (allowed: ${supported}). No default is inferred: a ` +
+        `reachable server is not the same claim as a disposable one, and only a human can ` +
+        `make it`,
+    };
+  }
+  const env = raw.trim().toLowerCase();
+  if (NON_PRODUCTION_ENVIRONMENTS.includes(env)) return { ok: true, environment: env };
+  if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
+    return {
+      ok: false,
+      reason:
+        `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} — the ` +
+        `design lane refuses it. A shared environment answers, looks right, and holds data ` +
+        `that is not yours to submit forms against; "up" is not "safe to mutate". Point the ` +
+        `lane at a local dev server and set environment to one of: ${supported}`,
+    };
+  }
+  return {
+    ok: false,
+    reason:
+      `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a ` +
+      `recognized non-production environment (allowed: ${supported}) — an unrecognized ` +
+      `value asserts nothing, so it is refused rather than assumed safe`,
+  };
+}
+
 type Obj = Record<string, unknown>;
 
 function isObj(x: unknown): x is Obj {
@@ -221,7 +381,12 @@ function resolveDesignLane(input: {
   registryPath: string;
   entries: RegistryEntry[];
 }):
-  | { ok: true; reviewer: string; browser: { tool: string; base_url: string }; personas: string }
+  | {
+      ok: true;
+      reviewer: string;
+      browser: { tool: string; base_url: string; environment: string };
+      personas: string;
+    }
   | { ok: false; reason: string } {
   const { packDir, manifest, manifestPath, registryPath, entries } = input;
 
@@ -273,10 +438,29 @@ function resolveDesignLane(input: {
       ok: false,
       reason:
         `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} — ` +
-        `set it to the local dev / seeded staging URL the design lane should drive ` +
-        `(never production)`,
+        `set it to the LOCAL dev server URL the design lane should drive ` +
+        `(loopback only — never staging, never production)`,
     };
   }
+
+  // T8 — environment safety. Both halves are required and both are refusals;
+  // see the NON_PRODUCTION_ENVIRONMENTS header for why neither substitutes for
+  // the other. Placed before the PERSONAS checks, so an operator who has pointed
+  // the lane somewhere unsafe is not first sent off to seed fixtures for an
+  // environment the lane will refuse anyway.
+  //
+  // It is NOT first overall, and that is worth being honest about: buildLanePlan
+  // reads the registry and resolveDesignLane resolves the adapter before it gets
+  // here, so a pack that is BOTH missing its flows registry AND pointed at
+  // production hears about the registry. Every path still refuses and nothing
+  // runs — the cost is an operator doing one round of setup work before learning
+  // about the second problem. Reordering means moving the whole design branch
+  // ahead of the shared registry read, which changes A5's refusal ordering for
+  // every lane to fix an ergonomic wrinkle in one.
+  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
+  if (!loopback.ok) return loopback;
+  const nonProd = checkNonProductionAssertion(browser, manifestPath);
+  if (!nonProd.ok) return nonProd;
 
   const personasPath = join(packDir, PERSONAS_REL);
   if (!insidePack(packDir, personasPath)) {
@@ -373,7 +557,7 @@ function resolveDesignLane(input: {
   return {
     ok: true,
     reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim() },
+    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
     personas: personasPath,
   };
 }

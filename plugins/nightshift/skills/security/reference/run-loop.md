@@ -107,8 +107,12 @@ This is the **fail-fast lane gate**. On **exit 2** the launcher **refuses the ru
 the stderr reason verbatim (`lane-plan: <reason>`) — nothing is dispatched, no run id is burned,
 no metrics are stamped, and stdout is deliberately empty so a caller capturing it can never get a
 partial plan. The design-lane refusals are the prerequisite checks: missing
-`stack_adapter.browser`, an unsupported `browser.tool`, a missing `browser.base_url`, missing or
-empty `fixtures/personas.yml`, or a flow whose `persona:` is not seeded.
+`stack_adapter.browser`, an unsupported `browser.tool`, a missing `browser.base_url`, a
+`browser.base_url` that is **not a loopback host**, a missing or non-`local|dev|test`
+`browser.environment`, missing or empty `fixtures/personas.yml`, or a flow whose `persona:` is not
+seeded. The last two are A7/T8's environment-safety gate: the design reviewer submits forms and
+changes state, and browser actions never touch the read-only filesystem guard, so "the server
+answered" is not the same claim as "this data is safe to mutate".
 
 On **exit 0** the plan is JSON on stdout. The launcher splices it into the Workflow's `args`
 alongside the run id and the surfaces `bin/select` chose:

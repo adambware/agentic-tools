@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep2) {
+          if (!keyProps.anchor && !keyProps.tag && !sep) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep2 = "";
+        let sep = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep2 + cb;
-              sep2 = "";
+                comment += sep + cb;
+              sep = "";
               break;
             }
             case "newline":
               if (comment)
-                sep2 += source;
+                sep += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep: sep2, value } = collItem;
+        const { start, key, sep, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep2?.[0],
+          next: key ?? sep?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep2 && !value) {
+          if (!props.anchor && !props.tag && !sep && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep2 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
+        if (!isMap && !sep && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep2)
-                for (const st of sep2) {
+              if (sep)
+                for (const st of sep) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep2 = "";
+      let sep = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep2 === " ")
-            sep2 = "\n";
-          else if (!prevMoreIndented && sep2 === "\n")
-            sep2 = "\n\n";
-          value += sep2 + indent.slice(trimIndent) + content;
-          sep2 = "\n";
+          if (sep === " ")
+            sep = "\n";
+          else if (!prevMoreIndented && sep === "\n")
+            sep = "\n\n";
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep2 === "\n")
+          if (sep === "\n")
             value += "\n";
           else
-            sep2 = "\n";
+            sep = "\n";
         } else {
-          value += sep2 + content;
-          sep2 = " ";
+          value += sep + content;
+          sep = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep2 = " ";
+      let sep = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep2 === "\n")
-            res += sep2;
+          if (sep === "\n")
+            res += sep;
           else
-            sep2 = "\n";
+            sep = "\n";
         } else {
-          res += sep2 + match[1];
-          sep2 = " ";
+          res += sep + match[1];
+          sep = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep2 + (match?.[1] ?? "");
+      return res + sep + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep: sep2, value }) {
+    function stringifyItem({ start, key, sep, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep2)
-        for (const st of sep2)
+      if (sep)
+        for (const st of sep)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep2;
+          let sep;
           if (scalar.end) {
-            sep2 = scalar.end;
-            sep2.push(this.sourceToken);
+            sep = scalar.end;
+            sep.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep2 = [this.sourceToken];
+            sep = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep: sep2 }]
+            items: [{ start, key: scalar, sep }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep2 = it.sep;
-                  sep2.push(this.sourceToken);
+                  const sep = it.sep;
+                  sep.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep: sep2 }]
+                    items: [{ start: start2, key, sep }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep2 = fc.end.splice(1, fc.end.length);
-            sep2.push(this.sourceToken);
+            const sep = fc.end.splice(1, fc.end.length);
+            sep.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep: sep2 }]
+              items: [{ start, key: fc, sep }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7415,9 +7415,9 @@ function atomicWrite(path, data) {
   }
   renameSync(tmp, path);
 }
-function readYaml(path) {
+function readJson(path) {
   if (!existsSync(path)) return void 0;
-  return (0, import_yaml.parse)(readFileSync(path, "utf8"));
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 function writeJson(path, value) {
   atomicWrite(path, JSON.stringify(value, null, 2) + "\n");
@@ -7425,29 +7425,6 @@ function writeJson(path, value) {
 function basename(path) {
   const i = path.lastIndexOf("/");
   return i === -1 ? path : path.slice(i + 1);
-}
-
-// src/lib/lane-plan.ts
-import { existsSync as existsSync2, statSync } from "node:fs";
-import { join as join2, resolve, sep } from "node:path";
-
-// src/lib/registry.ts
-function extractEntries(doc, lane) {
-  if (doc === void 0 || doc === null) return [];
-  let list;
-  if (Array.isArray(doc)) {
-    list = doc;
-  } else if (typeof doc === "object") {
-    const o = doc;
-    list = o.vectors ?? o.flows ?? o.entries;
-    if (list === void 0) {
-      throw new Error("malformed registry: expected vectors|flows|entries list");
-    }
-  } else {
-    throw new Error("malformed registry: not a list or object");
-  }
-  if (!Array.isArray(list)) throw new Error("malformed registry: entries is not a list");
-  return list.filter((e) => !e.owner || e.owner === lane);
 }
 
 // src/lib/validate.ts
@@ -7674,354 +7651,165 @@ var VALIDATORS = {
 };
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
 
-// src/lib/lane-plan.ts
-function tableGet(table, key) {
-  return Object.hasOwn(table, key) ? table[key] : void 0;
-}
-var REGISTRY_BY_LANE = {
-  security: "registries/vectors.yml",
-  design: "registries/flows.yml"
-};
-var SECURITY_REVIEWER = "security-reviewer";
-var AGENTS_BY_LANE = {
-  security: {
-    reviewer: SECURITY_REVIEWER,
-    refuter_tier1: "security-refuter",
-    refuter_tier2: "security-refuter-2"
-  },
-  design: {
-    refuter_tier1: "ux-refuter",
-    refuter_tier2: "ux-refuter-2"
-  }
-};
-var UX_REVIEWER_BY_ADAPTER = {
-  "playwright-mcp": "ux-reviewer-playwright",
-  playwright: "ux-reviewer-playwright"
-};
-var PERSONAS_REL = "fixtures/personas.yml";
-var PERSONAS_EXAMPLE_REL = "fixtures/personas.example.yml";
-var MANIFEST_REL = "manifest.yml";
-var NON_PRODUCTION_ENVIRONMENTS = ["local", "dev", "test"];
-var NAMED_PRODUCTION_ENVIRONMENTS = [
-  "staging",
-  "stage",
-  "production",
-  "prod",
-  "live"
-];
-function isLoopbackHost(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h.endsWith(".localhost")) return true;
-  if (h === "::1" || /^(0*:)+0*1$/.test(h)) return true;
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4 === null) return false;
-  const octets = v4.slice(1).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  return octets[0] === 127;
-}
-function checkLoopbackBaseUrl(baseUrl, manifestPath) {
-  const advice = `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no filesystem guard can undo a browser action \u2014 point base_url at a local dev server (e.g. http://localhost:3000) and start it before the run`;
-  let url;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`
-    };
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`
-    };
-  }
-  if (!isLoopbackHost(url.hostname)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`
-    };
-  }
-  return { ok: true };
-}
-function checkNonProductionAssertion(browser, manifestPath) {
-  const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
-  const raw = browser.environment;
-  if (!filled(raw)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`
-    };
-  }
-  const env = raw.trim().toLowerCase();
-  if (NON_PRODUCTION_ENVIRONMENTS.includes(env)) return { ok: true, environment: env };
-  if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`
-    };
-  }
-  return {
-    ok: false,
-    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`
-  };
-}
-function isObj2(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-function isLane(x) {
-  return x === "security" || x === "design";
-}
+// src/lib/workflow-args.ts
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
 function refuse(reason) {
-  return { ok: false, reason };
+  return { ok: false, kind: "refuse", reason };
 }
 function filled(x) {
   return typeof x === "string" && x.trim() !== "";
 }
-function insidePack(packDir, path) {
-  const root = resolve(packDir);
-  const p = resolve(path);
-  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+function chunk(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
 }
-function readYamlSafe(path, what) {
-  try {
-    return { ok: true, doc: readYaml(path) };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `${what} is not valid YAML: ${path} \u2014 ${err.message}`
-    };
+var SHELL_SAFE_PATH_RE = /^[A-Za-z0-9._/-]+$/;
+var DISPATCH_KEYS = ["model", "effort", "maxTurns"];
+function checkDispatch(d, surfaceId) {
+  if (d === void 0) {
+    return `surface "${surfaceId}" has no \`dispatch\` \u2014 bin/select derives it from \`band\` via MODEL_BY_BAND and the workflow spreads it into agent() verbatim. A surface without one would review at whatever the harness defaults to, silently discarding the model/effort/turn budget this run was sized for. Re-run bin/select with the current engine build`;
   }
+  if (!filled(d.model)) return `surface "${surfaceId}" has a dispatch with no \`model\``;
+  if (d.effort !== "low" && d.effort !== "medium" && d.effort !== "high") {
+    return `surface "${surfaceId}" has dispatch.effort "${String(d.effort)}" (expected low|medium|high)`;
+  }
+  if (!Number.isInteger(d.maxTurns) || d.maxTurns < 1) {
+    return `surface "${surfaceId}" has dispatch.maxTurns "${String(d.maxTurns)}" (expected a positive integer)`;
+  }
+  const extra = Object.keys(d).filter((k) => !DISPATCH_KEYS.includes(k));
+  if (extra.length > 0) {
+    return `surface "${surfaceId}" has dispatch key(s) ${extra.map((k) => `"${k}"`).join(", ")} outside {${DISPATCH_KEYS.join(", ")}} \u2014 the workflow spreads dispatch LAST into agent(), so an extra key OVERRIDES the option the shell just set (an "agentType" here would replace the lane's reviewer with whatever the registry chose)`;
+  }
+  return void 0;
 }
-function entryLabel(entry, index) {
-  return filled(entry?.id) ? entry.id : `<entry #${index}>`;
-}
-function resolveDesignLane(input) {
-  const { packDir, manifest, manifestPath, registryPath, entries } = input;
-  const stackAdapter = isObj2(manifest.stack_adapter) ? manifest.stack_adapter : void 0;
-  const browser = stackAdapter !== void 0 && isObj2(stackAdapter.browser) ? stackAdapter.browser : void 0;
-  if (browser === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`
-    };
-  }
-  const tool = browser.tool;
-  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
-  if (!filled(tool)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`
-    };
-  }
-  const reviewer = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
-  if (reviewer === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`
-    };
-  }
-  const baseUrl = browser.base_url;
-  if (!filled(baseUrl)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`
-    };
-  }
-  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
-  if (!loopback.ok) return loopback;
-  const nonProd = checkNonProductionAssertion(browser, manifestPath);
-  if (!nonProd.ok) return nonProd;
-  const personasPath = join2(packDir, PERSONAS_REL);
-  if (!insidePack(packDir, personasPath)) {
-    return {
-      ok: false,
-      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`
-    };
-  }
-  if (!existsSync2(personasPath)) {
-    if (existsSync2(join2(packDir, PERSONAS_EXAMPLE_REL))) {
-      return {
-        ok: false,
-        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`
-      };
-    }
-    return {
-      ok: false,
-      reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`
-    };
-  }
-  const personasRead = readYamlSafe(personasPath, "personas file");
-  if (!personasRead.ok) return personasRead;
-  const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
-  if (!Array.isArray(personasList)) {
-    return {
-      ok: false,
-      reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`
-    };
-  }
-  if (personasList.length === 0) {
-    return {
-      ok: false,
-      reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`
-    };
-  }
-  const idless = [];
-  const seeded = /* @__PURE__ */ new Set();
-  personasList.forEach((p, i) => {
-    const id = isObj2(p) ? p.id : void 0;
-    if (filled(id)) seeded.add(id.trim());
-    else idless.push(i);
-  });
-  if (idless.length > 0) {
-    return {
-      ok: false,
-      reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``
-    };
-  }
-  const unresolved = [];
-  entries.forEach((entry, i) => {
-    const persona = entry?.persona;
-    if (filled(persona) && seeded.has(persona.trim())) return;
-    unresolved.push(
-      `${entryLabel(entry, i)} -> ${filled(persona) ? persona : "(no persona: set)"}`
-    );
-  });
-  if (unresolved.length > 0) {
-    return {
-      ok: false,
-      reason: `${registryPath} references personas that are not seeded in ${personasPath}: ${unresolved.join("; ")} \u2014 seed the missing personas or fix each flow's \`persona:\` field`
-    };
-  }
-  return {
-    ok: true,
-    reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
-    personas: personasPath
-  };
-}
-function buildLanePlan(opts) {
-  const { packDir } = opts;
-  if (!isLane(opts.lane)) {
+function buildWorkflowArgs(opts) {
+  const { runId, lanePlan, surfaces, maxConcurrentReviewers } = opts;
+  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
     return refuse(
-      `unknown lane "${opts.lane}" \u2014 expected "security" or "design" (--lane selects the registry, the agent types, and the design-lane prerequisites)`
+      `run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and is not "." or "..") \u2014 it becomes this run's scratch directory name and is interpolated into every bin/ command line the workflow issues`
     );
   }
-  const lane = opts.lane;
-  if (!existsSync2(packDir)) {
+  if (!Number.isInteger(maxConcurrentReviewers) || maxConcurrentReviewers < 1) {
     return refuse(
-      `pack directory not found: ${packDir} \u2014 run /nightshift:onboard in the target repo to create the .nightshift pack`
+      `max_concurrent_reviewers must be an integer >= 1, got "${String(maxConcurrentReviewers)}" \u2014 it caps how many reviewer+refuter pairs are in flight at once (set it in $OPS/config.yml)`
     );
   }
-  if (!statSync(packDir).isDirectory()) {
-    return refuse(`pack path is not a directory: ${packDir} \u2014 --pack must name the .nightshift pack dir`);
+  if (lanePlan === null || typeof lanePlan !== "object") {
+    return refuse(`lane plan did not parse to an object \u2014 bin/lane-plan writes a JSON object`);
   }
-  const manifestPath = join2(packDir, MANIFEST_REL);
-  if (!existsSync2(manifestPath)) {
+  if (lanePlan.lane !== "security" && lanePlan.lane !== "design") {
     return refuse(
-      `manifest not found: ${manifestPath} \u2014 every pack needs a manifest.yml (re-run /nightshift:onboard, which writes it from the template)`
+      `lane plan has lane "${String(lanePlan.lane)}" (expected "security" or "design") \u2014 the workflow interpolates it into run-meta/dedupe/rollup command lines and into every judgment prompt, so an absent or unknown lane becomes the literal text there`
     );
   }
-  const manifestRead = readYamlSafe(manifestPath, "manifest");
-  if (!manifestRead.ok) return refuse(manifestRead.reason);
-  if (!isObj2(manifestRead.doc)) {
+  if (!filled(lanePlan.registry)) {
     return refuse(
-      `manifest is not a YAML mapping: ${manifestPath} \u2014 expected top-level keys (pack_format, project, repos, stack_adapter, ...)`
+      `lane plan has no \`registry\` \u2014 record and rollup stamp coverage freshness into exactly that file, and an absent value reaches them as "--registry undefined"`
     );
   }
-  const manifest = manifestRead.doc;
-  const registryRel = tableGet(REGISTRY_BY_LANE, lane);
-  const laneAgents = tableGet(AGENTS_BY_LANE, lane);
-  if (registryRel === void 0 || laneAgents === void 0) {
+  if (!SHELL_SAFE_PATH_RE.test(lanePlan.registry)) {
     return refuse(
-      `lane "${lane}" has no complete row in the lane tables (REGISTRY_BY_LANE: ${registryRel === void 0 ? "missing" : "ok"}, AGENTS_BY_LANE: ${laneAgents === void 0 ? "missing" : "ok"}) \u2014 every lane needs a row in both tables in src/lib/lane-plan.ts`
+      `lane plan registry "${lanePlan.registry}" is not a plain path (allowed: letters, digits, "." "_" "-" "/") \u2014 the workflow interpolates it UNQUOTED into the record and rollup command lines, so a space, quote, newline or shell metacharacter there is command injection, not a bad path`
     );
   }
-  const registryPath = join2(packDir, registryRel);
-  if (!insidePack(packDir, registryPath)) {
-    return refuse(`resolved registry path escapes the pack: ${registryPath} is not inside ${packDir}`);
+  const agents = lanePlan.agents;
+  if (agents === null || typeof agents !== "object") {
+    return refuse(`lane plan has no \`agents\` object (reviewer, refuter_tier1, refuter_tier2)`);
   }
-  if (!existsSync2(registryPath)) {
-    return refuse(
-      `registry not found: ${registryPath} \u2014 lane "${lane}" reads ${registryRel}; seed it (or re-run /nightshift:onboard, which writes it from the template)`
-    );
-  }
-  const registryRead = readYamlSafe(registryPath, "registry");
-  if (!registryRead.ok) return refuse(registryRead.reason);
-  let entries;
-  try {
-    entries = extractEntries(registryRead.doc, lane);
-  } catch (err) {
-    return refuse(`registry ${registryPath} is malformed: ${err.message}`);
-  }
-  if (entries.length === 0) {
-    return refuse(
-      `registry ${registryPath} has no entries for lane "${lane}" \u2014 a run that would review nothing is an operator error; add at least one entry with owner: ${lane}`
-    );
-  }
-  let plan;
-  if (lane === "design") {
-    const design = resolveDesignLane({ packDir, manifest, manifestPath, registryPath, entries });
-    if (!design.ok) return refuse(design.reason);
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: design.reviewer,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      },
-      browser: design.browser,
-      personas: design.personas
-    };
-  } else {
-    plan = {
-      lane,
-      registry: registryPath,
-      agents: {
-        reviewer: SECURITY_REVIEWER,
-        refuter_tier1: laneAgents.refuter_tier1,
-        refuter_tier2: laneAgents.refuter_tier2
-      }
-    };
-  }
-  const registryFile = registryRel.slice(registryRel.lastIndexOf("/") + 1);
-  if (!isSafeId(registryFile)) {
-    return refuse(`registry file name "${registryFile}" is not path-segment safe (lane "${lane}")`);
-  }
-  for (const [role, agentType] of Object.entries(plan.agents)) {
-    if (!isSafeId(agentType)) {
+  for (const role of ["reviewer", "refuter_tier1", "refuter_tier2"]) {
+    const value = agents[role];
+    if (!filled(value)) {
       return refuse(
-        `agent id for ${role} ("${agentType}") is not path-segment safe \u2014 agent types cross into args as control-plane data`
+        `lane plan has no \`agents.${role}\` \u2014 the workflow passes it straight to agent() as agentType, and an absent value dispatches every ${role} to an agent that does not exist`
+      );
+    }
+    if (!isSafeId(value.trim())) {
+      return refuse(
+        `lane plan agents.${role} "${value}" is not a safe agent id \u2014 agentTypes cross into the sandbox as control-plane data`
       );
     }
   }
-  return { ok: true, plan };
+  if (!Array.isArray(surfaces)) {
+    return refuse(`surfaces.json did not parse to an array \u2014 bin/select writes a JSON array`);
+  }
+  if (surfaces.length === 0) {
+    return {
+      ok: false,
+      kind: "nothing-to-review",
+      reason: `bin/select picked 0 surfaces for lane "${lanePlan.lane}" \u2014 nothing is stale enough or changed enough to review. This is a quiet night, not a failure`
+    };
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const s of surfaces) {
+    if (s === null || typeof s !== "object") {
+      return refuse(`surfaces.json contains a non-object entry \u2014 bin/select writes Surface records`);
+    }
+    if (!filled(s.id)) {
+      return refuse(`a surface in surfaces.json has no \`id\` \u2014 every surface must name its registry entry`);
+    }
+    if (s.id === "." || s.id === ".." || !RUN_ID_RE.test(s.id)) {
+      return refuse(
+        `surface id "${s.id}" is not filename-safe (matches ${RUN_ID_RE} and is not "." or "..") \u2014 it becomes a directory name under the run dir and is quoted into the reviewer's prompt; fix the \`id\` of that entry in the lane registry`
+      );
+    }
+    if (seen.has(s.id)) {
+      return refuse(
+        `surface id "${s.id}" appears twice in surfaces.json \u2014 two reviewers would write the same artifact paths and race each other; fix the duplicate \`id\` in the lane registry`
+      );
+    }
+    seen.add(s.id);
+    const dispatchProblem = checkDispatch(s.dispatch, s.id);
+    if (dispatchProblem !== void 0) return refuse(dispatchProblem);
+  }
+  return {
+    ok: true,
+    args: {
+      run_id: runId,
+      lane: lanePlan.lane,
+      surface_chunks: chunk(surfaces, maxConcurrentReviewers),
+      registry: lanePlan.registry,
+      agents: {
+        reviewer: lanePlan.agents.reviewer,
+        refuter_tier1: lanePlan.agents.refuter_tier1,
+        refuter_tier2: lanePlan.agents.refuter_tier2
+      }
+    },
+    chunks: Math.ceil(surfaces.length / maxConcurrentReviewers)
+  };
 }
 
-// src/bin/lane-plan.ts
+// src/bin/workflow-args.ts
 function main() {
   const args = parseArgs(process.argv.slice(2));
   try {
-    const res = buildLanePlan({
-      packDir: requireArg(args, "pack"),
-      lane: requireArg(args, "lane")
+    const plan = readJson(requireArg(args, "plan"));
+    if (plan === void 0) throw new Error(`lane plan not found or empty: ${args.plan}`);
+    const surfaces = readJson(requireArg(args, "surfaces"));
+    if (surfaces === void 0) throw new Error(`surfaces not found or empty: ${args.surfaces}`);
+    const maxConcurrentRaw = requireArg(args, "max-concurrent");
+    const res = buildWorkflowArgs({
+      runId: requireArg(args, "run-id"),
+      lanePlan: plan,
+      surfaces,
+      maxConcurrentReviewers: Number(maxConcurrentRaw)
     });
     if (!res.ok) {
-      process.stderr.write(`lane-plan: ${res.reason}
+      process.stderr.write(`workflow-args: ${res.reason}
 `);
-      process.exitCode = 2;
+      process.exitCode = res.kind === "nothing-to-review" ? 3 : 2;
       return;
     }
-    const plan = res.plan;
-    if (args.out !== void 0) writeJson(args.out, plan);
-    process.stdout.write(JSON.stringify(plan, null, 2) + "\n");
+    if (args.out !== void 0) writeJson(args.out, res.args);
+    process.stdout.write(JSON.stringify(res.args, null, 2) + "\n");
     process.stderr.write(
-      `lane-plan: lane=${plan.lane} registry=${plan.registry} reviewer=${plan.agents.reviewer}
+      `workflow-args: lane=${res.args.lane} surfaces=${surfaces.length} chunks=${res.chunks} cap=${maxConcurrentRaw}
 `
     );
   } catch (err) {
-    process.stderr.write(`lane-plan: ${err.message}
+    process.stderr.write(`workflow-args: ${err.message}
 `);
     process.exitCode = 2;
   }

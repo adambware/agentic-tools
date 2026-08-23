@@ -6,7 +6,9 @@
 # the route(s)/component(s) the flow exercises rather than backend code paths.
 #
 # PREREQUISITE (do not seed this file until BOTH exist):
-#   1. A STAGING environment wired into manifest.stack_adapter.browser.base_url.
+#   1. A LOOPBACK dev server wired into manifest.stack_adapter.browser.base_url, plus
+#      the explicit manifest.stack_adapter.browser.environment assertion (local|dev|test).
+#      A remote host is refused at preflight, staging included.
 #   2. SEEDED TEST PERSONAS in ../fixtures/personas.yml. Without seeded personas the
 #      reviewer confuses environment drift with real friction. See personas.example.yml.
 #

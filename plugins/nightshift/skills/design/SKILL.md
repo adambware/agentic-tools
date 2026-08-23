@@ -1,6 +1,6 @@
 ---
 name: design
-description: Prerequisite-gated — refuses (via bin/lane-plan.mjs) until the pack has a supported staging browser adapter + seeded personas. The nightshift design lane (dispatches the concrete per-adapter reviewer, e.g. ux-reviewer-playwright) — drives stale/changed flows through a staging browser against seeded personas, dedupes, logs anchored UX findings, and writes durable metrics. Use when someone says "/nightshift:design", "run the design review", "do the UX review", or wants one cadence-driven design review pass over a pack's .nightshift/ registry. Fails fast with a clear reason if the browser adapter, its adapter agent, or personas are missing.
+description: Prerequisite-gated — refuses (via bin/lane-plan.mjs) until the pack has a supported browser adapter pointed at a LOOPBACK dev server, an explicit non-production environment assertion, and seeded personas. The nightshift design lane (dispatches the concrete per-adapter reviewer, e.g. ux-reviewer-playwright) — drives stale/changed flows through a local dev server against seeded personas, dedupes, logs anchored UX findings, and writes durable metrics. Use when someone says "/nightshift:design", "run the design review", "do the UX review", or wants one cadence-driven design review pass over a pack's .nightshift/ registry. Fails fast with a clear reason if the browser adapter, its adapter agent, or personas are missing.
 allowed-tools: Read, Glob, Grep, Bash(git *), Bash(node ${CLAUDE_PLUGIN_ROOT}/bin/lane-plan.mjs *), Write, Agent
 model: sonnet
 disable-model-invocation: true
@@ -34,7 +34,7 @@ node ${CLAUDE_PLUGIN_ROOT}/bin/lane-plan.mjs --pack .nightshift --lane design
 ```
 
 This checks everything a half-eyeballed prose gate would miss: not just that
-`base_url` and a persona file are present, but that `stack_adapter.browser.tool` is
+`base_url` and a persona file are present, but that the `base_url` names a **loopback** host, that `stack_adapter.browser.environment` explicitly asserts a non-production environment (`local`/`dev`/`test` — `staging` and `production` are refused BY NAME), that `stack_adapter.browser.tool` is
 set to a **supported** adapter with an actual `ux-reviewer-<adapter>` agent file (an
 unsupported adapter must never silently fall back to the tool-less base spec), that
 every persona entry has an `id`, that every flow's `persona:` reference resolves, that
@@ -57,7 +57,7 @@ silently inert.
 Once the gate passes, run the six-step loop from [../security/reference/run-loop.md](../security/reference/run-loop.md) with `lane: design`. The loop is identical to the security lane with three design-specific deltas:
 
 1. **Registry**: use `registries/flows.yml` (not `vectors.yml`). Selection uses `window_budget_k.design`.
-2. **Reviewer**: dispatch the **concrete** per-adapter reviewer agent named by the gate's `plan.agents.reviewer` (e.g. `ux-reviewer-playwright`) — do not re-derive the adapter from the manifest yourself; the gate already resolved and validated it. No dispatch API accepts a tools list: a subagent's browser tool comes from that agent file's own frontmatter, so choosing the adapter *is* choosing the agent file — nothing is granted or injected at dispatch. Drive each flow through the staging adapter against a seeded `fixtures/` persona.
+2. **Reviewer**: dispatch the **concrete** per-adapter reviewer agent named by the gate's `plan.agents.reviewer` (e.g. `ux-reviewer-playwright`) — do not re-derive the adapter from the manifest yourself; the gate already resolved and validated it. No dispatch API accepts a tools list: a subagent's browser tool comes from that agent file's own frontmatter, so choosing the adapter *is* choosing the agent file — nothing is granted or injected at dispatch. Drive each flow through the adapter against a seeded `fixtures/` persona, on the **local dev server** the gate validated — never a shared environment.
 3. **Two-tier refute + anchor discipline**: under the v3 orchestrator the design lane runs the **same** two-tier refute gate as security — `ux-refuter` at Tier-1 (no Tier-1 refute → no finding), `ux-refuter-2` at Tier-2 on the gated survivors (critical/high severity or low confidence). The mandatory `anchor` field is **complementary** noise control, not a substitute for the gate: no `anchor`, no ticket.
 
 ## Severity gates (apply verbatim)

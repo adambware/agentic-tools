@@ -55,7 +55,7 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 | Command | What it does |
 |---------|--------------|
 | `/nightshift:security` | **Security/assurance review run.** Execute **one** bounded run for the security lane: select stalest/changed vectors within the manifest budget (**K**), fan out the security-reviewer subagent, run the mandatory refuter gate, dedupe, log findings, update state, emit per-run metrics, apply severity gates. |
-| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated launcher-side by `bin/lane-plan` — refuses to run unless the pack names a **supported** browser adapter (`stack_adapter.browser.tool`, resolved to a concrete per-adapter reviewer agent), a staging `stack_adapter.browser.base_url`, and seeded `fixtures/personas.yml` whose personas every selected flow's `persona:` reference actually resolves to. Fails fast with the specific reason rather than half-running. Shares the bounded run-loop with `/nightshift:security`. |
+| `/nightshift:design` | **Designer (UX) review run.** Prerequisite-gated launcher-side by `bin/lane-plan` — refuses to run unless the pack names a **supported** browser adapter (`stack_adapter.browser.tool`, resolved to a concrete per-adapter reviewer agent), a **loopback** `stack_adapter.browser.base_url` with an explicit non-production `stack_adapter.browser.environment`, and seeded `fixtures/personas.yml` whose personas every selected flow's `persona:` reference actually resolves to. Fails fast with the specific reason rather than half-running. Shares the bounded run-loop with `/nightshift:security`. |
 | `/nightshift:onboard` | Onboard a codebase as a pack: detect the stack, batch-confirm deltas, seed a draft `vectors.yml` from the base taxonomy, run a human-reviewed seed + gate pass, then write the pack. Interactive + mutating. |
 | `/nightshift:digest` | Produce the **weekly digest** — the management signal: new critical/high, repeated themes, overdue surfaces, false-positive rate, proposed entries awaiting approval, and the top human decisions needed. Read-only; the one skill left model-invocable. |
 | `/nightshift:garden` | Weekly **registry gardening**: does each recent change map to an entry? If not, *propose* one (humans approve). Flags orphaned entries and stale `area` mappings — the only defense against permanent blind spots. |
@@ -125,7 +125,8 @@ interview in the top-level skill:
 The security lane is "done" not when the run works, but when `vectors.yml` is reviewed,
 complete-enough (weights + code mappings + owners), with a low false-positive rate. The **design**
 lane is reachable but default-off: if selected during onboarding, the interview adds a branch to
-seed `fixtures/personas.yml` and capture the staging `stack_adapter.browser.base_url`; otherwise
+seed `fixtures/personas.yml` and capture a **loopback** `stack_adapter.browser.base_url` plus the
+explicit `stack_adapter.browser.environment` assertion; otherwise
 it is auto-deferred with one explanatory line.
 
 **To absorb stack drift later** (new CI tool, renamed test command, added sibling repo), re-run `/nightshift:onboard` — it detects the existing `.nightshift/` and enters **reconcile mode**, confirming only the deltas and never clobbering hand-tuned globs or `(auto)` fields. Don't hand-edit `manifest.yml` for structural changes; use onboard so the gate runs again.
@@ -155,8 +156,50 @@ bin/rollup            recompute + append the daily rollup (freshness / median / 
 bin/clean             end-of-run housekeeping — drop a successful run's scratch dir, keep a failed one, then time-prune .run/
 bin/record-cost       append one validated cost line per run (gates on is_error, never subtype)
 bin/dashboard         render the self-contained HTML living document across every onboarded repo
+bin/ops-target        resolve $OPS/config.yml + one repo/lane → every path and knob a run needs, or refuse
+bin/due               which configured repo/lane pairs warrant a run right now (`ns run --due`; A9's sentinel reuses it)
+bin/workflow-args     chunk the selected surfaces by max_concurrent_reviewers and assemble the Workflow's args
+bin/retain            copy evidence out of the run dir into $OPS/evidence/<repo>/ (content-addressed), lifecycle-prune it, time-prune $OPS/logs/
+bin/ns                THE EASY BUTTON — POSIX shell, shellchecked in CI (see below)
 hooks/guard           PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
 ```
+
+### `bin/ns` — the launcher
+
+`ns` is the one command an operator runs. It is **committed engine code**, versioned
+with the engine and shellchecked in CI; only operator-specific files (`config.yml`,
+`runbook.md`, and generated artifacts) live in the ops home. Every decision it looks
+like it makes is made in a vitest-covered `bin/` command above and handed back as a
+flat value — so `ns` is left with sequencing, environment, and exit paths.
+
+```
+ns run <repo> [security|design|all]        one bounded run, zero to refreshed dashboard
+ns run --due                               every repo/lane whose staleness/change warrants it
+ns run <repo> <lane> --interactive         same env + args, foreground session (debug)
+ns status                                  what select WOULD pick, per repo/lane. No model calls.
+ns dashboard                               regenerate the living document
+ns digest <repo>                           regenerate $OPS/digests/<repo>.md
+ns cost add <repo> <lane> <run_id> <usd>   manual cost line for a non-JSON run
+```
+
+Three things `ns` does that the sandboxed workflow cannot do for itself: it invokes
+`bin/lane-plan` as `--pack .nightshift` **with cwd at the repo root** (any other
+`--pack` silently pairs one pack's registry with another pack's metrics dir); it
+**arms the read-only guard** (`NIGHTSHIFT_LANE_RUN=1` + `NIGHTSHIFT_RUN_ID` — the
+guard cannot self-arm); and it pins one `NIGHTSHIFT_TODAY` per invocation while
+minting a **fresh run id for every attempt, retries included**.
+
+`ns run` regenerates the dashboard on **every** exit path — success, headless
+failure, preflight refusal, crash — after the cost row is written, because a failed
+run that left yesterday's dashboard looking fresh is the silent staleness this system
+exists to prevent. `bin/clean` stays success-only.
+
+The **design lane refuses to start** unless `manifest.stack_adapter.browser.base_url`
+names a loopback host AND `…browser.environment` explicitly asserts a non-production
+environment (`local`/`dev`/`test`). The reviewer submits forms and changes state, and
+browser actions never touch the filesystem guard — so "the server answered" is not
+the same claim as "this data is safe to mutate", and only a human can make the second
+one. `staging` and `production` are refused by name.
 
 The orchestrator is [`nightshift.workflow.js`](nightshift.workflow.js) — a thin
 Workflow shell with **zero decision logic** (E4): it only sequences free Bash plumbing
@@ -175,7 +218,9 @@ npm run check       # all three
 ```
 
 CI (`nightshift-ci.yml`) runs the above and fails if the committed `bin/`/`hooks/`
-artifacts are out of sync with `src/`. All writes are atomic (temp + fsync + rename, or
+artifacts are out of sync with `src/`. It also shellchecks every committed shell
+script (`bin/ns`, `scripts/check-example-hygiene.sh`) and asserts `bin/ns` is
+committed executable. All writes are atomic (temp + fsync + rename, or
 a whole-line jsonl append) and the record step is chained so a `bin/validate` failure
 aborts before any durable state is touched (E6).
 
@@ -184,7 +229,8 @@ aborts before any durable state is touched (E6).
 Canonical shapes live in [`schemas/`](schemas/): `registry-entry.yml` (the shared spine),
 `finding.yml` (lean finding + suppression, with `first_seen`/`last_seen`/`resolved_at`/`run_id`
 lifecycle fields), `candidate-finding.yml` (the model-written artifact gated by `bin/validate`
-before it enters the stateful path), `manifest.yml` (the portability layer + `pack_format`), and
+before it enters the stateful path), `manifest.yml` (the portability layer + `pack_format`),
+`ops-config.yml` (the operator's `$OPS/config.yml` — the one file that is never committed), and
 the metrics shapes (per-run + daily rollup). Engine-managed fields are tagged `(auto)`; everything
 else is human-seeded. The machine validators (`src/lib/validate.ts`) mirror these and are what
 `bin/validate` enforces.

@@ -1,0 +1,3 @@
+# Per-run scratch. Created by `ns`, deleted on success, kept (and auto-pruned)
+# on failure so exactly one run is diagnosable. Never commit it.
+.run/
