@@ -16,7 +16,8 @@
 # (Rewrite-in-place under union would instead leave duplicate stale rollups.)
 #
 # The durable truth is metrics/runs/*.jsonl + this daily.jsonl + git history.
-# dashboard.md / trends.md are disposable projections regenerated from these.
+# The local HTML dashboard (bin/dashboard, in the ops home) is a disposable
+# projection regenerated from these — never committed to the pack.
 #
 # All fields are (auto) — engine-managed.
 # ---------------------------------------------------------------------------
@@ -62,6 +63,21 @@ daily_metrics:
                            #   30-day window — the slower-moving baseline.
                            #   Expressed as a percentage integer or decimal (e.g. 24 = 24%), NOT as a 0–1 ratio.
 
+  # --- Cost fields (v3 A2). ADDITIVE — pack_format stays 1; older lines omit
+  # --- them and readers must tolerate their absence. Sourced from
+  # --- metrics/costs.jsonl (see cost-record.yml), filtered to this lane.
+  cost_usd_7d:             # number, (auto). Total usd across this lane's cost records
+                           #   in the trailing 7-day window (ALL rows — a failed run's
+                           #   recorded spend is still spend).
+
+  cost_usd_30d:            # number, (auto). Same over a trailing 30-day window.
+
+  cost_usd_avg_per_run_30d: # number|null, (auto). Mean usd per SUCCESSFUL run over
+                           #   the trailing 30-day window. Rows with status=error are
+                           #   excluded from numerator and denominator (a failed run's
+                           #   $0 would drag the average into false alarms). null when
+                           #   the window has no ok rows.
+
 # ---------------------------------------------------------------------------
 # Example (last line for this (date, lane) in metrics/daily.jsonl):
 #
@@ -80,6 +96,9 @@ daily_metrics:
 #     median_staleness_ratio: 0.71
 #     fpr_7d:                  24
 #     fpr_30d:                 18
+#     cost_usd_7d:             3.35
+#     cost_usd_30d:            9.5
+#     cost_usd_avg_per_run_30d: 1.9
 #
 # Read as a CHANGELOG delta against the previous committed rollup:
 #   2026-06-18 · security · freshness 83%→79% (-4) · 2 overdue · FPR_7d 24%

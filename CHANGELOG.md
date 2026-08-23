@@ -3,6 +3,38 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.4.0] - 2026-08-23
+
+Nightshift v3 lane B: every run's real cost is now recorded and trended, and the
+whole fleet is visible in one self-contained local HTML page you can open with no
+network. (v3 sessions A2 + A6; the 3.0.0 release cuts after A7.)
+
+### Added
+
+- **`bin/record-cost`** — captures what a run actually cost into a new append-only `metrics/costs.jsonl` (new `cost-record` schema). Status is gated on `is_error` and nothing else: a failed headless run reports `subtype: "success"` right next to `is_error: true`, so keying on `subtype` would file every failure as a free success. A fixture of that exact envelope ships as a regression test. Interactive runs without JSON output can record a `source: "manual"` line instead, and a run with no cost line at all shows up as a visible gap rather than as $0.
+- **Cost windows in the daily rollup** — `cost_usd_7d`, `cost_usd_30d`, and `cost_usd_avg_per_run_30d`. Failed runs count toward the totals (a partial burn is still real spend) but are excluded from the per-run average, so one crash cannot make the average look cheap. Additive fields, so `pack_format` stays `1`.
+- **`bin/dashboard`** — one self-contained HTML page covering every onboarded repo, regenerated on each run. Opens with no network: no scripts, no remote fonts, no external images. Leads with a verdict strip answering "what needs me?" computed only from pack data, then decisions from the digest, per-repo coverage split into freshness and open findings, sparkline trends for freshness / false-positive rate / cost, and a hygiene strip for orphaned run dirs and missing evidence. Cost lives in the footer and never competes with the alarm.
+- Accessibility is enforced, not aspirational: every foreground/background token pair clears WCAG AA 4.5:1 in both light and dark themes, and no state is signalled by colour alone.
+
+### Changed
+
+- The verdict strip now surfaces registry areas that are **due** (past their interval) alongside those that are **overdue**, at a distinct warn severity. A critical-weight area sitting exactly on its interval used to be invisible on the page whose only job is telling you what needs attention. When more items compete than fit, the four shown are the four most severe rather than the first four found.
+- `$OPS/config.yml` accepts the documented shape — `lanes: [security, design]` with `enabled: true` and no `name` — and still accepts the older lane-map spelling. A repo with no `name` takes its directory name instead of rendering as "undefined".
+- One unreadable repo no longer blanks the page: it is marked unreadable with the parse error, and every other repo still renders.
+- Retired the committed `dashboard.md` projection from the pack template and the example pack. The generated HTML replaces it.
+
+### Fixed
+
+- A successful run whose `total_cost_usd` was missing or mistyped was silently recorded as costing $0. It is now refused, the same way a missing `is_error` already was.
+- A retried `record-cost` wrote a second row for the same run, double-counting that run's spend in every cost window and in the dashboard footer. Repeated rows are now reduced to the most recent per run.
+- A malformed line in `costs.jsonl` produced `NaN` cost totals that landed in `daily.jsonl` as `null` and silently flatlined the cost trend. Cost rows are now validated on read, naming the offending file and line, and the rollup is validated before it is written.
+- Cost validation now rejects negative spend, fractional or negative token counts, and impossible calendar dates like `2026-99-99` — which previously passed and then fell outside every date window.
+- Trends collapsed two repositories' same-day rows for a lane into one, so a single repo's numbers stood in for all of them. Rows are now reduced per repository before being averaged.
+- Suppressions past their expiry date were still displayed as active accepted-risk, contradicting the auto-lift the dedupe engine already applies.
+- A failed run kept raising the alarm after a later successful run had already fixed it, when that re-run recorded no cost line.
+- Finding anchors used only the surface id, so two repositories sharing a taxonomy id produced duplicate DOM ids and every link jumped to the first repository's card.
+- Scanning the evidence store followed directory symlinks, so a symlink cycle could hang the rebuild and a link outward could bill someone else's bytes to the store.
+
 ## [2.3.0] - 2026-08-15
 
 ### Added

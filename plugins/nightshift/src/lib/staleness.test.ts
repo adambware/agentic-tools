@@ -7,6 +7,7 @@ import {
   computeScore,
   selectSurfaces,
   MAX_STALENESS,
+  tsNewer,
 } from "./staleness.js";
 import type { RegistryEntry } from "./types.js";
 import { WEIGHT_MULTIPLIER } from "./types.js";
@@ -156,5 +157,37 @@ describe("selectSurfaces", () => {
     );
     expect(out[0]!.asvs_ref).toBe("ASVS 4.0.3 V4.2");
     expect(out[0]!.persona).toBe("support-agent");
+  });
+});
+
+describe("tsNewer", () => {
+  it("orders by instant, not by string, across mixed precision", () => {
+    // The break is inside one second: '.' (0x2E) sorts below 'Z', so
+    // lexicographically "…:00.500Z" < "…:00Z" even though it is 500ms LATER.
+    // Both spellings occur — bin/* stamp toISOString() (ms) while callers pass
+    // --ts by hand at second precision.
+    expect("2026-06-21T07:00:00.500Z" > "2026-06-21T07:00:00Z").toBe(false);
+    expect(tsNewer("2026-06-21T07:00:00.500Z", "2026-06-21T07:00:00Z")).toBe(true);
+    expect(tsNewer("2026-06-21T07:00:00Z", "2026-06-21T07:00:00.500Z")).toBe(false);
+  });
+
+  it("treats the same instant spelled two ways as not newer, either direction", () => {
+    const a = "2026-06-21T07:00:00Z";
+    const b = "2026-06-21T07:00:00.000Z";
+    expect(tsNewer(a, b)).toBe(false);
+    expect(tsNewer(b, a)).toBe(false);
+  });
+
+  it("compares equal offsets written in different zones", () => {
+    expect(tsNewer("2026-06-21T09:00:00+02:00", "2026-06-21T07:00:00Z")).toBe(false);
+    expect(tsNewer("2026-06-21T10:00:00+02:00", "2026-06-21T07:00:00Z")).toBe(true);
+  });
+
+  it("falls back to string order when a value is not a parseable instant", () => {
+    // NOT false-for-everything: a NaN compare would make the first row win
+    // unconditionally, silently freezing every max-ts reduction on garbage input.
+    expect(tsNewer("zzz", "aaa")).toBe(true);
+    expect(tsNewer("aaa", "zzz")).toBe(false);
+    expect(tsNewer("zzz", "2026-06-21T07:00:00Z")).toBe(true);
   });
 });

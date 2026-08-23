@@ -45,7 +45,6 @@ See the plugin README (`../../README.md`) for context on how these files relate 
     runs/2026-06.jsonl          # append-only per-run records (security lane over June)
     daily.jsonl                 # append-only daily rollups (last-wins per date+lane) — the trend
     findings/2026-06.jsonl      # ND-SEC-05 IDOR, ND-SEC-02 replay, Triage Gate UX friction
-  dashboard.md                  # disposable generated coverage view + digest summary (overdue example)
 ```
 
 ## What each file proves (design properties)

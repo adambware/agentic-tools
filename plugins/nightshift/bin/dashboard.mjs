@@ -7360,6 +7360,11 @@ var require_dist = __commonJS({
   }
 });
 
+// src/bin/dashboard.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname3, join as join4 } from "node:path";
+import { fileURLToPath } from "node:url";
+
 // src/lib/args.ts
 function parseArgs(argv) {
   const out = {};
@@ -7393,9 +7398,9 @@ function resolveToday(args) {
   return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 }
 
-// src/lib/rollup-cli.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+// src/lib/dashboard-cli.ts
+import { existsSync as existsSync3, lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } from "node:fs";
+import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7411,9 +7416,17 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
-function appendJsonl(path, record) {
+function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, JSON.stringify(record) + "\n");
+  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
 }
 function readJsonl(path) {
   if (!existsSync(path)) return [];
@@ -7429,6 +7442,10 @@ function readJsonl(path) {
 function readYaml(path) {
   if (!existsSync(path)) return void 0;
   return (0, import_yaml.parse)(readFileSync(path, "utf8"));
+}
+function basename(path) {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? path : path.slice(i + 1);
 }
 
 // src/lib/registry.ts
@@ -7478,146 +7495,6 @@ function foldFindings(findings) {
 }
 function openFindings(metricsDir) {
   return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
-}
-
-// src/lib/types.ts
-var DEFAULT_INTERVAL_DAYS = {
-  critical: 7,
-  high: 14,
-  medium: 30,
-  low: 90
-};
-
-// src/lib/staleness.ts
-var MAX_STALENESS = 1e9;
-function daysBetween(from, to) {
-  const a = Date.parse(`${from}T00:00:00Z`);
-  const b = Date.parse(`${to}T00:00:00Z`);
-  return Math.round((b - a) / 864e5);
-}
-function intervalDays(entry) {
-  const n = entry.interval_days;
-  if (typeof n === "number" && Number.isFinite(n) && n > 0) return n;
-  return DEFAULT_INTERVAL_DAYS[entry.weight];
-}
-function computeStaleness(entry, today) {
-  if (!entry.last_reviewed) return MAX_STALENESS;
-  const elapsed = daysBetween(entry.last_reviewed, today);
-  return elapsed / intervalDays(entry);
-}
-function tsNewer(a, b) {
-  const ta = Date.parse(a);
-  const tb = Date.parse(b);
-  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
-  return ta > tb;
-}
-
-// src/lib/rollup-run.ts
-function median(values) {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) {
-    return sorted[mid] ?? 0;
-  }
-  const lo = sorted[mid - 1] ?? 0;
-  const hi = sorted[mid] ?? 0;
-  return (lo + hi) / 2;
-}
-function round(value, decimals) {
-  const factor = Math.pow(10, decimals);
-  return Math.round(value * factor) / factor;
-}
-function computeFpr(runs, endDate, windowDays) {
-  let created = 0;
-  let rejected = 0;
-  for (const r of runs) {
-    const d = daysBetween(r.date, endDate);
-    if (d >= 0 && d <= windowDays - 1) {
-      created += r.findings_created;
-      rejected += r.rejected_tier1 + r.rejected_tier2;
-    }
-  }
-  if (created === 0) return null;
-  return Math.round(rejected / created * 100);
-}
-function dedupeByRunId(costs) {
-  const best = /* @__PURE__ */ new Map();
-  for (const c of costs) {
-    const cur = best.get(c.run_id);
-    if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
-  }
-  return [...best.values()];
-}
-function inWindow(recordDate, endDate, windowDays) {
-  const d = daysBetween(recordDate, endDate);
-  return d >= 0 && d <= windowDays - 1;
-}
-function costSum(costs, endDate, windowDays) {
-  let sum = 0;
-  for (const c of costs) {
-    if (inWindow(c.date, endDate, windowDays)) sum += c.usd;
-  }
-  return round(sum, 4);
-}
-function costAvgPerRun(costs, endDate, windowDays) {
-  let sum = 0;
-  let n = 0;
-  for (const c of costs) {
-    if (c.status !== "error" && inWindow(c.date, endDate, windowDays)) {
-      sum += c.usd;
-      n++;
-    }
-  }
-  if (n === 0) return null;
-  return round(sum / n, 4);
-}
-function computeDailyRollup(input) {
-  const { date, lane, ts, entries, openFindingsCount, runRecords, today } = input;
-  const runs = runRecords.filter((r) => r.date === date && r.lane === lane).length;
-  let surfaces_green = 0;
-  let surfaces_stale = 0;
-  let surfaces_overdue = 0;
-  const stalenessValues = [];
-  for (const entry of entries) {
-    const s = computeStaleness(entry, today);
-    stalenessValues.push(s);
-    if (s <= 1) {
-      surfaces_green++;
-    } else if (s <= 2) {
-      surfaces_stale++;
-    } else {
-      surfaces_overdue++;
-    }
-  }
-  const surfaces_total = entries.length;
-  const coverage_freshness_pct = surfaces_total === 0 ? 100 : round(surfaces_green / surfaces_total * 100, 1);
-  const median_staleness_ratio = round(median(stalenessValues), 2);
-  const laneRuns = runRecords.filter((r) => r.lane === lane);
-  const fpr_7d = computeFpr(laneRuns, date, 7);
-  const fpr_30d = computeFpr(laneRuns, date, 30);
-  const laneCosts = dedupeByRunId((input.costRecords ?? []).filter((c) => c.lane === lane));
-  const cost_usd_7d = costSum(laneCosts, date, 7);
-  const cost_usd_30d = costSum(laneCosts, date, 30);
-  const cost_usd_avg_per_run_30d = costAvgPerRun(laneCosts, date, 30);
-  return {
-    date,
-    lane,
-    ts,
-    runs,
-    surfaces_total,
-    surfaces_green,
-    surfaces_stale,
-    surfaces_overdue,
-    open_findings: openFindingsCount,
-    coverage_freshness_pct,
-    median_staleness_ratio,
-    fpr_7d,
-    fpr_30d,
-    cost_usd_7d,
-    cost_usd_30d,
-    cost_usd_avg_per_run_30d
-  };
 }
 
 // src/lib/validate.ts
@@ -7822,74 +7699,1123 @@ var SCHEMA_NAMES = Object.keys(VALIDATORS);
 // src/lib/record-cost-run.ts
 var COSTS_FILENAME = "costs.jsonl";
 
-// src/lib/rollup-cli.ts
-function runRollup(opts) {
-  const date = opts.date ?? opts.today;
-  if (!existsSync3(opts.registryPath)) {
-    throw new Error(`registry not found: ${opts.registryPath}`);
-  }
-  const doc = readYaml(opts.registryPath);
-  const entries = extractEntries(doc, opts.lane);
-  const runsDir = join3(opts.metricsDir, "runs");
-  const runRecords = [];
-  if (existsSync3(runsDir)) {
-    const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort();
-    for (const shard of shards) {
-      runRecords.push(...readJsonl(join3(runsDir, shard)));
-    }
-  }
-  const laneRunRecords = runRecords.filter((r) => r.lane === opts.lane);
-  const openFindingsCount = openFindings(opts.metricsDir).length;
-  const costsPath = join3(opts.metricsDir, COSTS_FILENAME);
-  const costRecords = readJsonl(costsPath);
-  costRecords.forEach((c, i) => {
-    const res = validateCostRecord(c);
-    if (!res.ok) {
-      throw new Error(`${costsPath}:${i + 1}: invalid cost-record \u2014 ${res.errors.join("; ")}`);
-    }
-  });
-  const rollup = computeDailyRollup({
-    date,
-    lane: opts.lane,
-    ts: opts.ts,
-    entries,
-    openFindingsCount,
-    runRecords: laneRunRecords,
-    costRecords,
-    today: opts.today
-  });
-  const rollupCheck = validateDailyMetrics(rollup);
-  if (!rollupCheck.ok) {
-    throw new Error(`rollup produced an invalid daily-metrics row: ${rollupCheck.errors.join("; ")}`);
-  }
-  const outPath = opts.outPath ?? join3(opts.metricsDir, "daily.jsonl");
-  appendJsonl(outPath, rollup);
-  return rollup;
+// src/lib/types.ts
+var WEIGHT_MULTIPLIER = {
+  critical: 8,
+  high: 4,
+  medium: 2,
+  low: 1
+};
+var DEFAULT_INTERVAL_DAYS = {
+  critical: 7,
+  high: 14,
+  medium: 30,
+  low: 90
+};
+
+// src/lib/staleness.ts
+var MAX_STALENESS = 1e9;
+function daysBetween(from, to) {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  return Math.round((b - a) / 864e5);
+}
+function intervalDays(entry) {
+  const n = entry.interval_days;
+  if (typeof n === "number" && Number.isFinite(n) && n > 0) return n;
+  return DEFAULT_INTERVAL_DAYS[entry.weight];
+}
+function computeStaleness(entry, today) {
+  if (!entry.last_reviewed) return MAX_STALENESS;
+  const elapsed = daysBetween(entry.last_reviewed, today);
+  return elapsed / intervalDays(entry);
+}
+function tsNewer(a, b) {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
+  return ta > tb;
 }
 
-// src/bin/rollup.ts
+// src/lib/dashboard-run.ts
+var LIGHT_TOKENS = {
+  bg: "#fbfbfa",
+  surface: "#ffffff",
+  surface2: "#f6f6f4",
+  text: "#191918",
+  muted: "#6c6c68",
+  border: "#e4e4e0",
+  "border-strong": "#c9c9c3",
+  ok: "#15703f",
+  "ok-bg": "#e8f5ed",
+  warn: "#8a5a00",
+  "warn-bg": "#fdf3e0",
+  bad: "#a41c1c",
+  "bad-bg": "#fdecec",
+  neutral: "#5a5a75",
+  "neutral-bg": "#eeeef4",
+  "act-bg": "#fff8f0",
+  "act-border": "#e8b981"
+};
+var DARK_TOKENS = {
+  bg: "#141519",
+  surface: "#1c1e23",
+  surface2: "#22252b",
+  text: "#e9e9e6",
+  muted: "#9b9b96",
+  border: "#2d3037",
+  "border-strong": "#454a54",
+  ok: "#5fd08a",
+  "ok-bg": "#12291d",
+  warn: "#e8b055",
+  "warn-bg": "#2c2213",
+  bad: "#f28b8b",
+  "bad-bg": "#301818",
+  neutral: "#a9a9c4",
+  "neutral-bg": "#232430",
+  "act-bg": "#241c12",
+  "act-border": "#7a5a2c"
+};
+var escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => escMap[c]);
+}
+function fmtCopy(s) {
+  return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+var usdFmt = (n) => n == null ? "\u2014" : "$" + n.toFixed(2);
+var COVER = {
+  current: { glyph: "\u2713", label: "current", tone: "ok" },
+  due: { glyph: "\u25D0", label: "due", tone: "warn" },
+  overdue: { glyph: "\u25B2", label: "overdue", tone: "bad" },
+  never: { glyph: "\u25C7", label: "not yet reviewed", tone: "neutral" }
+};
+var SEV = {
+  critical: { abbr: "CRIT", tone: "bad" },
+  high: { abbr: "HIGH", tone: "bad" },
+  medium: { abbr: "MED", tone: "warn" },
+  low: { abbr: "LOW", tone: "neutral" }
+};
+function coverState(entry, today) {
+  if (!entry.last_reviewed) return "never";
+  const s = computeStaleness(entry, today);
+  if (s < 1) return "current";
+  if (s <= 2) return "due";
+  return "overdue";
+}
+function fmtVal(v2, unit) {
+  if (unit === "pct") return v2.toFixed(0) + "%";
+  if (unit === "usd") return "$" + v2.toFixed(2);
+  return String(v2);
+}
+function fmtDelta(d, unit) {
+  const s = d > 0 ? "+" : "";
+  if (unit === "pct") return s + d.toFixed(0) + "pp";
+  if (unit === "usd") return (d < 0 ? "-" : s) + "$" + Math.abs(d).toFixed(2);
+  return s + d;
+}
+function sparkline({ samples, windowDays, polarity, unit, id }) {
+  const W = 96, H = 24, PAD = 3;
+  if (!samples.length) {
+    return `<div class="spark-wrap"><span class="spark-none">no data</span></div>`;
+  }
+  if (samples.length < 2) {
+    const only = samples[0];
+    return `<div class="spark-wrap">
+      <span class="spark-val">${esc(fmtVal(only.v, unit))}</span>
+      <span class="spark-none">1 of 2 runs \u2014 trend starts next run</span>
+    </div>`;
+  }
+  const t0 = Date.parse(samples[0].d);
+  const tN = Date.parse(samples[samples.length - 1].d);
+  const span = Math.max(1, tN - t0);
+  const vals = samples.map((s) => s.v);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) {
+    hi = lo + 1;
+    lo = lo - 1;
+  }
+  const x = (s) => PAD + (Date.parse(s.d) - t0) / span * (W - PAD * 2);
+  const y = (s) => H - PAD - (s.v - lo) / (hi - lo) * (H - PAD * 2);
+  const pts = samples.map((s) => `${x(s).toFixed(1)},${y(s).toFixed(1)}`).join(" ");
+  const dots = samples.map((s) => `<circle cx="${x(s).toFixed(1)}" cy="${y(s).toFixed(1)}" r="1.4"/>`).join("");
+  const last = samples[samples.length - 1], prev = samples[samples.length - 2];
+  const delta = last.v - prev.v;
+  const rising = delta > 0;
+  const good = delta === 0 ? null : polarity === "up-good" ? rising : !rising;
+  const arrow = delta === 0 ? "\u2192" : rising ? "\u2191" : "\u2193";
+  const tone = good === null ? "neutral" : good ? "ok" : "bad";
+  const desc = `${samples.length} samples over ${windowDays} days, ${fmtVal(samples[0].v, unit)} to ${fmtVal(last.v, unit)}`;
+  return `<div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"
+         role="img" aria-labelledby="sl-${esc(id)}" preserveAspectRatio="none">
+      <title id="sl-${esc(id)}">${esc(desc)}</title>
+      <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor">${dots}</g>
+    </svg>
+    <span class="spark-val">${esc(fmtVal(last.v, unit))}</span>
+    <span class="delta t-${tone}"><span aria-hidden="true">${arrow}</span>
+      <span class="vh">${good === null ? "unchanged" : good ? "improving" : "worsening"}: </span>${esc(fmtDelta(delta, unit))}</span>
+  </div>`;
+}
+var ORPHAN_AGE_DAYS = 7;
+function findingAnchor(f) {
+  const slug = (x) => String(x ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const key = [f.repo, f.dedupe_key.surface, f.dedupe_key.symptom, f.dedupe_key.root_cause].map(slug).join("--");
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = (h * 33 ^ key.charCodeAt(i)) >>> 0;
+  return `f-${key.slice(0, 60)}-${h.toString(36)}`;
+}
+function verdictHtml(items, meta) {
+  if (!items.length) {
+    return `<section class="verdict clear" aria-labelledby="v-h">
+      <h1 id="v-h"><span class="v-mark" aria-hidden="true">\u2713</span>Nothing needs you</h1>
+      <p class="v-sub">${esc(meta)}</p>
+    </section>`;
+  }
+  const TONE_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
+  const ranked = [...items].sort(
+    (a, b) => (TONE_ORDER[a.tone] ?? 9) - (TONE_ORDER[b.tone] ?? 9)
+  );
+  const shown = ranked.slice(0, 4), rest = ranked.length - shown.length;
+  return `<section class="verdict act" aria-labelledby="v-h">
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">\u25B2</span>${items.length} ${items.length === 1 ? "thing needs" : "things need"} you</h1>
+    <ul class="v-list">
+      ${shown.map(
+    (i) => `<li>
+        <span class="v-kind t-${i.tone}">${esc(i.kind)}</span>
+        <a href="#${esc(i.href)}">${esc(i.text)}</a>
+        <span class="v-meta">${esc(i.meta)}</span>
+      </li>`
+  ).join("")}
+      ${rest > 0 ? `<li class="v-more"><a href="#decisions">and ${rest} more below</a></li>` : ""}
+    </ul>
+    <p class="v-sub">${esc(meta)}</p>
+  </section>`;
+}
+function latestFailedRuns(repo) {
+  const byLane = /* @__PURE__ */ new Map();
+  for (const c of repo.costs) {
+    const cur = byLane.get(c.lane);
+    if (!cur || tsNewer(c.ts, cur.ts)) byLane.set(c.lane, c);
+  }
+  const newestRunByLane = /* @__PURE__ */ new Map();
+  for (const r of repo.run_records) {
+    const cur = newestRunByLane.get(r.lane);
+    if (!cur || tsNewer(r.ts, cur)) newestRunByLane.set(r.lane, r.ts);
+  }
+  return [...byLane.values()].filter((c) => {
+    if (c.status !== "error") return false;
+    const newestRun = newestRunByLane.get(c.lane);
+    return !(newestRun && tsNewer(newestRun, c.ts));
+  });
+}
+function computeVerdict(input) {
+  const items = [];
+  for (const repo of input.repos) {
+    if (!repo.pack_present) {
+      items.push({
+        kind: "config gap",
+        tone: "bad",
+        text: `${repo.name} is configured but its .nightshift/ pack is missing`,
+        href: `gap-${repo.name}`,
+        meta: `${repo.path ? `path ${repo.path} \xB7 ` : ""}nothing can be reviewed until it is onboarded`
+      });
+    }
+  }
+  for (const repo of input.repos) {
+    for (const f of repo.findings) {
+      if (f.needs_human_verification && !f.resolved_at) {
+        items.push({
+          kind: "verify",
+          tone: "bad",
+          text: `${f.dedupe_key.surface} \u2014 ${f.title}`,
+          href: findingAnchor(f),
+          meta: `${repo.name} \xB7 ${f.severity} \xB7 awaiting your verification${f.age_days != null ? ` \xB7 ${f.age_days}d open` : ""}`
+        });
+      }
+    }
+  }
+  for (const repo of input.repos) {
+    for (const c of latestFailedRuns(repo)) {
+      items.push({
+        kind: "run failed",
+        tone: "bad",
+        text: `${repo.name} ${c.lane} run failed ${c.date}`,
+        href: "hygiene",
+        meta: `${c.terminal_reason ?? "unknown"} \xB7 coverage did not advance`
+      });
+    }
+  }
+  for (const repo of input.repos) {
+    for (const lane of repo.lanes) {
+      if (lane.state !== "on") continue;
+      for (const e of lane.entries) {
+        const cs = coverState(e, input.today);
+        if (cs === "overdue" || cs === "due") {
+          const ago = daysBetween(e.last_reviewed, input.today);
+          items.push({
+            kind: cs,
+            // due and overdue are both actionable but not equally urgent;
+            // reuse the coverage tones so the strip does not flatten them.
+            tone: COVER[cs].tone,
+            text: `${e.id} \u2014 ${e.title}`,
+            href: repo.name,
+            meta: `${repo.name} \xB7 ${e.weight} weight \xB7 ${ago}d since review (interval ${intervalDays(e)}d)`
+          });
+        }
+      }
+    }
+  }
+  for (const repo of input.repos) {
+    if (!repo.pack_present || repo.run_records.length > 0) continue;
+    const onLanes = repo.lanes.filter((l) => l.state === "on");
+    const areas = onLanes.reduce((a, l) => a + l.entries.length, 0);
+    const allNever = onLanes.every(
+      (l) => l.entries.every((e) => coverState(e, input.today) === "never")
+    );
+    if (areas > 0 && allNever) {
+      const lane = onLanes[0].lane;
+      items.push({
+        kind: "first run",
+        tone: "neutral",
+        text: `${repo.name} is onboarded but has never been reviewed`,
+        href: repo.name,
+        meta: `${areas} ${onLanes.length === 1 ? `${lane} areas` : "areas"} registered \xB7 run \`ns run ${repo.name} ${lane}\` to start`
+      });
+    }
+  }
+  return items;
+}
+var COVER_ORDER = { overdue: 0, due: 1, never: 2, current: 3 };
+function laneRows(repo, lane, today) {
+  const bySurface = /* @__PURE__ */ new Map();
+  for (const f of repo.findings) {
+    if (f.lane !== lane.lane) continue;
+    const k = f.dedupe_key.surface;
+    bySurface.set(k, [...bySurface.get(k) ?? [], f]);
+  }
+  const rows = lane.entries.map((entry) => ({
+    entry,
+    cover: coverState(entry, today),
+    findings: bySurface.get(entry.id) ?? []
+  }));
+  rows.sort((a, b) => {
+    const c = COVER_ORDER[a.cover] - COVER_ORDER[b.cover];
+    if (c !== 0) return c;
+    const w = WEIGHT_MULTIPLIER[b.entry.weight] - WEIGHT_MULTIPLIER[a.entry.weight];
+    if (w !== 0) return w;
+    return a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0;
+  });
+  return rows;
+}
+function laneTableHtml(repo, lane, today) {
+  const laneName = `${lane.lane} lane`;
+  if (lane.state === "disabled") {
+    return `<div class="lane"><h4>${esc(laneName)}</h4>
+      <p class="lane-off">Lane not enabled for this repo. Turn it on in <code>config.yml</code>.</p></div>`;
+  }
+  if (lane.state === "not-ready") {
+    const reason = lane.not_ready_reason ?? "prerequisites missing";
+    const tail = reason.includes(" and ") ? "until both exist" : "until it exists";
+    return `<div class="lane"><h4>${esc(laneName)}</h4>
+      <p class="lane-off">Enabled in <code>config.yml</code>, but the pack is not ready: ${fmtCopy(reason)}. <code>ns</code> will refuse this lane ${tail}.</p></div>`;
+  }
+  if (!lane.entries.length) {
+    return `<div class="lane"><h4>${esc(laneName)}</h4>
+      <p class="lane-off">Registry seeded but empty \u2014 no areas registered yet. Run <code>/nightshift:garden</code> to propose entries.</p></div>`;
+  }
+  const rows = laneRows(repo, lane, today);
+  const tally = rows.reduce(
+    (a, r) => (a[r.cover] = (a[r.cover] ?? 0) + 1, a),
+    {}
+  );
+  const openTotal = rows.reduce((a, r) => a + r.findings.length, 0);
+  const tallyHtml = Object.keys(COVER).filter((k) => tally[k]).map(
+    (k) => `<span class="t-${COVER[k].tone}"><span aria-hidden="true">${COVER[k].glyph}</span> ${tally[k]} ${esc(COVER[k].label)}</span>`
+  ).join('<span class="sep">\xB7</span>');
+  return `<div class="lane">
+    <h4>${esc(laneName)}
+      <span class="tally">${tallyHtml}
+        ${openTotal ? `<span class="sep">\xB7</span><span class="t-bad">\u25CF ${openTotal} open finding${openTotal === 1 ? "" : "s"}</span>` : ""}
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">${esc(repo.name)} ${esc(laneName)} coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      ${rows.map((r) => {
+    const c = COVER[r.cover];
+    const last = r.entry.last_reviewed;
+    const ago = last ? `${daysBetween(last, today)}d` : "";
+    return `<tr class="c-${r.cover}">
+        <th scope="row" class="area"><code>${esc(r.entry.area.join(", "))}</code></th>
+        <td class="id"><code>${esc(r.entry.id)}</code></td>
+        <td class="wt">${esc(r.entry.weight)}</td>
+        <td class="cov"><span class="pill p-${c.tone}">
+          <span class="g" aria-hidden="true">${c.glyph}</span>${esc(c.label)}</span></td>
+        <td class="when">${last ? `${esc(last)} <span class="ago">${esc(ago)}</span>` : '<span class="ago">never</span>'}</td>
+        <td class="find">${r.findings.length ? r.findings.map(
+      (f) => `<a class="fpill s-${SEV[f.severity].tone}" href="#${esc(findingAnchor(f))}">
+            <span class="sabbr">${SEV[f.severity].abbr}</span>${esc(f.dedupe_key.surface)}${f.needs_human_verification ? '<span class="verify" title="needs human verification">\u270B</span>' : ""}</a>`
+    ).join("") : '<span class="none">\u2014</span>'}</td>
+      </tr>`;
+  }).join("")}
+      </tbody>
+    </table>
+    </div>
+  </div>`;
+}
+function fmtTs(ts) {
+  return ts.slice(0, 16).replace("T", " ");
+}
+function repoRunLine(repo) {
+  if (repo.run_records.length === 0 && repo.costs.length === 0) return "never run";
+  const parts = [];
+  for (const lane of repo.lanes) {
+    if (lane.state === "disabled") {
+      parts.push(`${esc(lane.lane)} lane off`);
+      continue;
+    }
+    const laneCosts = repo.costs.filter((c) => c.lane === lane.lane);
+    const latest = laneCosts.reduce(
+      (a, c) => !a || tsNewer(c.ts, a.ts) ? c : a,
+      null
+    );
+    const laneRuns = repo.run_records.filter((r) => r.lane === lane.lane);
+    const latestRun = laneRuns.reduce(
+      (a, r) => !a || tsNewer(r.ts, a.ts) ? r : a,
+      null
+    );
+    if (latest && latest.status === "error" && (!latestRun || tsNewer(latest.ts, latestRun.ts))) {
+      parts.push(
+        `<span class="fail">${esc(lane.lane)} FAILED ${esc(fmtTs(latest.ts))} (${esc(latest.terminal_reason ?? "unknown")})</span>`
+      );
+    } else if (latestRun) {
+      const costPart = latest && latest.status === "ok" && latest.run_id === latestRun.run_id ? ` \xB7 ${usdFmt(latest.usd)}` : ' \xB7 <span class="t-warn">cost not captured</span>';
+      parts.push(`${esc(lane.lane)} ok ${esc(fmtTs(latestRun.ts))}${costPart}`);
+    } else {
+      parts.push(`${esc(lane.lane)}: never run`);
+    }
+  }
+  if (!parts.length) return "never run";
+  return parts.join(" &nbsp;\xB7&nbsp; ");
+}
+var TREND_WINDOW_DAYS = 30;
+function maxTsDaily(lines) {
+  const best = /* @__PURE__ */ new Map();
+  for (const l of lines) {
+    const k = `${l.date}|${l.lane}`;
+    const cur = best.get(k);
+    if (!cur || tsNewer(l.ts, cur.ts)) best.set(k, l);
+  }
+  return [...best.values()].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+}
+function inTrendWindow(date, today) {
+  const d = daysBetween(date, today);
+  return d >= 0 && d < TREND_WINDOW_DAYS;
+}
+function computeTrends(input) {
+  const daily = input.repos.flatMap((r) => maxTsDaily(r.daily)).filter((l) => inTrendWindow(l.date, input.today));
+  const byDate = /* @__PURE__ */ new Map();
+  for (const l of daily) byDate.set(l.date, [...byDate.get(l.date) ?? [], l]);
+  const dates = [...byDate.keys()].sort();
+  const freshness = [];
+  const fpr = [];
+  for (const d of dates) {
+    const ls = byDate.get(d);
+    freshness.push({
+      d,
+      v: Math.round(ls.reduce((a, l) => a + l.coverage_freshness_pct, 0) / ls.length)
+    });
+    const withFpr = ls.filter((l) => l.fpr_7d != null);
+    if (withFpr.length) {
+      fpr.push({ d, v: Math.round(withFpr.reduce((a, l) => a + l.fpr_7d, 0) / withFpr.length) });
+    }
+  }
+  const okCosts = input.repos.flatMap((r) => r.costs).filter((c) => c.status === "ok" && inTrendWindow(c.date, input.today));
+  const costByDate = /* @__PURE__ */ new Map();
+  for (const c of okCosts) costByDate.set(c.date, [...costByDate.get(c.date) ?? [], c.usd]);
+  const cost = [...costByDate.keys()].sort().map((d) => {
+    const vs = costByDate.get(d);
+    return { d, v: Math.round(vs.reduce((a, v2) => a + v2, 0) / vs.length * 100) / 100 };
+  });
+  const runCount = input.repos.flatMap((r) => r.run_records).filter((r) => inTrendWindow(r.date, input.today)).length;
+  const costTotal30d = input.repos.flatMap((r) => r.costs).filter((c) => inTrendWindow(c.date, input.today)).reduce((a, c) => a + c.usd, 0);
+  return { freshness, fpr, cost, runCount, costTotal30d };
+}
+function trendCard(name, goal, sub, spark) {
+  return `<div class="tr">
+  <div class="tr-hd"><span class="tr-name">${esc(name)}</span><span class="tr-goal">${esc(goal)}</span></div>
+  ${spark}<p class="tr-sub">${esc(sub)}</p></div>`;
+}
+function trendsHtml(input, t) {
+  const windowRuns = t.runCount > 0;
+  const heading = windowRuns ? `Trends <span style="font-weight:400;text-transform:none;letter-spacing:0">\xB7 last ${TREND_WINDOW_DAYS} days, ${t.runCount} run${t.runCount === 1 ? "" : "s"}</span>` : "Trends";
+  const everRan = input.repos.some((r) => r.run_records.length > 0);
+  const whyFor = (seriesWhy) => {
+    if (!everRan) return "Starts after the first run.";
+    if (!windowRuns) return `No runs in the last ${TREND_WINDOW_DAYS} days.`;
+    return seriesWhy;
+  };
+  return `<section class="blk">
+  <h2>${heading}</h2>
+  <div class="trends">
+    ${trendCard(
+    "Coverage freshness",
+    "higher is better",
+    t.freshness.length ? "Share of registry areas reviewed within their interval." : whyFor("No daily rollup recorded in the window."),
+    sparkline({ samples: t.freshness, windowDays: TREND_WINDOW_DAYS, polarity: "up-good", unit: "pct", id: "fresh" })
+  )}
+    ${trendCard(
+    "False-positive rate (7d)",
+    "lower is better",
+    t.fpr.length ? "Candidates refuted by Tier-1 + Tier-2, over findings created." : whyFor("No findings created in the window \u2014 FPR is undefined."),
+    sparkline({ samples: t.fpr, windowDays: TREND_WINDOW_DAYS, polarity: "down-good", unit: "pct", id: "fpr" })
+  )}
+    ${trendCard(
+    "Cost per run",
+    "lower is better",
+    t.cost.length ? `${TREND_WINDOW_DAYS}d total ${usdFmt(t.costTotal30d)}.` : whyFor("No run in the window captured a cost envelope."),
+    sparkline({ samples: t.cost, windowDays: TREND_WINDOW_DAYS, polarity: "down-good", unit: "usd", id: "cost" })
+  )}
+  </div>
+</section>`;
+}
+function decisionsHtml(input) {
+  const anyRuns = input.repos.some((r) => r.run_records.length > 0);
+  if (!input.digests.length) {
+    const repoName2 = input.repos.find((r) => r.pack_present)?.name;
+    const cmd = `<code>ns digest ${esc(repoName2 ?? "<repo>")}</code>`;
+    const copy = anyRuns ? `No digest yet \u2014 run ${cmd} to write the first one.` : `No digest yet \u2014 the first digest is written after the first run (${cmd}).`;
+    return `<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  <p class="lane-off">${copy}</p>
+</section>`;
+  }
+  const stale = input.digests.filter((d) => d.runs_behind > 2);
+  const banner = stale.map(
+    (d) => `<p class="stale-note">\u26A0 Digest is ${d.age_days} days old (generated ${esc(d.generated_at)}, ${d.runs_behind} runs ago). These decisions may already be resolved \u2014 run <code>ns digest ${esc(d.repo)}</code> to refresh.</p>`
+  ).join("");
+  const items = input.digests.flatMap(
+    (d) => d.items.map(
+      (i) => `<li>${fmtCopy(i.text)}
+      <span class="d-src">from digest \xB7 ${esc(i.repo)} \xB7 generated ${esc(d.generated_at)} (${d.runs_behind === 0 ? "this run" : `${d.runs_behind} run${d.runs_behind === 1 ? "" : "s"} ago`})</span></li>`
+    )
+  );
+  const body = items.length ? `<ol class="dec">${items.join("")}</ol>` : `<ol class="dec"><li style="padding-left:14px" class="t-neutral">No decisions pending.
+      <span class="d-src">from digest \xB7 generated ${esc(input.digests[0].generated_at)}</span></li></ol>
+  <style>.dec li:only-child::before{display:none}</style>`;
+  return `<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  ${banner}
+  ${body}
+</section>`;
+}
+function findingsHtml(input) {
+  const all = input.repos.flatMap((r) => r.findings.map((f) => ({ repo: r.name, f })));
+  const supp = input.repos.flatMap((r) => r.suppressions);
+  if (!all.length && !supp.length) return "";
+  all.sort(
+    (a, b) => WEIGHT_MULTIPLIER[b.f.severity] - WEIGHT_MULTIPLIER[a.f.severity]
+  );
+  const cards = all.map(({ repo, f }) => {
+    const sev = SEV[f.severity];
+    const metaBits = [
+      `${repo} \xB7 ${f.lane}`,
+      f.anchor ? `anchor: ${f.anchor}${f.measured ? ` ${f.measured}` : ""}` : `${f.confidence} confidence`,
+      f.filed ? `filed ${f.filed}` : null,
+      f.first_seen ? `first seen ${f.first_seen}${f.age_days != null ? ` (${f.age_days}d${f.no_movement ? ", no movement" : ""})` : ""}` : null
+    ].filter(Boolean);
+    let evidence = "";
+    if (f.evidence) {
+      evidence = f.evidence_present === false ? `<span class="ev ev-gone">\u{1F4CE} evidence no longer on disk (pruned or never copied) \u2014 the anchor value above still stands</span>` : `<a class="ev" href="${esc(f.evidence)}">\u{1F4CE} evidence: ${esc(f.evidence.split("/").pop())}</a>`;
+    }
+    const verifyLine = f.needs_human_verification && !f.filed ? `<p class="fd-meta">\u270B Needs human verification \xB7 not yet filed to Linear</p>` : "";
+    return `<div class="fd" id="${esc(findingAnchor(f))}">
+    <div class="fd-hd"><span class="fpill s-${sev.tone}"><span class="sabbr">${sev.abbr}</span>${esc(f.dedupe_key.surface)}</span>
+      <strong>${esc(f.title)}</strong>
+      <span class="fd-meta">${esc(metaBits.join(" \xB7 "))}</span></div>
+    ${verifyLine}${evidence}
+  </div>`;
+  }).join("");
+  const suppLine = supp.length ? `<p class="fd-meta" style="margin-top:10px">${supp.length} active suppression${supp.length === 1 ? "" : "s"}: ${supp.map(
+    (s) => `<code>${esc(s.dedupe_key.surface)}</code> ${esc(s.reason)}, expires ${esc(s.expires)}${s.filed ? ` (${esc(s.filed)})` : ""}`
+  ).join(" \xB7 ")}</p>` : "";
+  return `<section class="blk">
+  <h2>Open findings</h2>
+  ${cards}${suppLine}
+</section>`;
+}
+function computeHygiene(input) {
+  const rows = [];
+  for (const repo of input.repos) {
+    if (!repo.pack_present) {
+      rows.push({
+        tone: "bad",
+        html: `1 configured repo unreadable \u2014 <code>${esc(repo.name)}</code> (pack missing)`
+      });
+    }
+  }
+  for (const repo of input.repos) {
+    const failed = repo.costs.filter((c) => c.status === "error");
+    for (const c of failed) {
+      rows.push({
+        tone: "bad",
+        html: `1 failed run kept for diagnosis \u2014 <code>${esc(repo.name)}/.nightshift/.run/${esc(c.run_id)}/</code> (${esc(c.terminal_reason ?? "unknown")}, ${esc(c.date)})`
+      });
+    }
+  }
+  for (const repo of input.repos) {
+    const covered = new Set(repo.costs.map((c) => c.run_id));
+    const gaps = repo.run_records.filter(
+      (r) => !covered.has(r.run_id) && inTrendWindow(r.date, input.today)
+    );
+    if (gaps.length) {
+      rows.push({
+        tone: "warn",
+        html: `${gaps.length} run${gaps.length === 1 ? "" : "s"} missing cost capture \u2014 <code>${esc(repo.name)}</code> ${gaps.map((g) => esc(g.date)).join(", ")} (source: interactive, no JSON envelope)`
+      });
+    }
+  }
+  for (const o of input.orphan_run_dirs) {
+    rows.push({
+      tone: "warn",
+      html: `1 orphaned run dir older than ${ORPHAN_AGE_DAYS} days \u2014 <code>${esc(o.path)}</code>`
+    });
+  }
+  const gone = input.repos.flatMap(
+    (r) => r.findings.filter((f) => f.evidence && f.evidence_present === false)
+  );
+  if (gone.length) {
+    rows.push({
+      tone: "warn",
+      html: `${gone.length} open finding${gone.length === 1 ? "" : "s"} with missing evidence \u2014 ${gone.map((f) => `<code>${esc(f.dedupe_key.surface)}</code>`).join(", ")}`
+    });
+  }
+  const okLines = [];
+  const anyRuns = input.repos.some((r) => r.run_records.length > 0 || r.costs.length > 0);
+  if (!anyRuns) {
+    okLines.push("No runs yet.");
+  } else if (!rows.length) {
+    okLines.push("No orphaned run dirs, no failed runs, every run has a cost line.");
+  }
+  if (input.evidence_stats) {
+    const e = input.evidence_stats;
+    okLines.push(
+      e.files === 0 ? "Evidence store: 0 files \u2014 no open findings reference evidence." : `Evidence store: ${e.files} file${e.files === 1 ? "" : "s"}, ${(e.bytes / 1048576).toFixed(1)} MB${e.unreferenced === 0 ? ", all referenced by open findings" : `, ${e.unreferenced} unreferenced`}.`
+    );
+  }
+  return { rows, okLines };
+}
+function hygieneHtml(h) {
+  const head = h.rows.length ? `<strong class="t-bad">${h.rows.length} item${h.rows.length === 1 ? "" : "s"} need${h.rows.length === 1 ? "s" : ""} cleanup</strong>` : `<strong class="t-ok">\u2713 Nothing to clean up</strong>`;
+  const lis = [
+    ...h.rows.map((r) => `<li class="t-${r.tone}">${r.html}</li>`),
+    ...h.okLines.map((l) => `<li class="ok">${esc(l)}</li>`)
+  ];
+  return `<section class="blk" id="hygiene">
+  <h2>Hygiene</h2>
+  <div class="hyg">
+    ${head}
+    <ul>${lis.join("\n      ")}</ul>
+  </div>
+</section>`;
+}
+function footerHtml(input) {
+  const costs = input.repos.flatMap((r) => r.costs);
+  const runs = input.repos.flatMap((r) => r.run_records);
+  let costPart;
+  if (!costs.length && !runs.length) {
+    costPart = "Cost: no runs recorded";
+  } else {
+    const sum = (days) => costs.filter((c) => {
+      const d = daysBetween(c.date, input.today);
+      return d >= 0 && d < days;
+    }).reduce((a, c) => a + c.usd, 0);
+    const covered = new Set(costs.map((c) => c.run_id));
+    const windowRuns = runs.filter((r) => inTrendWindow(r.date, input.today));
+    const missing = windowRuns.filter((r) => !covered.has(r.run_id)).length;
+    costPart = missing > 0 ? `Cost: <span class="t-warn">incomplete \u2014 ${missing} of ${windowRuns.length} runs missing capture</span>` : `Cost: ${usdFmt(sum(7))} (7d) \xB7 ${usdFmt(sum(30))} (30d)`;
+  }
+  return `<footer>
+  <span>Generated ${esc(input.generated_at)} by <code>bin/dashboard</code> \xB7 nightshift ${esc(input.engine_version)} \xB7 disposable projection, never committed</span>
+  <span>${costPart}</span>
+</footer>`;
+}
+function tokenBlock(tokens) {
+  return Object.entries(tokens).map(([k, v2]) => `--${k}:${v2};`).join(" ");
+}
+function buildCss() {
+  return `
+:root{ ${tokenBlock(LIGHT_TOKENS)} }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ ${tokenBlock(DARK_TOKENS)} }
+}
+:root[data-theme="dark"]{ ${tokenBlock(DARK_TOKENS)} }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-variant-numeric:tabular-nums;}
+.page{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:inherit;text-decoration:none;border-bottom:1px solid var(--border-strong)}
+a:hover{border-bottom-color:currentColor}
+a:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:3px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-neutral{color:var(--muted)}
+.sep{color:var(--muted);margin:0 7px}
+
+/* verdict */
+.verdict{border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:0 0 26px;background:var(--surface)}
+.verdict.act{background:var(--act-bg);border-color:var(--act-border);border-left-width:4px}
+.verdict.clear{border-left:4px solid var(--ok)}
+.verdict h1{margin:0;font-size:21px;line-height:1.25;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+.v-mark{font-size:16px}
+.verdict.act .v-mark{color:var(--bad)} .verdict.clear .v-mark{color:var(--ok)}
+.v-list{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+.v-list li{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+.v-kind{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;min-width:92px}
+.v-meta{color:var(--muted);font-size:12.5px}
+.v-more{padding-left:101px;font-size:12.5px;color:var(--muted)}
+.v-sub{margin:14px 0 0;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+
+/* sections */
+section.blk{margin:0 0 30px}
+h2{font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   margin:0 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:0;letter-spacing:-.01em}
+h4{font-size:13px;margin:0 0 8px;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+
+/* decisions */
+.dec{list-style:none;margin:0;padding:0;counter-reset:d}
+.dec li{counter-increment:d;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px 12px 44px;margin-bottom:8px;position:relative}
+.dec li::before{content:counter(d);position:absolute;left:14px;top:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--surface2);border:1px solid var(--border-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--muted)}
+.dec .d-src{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.stale-note{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+  border-radius:7px;padding:9px 12px;margin:0 0 10px;font-size:12.5px}
+
+/* repo */
+.repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.repo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.repo-run{color:var(--muted);font-size:12.5px}
+.repo-run .fail{color:var(--bad);font-weight:600}
+.lane + .lane{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.lane-off{color:var(--muted);font-size:12.5px;margin:0;padding:9px 11px;background:var(--surface2);border-radius:6px}
+.tally{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border-strong)}
+tbody tr{border-left:3px solid transparent}
+tbody tr.c-overdue{border-left-color:var(--bad);background:var(--bad-bg)}
+tbody tr.c-due{border-left-color:var(--warn)}
+tbody tr.c-never{border-left-color:var(--border-strong)}
+.area code{color:var(--text)} .id code,.wt{color:var(--muted)}
+.when .ago{color:var(--muted)}
+.none{color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px 1px 6px;border-radius:20px;
+  font-size:11.5px;font-weight:600;border:1px solid currentColor}
+.pill .g{font-size:11px}
+.p-ok{color:var(--ok);background:var(--ok-bg)} .p-warn{color:var(--warn);background:var(--warn-bg)}
+.p-bad{color:var(--bad);background:var(--bad-bg)} .p-neutral{color:var(--muted);background:var(--surface2)}
+.fpill{display:inline-flex;align-items:center;gap:5px;margin:0 5px 3px 0;padding:1px 7px;border-radius:5px;
+  font-size:11px;border:1px solid currentColor;border-bottom-width:1px}
+.fpill .sabbr{font-weight:700;font-size:11px;letter-spacing:.04em}
+.s-bad{color:var(--bad);background:var(--bad-bg)} .s-warn{color:var(--warn);background:var(--warn-bg)}
+.s-neutral{color:var(--muted);background:var(--surface2)}
+.verify{font-size:11px}
+
+/* findings detail */
+.fd{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:8px}
+.fd-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.fd-meta{color:var(--muted);font-size:12px}
+.ev{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-top:7px}
+.ev-gone{color:var(--muted);font-style:italic;border-bottom:0}
+
+/* trends */
+.trends{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.tr{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.tr-hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.tr-name{font-size:12.5px;font-weight:600}
+.tr-goal{font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+.spark-wrap{display:flex;align-items:center;gap:10px;min-height:26px}
+.spark{color:var(--muted);flex:0 0 auto}
+.spark-val{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.spark-none{color:var(--muted);font-size:12px;font-style:italic}
+.delta{font-size:12px;font-weight:600}
+.tr-sub{margin:8px 0 0;color:var(--muted);font-size:11.5px}
+
+/* hygiene */
+.hyg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px}
+.hyg ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.hyg .ok{color:var(--muted)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+`;
+}
+function coverageHtml(input) {
+  if (!input.repos.length) {
+    return `<section class="blk">
+  <h2>Coverage</h2>
+  <p class="lane-off">No repos configured. Add one to <code>config.yml</code>.</p>
+</section>`;
+  }
+  const articles = input.repos.map((repo) => {
+    if (repo.read_error) {
+      return `<article class="repo" id="gap-${esc(repo.name)}">
+    <div class="repo-hd"><h3>${esc(repo.name)}</h3><span class="repo-run fail">unreadable</span></div>
+    <p class="lane-off"><strong class="t-bad">Cannot read this repo.</strong> <code>.nightshift/</code> is present at <code>${esc(repo.path ?? "?")}</code> but could not be parsed: <code>${esc(repo.read_error)}</code>. Every other repo on this page is unaffected.</p>
+  </article>`;
+    }
+    if (!repo.pack_present) {
+      return `<article class="repo" id="gap-${esc(repo.name)}">
+    <div class="repo-hd"><h3>${esc(repo.name)}</h3><span class="repo-run fail">pack missing</span></div>
+    <p class="lane-off"><strong class="t-bad">Cannot read this repo.</strong> <code>config.yml</code> points at <code>${esc(repo.path ?? "?")}</code>, but <code>.nightshift/</code> is not there. Either run <code>/nightshift:onboard</code> in that repo, or set <code>enabled: false</code> to stop showing this row.</p>
+  </article>`;
+    }
+    return `<article class="repo" id="${esc(repo.name)}">
+    <div class="repo-hd"><h3>${esc(repo.name)}</h3>
+      <span class="repo-run">${repoRunLine(repo)}</span></div>
+    ${repo.lanes.map((lane) => laneTableHtml(repo, lane, input.today)).join("\n    ")}
+  </article>`;
+  }).join("\n\n  ");
+  return `<section class="blk">
+  <h2>Coverage</h2>
+
+  ${articles}
+</section>`;
+}
+function verdictMeta(input) {
+  const repoCount = input.repos.length;
+  const laneCount = input.repos.filter((r) => r.pack_present).reduce((a, r) => a + r.lanes.filter((l) => l.state === "on").length, 0);
+  const anyRuns = input.repos.some((r) => r.run_records.length > 0);
+  const readable = input.repos.filter((r) => r.pack_present).length;
+  const base = `Dashboard rebuilt ${input.generated_at}`;
+  if (repoCount && readable < repoCount) {
+    return `${base} \xB7 ${repoCount} repo${repoCount === 1 ? "" : "s"} configured, ${readable} readable`;
+  }
+  const cover = `covering ${repoCount} repo${repoCount === 1 ? "" : "s"}, ${laneCount} lane${laneCount === 1 ? "" : "s"}`;
+  if (!anyRuns) return `${base} \xB7 ${cover} \xB7 no runs recorded yet`;
+  return `${base} \xB7 ${cover}`;
+}
+function dedupeCostsByRunId(input) {
+  return {
+    ...input,
+    repos: input.repos.map((r) => {
+      const best = /* @__PURE__ */ new Map();
+      for (const c of r.costs) {
+        const cur = best.get(c.run_id);
+        if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
+      }
+      return { ...r, costs: [...best.values()] };
+    })
+  };
+}
+function renderDashboard(rawInput) {
+  const input = dedupeCostsByRunId(rawInput);
+  const items = computeVerdict(input);
+  const trends = computeTrends(input);
+  const body = [
+    verdictHtml(items, verdictMeta(input)),
+    decisionsHtml(input),
+    coverageHtml(input),
+    findingsHtml(input),
+    trendsHtml(input, trends),
+    hygieneHtml(computeHygiene(input)),
+    footerHtml(input)
+  ].filter(Boolean).join("\n\n");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nightshift \u2014 dashboard</title>
+<style>${buildCss()}</style></head>
+<body><div class="page">${body}</div></body></html>`;
+}
+
+// src/lib/dashboard-cli.ts
+var LANES2 = ["security", "design"];
+function repoName(repo) {
+  if (repo.name && repo.name.length > 0) return repo.name;
+  const cleaned = String(repo.path ?? "").replace(/\/+$/, "");
+  return cleaned.slice(cleaned.lastIndexOf("/") + 1) || "unnamed";
+}
+function repoEnabled(repo) {
+  return repo.enabled !== false;
+}
+function laneEnabled(repo, lane) {
+  const lanes = repo.lanes;
+  if (lanes === void 0) return false;
+  if (Array.isArray(lanes)) return lanes.includes(lane);
+  const v2 = lanes[lane];
+  return v2 === true || v2 === "on";
+}
+function parseDigest(path, repo, runsSince, today) {
+  if (!existsSync3(path)) return null;
+  const text = readFileSync2(path, "utf8");
+  const genMatch = text.match(/^generated:\s*(.+)$/im);
+  const generated_at = genMatch ? genMatch[1].trim() : statSync(path).mtime.toISOString().slice(0, 16).replace("T", " ");
+  const genDate = generated_at.slice(0, 10);
+  const age_days = /^\d{4}-\d{2}-\d{2}/.test(genDate) ? Math.max(0, daysBetween(genDate, today)) : 0;
+  const lines = text.split("\n");
+  const decisionsIdx = lines.findIndex((l) => /^#+\s*decisions/i.test(l));
+  const scope = decisionsIdx === -1 ? lines : lines.slice(decisionsIdx + 1);
+  const items = [];
+  for (const line of scope) {
+    if (decisionsIdx !== -1 && /^#+\s/.test(line)) break;
+    const m = line.match(/^\s*[-*]\s+(.+)$/);
+    if (m) items.push(m[1].trim());
+  }
+  return {
+    repo,
+    generated_at,
+    runs_behind: runsSince,
+    age_days,
+    items: items.map((text2) => ({ text: text2, repo }))
+  };
+}
+function loadRunRecords(metricsDir) {
+  const runsDir = join3(metricsDir, "runs");
+  const out = [];
+  if (existsSync3(runsDir)) {
+    for (const shard of readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort()) {
+      out.push(...readJsonl(join3(runsDir, shard)));
+    }
+  }
+  return out;
+}
+function loadSuppressions(packDir, today) {
+  const doc = readYaml(
+    join3(packDir, "findings", "suppressions.yml")
+  );
+  return (doc?.suppressions ?? []).filter((s) => s.expires >= today);
+}
+function laneInput(packDir, lane, enabled) {
+  if (!enabled) return { lane, state: "disabled", entries: [] };
+  const registryPath = join3(
+    packDir,
+    "registries",
+    lane === "security" ? "vectors.yml" : "flows.yml"
+  );
+  const entries = existsSync3(registryPath) ? extractEntries(readYaml(registryPath), lane) : [];
+  if (lane === "design") {
+    const personas = existsSync3(join3(packDir, "fixtures", "personas.yml"));
+    const manifest = readYaml(join3(packDir, "manifest.yml"));
+    const baseUrl = manifest?.stack_adapter?.browser?.base_url;
+    if (!personas || !baseUrl) {
+      const missing = [
+        personas ? null : "`fixtures/personas.yml` is missing",
+        baseUrl ? null : "`stack_adapter.browser.base_url` is unset"
+      ].filter(Boolean).join(" and ");
+      return { lane, state: "not-ready", not_ready_reason: missing, entries };
+    }
+  }
+  return { lane, state: "on", entries };
+}
+function loadRepo(cfg, opsHome, today) {
+  const packDir = join3(cfg.path, ".nightshift");
+  if (!existsSync3(packDir)) {
+    return {
+      name: repoName(cfg),
+      path: cfg.path,
+      pack_present: false,
+      lanes: [],
+      findings: [],
+      suppressions: [],
+      run_records: [],
+      daily: [],
+      costs: []
+    };
+  }
+  const metricsDir = join3(packDir, "metrics");
+  const run_records = loadRunRecords(metricsDir);
+  const costs = readJsonl(join3(metricsDir, COSTS_FILENAME));
+  const daily = readJsonl(join3(metricsDir, "daily.jsonl"));
+  const lanesByEntryOwner = /* @__PURE__ */ new Map();
+  const lanes = LANES2.map((lane) => {
+    const li = laneInput(packDir, lane, laneEnabled(cfg, lane));
+    for (const e of li.entries) lanesByEntryOwner.set(e.id, lane);
+    return li;
+  });
+  const findings = openFindings(metricsDir).map((f) => {
+    const evidence = f.evidence;
+    const evidencePath = evidence ? isAbsolute(evidence) ? evidence : join3(opsHome, evidence) : void 0;
+    return {
+      ...f,
+      repo: repoName(cfg),
+      lane: lanesByEntryOwner.get(f.dedupe_key.surface) ?? (f.anchor ? "design" : "security"),
+      title: f.dedupe_key.symptom,
+      ...evidencePath ? { evidence_present: existsSync3(evidencePath) } : {},
+      age_days: f.first_seen ? Math.max(0, daysBetween(f.first_seen, today)) : void 0
+    };
+  });
+  return {
+    name: repoName(cfg),
+    path: cfg.path,
+    pack_present: true,
+    lanes,
+    findings,
+    suppressions: loadSuppressions(packDir, today),
+    run_records,
+    daily,
+    costs
+  };
+}
+function scanOrphanRunDirs(repos, now) {
+  const out = [];
+  for (const { cfg, input } of repos) {
+    if (!input.pack_present) continue;
+    const runDir = join3(cfg.path, ".nightshift", ".run");
+    if (!existsSync3(runDir)) continue;
+    for (const d of readdirSync2(runDir).sort()) {
+      const full = join3(runDir, d);
+      let age_days;
+      try {
+        age_days = Math.floor((now.getTime() - statSync(full).mtime.getTime()) / 864e5);
+      } catch {
+        continue;
+      }
+      if (age_days >= ORPHAN_AGE_DAYS) {
+        out.push({ path: `${repoName(cfg)}/.nightshift/.run/${d}/`, age_days });
+      }
+    }
+  }
+  return out;
+}
+function evidenceStats(opsHome, referenced) {
+  const evDir = join3(opsHome, "evidence");
+  if (!existsSync3(evDir)) return void 0;
+  let files = 0, bytes = 0, unreferenced = 0;
+  const walk = (dir, rel) => {
+    let names;
+    try {
+      names = readdirSync2(dir).sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const full = join3(dir, name);
+      const relPath = `${rel}${name}`;
+      let st;
+      try {
+        st = lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(full, `${relPath}/`);
+      else if (st.isFile()) {
+        files++;
+        bytes += st.size;
+        if (!referenced.has(`evidence/${relPath}`)) unreferenced++;
+      }
+    }
+  };
+  walk(evDir, "");
+  return { files, bytes, unreferenced };
+}
+function runDashboard(opts) {
+  if (!existsSync3(opts.configPath)) {
+    throw new Error(`config not found: ${opts.configPath}`);
+  }
+  const opsHome = dirname2(resolve(opts.configPath));
+  const config = readYaml(opts.configPath) ?? {};
+  const repoCfgs = config.repos ?? [];
+  const loaded = repoCfgs.filter((cfg) => repoEnabled(cfg)).map((cfg) => {
+    try {
+      return { cfg, input: loadRepo(cfg, opsHome, opts.today) };
+    } catch (err) {
+      return {
+        cfg,
+        input: {
+          name: repoName(cfg),
+          path: cfg.path,
+          pack_present: true,
+          read_error: err instanceof Error ? err.message : String(err),
+          lanes: [],
+          findings: [],
+          suppressions: [],
+          run_records: [],
+          daily: [],
+          costs: []
+        }
+      };
+    }
+  });
+  const digests = [];
+  for (const { cfg, input: input2 } of loaded) {
+    const digestPath = join3(opsHome, "digests", `${repoName(cfg)}.md`);
+    const digest = parseDigest(
+      digestPath,
+      repoName(cfg),
+      runsSinceDigest(digestPath, input2.run_records),
+      opts.today
+    );
+    if (digest) digests.push(digest);
+  }
+  const referenced = new Set(
+    loaded.flatMap(
+      ({ input: input2 }) => input2.findings.map((f) => f.evidence).filter((e) => !!e)
+    )
+  );
+  const input = {
+    generated_at: opts.generatedAt,
+    engine_version: opts.engineVersion,
+    today: opts.today,
+    repos: loaded.map((l) => l.input),
+    digests,
+    orphan_run_dirs: scanOrphanRunDirs(loaded, opts.now ?? /* @__PURE__ */ new Date()),
+    evidence_stats: evidenceStats(opsHome, referenced)
+  };
+  const html = renderDashboard(input);
+  atomicWrite(opts.outPath, html);
+  return { html, outPath: opts.outPath };
+}
+function runsSinceDigest(digestPath, runs) {
+  if (!existsSync3(digestPath)) return 0;
+  const mtime = statSync(digestPath).mtime.toISOString();
+  return runs.filter((r) => tsNewer(r.ts, mtime)).length;
+}
+
+// src/bin/dashboard.ts
+function defaultEngineVersion() {
+  try {
+    const pkgPath = join4(dirname3(fileURLToPath(import.meta.url)), "..", "package.json");
+    const pkg = JSON.parse(readFileSync3(pkgPath, "utf8"));
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const lane = args.lane ?? "security";
-  const ts = args.ts ?? (/* @__PURE__ */ new Date()).toISOString();
   const today = resolveToday(args);
-  const date = args.date ?? today;
+  const ts = args.ts ?? (/* @__PURE__ */ new Date()).toISOString();
+  const generatedAt = ts.slice(0, 16).replace("T", " ");
   try {
-    const res = runRollup({
-      registryPath: requireArg(args, "registry"),
-      metricsDir: requireArg(args, "metrics-dir"),
-      lane,
+    const res = runDashboard({
+      configPath: requireArg(args, "config"),
+      outPath: requireArg(args, "out"),
       today,
-      date,
-      ts
+      generatedAt,
+      engineVersion: args["engine-version"] ?? defaultEngineVersion()
     });
-    process.stderr.write(
-      `rollup: ${res.date} ${res.lane} freshness=${res.coverage_freshness_pct}% open=${res.open_findings}
-`
-    );
+    process.stderr.write(`dashboard: wrote ${res.outPath}
+`);
     process.exit(0);
   } catch (err) {
-    process.stderr.write(`rollup: ${err.message}
+    process.stderr.write(`dashboard: ${err.message}
 `);
     process.exit(2);
   }

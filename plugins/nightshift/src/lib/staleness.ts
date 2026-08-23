@@ -82,3 +82,17 @@ export function selectSurfaces(entries: RegistryEntry[], opts: SelectOpts): Surf
   if (opts.k <= 0) return [];
   return surfaces.slice(0, opts.k);
 }
+
+/** True when timestamp `a` is strictly newer than `b`.
+ *  Both are ISO-8601 instants in practice, but `--ts` is caller-supplied and the
+ *  schema only requires a non-empty string, so precision varies ("...:00Z" vs
+ *  "...:00.000Z"). A lexicographic compare misorders those against each other,
+ *  which silently picks the wrong "latest" row in every max-ts reduction. Fall
+ *  back to string order only when a value is not a parseable instant — a NaN
+ *  compare is always false, which would make the first row win unconditionally. */
+export function tsNewer(a: string, b: string): boolean {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
+  return ta > tb;
+}

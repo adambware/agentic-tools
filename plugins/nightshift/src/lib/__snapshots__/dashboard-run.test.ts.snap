@@ -1,0 +1,1235 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderDashboard snapshots > renders the all-clear fixture 1`] = `
+"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nightshift — dashboard</title>
+<style>
+:root{ --bg:#fbfbfa; --surface:#ffffff; --surface2:#f6f6f4; --text:#191918; --muted:#6c6c68; --border:#e4e4e0; --border-strong:#c9c9c3; --ok:#15703f; --ok-bg:#e8f5ed; --warn:#8a5a00; --warn-bg:#fdf3e0; --bad:#a41c1c; --bad-bg:#fdecec; --neutral:#5a5a75; --neutral-bg:#eeeef4; --act-bg:#fff8f0; --act-border:#e8b981; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+}
+:root[data-theme="dark"]{ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-variant-numeric:tabular-nums;}
+.page{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:inherit;text-decoration:none;border-bottom:1px solid var(--border-strong)}
+a:hover{border-bottom-color:currentColor}
+a:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:3px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-neutral{color:var(--muted)}
+.sep{color:var(--muted);margin:0 7px}
+
+/* verdict */
+.verdict{border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:0 0 26px;background:var(--surface)}
+.verdict.act{background:var(--act-bg);border-color:var(--act-border);border-left-width:4px}
+.verdict.clear{border-left:4px solid var(--ok)}
+.verdict h1{margin:0;font-size:21px;line-height:1.25;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+.v-mark{font-size:16px}
+.verdict.act .v-mark{color:var(--bad)} .verdict.clear .v-mark{color:var(--ok)}
+.v-list{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+.v-list li{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+.v-kind{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;min-width:92px}
+.v-meta{color:var(--muted);font-size:12.5px}
+.v-more{padding-left:101px;font-size:12.5px;color:var(--muted)}
+.v-sub{margin:14px 0 0;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+
+/* sections */
+section.blk{margin:0 0 30px}
+h2{font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   margin:0 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:0;letter-spacing:-.01em}
+h4{font-size:13px;margin:0 0 8px;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+
+/* decisions */
+.dec{list-style:none;margin:0;padding:0;counter-reset:d}
+.dec li{counter-increment:d;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px 12px 44px;margin-bottom:8px;position:relative}
+.dec li::before{content:counter(d);position:absolute;left:14px;top:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--surface2);border:1px solid var(--border-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--muted)}
+.dec .d-src{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.stale-note{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+  border-radius:7px;padding:9px 12px;margin:0 0 10px;font-size:12.5px}
+
+/* repo */
+.repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.repo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.repo-run{color:var(--muted);font-size:12.5px}
+.repo-run .fail{color:var(--bad);font-weight:600}
+.lane + .lane{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.lane-off{color:var(--muted);font-size:12.5px;margin:0;padding:9px 11px;background:var(--surface2);border-radius:6px}
+.tally{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border-strong)}
+tbody tr{border-left:3px solid transparent}
+tbody tr.c-overdue{border-left-color:var(--bad);background:var(--bad-bg)}
+tbody tr.c-due{border-left-color:var(--warn)}
+tbody tr.c-never{border-left-color:var(--border-strong)}
+.area code{color:var(--text)} .id code,.wt{color:var(--muted)}
+.when .ago{color:var(--muted)}
+.none{color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px 1px 6px;border-radius:20px;
+  font-size:11.5px;font-weight:600;border:1px solid currentColor}
+.pill .g{font-size:11px}
+.p-ok{color:var(--ok);background:var(--ok-bg)} .p-warn{color:var(--warn);background:var(--warn-bg)}
+.p-bad{color:var(--bad);background:var(--bad-bg)} .p-neutral{color:var(--muted);background:var(--surface2)}
+.fpill{display:inline-flex;align-items:center;gap:5px;margin:0 5px 3px 0;padding:1px 7px;border-radius:5px;
+  font-size:11px;border:1px solid currentColor;border-bottom-width:1px}
+.fpill .sabbr{font-weight:700;font-size:11px;letter-spacing:.04em}
+.s-bad{color:var(--bad);background:var(--bad-bg)} .s-warn{color:var(--warn);background:var(--warn-bg)}
+.s-neutral{color:var(--muted);background:var(--surface2)}
+.verify{font-size:11px}
+
+/* findings detail */
+.fd{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:8px}
+.fd-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.fd-meta{color:var(--muted);font-size:12px}
+.ev{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-top:7px}
+.ev-gone{color:var(--muted);font-style:italic;border-bottom:0}
+
+/* trends */
+.trends{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.tr{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.tr-hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.tr-name{font-size:12.5px;font-weight:600}
+.tr-goal{font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+.spark-wrap{display:flex;align-items:center;gap:10px;min-height:26px}
+.spark{color:var(--muted);flex:0 0 auto}
+.spark-val{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.spark-none{color:var(--muted);font-size:12px;font-style:italic}
+.delta{font-size:12px;font-weight:600}
+.tr-sub{margin:8px 0 0;color:var(--muted);font-size:11.5px}
+
+/* hygiene */
+.hyg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px}
+.hyg ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.hyg .ok{color:var(--muted)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+</style></head>
+<body><div class="page"><section class="verdict clear" aria-labelledby="v-h">
+      <h1 id="v-h"><span class="v-mark" aria-hidden="true">✓</span>Nothing needs you</h1>
+      <p class="v-sub">Dashboard rebuilt 2026-08-23 06:14 · covering 2 repos, 3 lanes</p>
+    </section>
+
+<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  
+  <ol class="dec"><li style="padding-left:14px" class="t-neutral">No decisions pending.
+      <span class="d-src">from digest · generated 2026-08-23 06:14</span></li></ol>
+  <style>.dec li:only-child::before{display:none}</style>
+</section>
+
+<section class="blk">
+  <h2>Coverage</h2>
+
+  <article class="repo" id="quillbase">
+    <div class="repo-hd"><h3>quillbase</h3>
+      <span class="repo-run">security ok 2026-08-23 06:12 · $3.90 &nbsp;·&nbsp; design ok 2026-08-23 06:11 · $3.90</span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 6 current</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-current">
+        <th scope="row" class="area"><code>app/Http/Controllers/Account*</code></th>
+        <td class="id"><code>ASVS-AUTH-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Billing/*</code></th>
+        <td class="id"><code>ASVS-SESS-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-21 <span class="ago">2d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Dispatch/*</code></th>
+        <td class="id"><code>QB-SEC-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Http/Middleware/*</code></th>
+        <td class="id"><code>ASVS-RATE-07</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-20 <span class="ago">3d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/TriageGate/*</code></th>
+        <td class="id"><code>QB-SEC-04</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-21 <span class="ago">2d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Webhooks/*</code></th>
+        <td class="id"><code>QB-SEC-06</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-18 <span class="ago">5d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane">
+    <h4>design lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 3 current</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase design lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-current">
+        <th scope="row" class="area"><code>/checkout (FLOW-01)</code></th>
+        <td class="id"><code>FLOW-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>/signup (FLOW-02)</code></th>
+        <td class="id"><code>FLOW-02</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-21 <span class="ago">2d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>/settings (FLOW-03)</code></th>
+        <td class="id"><code>FLOW-03</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-20 <span class="ago">3d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+  </article>
+
+  <article class="repo" id="novudesk">
+    <div class="repo-hd"><h3>novudesk</h3>
+      <span class="repo-run">security ok 2026-08-21 07:00 · $2.98 &nbsp;·&nbsp; design lane off</span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 3 current</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">novudesk security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-current">
+        <th scope="row" class="area"><code>app/controllers/sessions_controller.rb</code></th>
+        <td class="id"><code>ASVS-AUTH-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/services/triage_gate/*</code></th>
+        <td class="id"><code>ND-SEC-04</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-21 <span class="ago">2d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/services/triage_gate/review_queue.rb</code></th>
+        <td class="id"><code>ND-SEC-07</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-19 <span class="ago">4d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane"><h4>design lane</h4>
+      <p class="lane-off">Lane not enabled for this repo. Turn it on in <code>config.yml</code>.</p></div>
+  </article>
+</section>
+
+<section class="blk">
+  <h2>Trends <span style="font-weight:400;text-transform:none;letter-spacing:0">· last 30 days, 3 runs</span></h2>
+  <div class="trends">
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Coverage freshness</span><span class="tr-goal">higher is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-fresh" preserveAspectRatio="none">
+      <title id="sl-fresh">8 samples over 30 days, 88% to 96%</title>
+      <polyline points="3.0,21.0 13.4,16.5 27.2,14.3 44.5,9.8 54.9,7.5 72.2,5.3 86.1,3.0 93.0,3.0" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="21.0" r="1.4"/><circle cx="13.4" cy="16.5" r="1.4"/><circle cx="27.2" cy="14.3" r="1.4"/><circle cx="44.5" cy="9.8" r="1.4"/><circle cx="54.9" cy="7.5" r="1.4"/><circle cx="72.2" cy="5.3" r="1.4"/><circle cx="86.1" cy="3.0" r="1.4"/><circle cx="93.0" cy="3.0" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">96%</span>
+    <span class="delta t-neutral"><span aria-hidden="true">→</span>
+      <span class="vh">unchanged: </span>0pp</span>
+  </div><p class="tr-sub">Share of registry areas reviewed within their interval.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">False-positive rate (7d)</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-fpr" preserveAspectRatio="none">
+      <title id="sl-fpr">8 samples over 30 days, 18% to 12%</title>
+      <polyline points="3.0,3.0 13.4,9.0 27.2,12.0 44.5,15.0 54.9,18.0 72.2,18.0 86.1,21.0 93.0,21.0" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="3.0" r="1.4"/><circle cx="13.4" cy="9.0" r="1.4"/><circle cx="27.2" cy="12.0" r="1.4"/><circle cx="44.5" cy="15.0" r="1.4"/><circle cx="54.9" cy="18.0" r="1.4"/><circle cx="72.2" cy="18.0" r="1.4"/><circle cx="86.1" cy="21.0" r="1.4"/><circle cx="93.0" cy="21.0" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">12%</span>
+    <span class="delta t-neutral"><span aria-hidden="true">→</span>
+      <span class="vh">unchanged: </span>0pp</span>
+  </div><p class="tr-sub">Candidates refuted by Tier-1 + Tier-2, over findings created.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Cost per run</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-cost" preserveAspectRatio="none">
+      <title id="sl-cost">8 samples over 30 days, $3.90 to $3.90</title>
+      <polyline points="3.0,4.8 13.4,3.0 27.2,5.5 44.5,4.1 54.9,4.8 72.2,3.4 86.1,21.0 93.0,4.8" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="4.8" r="1.4"/><circle cx="13.4" cy="3.0" r="1.4"/><circle cx="27.2" cy="5.5" r="1.4"/><circle cx="44.5" cy="4.1" r="1.4"/><circle cx="54.9" cy="4.8" r="1.4"/><circle cx="72.2" cy="3.4" r="1.4"/><circle cx="86.1" cy="21.0" r="1.4"/><circle cx="93.0" cy="4.8" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">$3.90</span>
+    <span class="delta t-bad"><span aria-hidden="true">↑</span>
+      <span class="vh">worsening: </span>+$0.46</span>
+  </div><p class="tr-sub">30d total $38.16.</p></div>
+  </div>
+</section>
+
+<section class="blk" id="hygiene">
+  <h2>Hygiene</h2>
+  <div class="hyg">
+    <strong class="t-ok">✓ Nothing to clean up</strong>
+    <ul><li class="ok">No orphaned run dirs, no failed runs, every run has a cost line.</li>
+      <li class="ok">Evidence store: 0 files — no open findings reference evidence.</li></ul>
+  </div>
+</section>
+
+<footer>
+  <span>Generated 2026-08-23 06:14 by <code>bin/dashboard</code> · nightshift 3.0.0-dev · disposable projection, never committed</span>
+  <span>Cost: $18.61 (7d) · $38.16 (30d)</span>
+</footer></div></body></html>"
+`;
+
+exports[`renderDashboard snapshots > renders the cold-start fixture 1`] = `
+"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nightshift — dashboard</title>
+<style>
+:root{ --bg:#fbfbfa; --surface:#ffffff; --surface2:#f6f6f4; --text:#191918; --muted:#6c6c68; --border:#e4e4e0; --border-strong:#c9c9c3; --ok:#15703f; --ok-bg:#e8f5ed; --warn:#8a5a00; --warn-bg:#fdf3e0; --bad:#a41c1c; --bad-bg:#fdecec; --neutral:#5a5a75; --neutral-bg:#eeeef4; --act-bg:#fff8f0; --act-border:#e8b981; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+}
+:root[data-theme="dark"]{ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-variant-numeric:tabular-nums;}
+.page{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:inherit;text-decoration:none;border-bottom:1px solid var(--border-strong)}
+a:hover{border-bottom-color:currentColor}
+a:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:3px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-neutral{color:var(--muted)}
+.sep{color:var(--muted);margin:0 7px}
+
+/* verdict */
+.verdict{border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:0 0 26px;background:var(--surface)}
+.verdict.act{background:var(--act-bg);border-color:var(--act-border);border-left-width:4px}
+.verdict.clear{border-left:4px solid var(--ok)}
+.verdict h1{margin:0;font-size:21px;line-height:1.25;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+.v-mark{font-size:16px}
+.verdict.act .v-mark{color:var(--bad)} .verdict.clear .v-mark{color:var(--ok)}
+.v-list{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+.v-list li{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+.v-kind{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;min-width:92px}
+.v-meta{color:var(--muted);font-size:12.5px}
+.v-more{padding-left:101px;font-size:12.5px;color:var(--muted)}
+.v-sub{margin:14px 0 0;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+
+/* sections */
+section.blk{margin:0 0 30px}
+h2{font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   margin:0 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:0;letter-spacing:-.01em}
+h4{font-size:13px;margin:0 0 8px;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+
+/* decisions */
+.dec{list-style:none;margin:0;padding:0;counter-reset:d}
+.dec li{counter-increment:d;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px 12px 44px;margin-bottom:8px;position:relative}
+.dec li::before{content:counter(d);position:absolute;left:14px;top:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--surface2);border:1px solid var(--border-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--muted)}
+.dec .d-src{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.stale-note{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+  border-radius:7px;padding:9px 12px;margin:0 0 10px;font-size:12.5px}
+
+/* repo */
+.repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.repo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.repo-run{color:var(--muted);font-size:12.5px}
+.repo-run .fail{color:var(--bad);font-weight:600}
+.lane + .lane{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.lane-off{color:var(--muted);font-size:12.5px;margin:0;padding:9px 11px;background:var(--surface2);border-radius:6px}
+.tally{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border-strong)}
+tbody tr{border-left:3px solid transparent}
+tbody tr.c-overdue{border-left-color:var(--bad);background:var(--bad-bg)}
+tbody tr.c-due{border-left-color:var(--warn)}
+tbody tr.c-never{border-left-color:var(--border-strong)}
+.area code{color:var(--text)} .id code,.wt{color:var(--muted)}
+.when .ago{color:var(--muted)}
+.none{color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px 1px 6px;border-radius:20px;
+  font-size:11.5px;font-weight:600;border:1px solid currentColor}
+.pill .g{font-size:11px}
+.p-ok{color:var(--ok);background:var(--ok-bg)} .p-warn{color:var(--warn);background:var(--warn-bg)}
+.p-bad{color:var(--bad);background:var(--bad-bg)} .p-neutral{color:var(--muted);background:var(--surface2)}
+.fpill{display:inline-flex;align-items:center;gap:5px;margin:0 5px 3px 0;padding:1px 7px;border-radius:5px;
+  font-size:11px;border:1px solid currentColor;border-bottom-width:1px}
+.fpill .sabbr{font-weight:700;font-size:11px;letter-spacing:.04em}
+.s-bad{color:var(--bad);background:var(--bad-bg)} .s-warn{color:var(--warn);background:var(--warn-bg)}
+.s-neutral{color:var(--muted);background:var(--surface2)}
+.verify{font-size:11px}
+
+/* findings detail */
+.fd{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:8px}
+.fd-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.fd-meta{color:var(--muted);font-size:12px}
+.ev{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-top:7px}
+.ev-gone{color:var(--muted);font-style:italic;border-bottom:0}
+
+/* trends */
+.trends{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.tr{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.tr-hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.tr-name{font-size:12.5px;font-weight:600}
+.tr-goal{font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+.spark-wrap{display:flex;align-items:center;gap:10px;min-height:26px}
+.spark{color:var(--muted);flex:0 0 auto}
+.spark-val{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.spark-none{color:var(--muted);font-size:12px;font-style:italic}
+.delta{font-size:12px;font-weight:600}
+.tr-sub{margin:8px 0 0;color:var(--muted);font-size:11.5px}
+
+/* hygiene */
+.hyg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px}
+.hyg ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.hyg .ok{color:var(--muted)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+</style></head>
+<body><div class="page"><section class="verdict act" aria-labelledby="v-h">
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>1 thing needs you</h1>
+    <ul class="v-list">
+      <li>
+        <span class="v-kind t-neutral">first run</span>
+        <a href="#quillbase">quillbase is onboarded but has never been reviewed</a>
+        <span class="v-meta">3 security areas registered · run \`ns run quillbase security\` to start</span>
+      </li>
+      
+    </ul>
+    <p class="v-sub">Dashboard rebuilt 2026-08-23 09:02 · covering 1 repo, 1 lane · no runs recorded yet</p>
+  </section>
+
+<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  <p class="lane-off">No digest yet — the first digest is written after the first run (<code>ns digest quillbase</code>).</p>
+</section>
+
+<section class="blk">
+  <h2>Coverage</h2>
+
+  <article class="repo" id="quillbase">
+    <div class="repo-hd"><h3>quillbase</h3>
+      <span class="repo-run">never run</span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-neutral"><span aria-hidden="true">◇</span> 3 not yet reviewed</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-never">
+        <th scope="row" class="area"><code>app/Http/Controllers/Account*</code></th>
+        <td class="id"><code>QB-SEC-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-neutral">
+          <span class="g" aria-hidden="true">◇</span>not yet reviewed</span></td>
+        <td class="when"><span class="ago">never</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-never">
+        <th scope="row" class="area"><code>app/Services/Billing/*</code></th>
+        <td class="id"><code>QB-SEC-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-neutral">
+          <span class="g" aria-hidden="true">◇</span>not yet reviewed</span></td>
+        <td class="when"><span class="ago">never</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-never">
+        <th scope="row" class="area"><code>app/Http/Middleware/*</code></th>
+        <td class="id"><code>QB-SEC-03</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-neutral">
+          <span class="g" aria-hidden="true">◇</span>not yet reviewed</span></td>
+        <td class="when"><span class="ago">never</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane"><h4>design lane</h4>
+      <p class="lane-off">Enabled in <code>config.yml</code>, but the pack is not ready: <code>fixtures/personas.yml</code> is missing and <code>stack_adapter.browser.base_url</code> is unset. <code>ns</code> will refuse this lane until both exist.</p></div>
+  </article>
+</section>
+
+<section class="blk">
+  <h2>Trends</h2>
+  <div class="trends">
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Coverage freshness</span><span class="tr-goal">higher is better</span></div>
+  <div class="spark-wrap"><span class="spark-none">no data</span></div><p class="tr-sub">Starts after the first run.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">False-positive rate (7d)</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap"><span class="spark-none">no data</span></div><p class="tr-sub">Starts after the first run.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Cost per run</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap"><span class="spark-none">no data</span></div><p class="tr-sub">Starts after the first run.</p></div>
+  </div>
+</section>
+
+<section class="blk" id="hygiene">
+  <h2>Hygiene</h2>
+  <div class="hyg">
+    <strong class="t-ok">✓ Nothing to clean up</strong>
+    <ul><li class="ok">No runs yet.</li></ul>
+  </div>
+</section>
+
+<footer>
+  <span>Generated 2026-08-23 09:02 by <code>bin/dashboard</code> · nightshift 3.0.0-dev · disposable projection, never committed</span>
+  <span>Cost: no runs recorded</span>
+</footer></div></body></html>"
+`;
+
+exports[`renderDashboard snapshots > renders the degenerate fixture 1`] = `
+"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nightshift — dashboard</title>
+<style>
+:root{ --bg:#fbfbfa; --surface:#ffffff; --surface2:#f6f6f4; --text:#191918; --muted:#6c6c68; --border:#e4e4e0; --border-strong:#c9c9c3; --ok:#15703f; --ok-bg:#e8f5ed; --warn:#8a5a00; --warn-bg:#fdf3e0; --bad:#a41c1c; --bad-bg:#fdecec; --neutral:#5a5a75; --neutral-bg:#eeeef4; --act-bg:#fff8f0; --act-border:#e8b981; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+}
+:root[data-theme="dark"]{ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-variant-numeric:tabular-nums;}
+.page{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:inherit;text-decoration:none;border-bottom:1px solid var(--border-strong)}
+a:hover{border-bottom-color:currentColor}
+a:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:3px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-neutral{color:var(--muted)}
+.sep{color:var(--muted);margin:0 7px}
+
+/* verdict */
+.verdict{border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:0 0 26px;background:var(--surface)}
+.verdict.act{background:var(--act-bg);border-color:var(--act-border);border-left-width:4px}
+.verdict.clear{border-left:4px solid var(--ok)}
+.verdict h1{margin:0;font-size:21px;line-height:1.25;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+.v-mark{font-size:16px}
+.verdict.act .v-mark{color:var(--bad)} .verdict.clear .v-mark{color:var(--ok)}
+.v-list{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+.v-list li{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+.v-kind{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;min-width:92px}
+.v-meta{color:var(--muted);font-size:12.5px}
+.v-more{padding-left:101px;font-size:12.5px;color:var(--muted)}
+.v-sub{margin:14px 0 0;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+
+/* sections */
+section.blk{margin:0 0 30px}
+h2{font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   margin:0 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:0;letter-spacing:-.01em}
+h4{font-size:13px;margin:0 0 8px;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+
+/* decisions */
+.dec{list-style:none;margin:0;padding:0;counter-reset:d}
+.dec li{counter-increment:d;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px 12px 44px;margin-bottom:8px;position:relative}
+.dec li::before{content:counter(d);position:absolute;left:14px;top:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--surface2);border:1px solid var(--border-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--muted)}
+.dec .d-src{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.stale-note{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+  border-radius:7px;padding:9px 12px;margin:0 0 10px;font-size:12.5px}
+
+/* repo */
+.repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.repo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.repo-run{color:var(--muted);font-size:12.5px}
+.repo-run .fail{color:var(--bad);font-weight:600}
+.lane + .lane{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.lane-off{color:var(--muted);font-size:12.5px;margin:0;padding:9px 11px;background:var(--surface2);border-radius:6px}
+.tally{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border-strong)}
+tbody tr{border-left:3px solid transparent}
+tbody tr.c-overdue{border-left-color:var(--bad);background:var(--bad-bg)}
+tbody tr.c-due{border-left-color:var(--warn)}
+tbody tr.c-never{border-left-color:var(--border-strong)}
+.area code{color:var(--text)} .id code,.wt{color:var(--muted)}
+.when .ago{color:var(--muted)}
+.none{color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px 1px 6px;border-radius:20px;
+  font-size:11.5px;font-weight:600;border:1px solid currentColor}
+.pill .g{font-size:11px}
+.p-ok{color:var(--ok);background:var(--ok-bg)} .p-warn{color:var(--warn);background:var(--warn-bg)}
+.p-bad{color:var(--bad);background:var(--bad-bg)} .p-neutral{color:var(--muted);background:var(--surface2)}
+.fpill{display:inline-flex;align-items:center;gap:5px;margin:0 5px 3px 0;padding:1px 7px;border-radius:5px;
+  font-size:11px;border:1px solid currentColor;border-bottom-width:1px}
+.fpill .sabbr{font-weight:700;font-size:11px;letter-spacing:.04em}
+.s-bad{color:var(--bad);background:var(--bad-bg)} .s-warn{color:var(--warn);background:var(--warn-bg)}
+.s-neutral{color:var(--muted);background:var(--surface2)}
+.verify{font-size:11px}
+
+/* findings detail */
+.fd{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:8px}
+.fd-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.fd-meta{color:var(--muted);font-size:12px}
+.ev{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-top:7px}
+.ev-gone{color:var(--muted);font-style:italic;border-bottom:0}
+
+/* trends */
+.trends{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.tr{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.tr-hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.tr-name{font-size:12.5px;font-weight:600}
+.tr-goal{font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+.spark-wrap{display:flex;align-items:center;gap:10px;min-height:26px}
+.spark{color:var(--muted);flex:0 0 auto}
+.spark-val{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.spark-none{color:var(--muted);font-size:12px;font-style:italic}
+.delta{font-size:12px;font-weight:600}
+.tr-sub{margin:8px 0 0;color:var(--muted);font-size:11.5px}
+
+/* hygiene */
+.hyg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px}
+.hyg ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.hyg .ok{color:var(--muted)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+</style></head>
+<body><div class="page"><section class="verdict act" aria-labelledby="v-h">
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>2 things need you</h1>
+    <ul class="v-list">
+      <li>
+        <span class="v-kind t-bad">config gap</span>
+        <a href="#gap-novudesk">novudesk is configured but its .nightshift/ pack is missing</a>
+        <span class="v-meta">path ~/Developer/novudesk · nothing can be reviewed until it is onboarded</span>
+      </li><li>
+        <span class="v-kind t-warn">due</span>
+        <a href="#quillbase">QB-SEC-02 — Dispatch command replay handling</a>
+        <span class="v-meta">quillbase · critical weight · 7d since review (interval 7d)</span>
+      </li>
+      
+    </ul>
+    <p class="v-sub">Dashboard rebuilt 2026-08-23 06:14 · 2 repos configured, 1 readable</p>
+  </section>
+
+<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  <p class="stale-note">⚠ Digest is 9 days old (generated 2026-08-14 06:03, 4 runs ago). These decisions may already be resolved — run <code>ns digest quillbase</code> to refresh.</p>
+  <ol class="dec"><li>Verify <code>QB-SEC-02</code> — critical, awaiting human verification.
+      <span class="d-src">from digest · quillbase · generated 2026-08-14 06:03 (4 runs ago)</span></li></ol>
+</section>
+
+<section class="blk">
+  <h2>Coverage</h2>
+
+  <article class="repo" id="quillbase">
+    <div class="repo-hd"><h3>quillbase</h3>
+      <span class="repo-run">security ok 2026-08-23 06:12 · <span class="t-warn">cost not captured</span> &nbsp;·&nbsp; design lane off</span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 2 current</span><span class="sep">·</span><span class="t-warn"><span aria-hidden="true">◐</span> 1 due</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-due">
+        <th scope="row" class="area"><code>app/Services/Dispatch/*</code></th>
+        <td class="id"><code>QB-SEC-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-warn">
+          <span class="g" aria-hidden="true">◐</span>due</span></td>
+        <td class="when">2026-08-16 <span class="ago">7d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Http/Controllers/Account*</code></th>
+        <td class="id"><code>QB-SEC-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Webhooks/*</code></th>
+        <td class="id"><code>QB-SEC-03</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-10 <span class="ago">13d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane"><h4>design lane</h4>
+      <p class="lane-off">Lane not enabled for this repo. Turn it on in <code>config.yml</code>.</p></div>
+  </article>
+
+  <article class="repo" id="gap-novudesk">
+    <div class="repo-hd"><h3>novudesk</h3><span class="repo-run fail">pack missing</span></div>
+    <p class="lane-off"><strong class="t-bad">Cannot read this repo.</strong> <code>config.yml</code> points at <code>~/Developer/novudesk</code>, but <code>.nightshift/</code> is not there. Either run <code>/nightshift:onboard</code> in that repo, or set <code>enabled: false</code> to stop showing this row.</p>
+  </article>
+</section>
+
+<section class="blk">
+  <h2>Open findings</h2>
+  <div class="fd" id="f-quillbase--flow-01--form-reset-on-error--shared-error-state--19ncu2k">
+    <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>FLOW-01</span>
+      <strong>Checkout: card errors clear the whole form</strong>
+      <span class="fd-meta">quillbase · design · anchor: friction_delta +4 steps · first seen 2026-08-20</span></div>
+    <span class="ev ev-gone">📎 evidence no longer on disk (pruned or never copied) — the anchor value above still stands</span>
+  </div>
+</section>
+
+<section class="blk">
+  <h2>Trends <span style="font-weight:400;text-transform:none;letter-spacing:0">· last 30 days, 1 run</span></h2>
+  <div class="trends">
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Coverage freshness</span><span class="tr-goal">higher is better</span></div>
+  <div class="spark-wrap">
+      <span class="spark-val">67%</span>
+      <span class="spark-none">1 of 2 runs — trend starts next run</span>
+    </div><p class="tr-sub">Share of registry areas reviewed within their interval.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">False-positive rate (7d)</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap">
+      <span class="spark-val">20%</span>
+      <span class="spark-none">1 of 2 runs — trend starts next run</span>
+    </div><p class="tr-sub">Candidates refuted by Tier-1 + Tier-2, over findings created.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Cost per run</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap"><span class="spark-none">no data</span></div><p class="tr-sub">No run in the window captured a cost envelope.</p></div>
+  </div>
+</section>
+
+<section class="blk" id="hygiene">
+  <h2>Hygiene</h2>
+  <div class="hyg">
+    <strong class="t-bad">3 items need cleanup</strong>
+    <ul><li class="t-bad">1 configured repo unreadable — <code>novudesk</code> (pack missing)</li>
+      <li class="t-warn">1 run missing cost capture — <code>quillbase</code> 2026-08-23 (source: interactive, no JSON envelope)</li>
+      <li class="t-warn">1 open finding with missing evidence — <code>FLOW-01</code></li></ul>
+  </div>
+</section>
+
+<footer>
+  <span>Generated 2026-08-23 06:14 by <code>bin/dashboard</code> · nightshift 3.0.0-dev · disposable projection, never committed</span>
+  <span>Cost: <span class="t-warn">incomplete — 1 of 1 runs missing capture</span></span>
+</footer></div></body></html>"
+`;
+
+exports[`renderDashboard snapshots > renders the populated fixture 1`] = `
+"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nightshift — dashboard</title>
+<style>
+:root{ --bg:#fbfbfa; --surface:#ffffff; --surface2:#f6f6f4; --text:#191918; --muted:#6c6c68; --border:#e4e4e0; --border-strong:#c9c9c3; --ok:#15703f; --ok-bg:#e8f5ed; --warn:#8a5a00; --warn-bg:#fdf3e0; --bad:#a41c1c; --bad-bg:#fdecec; --neutral:#5a5a75; --neutral-bg:#eeeef4; --act-bg:#fff8f0; --act-border:#e8b981; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+}
+:root[data-theme="dark"]{ --bg:#141519; --surface:#1c1e23; --surface2:#22252b; --text:#e9e9e6; --muted:#9b9b96; --border:#2d3037; --border-strong:#454a54; --ok:#5fd08a; --ok-bg:#12291d; --warn:#e8b055; --warn-bg:#2c2213; --bad:#f28b8b; --bad-bg:#301818; --neutral:#a9a9c4; --neutral-bg:#232430; --act-bg:#241c12; --act-border:#7a5a2c; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-variant-numeric:tabular-nums;}
+.page{max-width:1080px;margin:0 auto;padding:28px 20px 64px}
+code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:inherit;text-decoration:none;border-bottom:1px solid var(--border-strong)}
+a:hover{border-bottom-color:currentColor}
+a:focus-visible,summary:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:3px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.t-ok{color:var(--ok)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-neutral{color:var(--muted)}
+.sep{color:var(--muted);margin:0 7px}
+
+/* verdict */
+.verdict{border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:0 0 26px;background:var(--surface)}
+.verdict.act{background:var(--act-bg);border-color:var(--act-border);border-left-width:4px}
+.verdict.clear{border-left:4px solid var(--ok)}
+.verdict h1{margin:0;font-size:21px;line-height:1.25;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+.v-mark{font-size:16px}
+.verdict.act .v-mark{color:var(--bad)} .verdict.clear .v-mark{color:var(--ok)}
+.v-list{list-style:none;margin:13px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+.v-list li{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+.v-kind{font-size:11px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;min-width:92px}
+.v-meta{color:var(--muted);font-size:12.5px}
+.v-more{padding-left:101px;font-size:12.5px;color:var(--muted)}
+.v-sub{margin:14px 0 0;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+
+/* sections */
+section.blk{margin:0 0 30px}
+h2{font-size:12px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   margin:0 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:0;letter-spacing:-.01em}
+h4{font-size:13px;margin:0 0 8px;display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+
+/* decisions */
+.dec{list-style:none;margin:0;padding:0;counter-reset:d}
+.dec li{counter-increment:d;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px 12px 44px;margin-bottom:8px;position:relative}
+.dec li::before{content:counter(d);position:absolute;left:14px;top:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--surface2);border:1px solid var(--border-strong);
+  display:grid;place-items:center;font-size:11px;font-weight:650;color:var(--muted)}
+.dec .d-src{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.stale-note{background:var(--warn-bg);border:1px solid var(--warn);color:var(--warn);
+  border-radius:7px;padding:9px 12px;margin:0 0 10px;font-size:12.5px}
+
+/* repo */
+.repo{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.repo-hd{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.repo-run{color:var(--muted);font-size:12.5px}
+.repo-run .fail{color:var(--bad);font-weight:600}
+.lane + .lane{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.lane-off{color:var(--muted);font-size:12.5px;margin:0;padding:9px 11px;background:var(--surface2);border-radius:6px}
+.tally{font-size:11.5px;font-weight:400;color:var(--muted)}
+
+.tbl-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border-strong)}
+tbody tr{border-left:3px solid transparent}
+tbody tr.c-overdue{border-left-color:var(--bad);background:var(--bad-bg)}
+tbody tr.c-due{border-left-color:var(--warn)}
+tbody tr.c-never{border-left-color:var(--border-strong)}
+.area code{color:var(--text)} .id code,.wt{color:var(--muted)}
+.when .ago{color:var(--muted)}
+.none{color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px 1px 6px;border-radius:20px;
+  font-size:11.5px;font-weight:600;border:1px solid currentColor}
+.pill .g{font-size:11px}
+.p-ok{color:var(--ok);background:var(--ok-bg)} .p-warn{color:var(--warn);background:var(--warn-bg)}
+.p-bad{color:var(--bad);background:var(--bad-bg)} .p-neutral{color:var(--muted);background:var(--surface2)}
+.fpill{display:inline-flex;align-items:center;gap:5px;margin:0 5px 3px 0;padding:1px 7px;border-radius:5px;
+  font-size:11px;border:1px solid currentColor;border-bottom-width:1px}
+.fpill .sabbr{font-weight:700;font-size:11px;letter-spacing:.04em}
+.s-bad{color:var(--bad);background:var(--bad-bg)} .s-warn{color:var(--warn);background:var(--warn-bg)}
+.s-neutral{color:var(--muted);background:var(--surface2)}
+.verify{font-size:11px}
+
+/* findings detail */
+.fd{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:8px}
+.fd-hd{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+.fd-meta{color:var(--muted);font-size:12px}
+.ev{display:inline-flex;gap:5px;align-items:center;font-size:12px;margin-top:7px}
+.ev-gone{color:var(--muted);font-style:italic;border-bottom:0}
+
+/* trends */
+.trends{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.tr{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.tr-hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.tr-name{font-size:12.5px;font-weight:600}
+.tr-goal{font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+.spark-wrap{display:flex;align-items:center;gap:10px;min-height:26px}
+.spark{color:var(--muted);flex:0 0 auto}
+.spark-val{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.spark-none{color:var(--muted);font-size:12px;font-style:italic}
+.delta{font-size:12px;font-weight:600}
+.tr-sub{margin:8px 0 0;color:var(--muted);font-size:11.5px}
+
+/* hygiene */
+.hyg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px}
+.hyg ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.hyg .ok{color:var(--muted)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+</style></head>
+<body><div class="page"><section class="verdict act" aria-labelledby="v-h">
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>6 things need you</h1>
+    <ul class="v-list">
+      <li>
+        <span class="v-kind t-bad">verify</span>
+        <a href="#f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">QB-SEC-02 — Command replay exposure on dispatch endpoints</a>
+        <span class="v-meta">quillbase · critical · awaiting your verification · 6d open</span>
+      </li><li>
+        <span class="v-kind t-bad">run failed</span>
+        <a href="#hygiene">quillbase design run failed 2026-08-23</a>
+        <span class="v-meta">api_error · coverage did not advance</span>
+      </li><li>
+        <span class="v-kind t-bad">overdue</span>
+        <a href="#quillbase">QB-SEC-04 — Triage Gate prompt injection surface</a>
+        <span class="v-meta">quillbase · high weight · 57d since review (interval 14d)</span>
+      </li><li>
+        <span class="v-kind t-bad">overdue</span>
+        <a href="#novudesk">ND-SEC-07 — Triage Gate review queue output handling</a>
+        <span class="v-meta">novudesk · medium weight · 62d since review (interval 30d)</span>
+      </li>
+      <li class="v-more"><a href="#decisions">and 2 more below</a></li>
+    </ul>
+    <p class="v-sub">Dashboard rebuilt 2026-08-23 06:14 · covering 2 repos, 3 lanes</p>
+  </section>
+
+<section class="blk" id="decisions">
+  <h2>Decisions needed</h2>
+  
+  <ol class="dec"><li>Verify and prioritise <code>QB-SEC-02</code> (dispatch endpoint command replay) — critical, awaiting human verification since 2026-08-17.
+      <span class="d-src">from digest · quillbase · generated 2026-08-23 06:14 (this run)</span></li><li>Decide whether the Triage Gate cluster gets a focused pass — <code>QB-SEC-04</code> overdue 57d and the LLM-content surface is the thinnest-covered area across both repos.
+      <span class="d-src">from digest · quillbase · generated 2026-08-23 06:14 (this run)</span></li><li>Approve or reject 2 proposed registry entries from gardening (<code>app/services/export/*</code>, <code>app/jobs/*</code>).
+      <span class="d-src">from digest · novudesk · generated 2026-08-21 07:02 (2 runs ago)</span></li></ol>
+</section>
+
+<section class="blk">
+  <h2>Coverage</h2>
+
+  <article class="repo" id="quillbase">
+    <div class="repo-hd"><h3>quillbase</h3>
+      <span class="repo-run">security ok 2026-08-23 06:12 · $4.61 &nbsp;·&nbsp; <span class="fail">design FAILED 2026-08-23 03:40 (api_error)</span></span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 4 current</span><span class="sep">·</span><span class="t-warn"><span aria-hidden="true">◐</span> 1 due</span><span class="sep">·</span><span class="t-bad"><span aria-hidden="true">▲</span> 1 overdue</span>
+        <span class="sep">·</span><span class="t-bad">● 2 open findings</span>
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-overdue">
+        <th scope="row" class="area"><code>app/Services/TriageGate/*</code></th>
+        <td class="id"><code>QB-SEC-04</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-bad">
+          <span class="g" aria-hidden="true">▲</span>overdue</span></td>
+        <td class="when">2026-06-27 <span class="ago">57d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-due">
+        <th scope="row" class="area"><code>app/Http/Middleware/*</code></th>
+        <td class="id"><code>ASVS-RATE-07</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-warn">
+          <span class="g" aria-hidden="true">◐</span>due</span></td>
+        <td class="when">2026-08-09 <span class="ago">14d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Http/Controllers/Account*</code></th>
+        <td class="id"><code>ASVS-AUTH-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Billing/*</code></th>
+        <td class="id"><code>ASVS-SESS-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-21 <span class="ago">2d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Dispatch/*</code></th>
+        <td class="id"><code>QB-SEC-02</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-22 <span class="ago">1d</span></td>
+        <td class="find"><a class="fpill s-bad" href="#f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">
+            <span class="sabbr">CRIT</span>QB-SEC-02<span class="verify" title="needs human verification">✋</span></a></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/Services/Webhooks/*</code></th>
+        <td class="id"><code>QB-SEC-06</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-18 <span class="ago">5d</span></td>
+        <td class="find"><a class="fpill s-warn" href="#f-quillbase--qb-sec-06--webhook-accepts-signatures-well-past-i-14uyua3">
+            <span class="sabbr">MED</span>QB-SEC-06</a></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane">
+    <h4>design lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 1 current</span><span class="sep">·</span><span class="t-neutral"><span aria-hidden="true">◇</span> 2 not yet reviewed</span>
+        <span class="sep">·</span><span class="t-bad">● 1 open finding</span>
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">quillbase design lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-never">
+        <th scope="row" class="area"><code>/signup (FLOW-02)</code></th>
+        <td class="id"><code>FLOW-02</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-neutral">
+          <span class="g" aria-hidden="true">◇</span>not yet reviewed</span></td>
+        <td class="when"><span class="ago">never</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-never">
+        <th scope="row" class="area"><code>/settings (FLOW-03)</code></th>
+        <td class="id"><code>FLOW-03</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-neutral">
+          <span class="g" aria-hidden="true">◇</span>not yet reviewed</span></td>
+        <td class="when"><span class="ago">never</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>/checkout (FLOW-01)</code></th>
+        <td class="id"><code>FLOW-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-20 <span class="ago">3d</span></td>
+        <td class="find"><a class="fpill s-warn" href="#f-quillbase--flow-01--card-errors-clear-the-entire-checkout-fo-1bg0a32">
+            <span class="sabbr">MED</span>FLOW-01</a></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+  </article>
+
+  <article class="repo" id="novudesk">
+    <div class="repo-hd"><h3>novudesk</h3>
+      <span class="repo-run">security ok 2026-08-21 07:00 · $2.98 &nbsp;·&nbsp; design lane off</span></div>
+    <div class="lane">
+    <h4>security lane
+      <span class="tally"><span class="t-ok"><span aria-hidden="true">✓</span> 1 current</span><span class="sep">·</span><span class="t-warn"><span aria-hidden="true">◐</span> 1 due</span><span class="sep">·</span><span class="t-bad"><span aria-hidden="true">▲</span> 1 overdue</span>
+        
+      </span>
+    </h4>
+    <div class="tbl-scroll">
+    <table>
+      <caption class="vh">novudesk security lane coverage by registry area</caption>
+      <thead><tr>
+        <th scope="col">Area</th><th scope="col">Id</th><th scope="col">Weight</th>
+        <th scope="col">Coverage</th><th scope="col">Last reviewed</th><th scope="col">Open findings</th>
+      </tr></thead>
+      <tbody>
+      <tr class="c-overdue">
+        <th scope="row" class="area"><code>app/services/triage_gate/review_queue.rb</code></th>
+        <td class="id"><code>ND-SEC-07</code></td>
+        <td class="wt">medium</td>
+        <td class="cov"><span class="pill p-bad">
+          <span class="g" aria-hidden="true">▲</span>overdue</span></td>
+        <td class="when">2026-06-22 <span class="ago">62d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-due">
+        <th scope="row" class="area"><code>app/services/triage_gate/*</code></th>
+        <td class="id"><code>ND-SEC-04</code></td>
+        <td class="wt">high</td>
+        <td class="cov"><span class="pill p-warn">
+          <span class="g" aria-hidden="true">◐</span>due</span></td>
+        <td class="when">2026-08-05 <span class="ago">18d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr><tr class="c-current">
+        <th scope="row" class="area"><code>app/controllers/sessions_controller.rb</code></th>
+        <td class="id"><code>ASVS-AUTH-01</code></td>
+        <td class="wt">critical</td>
+        <td class="cov"><span class="pill p-ok">
+          <span class="g" aria-hidden="true">✓</span>current</span></td>
+        <td class="when">2026-08-19 <span class="ago">4d</span></td>
+        <td class="find"><span class="none">—</span></td>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+    <div class="lane"><h4>design lane</h4>
+      <p class="lane-off">Lane not enabled for this repo. Turn it on in <code>config.yml</code>.</p></div>
+  </article>
+</section>
+
+<section class="blk">
+  <h2>Open findings</h2>
+  <div class="fd" id="f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">
+    <div class="fd-hd"><span class="fpill s-bad"><span class="sabbr">CRIT</span>QB-SEC-02</span>
+      <strong>Command replay exposure on dispatch endpoints</strong>
+      <span class="fd-meta">quillbase · security · high confidence · first seen 2026-08-17 (6d, no movement)</span></div>
+    <p class="fd-meta">✋ Needs human verification · not yet filed to Linear</p>
+  </div><div class="fd" id="f-quillbase--flow-01--card-errors-clear-the-entire-checkout-fo-1bg0a32">
+    <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>FLOW-01</span>
+      <strong>Checkout: card errors clear the whole form</strong>
+      <span class="fd-meta">quillbase · design · anchor: friction_delta +4 steps · first seen 2026-08-20</span></div>
+    <a class="ev" href="evidence/quillbase/f3a91c02.png">📎 evidence: f3a91c02.png</a>
+  </div><div class="fd" id="f-quillbase--qb-sec-06--webhook-accepts-signatures-well-past-i-14uyua3">
+    <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>QB-SEC-06</span>
+      <strong>Webhook signature window too permissive</strong>
+      <span class="fd-meta">quillbase · security · medium confidence · filed QB-318 · first seen 2026-08-10</span></div>
+    
+  </div><p class="fd-meta" style="margin-top:10px">1 active suppression: <code>QB-SEC-03</code> redirect re-validation, expires 2026-09-15 (QB-291)</p>
+</section>
+
+<section class="blk">
+  <h2>Trends <span style="font-weight:400;text-transform:none;letter-spacing:0">· last 30 days, 9 runs</span></h2>
+  <div class="trends">
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Coverage freshness</span><span class="tr-goal">higher is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-fresh" preserveAspectRatio="none">
+      <title id="sl-fresh">8 samples over 30 days, 71% to 88%</title>
+      <polyline points="3.0,21.0 13.4,17.8 27.2,17.8 44.5,12.5 54.9,8.3 72.2,10.4 86.1,5.1 93.0,3.0" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="21.0" r="1.4"/><circle cx="13.4" cy="17.8" r="1.4"/><circle cx="27.2" cy="17.8" r="1.4"/><circle cx="44.5" cy="12.5" r="1.4"/><circle cx="54.9" cy="8.3" r="1.4"/><circle cx="72.2" cy="10.4" r="1.4"/><circle cx="86.1" cy="5.1" r="1.4"/><circle cx="93.0" cy="3.0" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">88%</span>
+    <span class="delta t-ok"><span aria-hidden="true">↑</span>
+      <span class="vh">improving: </span>+2pp</span>
+  </div><p class="tr-sub">Share of registry areas reviewed within their interval.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">False-positive rate (7d)</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-fpr" preserveAspectRatio="none">
+      <title id="sl-fpr">8 samples over 30 days, 31% to 29%</title>
+      <polyline points="3.0,3.0 13.4,7.5 27.2,13.5 44.5,16.5 54.9,21.0 72.2,13.5 86.1,10.5 93.0,6.0" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="3.0" r="1.4"/><circle cx="13.4" cy="7.5" r="1.4"/><circle cx="27.2" cy="13.5" r="1.4"/><circle cx="44.5" cy="16.5" r="1.4"/><circle cx="54.9" cy="21.0" r="1.4"/><circle cx="72.2" cy="13.5" r="1.4"/><circle cx="86.1" cy="10.5" r="1.4"/><circle cx="93.0" cy="6.0" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">29%</span>
+    <span class="delta t-bad"><span aria-hidden="true">↑</span>
+      <span class="vh">worsening: </span>+3pp</span>
+  </div><p class="tr-sub">Candidates refuted by Tier-1 + Tier-2, over findings created.</p></div>
+    <div class="tr">
+  <div class="tr-hd"><span class="tr-name">Cost per run</span><span class="tr-goal">lower is better</span></div>
+  <div class="spark-wrap">
+    <svg class="spark" viewBox="0 0 96 24" width="96" height="24"
+         role="img" aria-labelledby="sl-cost" preserveAspectRatio="none">
+      <title id="sl-cost">8 samples over 30 days, $1.84 to $4.61</title>
+      <polyline points="3.0,21.0 13.4,19.3 27.2,20.2 44.5,10.7 54.9,7.7 72.2,6.2 86.1,10.1 93.0,3.0" fill="none" stroke="currentColor" stroke-width="1.25"
+                stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+      <g fill="currentColor"><circle cx="3.0" cy="21.0" r="1.4"/><circle cx="13.4" cy="19.3" r="1.4"/><circle cx="27.2" cy="20.2" r="1.4"/><circle cx="44.5" cy="10.7" r="1.4"/><circle cx="54.9" cy="7.7" r="1.4"/><circle cx="72.2" cy="6.2" r="1.4"/><circle cx="86.1" cy="10.1" r="1.4"/><circle cx="93.0" cy="3.0" r="1.4"/></g>
+    </svg>
+    <span class="spark-val">$4.61</span>
+    <span class="delta t-bad"><span aria-hidden="true">↑</span>
+      <span class="vh">worsening: </span>+$1.10</span>
+  </div><p class="tr-sub">30d total $29.58.</p></div>
+  </div>
+</section>
+
+<section class="blk" id="hygiene">
+  <h2>Hygiene</h2>
+  <div class="hyg">
+    <strong class="t-bad">2 items need cleanup</strong>
+    <ul><li class="t-bad">1 failed run kept for diagnosis — <code>quillbase/.nightshift/.run/20260823-0340-design-quillbase/</code> (api_error, 2026-08-23)</li>
+      <li class="t-warn">1 orphaned run dir older than 7 days — <code>novudesk/.nightshift/.run/20260812-0700-security/</code></li>
+      <li class="ok">Evidence store: 4 files, 1.2 MB, all referenced by open findings.</li></ul>
+  </div>
+</section>
+
+<footer>
+  <span>Generated 2026-08-23 06:14 by <code>bin/dashboard</code> · nightshift 3.0.0-dev · disposable projection, never committed</span>
+  <span>Cost: $16.38 (7d) · $29.58 (30d)</span>
+</footer></div></body></html>"
+`;

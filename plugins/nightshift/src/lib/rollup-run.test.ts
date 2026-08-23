@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeDailyRollup, type RollupInput } from "./rollup-run.js";
@@ -434,5 +434,230 @@ describe("runRollup (cli integration)", () => {
         ts: "2026-06-21T07:00:00Z",
       }),
     ).toThrow(/registry not found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost windows (v3 A2) — cost_usd_7d / cost_usd_30d / cost_usd_avg_per_run_30d
+// ---------------------------------------------------------------------------
+
+function makeCost(
+  date: string,
+  usd: number,
+  status: "ok" | "error" = "ok",
+  lane: Lane = "security",
+): import("./types.js").CostRecord {
+  return {
+    run_id: `run-${date}-${lane}-${usd}`,
+    lane,
+    date,
+    ts: `${date}T07:00:00Z`,
+    usd,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status,
+    ...(status === "error" ? { terminal_reason: "api_error" } : {}),
+  };
+}
+
+describe("computeDailyRollup — cost windows", () => {
+  it("omitted costRecords yields zero sums and a null average (additive default)", () => {
+    const result = computeDailyRollup(baseInput());
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_30d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("windows are trailing and inclusive: day-6 is in the 7d window, day-7 is out", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-15", 1.0), // 6 days back -> in 7d
+          makeCost("2026-06-14", 2.0), // 7 days back -> out of 7d, in 30d
+          makeCost("2026-05-23", 4.0), // 29 days back -> in 30d
+          makeCost("2026-05-22", 8.0), // 30 days back -> out of 30d
+          makeCost("2026-06-22", 16.0), // future -> out of every window
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(7.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(7.0 / 3, 4);
+  });
+
+  it("error rows count in the sums but are excluded from the per-run average", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.5),
+          makeCost("2026-06-19", 0, "error"),
+          makeCost("2026-06-18", 2.5),
+        ],
+      }),
+    );
+    // Sums include the error row's usd (honest total spend).
+    expect(result.cost_usd_7d).toBeCloseTo(4.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(4.0, 4);
+    // Average is over ok rows only: (1.5 + 2.5) / 2 — the $0 error row must not
+    // drag it down to 1.33.
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(2.0, 4);
+  });
+
+  it("a window with only error rows averages to null, not 0", () => {
+    const result = computeDailyRollup(
+      baseInput({ date: "2026-06-21", costRecords: [makeCost("2026-06-20", 0, "error")] }),
+    );
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("filters cost records to the rollup's lane", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        lane: "security",
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.0, "ok", "security"),
+          makeCost("2026-06-20", 100.0, "ok", "design"),
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(1.0, 4);
+  });
+});
+
+/* ---------- runRollup validates on the way in AND on the way out ---------- */
+
+// A malformed costs.jsonl row used to sum to NaN, serialize to null in
+// daily.jsonl, and reach the dashboard with no error anywhere. Both gates are
+// pinned here: the read-side one names the offending line, the write-side one
+// refuses to put a non-finite rollup into the stateful path at all.
+describe("runRollup — validation gates around costs.jsonl", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ns-rollup-gate-"));
+    mkdirSync(join(dir, "metrics"), { recursive: true });
+    writeFileSync(
+      join(dir, "vectors.yml"),
+      "vectors:\n  - id: V1\n    weight: low\n    interval_days: 90\n    last_reviewed: null\n",
+    );
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const rollupOpts = () => ({
+    registryPath: join(dir, "vectors.yml"),
+    metricsDir: join(dir, "metrics"),
+    lane: "security" as Lane,
+    date: "2026-06-21",
+    ts: "2026-06-21T07:00:00Z",
+    today: "2026-06-21",
+    outPath: join(dir, "metrics", "daily.jsonl"),
+  });
+
+  it("a cost row missing `usd` aborts, naming the file and line", () => {
+    writeFileSync(
+      join(dir, "metrics", "costs.jsonl"),
+      JSON.stringify({
+        run_id: "r1",
+        lane: "security",
+        date: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        source: "manual",
+        status: "ok",
+      }) + "\n",
+    );
+    expect(() => runRollup(rollupOpts())).toThrow(/costs\.jsonl:1: invalid cost-record/);
+  });
+
+  it("nothing is appended to daily.jsonl when the cost gate fires", () => {
+    writeFileSync(join(dir, "metrics", "costs.jsonl"), '{"run_id":"r1","lane":"security"}\n');
+    expect(() => runRollup(rollupOpts())).toThrow();
+    expect(existsSync(join(dir, "metrics", "daily.jsonl"))).toBe(false);
+  });
+
+  it("a clean costs.jsonl still rolls up and appends normally", () => {
+    writeFileSync(
+      join(dir, "metrics", "costs.jsonl"),
+      JSON.stringify(makeCost("2026-06-20", 1.5)) + "\n",
+    );
+    const out = runRollup(rollupOpts());
+    expect(out.cost_usd_7d).toBeCloseTo(1.5, 4);
+    expect(existsSync(join(dir, "metrics", "daily.jsonl"))).toBe(true);
+  });
+});
+
+/* ---------- cost rows are deduped per run_id before aggregation ---------- */
+
+// costs.jsonl is append-only, so a retried `record-cost` writes a SECOND row
+// for the same run. Summing both bills one run twice and inflates every window
+// with no error anywhere — the silent-overcount mirror of the silent-undercount
+// the is_error gate exists to prevent.
+describe("computeDailyRollup — duplicate run_id (retry replay)", () => {
+  it("counts a replayed run once, not twice", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME" },
+          { ...makeCost("2026-06-20", 5), run_id: "SAME" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(5, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(5, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(5, 4);
+  });
+
+  it("keeps the max-ts row when a replay carries a corrected amount", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME", ts: "2026-06-20T06:00:00Z" },
+          { ...makeCost("2026-06-20", 9), run_id: "SAME", ts: "2026-06-20T18:00:00Z" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(9, 4);
+  });
+
+  // A retry stamped by bin/record-cost carries toISOString() milliseconds; the
+  // row it corrects may have been written at second precision. Lexicographically
+  // "…:00.500Z" < "…:00Z" ('.' sorts below 'Z'), so a string compare picks the
+  // SUPERSEDED amount and the corrected spend never lands in the window.
+  it("keeps the max-ts row when the two rows differ in timestamp precision", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME", ts: "2026-06-20T18:00:00Z" },
+          { ...makeCost("2026-06-20", 9), run_id: "SAME", ts: "2026-06-20T18:00:00.500Z" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(9, 4);
+  });
+
+  it("distinct run_ids on the same day still both count", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "A" },
+          { ...makeCost("2026-06-20", 5), run_id: "B" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(10, 4);
   });
 });

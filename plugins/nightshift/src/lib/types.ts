@@ -128,7 +128,29 @@ export interface RunMeta {
   elapsed: number | string;
 }
 
+// schemas/cost-record.yml — one line per run in metrics/costs.jsonl (append-only,
+// separate from runs/<YYYY-MM>.jsonl; readers join on run_id). status gates on the
+// CLI envelope's is_error ONLY — a failed run reports subtype:"success" next to
+// is_error:true, so subtype must never be consulted.
+export type CostSource = "cli-json" | "manual";
+export type CostStatus = "ok" | "error";
+export interface CostRecord {
+  run_id: string;
+  lane: Lane;
+  date: string;
+  ts: string;
+  usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  source: CostSource;
+  status: CostStatus;
+  terminal_reason?: string; // present iff status === "error"
+}
+
 // schemas/daily-metrics.yml — one rollup per (date, lane).
+// cost_* fields are additive (pack_format stays 1); older lines omit them.
 export interface DailyMetrics {
   date: string;
   lane: Lane;
@@ -143,6 +165,9 @@ export interface DailyMetrics {
   median_staleness_ratio: number;
   fpr_7d: number | null;
   fpr_30d: number | null;
+  cost_usd_7d?: number;
+  cost_usd_30d?: number;
+  cost_usd_avg_per_run_30d?: number | null;
 }
 
 // Monotonic weight multiplier: weight breaks ties and amplifies priority.
