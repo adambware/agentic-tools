@@ -7505,6 +7505,12 @@ function computeStaleness(entry, today) {
   const elapsed = daysBetween(entry.last_reviewed, today);
   return elapsed / intervalDays(entry);
 }
+function tsNewer(a, b) {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
+  return ta > tb;
+}
 
 // src/lib/rollup-run.ts
 function median(values) {
@@ -7539,7 +7545,7 @@ function dedupeByRunId(costs) {
   const best = /* @__PURE__ */ new Map();
   for (const c of costs) {
     const cur = best.get(c.run_id);
-    if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+    if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
   }
   return [...best.values()];
 }
@@ -7751,13 +7757,13 @@ function validateDailyMetrics(x) {
   ])
     reqNum(x, k, errors, "daily-metrics");
   for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && typeof x[k] !== "number")
-      errors.push(`daily-metrics: ${k} must be a number or null`);
+    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number or null`);
   for (const k of ["cost_usd_7d", "cost_usd_30d"])
     if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
       errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && typeof x.cost_usd_avg_per_run_30d !== "number")
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a number or null");
+  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
+    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
   return finish(errors);
 }
 function validateCostRecord(x) {

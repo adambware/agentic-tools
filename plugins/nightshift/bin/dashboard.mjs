@@ -7634,13 +7634,13 @@ function validateDailyMetrics(x) {
   ])
     reqNum(x, k, errors, "daily-metrics");
   for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && typeof x[k] !== "number")
-      errors.push(`daily-metrics: ${k} must be a number or null`);
+    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number or null`);
   for (const k of ["cost_usd_7d", "cost_usd_30d"])
     if (x[k] !== void 0 && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
       errors.push(`daily-metrics: ${k} must be a finite number`);
-  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && typeof x.cost_usd_avg_per_run_30d !== "number")
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a number or null");
+  if (x.cost_usd_avg_per_run_30d !== void 0 && x.cost_usd_avg_per_run_30d !== null && (typeof x.cost_usd_avg_per_run_30d !== "number" || !Number.isFinite(x.cost_usd_avg_per_run_30d)))
+    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
   return finish(errors);
 }
 function validateCostRecord(x) {
@@ -7729,6 +7729,12 @@ function computeStaleness(entry, today) {
   if (!entry.last_reviewed) return MAX_STALENESS;
   const elapsed = daysBetween(entry.last_reviewed, today);
   return elapsed / intervalDays(entry);
+}
+function tsNewer(a, b) {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
+  return ta > tb;
 }
 
 // src/lib/dashboard-run.ts
@@ -7892,17 +7898,17 @@ function latestFailedRuns(repo) {
   const byLane = /* @__PURE__ */ new Map();
   for (const c of repo.costs) {
     const cur = byLane.get(c.lane);
-    if (!cur || c.ts > cur.ts) byLane.set(c.lane, c);
+    if (!cur || tsNewer(c.ts, cur.ts)) byLane.set(c.lane, c);
   }
   const newestRunByLane = /* @__PURE__ */ new Map();
   for (const r of repo.run_records) {
     const cur = newestRunByLane.get(r.lane);
-    if (!cur || r.ts > cur) newestRunByLane.set(r.lane, r.ts);
+    if (!cur || tsNewer(r.ts, cur)) newestRunByLane.set(r.lane, r.ts);
   }
   return [...byLane.values()].filter((c) => {
     if (c.status !== "error") return false;
     const newestRun = newestRunByLane.get(c.lane);
-    return !(newestRun && newestRun > c.ts);
+    return !(newestRun && tsNewer(newestRun, c.ts));
   });
 }
 function computeVerdict(input) {
@@ -8078,15 +8084,15 @@ function repoRunLine(repo) {
     }
     const laneCosts = repo.costs.filter((c) => c.lane === lane.lane);
     const latest = laneCosts.reduce(
-      (a, c) => !a || c.ts > a.ts ? c : a,
+      (a, c) => !a || tsNewer(c.ts, a.ts) ? c : a,
       null
     );
     const laneRuns = repo.run_records.filter((r) => r.lane === lane.lane);
     const latestRun = laneRuns.reduce(
-      (a, r) => !a || r.ts > a.ts ? r : a,
+      (a, r) => !a || tsNewer(r.ts, a.ts) ? r : a,
       null
     );
-    if (latest && latest.status === "error" && (!latestRun || latest.ts > latestRun.ts)) {
+    if (latest && latest.status === "error" && (!latestRun || tsNewer(latest.ts, latestRun.ts))) {
       parts.push(
         `<span class="fail">${esc(lane.lane)} FAILED ${esc(fmtTs(latest.ts))} (${esc(latest.terminal_reason ?? "unknown")})</span>`
       );
@@ -8106,7 +8112,7 @@ function maxTsDaily(lines) {
   for (const l of lines) {
     const k = `${l.date}|${l.lane}`;
     const cur = best.get(k);
-    if (!cur || l.ts > cur.ts) best.set(k, l);
+    if (!cur || tsNewer(l.ts, cur.ts)) best.set(k, l);
   }
   return [...best.values()].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 }
@@ -8511,7 +8517,7 @@ function dedupeCostsByRunId(input) {
       const best = /* @__PURE__ */ new Map();
       for (const c of r.costs) {
         const cur = best.get(c.run_id);
-        if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+        if (!cur || tsNewer(c.ts, cur.ts)) best.set(c.run_id, c);
       }
       return { ...r, costs: [...best.values()] };
     })
@@ -8779,7 +8785,7 @@ function runDashboard(opts) {
 function runsSinceDigest(digestPath, runs) {
   if (!existsSync3(digestPath)) return 0;
   const mtime = statSync(digestPath).mtime.toISOString();
-  return runs.filter((r) => r.ts > mtime).length;
+  return runs.filter((r) => tsNewer(r.ts, mtime)).length;
 }
 
 // src/bin/dashboard.ts
