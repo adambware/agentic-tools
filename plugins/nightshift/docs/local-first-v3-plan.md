@@ -1,5 +1,12 @@
 # Nightshift v3 — Local-First Plan
 
+> **⚠️ Implementation sessions: do not read this file. Read [`v3/README.md`](v3/README.md)
+> plus your one session file instead.** This document is the **decision record** —
+> review reports, rationale, and provenance. The §9 and §15 amendments below are already
+> folded into the per-session guides in [`v3/`](v3/); where this file and a session file
+> disagree, the session file wins. The §14 task checklist here is frozen; the session
+> files are the tracker.
+
 **Status: APPROVED DIRECTION — implementation sequenced below.**
 Successor to the v2.x spike arc. Decisions in this doc were made interactively with the
 operator (Adam) on 2026-08-23; open items are listed at the bottom.
@@ -78,10 +85,11 @@ ns run
   │    └─ Workflow: pipeline(surfaces) → reviewer+refuter per surface (dynamic dispatch)
   │                 → merge → tier2-gate → tier2 refuters → run-meta → validate → dedupe
   │                 → record → rollup   (all bin/, chained, abort-on-validate-fail)
-  ├─ node bin/record-cost …                               # parse CLI JSON → costs.jsonl
+  ├─ node bin/record-cost …                  # ALWAYS — is_error gates status (§9.7)
   ├─ node bin/dashboard --config $OPS/config.yml --out $OPS/dashboard.html
-  ├─ node bin/clean …                                     # delete .run/<id>/ on success
-  └─ open $OPS/dashboard.html                             # unless --no-open
+  │                                          # ALWAYS — success or failure (§15.8)
+  ├─ node bin/clean …                        # success only: delete .run/<id>/
+  └─ open $OPS/dashboard.html                # unless --no-open
 ```
 
 ## 4. Workstreams (technical detail)
@@ -191,20 +199,47 @@ The spike workflow reviews only `surfaces[0]`. v2 makes the Workflow do what it'
 
 - **New `bin/dashboard --config $OPS/config.yml --out $OPS/dashboard.html`** — a
   deterministic, vitest-covered engine command like every other bin (pure render function
-  in `src/lib/dashboard-run.ts`, snapshot tests against the NovuDesk fixture plus a
-  synthetic second pack to prove multi-repo).
-- Reads every configured repo's pack: registries (status/last_reviewed), findings +
-  suppressions, `daily.jsonl` (max-ts per date+lane), `costs.jsonl`, latest
-  `$OPS/digests/<repo>.md` if present.
-- One **self-contained** HTML file (inline CSS/SVG, no external assets, light/dark via
-  `prefers-color-scheme`):
-  1. **Header:** last-updated, per-repo last-run + result, 7d/30d cost.
-  2. **Decisions needed** (from the latest digest per repo — the human queue, at the top).
-  3. **Per repo, per lane:** coverage table (green/stale/overdue/open-findings, color-coded),
-     open findings (severity, age, `needs_human_verification`, evidence links).
-  4. **Trends:** inline-SVG sparklines — coverage freshness, FPR 7d/30d, cost per run.
-  5. **Hygiene strip:** orphaned run dirs, failed runs kept for diagnosis, gaps in cost
-     capture — the "junk detector" that keeps the system honest about itself.
+  in `src/lib/dashboard-run.ts`, snapshot tests against **four** fixtures: populated,
+  all-clear, cold-start, degenerate — §15.6).
+- Reads every configured repo's pack: registries (`status` / `last_reviewed` /
+  `interval_days`), findings + suppressions, `daily.jsonl` (max-ts per date+lane),
+  `costs.jsonl`, latest `$OPS/digests/<repo>.md` if present.
+- One **self-contained** HTML file. *Self-contained* means **no network fetches** — no CDN,
+  no webfont, no remote image; the file renders correctly with the machine offline (§15.5).
+  Inline CSS + inline SVG only. System font stack with tabular numerals — a deliberate
+  exception to "pick a real typeface", since a webfont would mean base64-embedding a face
+  into a document rewritten after every run. Light/dark via `prefers-color-scheme`, with the
+  light palette defined on **bare `:root`** so the "no preference" default (the majority
+  case) renders correctly instead of inheriting the host background.
+
+  **Six sections, in this order** (§15.1 — hierarchy is a decision, not an inventory):
+
+  0. **Verdict strip — the five-second answer.** A count plus up to 4 named items, each
+     anchor-linked to its detail below; the remainder rolls into "and N more". **Computed
+     deterministically from pack data, never from the digest** (§15.2), from exactly three
+     sources: open findings with `needs_human_verification` and no `resolved_at`; registry
+     entries past `interval_days`; runs whose cost record carries `status: "error"`. The
+     zero state renders **"Nothing needs you"** plus the freshness line — a quiet day is a
+     success signal, not a blank page.
+  1. **Decisions needed** — the digest's narrative queue: the judgment arithmetic cannot
+     produce. Every item renders the digest's generation timestamp and run-distance, and a
+     banner appears once the digest is more than 2 runs behind (§15.2).
+  2. **Per repo, per lane** — coverage table in **two columns, not one** (§15.3).
+     `Coverage` carries freshness only (`current | due | overdue | not yet reviewed`); a
+     separate `Open findings` column carries severity-tagged chips. Per-repo last-run +
+     result lives in the repo header row.
+  3. **Open findings** — severity, age, `needs_human_verification`, evidence link (§15.5).
+  4. **Trends** — inline-SVG sparklines, always paired with the current value as text, a
+     polarity label, and x positioned by real date (§15.4).
+  5. **Hygiene strip** — orphaned run dirs, failed runs kept for diagnosis, cost-capture
+     gaps, evidence store size. The "junk detector" that keeps the system honest about
+     itself. A failed run also appears in the verdict strip; the strip is the alarm, the
+     hygiene strip is the ledger.
+
+  **Footer:** generated-at, engine version, 7d/30d cost. Cost is a slow-day number and does
+  not compete with the alarm for the first viewport.
+- Design tokens and the accessibility contract are pinned in §15.7 and **enforced by
+  vitest**, not left to the implementer.
 - The digest skill gains one convention: `ns digest <repo>` runs `/nightshift:digest`
   headless and writes the output to `$OPS/digests/<repo>.md` (the skill itself stays
   read-only over the pack; writing the file is the launcher's doing).
@@ -273,7 +308,7 @@ real runs. One workstream per session keeps review clean; A4 is the only long po
 | A3 | WS3: agent frontmatter + run-loop/README updates | agents/, docs | A0 | Docs consistent; no engine code change (can share A2's session) |
 | A4 | WS4: workflow v2, `bin/merge-candidates`, `bin/tier2-gate`, CONTRACTS amendment | workflow, bins, tests | A1 | New bins full-branch tested; workflow reviewed against thin-shell rule; dry chain on fixture artifacts |
 | A5 | WS5 engine side: lane-parameterized workflow, ux-reviewer refresh, onboard design branch | workflow, agents, skills | A4 | Lane gating refuses correctly on a pack missing browser/personas |
-| A6 | WS6: `bin/dashboard` + `src/lib/dashboard-run` + snapshot tests; retire pack dashboard.md | src/lib, bins, templates | A2 | Renders NovuDesk + synthetic second pack; self-contained file passes a no-network open |
+| A6 | WS6: `bin/dashboard` + `src/lib/dashboard-run` + snapshot tests; retire pack dashboard.md | src/lib, bins, templates | A2 | Four fixture snapshots green (populated / all-clear / cold-start / degenerate, §15.6); every §15.7 token pair clears 4.5:1 in both themes; every status carries a non-colour channel; self-contained file passes a no-network open |
 | — | **Release: nightshift 3.0.0** (CHANGELOG, marketplace bump) | repo | A1–A6 | CI green on main |
 | A7 | **LOCAL** WS7: create `$OPS`, `ns`, config, runbook; first real `ns run novudesk security` | operator machine | A1–A4, A6 | End-to-end: cost line captured, dashboard regenerated + opens, run dir cleaned, only reviewed ids stamped, guard verified inside Workflow, permission flag set recorded in runbook |
 | A8 | **LOCAL** WS5 pack side: novudesk onboard reconcile, personas, base_url; first design run | operator machine + novudesk pack | A5, A7 | Design run completes against local dev server; findings anchored or clean pass; evidence copied + pruned |
@@ -580,8 +615,11 @@ Nothing in the plan rebuilds an existing capability. The engine's 203 tests all 
 | 5 | `bin/record` | two concurrent runs | §9.11 | per-repo lock | blocks, then proceeds |
 | 6 | `bin/record-cost` | run failed, `total_cost_usd:0` | §9.7 | gate on `is_error` | hygiene strip |
 | 7 | `bin/tier2-gate` | empty survivor set | WS4 tests | empty `tier2.json` | `rejected_tier2: 0` |
-| 8 | `bin/dashboard` | a configured pack is missing | WS6 tests | render gap row | visible gap |
-| 9 | `bin/dashboard` | fewer than 2 trend points | WS6 tests | omit sparkline | no chart |
+| 8 | `bin/dashboard` | a configured pack is missing | §15.6 fixture | render gap row naming the fix | visible gap |
+| 9 | `bin/dashboard` | fewer than 2 trend points | §15.6 fixture | render value + "1 of 2 runs" | value, no line |
+| 9b | `bin/dashboard` | freshly onboarded repo, `last_reviewed` null everywhere | §15.6 fixture | `not yet reviewed` state, **never** `overdue` (§15.9) | correct, not a wall of red |
+| 9c | `bin/dashboard` | evidence file referenced but gone from disk | §15.6 fixture | stat at render; explicit missing state | link replaced by reason |
+| 9d | `ns run` | run fails before the record chain | §15.8 | dashboard regenerates anyway | failure in verdict strip |
 | 10 | `bin/clean` | prune deletes needed evidence | §9.8 | lifecycle rule | n/a, prevented |
 | 11 | `ns` preflight | dev server up but is **staging** | §9.14 | loopback + assert | **refuses** |
 | 12 | `ns` preflight | personas absent | WS5 | refuse | refuses with reason |
@@ -682,6 +720,224 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Files: this plan §WS2, runbook template
   - Verify: TBD placeholder, filled by A7 from three real runs
 
+_From `/plan-design-review` (§15). Scope: §WS6 and §WS5's evidence surface._
+
+- [ ] **T16 (P1, human: ~4h / CC: ~30min)** — `dashboard-run` — verdict strip + section reorder
+  - Surfaced by: §15.1 — the stated order answers "what did this cost" before "what needs me"
+  - Files: `src/lib/dashboard-run.ts`, `templates/`, this plan §WS6
+  - Verify: populated fixture snapshot shows the strip first; cost appears only in the footer
+- [ ] **T17 (P1, human: ~3h / CC: ~20min)** — `dashboard-run` — computed strip, dated digest
+  - Surfaced by: §15.2 — the top queue was sourced from unschematized LLM prose of open cadence
+  - Files: `src/lib/dashboard-run.ts` + tests
+  - Verify: strip is derived with the digest file absent; a 4-run-old digest renders the staleness banner
+- [ ] **T18 (P1, human: ~2h / CC: ~15min)** — `dashboard-run` — split coverage from findings
+  - Surfaced by: §15.3 — one column carried two orthogonal axes
+  - Files: `src/lib/dashboard-run.ts` + tests
+  - Verify: an area both overdue and carrying an open critical renders both facts
+- [ ] **T19 (P1, human: ~3h / CC: ~20min)** — `dashboard-run` — sparkline contract
+  - Surfaced by: §15.4 — no size, label, polarity, or gap policy; three series with opposite polarity
+  - Files: `src/lib/dashboard-run.ts` + tests
+  - Verify: 12-day gap renders as a gap; flat series does not divide by zero; 1-point series shows its value
+- [ ] **T20 (P1, human: ~5h / CC: ~35min)** — `dashboard-run` — 13-state table + 4 fixtures
+  - Surfaced by: §15.6 — §12 specified 2 of ~13 states; `not yet reviewed` was missing entirely (§15.9)
+  - Files: `src/lib/dashboard-run.ts`, `src/lib/dashboard-run.test.ts`, `examples/`
+  - Verify: four snapshots green; a null `last_reviewed` never renders as `overdue`
+- [ ] **T21 (P2, human: ~3h / CC: ~20min)** — `dashboard-run` — token + a11y contract, enforced
+  - Surfaced by: §15.7 — the entire a11y spec was "color-coded" and "light/dark"
+  - Files: `src/lib/dashboard-run.ts`, `src/lib/dashboard-a11y.test.ts`
+  - Verify: 11 token pairs × 2 themes ≥ 4.5:1; every status has a non-colour channel; `caption` / `th scope` / `role="img"` + `<title>` asserted present
+- [ ] **T22 (P2, human: ~1h / CC: ~10min)** — `ns` — regenerate the dashboard on every exit path
+  - Surfaced by: §15.8 — the verdict strip promises failed runs it could never see
+  - Files: `plugins/nightshift/bin/ns`, this plan §3
+  - Verify: a forced-failure run leaves a dashboard whose strip names the failure
+- [ ] **T23 (P2, human: ~1h / CC: ~10min)** — evidence — define self-contained, handle missing files
+  - Surfaced by: §15.5 — "no external assets" and "evidence links" contradicted each other
+  - Files: `src/lib/dashboard-run.ts`, this plan §WS6/§WS5
+  - Verify: no-network open renders fully; a deleted evidence file renders the missing state, not a dead link
+
+---
+
+## 15. Design review amendments (/plan-design-review, 2026-08-23)
+
+Scope reviewed: **§WS6 and §WS5's evidence surface only.** Architecture and scope were not
+re-litigated — §9 stands. Initial design completeness **4/10**; after these amendments,
+**9/10**. Every decision below was made interactively with the operator.
+
+Reference prototype (real HTML, real fixture data, four artboards, verified in both themes
+and in greyscale): `~/.gstack/projects/adambware-agentic-tools/designs/nightshift-dashboard-20260823/dashboard-proto.html`
+(generator: `gen.mjs` in the same directory). `src/lib/dashboard-run.ts` should render the
+same structure; the prototype's generator is the reference for geometry and state strings.
+
+| Screen / section | Artboard | Direction | Constraints from review |
+|---|---|---|---|
+| Main view | 1 — 2 repos, mixed states, 1 failed run | Verdict strip → decisions → coverage → findings → trends → hygiene; cost in footer | §15.1, §15.2, §15.3 |
+| All clear | 2 — nothing needs the operator | "Nothing needs you" + freshness line; trends and hygiene still render | §15.6 state 7 |
+| Cold start | 3 — onboarded, never run | `◇ not yet reviewed` everywhere; no digest yet; empty trends name why | §15.9, §15.6 states 3/4/8/11 |
+| Degenerate | 4 — everything absent at once | Missing pack, 9-day-old digest, 1 trend point, pruned evidence, cost gap | §15.5, §15.6 states 2/9/10/12/13 |
+
+### 15.1 The five-second answer gets its own section (Pass 1)
+
+The operator opens this once a day and needs "what needs me" answered before scrolling.
+The original order opened with metadata and cost, and split the answer across three
+sections with three different freshness guarantees — the human queue in §2, unverified
+findings in §3, and failed runs in the hygiene strip at the **bottom**, even though a failed
+run means coverage silently did not advance.
+
+Fix: a **verdict strip** becomes section 0. Count plus up to 4 named, anchor-linked items;
+the rest roll into "and N more". 7d/30d cost demotes to the footer; per-repo last-run moves
+into each repo's header row. Five sections become six.
+
+### 15.2 The strip is computed; the digest is dated (Pass 1)
+
+WS6 sourced the decisions queue from `$OPS/digests/<repo>.md` — free-form markdown written
+by a Haiku-tier skill, on a cadence §8 Q4 leaves **open**. Two consequences stacked: if
+digest stays manual, the page's most prominent section is the only one that can be days
+behind the file it sits in and nothing marks it; and prose content cannot be snapshot-tested,
+so the most important section would be the one section A6's gate does not cover.
+
+Fix: **split arithmetic from judgment.**
+
+| Source | Drives | Freshness | Tested |
+|---|---|---|---|
+| Pack data (findings, registries, `costs.jsonl`) | the verdict strip | always equals the file | snapshot |
+| `$OPS/digests/<repo>.md` | "Decisions needed" narrative | stamped + run-distance on every item; banner past 2 runs behind | presence + staleness logic only |
+
+This leaves §8 Q4 free to be answered either way without changing the design.
+*Prior learning applied: `nightshift-prose-aspirational-present-tense` (7/10, 2026-06-18) —
+the same shape as the README describing automation before the mechanism shipped.*
+
+### 15.3 Coverage and findings are two axes (Pass 1)
+
+`green | stale | overdue | open-findings` mixes *when was this reviewed* with *did we find
+something*. An area 57 days overdue that also carries an open critical can only display one.
+
+Fix, dashboard-side only: `Coverage` carries freshness (`current | due | overdue | not yet
+reviewed`), derived from `last_reviewed` + `interval_days`; a separate `Open findings`
+column carries severity chips joined by `dedupe_key.surface`. The registry enum is untouched
+here — the source-side split is filed to TODOS.md as P2 (operator's call, 2026-08-23).
+
+### 15.4 Sparkline contract (Pass 4)
+
+At ~96×24 a sparkline conveys direction and rough shape and nothing else — but the fact the
+operator needs from FPR is "29%, climbing three runs", which the shape gives neither half of.
+Worse, the three series have **opposite polarity**: freshness-up is good, FPR-up and cost-up
+are bad. Three identical rising lines, three different meanings.
+
+Every sparkline therefore ships with:
+
+- **The current value as text**, larger than the chart. The number is the fact; the line is context.
+- **A signed delta coloured by polarity**, plus an explicit `higher is better` / `lower is better` label.
+- **x positioned by real date, not array index.** Manual cadence makes `daily.jsonl` sparse;
+  index-positioning would render a 12-day hole as a smooth continuous trend.
+- **Under 2 points:** render the value plus "1 of 2 runs — trend starts next run". Never
+  omit silently — an empty card is indistinguishable from flat-and-healthy.
+- **Zero points:** "no data" plus why.
+- **Flat series:** centre it. `min === max` must not divide by zero.
+- Geometry: 96×24, `role="img"`, `<title>` carrying the sample count, window, and endpoints.
+
+### 15.5 "Self-contained" means no network; evidence is a link (Pass 7, §WS5)
+
+WS6 said "no external assets" and also "evidence links", and §9.8 keeps screenshots on disk
+**precisely so** the dashboard can show them. Those could not all be true.
+
+Resolution: *self-contained* = **no network fetches**; the file renders correctly offline.
+Evidence renders as an `<a href>` to a relative local path (`evidence/<repo>/<hash>.png`),
+so the document stays small and cheap to rewrite every run. `dashboard-run.ts` stats each
+referenced file at render time; when it is absent (pruned, or the run failed before the copy)
+it renders *"evidence no longer on disk (pruned or never copied) — the anchor value above
+still stands"*, which is honest and keeps the numeric design anchor (`friction_delta`,
+`a11y`) doing its job. Because the hrefs are relative, the dashboard only works from `$OPS/`;
+copying `dashboard.html` elsewhere breaks evidence links. Noted in the runbook.
+
+### 15.6 State table — 13 states, 4 fixtures (Pass 2)
+
+§12 specified 2. Each state names why it is empty and what to do about it; no blank regions.
+
+| # | State | Renders as |
+|---|---|---|
+| 1 | zero repos configured | "No repos configured. Add one to `config.yml`." |
+| 2 | repo configured, pack missing | "Cannot read this repo. Run `/nightshift:onboard` there, or set `enabled: false`." |
+| 3 | repo onboarded, never run | every area `◇ not yet reviewed`; strip says "run `ns run <repo>`" (§15.9) |
+| 4 | lane enabled, pack not ready | "`fixtures/personas.yml` missing and `base_url` unset — `ns` will refuse this lane" |
+| 5 | lane not enabled for repo | "Lane not enabled for this repo. Turn it on in `config.yml`." |
+| 6 | registry seeded but empty | "No areas registered yet. Run `/nightshift:garden` to propose entries." |
+| 7 | no open findings anywhere | verdict strip: "✓ Nothing needs you" + freshness line |
+| 8 | no digest yet | "The first digest is written after the first run." |
+| 9 | digest ≥2 runs behind | amber banner + per-item run-distance (§15.2) |
+| 10 | fewer than 2 trend points | value + "1 of 2 runs — trend starts next run" (§15.4) |
+| 11 | zero trend points | "no data" + why |
+| 12 | evidence referenced, file gone | missing-evidence line, anchor value retained (§15.5) |
+| 13 | run failed / cost not captured | verdict strip item + hygiene row + footer "incomplete" (§15.8, §9.7) |
+
+Snapshot fixtures: **populated** (2 repos, mixed states, 1 failed run), **all-clear**,
+**cold-start**, **degenerate** (states 2, 9, 10, 11, 12, 13 at once).
+
+### 15.7 Token + accessibility contract, enforced by vitest (Passes 5 + 6)
+
+No `DESIGN.md` exists in this repo and §WS6 named no tokens, so the implementer would have
+invented a palette that the snapshot tests would then lock in. The contract:
+
+- **Colour is never the only channel.** Every coverage state carries a glyph
+  (`✓ ◐ ▲ ◇`), a text label, a row tint, and a left-border weight. Every severity carries a
+  text abbreviation (`CRIT / HIGH / MED / LOW`). Every trend delta carries an arrow **and** a
+  visually-hidden "improving"/"worsening". Verified: the full page survives `grayscale(1)`
+  with every status still readable.
+- **Contrast ≥ 4.5:1 for all text, both themes.** Measured on the prototype's tokens:
+  4.87–17.59 light, 5.50–13.71 dark. Asserted in vitest from the token values.
+- **Three colour-scheme states, not two.** Light palette on bare `:root`; dark redefined
+  under `@media (prefers-color-scheme: dark)`. `body` gets an explicit background token.
+- **Semantics.** `<caption>` + `th scope` on every table; `role="img"` + `<title>` on every
+  sparkline; visible `:focus-visible` on links (they are the only navigation).
+- **Viewport.** Wide tables scroll inside their own `overflow-x: auto` container; the page
+  body never scrolls sideways. No JS, therefore no sorting or filtering — so **default
+  ordering does the work**: worst-first within a lane, never alphabetical.
+- **Motion: none.** Stated so nobody adds a transition later.
+- **Type:** system stack with tabular numerals; body ≥ 13px, no text below 11px except
+  uppercase micro-labels at ≥ 10.5px with ≥ 5:1 contrast.
+
+### 15.8 The dashboard regenerates on every exit path (Pass 7)
+
+§3 chained `bin/dashboard` behind the record chain, so a failed run would leave the previous
+dashboard in place — recent-looking timestamp, no sign of the failure — until the next
+successful run. That is the exact silent staleness this system exists to prevent, and it
+would make §15.1's "run failed" strip item unreachable.
+
+`ns run` now regenerates the dashboard **unconditionally**, after `record-cost` has written
+its `status: "error"` row (§9.7). `bin/clean` stays success-only. Launcher-side; no engine change.
+
+### 15.9 `not yet reviewed` is a first-class state, distinct from `overdue`
+
+A freshly onboarded repo has `last_reviewed: null` on every entry. Computing freshness as
+`now - last_reviewed > interval_days` makes null maximally overdue, so day one on a healthy
+new repo renders a wall of red and the operator's first impression is that everything is
+broken. `not yet reviewed` gets its own glyph (`◇`), its own neutral tone, and its own copy.
+One is a system that has not started; the other is a system that is rotting.
+
+### 15.10 NOT in scope (design decisions considered, deferred)
+
+| Deferred | Why |
+|---|---|
+| A real typeface | Self-contained + no-network means base64-embedding a font into a per-run artifact. System stack with tabular numerals is the right call, not a compromise. |
+| Inline base64 evidence thumbnails | ~270KB per 200KB screenshot in a file rewritten every run; needs an image dependency the repo does not have. Links instead (§15.5). |
+| Sorting / filtering / collapsing | Requires JS. Default worst-first ordering does the job for a two-repo, ~20-row page. Revisit past ~5 repos. |
+| A manual light/dark toggle | `prefers-color-scheme` is enough for a single-operator local file. |
+| Mobile layout | The operator opens this on a laptop. Narrow windows must not break (overflow containers), but no phone-specific design. |
+| Registry `status` enum split | Filed to TODOS.md as P2 (§15.3) — schema change rippling through 4 consumers, outside WS6. |
+| `/design-consultation` + a `DESIGN.md` | Disproportionate. This is the only UI nightshift will ever have; §15.7's contract is the right size. |
+
+### 15.11 What already exists (design reuse check)
+
+| Sub-problem | Already solved by | Verdict |
+|---|---|---|
+| Coverage status vocabulary | retired `templates/.nightshift/dashboard.md` | **Reuse** the four terms; re-axis them (§15.3). |
+| Status without colour | that template already bolded `**overdue**` in plain markdown | **Reuse** the instinct; formalise as §15.7. |
+| One-line freshness tally | `Entries: 0 · green: 0 · stale: 0 · …` summary line | **Reuse** as the per-lane tally row. |
+| Findings table shape | NovuDesk's severity / confidence / `needs_human_verification` / linear columns | **Reuse** verbatim. |
+| Every render state | `examples/novudesk/` | **Reuse** as fixture 1; three more per §15.6. |
+| Decisions-needed framing | `skills/digest` "top 3 human decisions" | **Reuse** as section 1's content contract. |
+
+Nothing in this review invents a pattern the pack did not already imply.
+
 ---
 
 ## GSTACK REVIEW REPORT
@@ -691,7 +947,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | 15 findings, 11 folded / 4 filed |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 22 issues, 0 critical gaps |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | issues_found | 8 issues, 8 resolved, 0 unresolved |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
 - **CODEX:** 15 findings at high reasoning, read-only. 4 P0s, all folded (§9.2, §9.11,
@@ -703,9 +959,16 @@ Synthesized from this review's findings. Each task derives from a specific findi
   rewrite; the "drop the Workflow entirely" claim depends on A7's billing answer.
   (3) Release sequencing — codex's narrower fix accepted (move the tag, not the
   workstreams), after the operator declined the broader Step 0 re-sequence.
-- **VERDICT:** ENG CLEARED — ready to implement. Scope accepted as-is (all 8 workstreams,
-  A0–A9 order preserved); 15 implementation tasks in §14; 4 findings filed to TODOS.md
-  with full context. Recommend `/plan-design-review` before A8, since WS5/WS6 introduce
-  a user-facing dashboard and a driven-flow lane.
+- **DESIGN:** 8 issues across 7 passes, scoped to §WS6 + §WS5's evidence surface. Initial
+  4/10, final 9/10. Judged against a real HTML prototype with fixture data (four artboards),
+  verified in light, dark, and full greyscale, with contrast measured on every token pair.
+  Three findings were correctness, not polish: a null `last_reviewed` would have rendered a
+  new repo as entirely overdue (§15.9); the top queue was sourced from unschematized LLM
+  prose of open cadence (§15.2); and a failed run could never reach the page it was supposed
+  to warn about (§15.8). Scope and architecture were not re-litigated — §9 stands. 8 tasks
+  (T16–T23) added to §14; 1 finding filed to TODOS.md.
+- **VERDICT:** ENG CLEARED + DESIGN CLEARED — ready to implement. Scope accepted as-is (all
+  8 workstreams, A0–A9 order preserved); 23 implementation tasks in §14; 5 findings filed to
+  TODOS.md with full context.
 
 NO UNRESOLVED DECISIONS
