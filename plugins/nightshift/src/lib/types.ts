@@ -31,6 +31,15 @@ export interface RegistryEntry {
   linear?: string[];
 }
 
+// Per-surface compute dispatch, derived from `band` by the tested core
+// (bin/select). The workflow passes it verbatim to agent() — model/effort/turns
+// are decided here, never by a lookup table inside the workflow sandbox (E4).
+export interface Dispatch {
+  model: string;
+  effort: "low" | "medium" | "high";
+  maxTurns: number;
+}
+
 // Output of bin/select -> surfaces.json. One per selected entry.
 export interface Surface {
   id: string;
@@ -41,6 +50,7 @@ export interface Surface {
   change_flag: 0 | 1;
   score: number; // max(staleness, change_flag) * weight_multiplier
   band: Band; // compute-allocation key for the fan-out budget table
+  dispatch?: Dispatch; // emitted by bin/select from MODEL_BY_BAND (A4/T1)
   asvs_ref?: string;
   persona?: string;
 }
