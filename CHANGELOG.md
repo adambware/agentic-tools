@@ -3,6 +3,48 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [3.0.0] - 2026-08-23
+
+Nightshift v3. The loop now runs **local-first behind one easy button** — `ns run <repo>
+security` takes you from nothing to a refreshed dashboard on your own machine, with no
+cloud in the run path. This release cuts on a system that has completed a real run, which
+is the point: the last five defects below were found by running it, not by reading it.
+
+### Added
+
+- **`bin/ns` — the easy button.** POSIX shell, committed, shellchecked in CI, versioned with the engine. `ns run`, `ns run --due`, `ns status`, `ns dashboard`, `ns digest`, `ns cost add`, `--interactive`. Every decision it looks like it makes is made in vitest-covered TypeScript and handed back as a flat value: `bin/ops-target`, `bin/due`, `bin/workflow-args`, `bin/retain`, `bin/run-outcome`. What is left in the shell is sequencing, environment, and exit paths.
+- **The ops home.** `templates/ops/{config.yml,runbook.md}` plus `schemas/ops-config.yml`. The operator's config, runbook, dashboard, digests, evidence and logs live outside every repo and are never committed; nothing operator-specific ships in the engine.
+- **`bin/run-outcome`** — the success predicate. A run succeeded iff `bin/record` left its run row, written under the per-repo lock after validate and dedupe. Not "the CLI exited 0", not "the workflow returned complete" — both of which were true of a run that reviewed nothing. A row with `reviewed: 0` against a non-zero `selected` is a failure too.
+- **Dynamic Workflow v2** — full-K fan-out over the launcher's pre-chunked surfaces, reviewer + Tier-1 refuter per surface, deterministic merge, conditional Tier-2, then validate → dedupe → record → rollup. Zero conditionals in the workflow file, enforced by a scanner that fails the build if the file adopts a form it cannot see.
+- **Per-run isolation** — `.run/<run_id>/` per attempt, a record lock with run_id uniqueness and a provenance assert, `bin/clean`, and one `prune()` for lifecycle retention.
+- **The design lane, engine-side** — lane-parameterized workflow, one ux-reviewer per browser adapter, and a preflight that **refuses** a non-loopback `base_url` or a manifest that does not explicitly assert `environment: local|dev|test`. Staging and production are refused by name. Never warn-and-proceed.
+- **`--plugin-dir "$ENGINE"` on every session `ns` starts**, so the bins, the agents the workflow dispatches to, and the PreToolUse guard all come from one tree instead of from whatever version happens to be installed.
+- **`agent-budgets.test.ts`** — pins every agent's `maxTurns` by snapshot, and asserts no refuter is below 40, because nothing overrides a refuter's budget at dispatch.
+
+### Changed
+
+- **Agent types are plugin-qualified** (`nightshift:security-reviewer`). A plugin agent is addressable by its qualified name; the bare name resolved only if something else happened to provide one. **Breaking** for anything that pinned the bare strings.
+- **Turn budgets raised** on evidence: `MODEL_BY_BAND` critical 40→80 and high 32→64; refuters Tier-1 10→40 and Tier-2 16→56. At the old numbers, reviewers on a real critical surface never reached the `Write` that produces their artifacts, and refuters never reached theirs — the chain completed correctly and reviewed nothing.
+- **The headless prompt makes waiting the task.** The Workflow tool returns a task id, not a result, and the workflow is killed if the session ends first. `TaskOutput` is now in the default grant: `Workflow,TaskOutput,Read,Glob,Grep,Bash,Write,Agent`.
+- `ns` exports `CLAUDE_PLUGIN_ROOT`, which is not set inside a Workflow subagent's Bash environment. The workflow interpolates that literal and relies on the shell to expand it; without the export every plumbing command ran as `node /bin/<name>.mjs`.
+- Reviewer and refuter agents refreshed to the current model fleet, with the band→compute table pinned by snapshot so a tier change is a deliberate red-CI event.
+
+### Fixed
+
+- **A run that reviewed nothing reported success**, wrote an `ok` cost row, deleted the run dir holding the only evidence, and refreshed the dashboard to say all was well. The outcome is now read from durable state.
+- **`bin/ns` could not find its engine through the documented symlink install.** `dirname $0` of the link made the engine the PATH directory's parent, and because that directory exists the check passed and the error blamed the engine build. It now walks the symlink chain.
+- The dashboard regenerates on **every** exit path — success, failure, crash, Ctrl-C, and preflight refusal — via an EXIT trap, after the cost row is written. A failed run that leaves yesterday's dashboard looking fresh is the silent staleness this system exists to prevent.
+- SIGINT/SIGTERM now stop the run instead of finalizing and carrying on to invoke the model anyway.
+- `ns run --due` no longer feeds its work list to the model on stdin, where the first session swallowed the rest of the sweep.
+- A refused run no longer leaves scratch directories inside the operator's repository.
+
+### Upgrading
+
+`ns` has no default ops home — set `NIGHTSHIFT_OPS` or pass `--ops`. Symlink `bin/ns` onto
+your PATH rather than copying it, so it stays versioned with the engine it launches. Packs
+predating v3 should be re-checked against the current schemas: `pack_format` is still `1`
+and is still never read, which is a known gap for the first external adopter.
+
 ## [2.4.0] - 2026-08-23
 
 Nightshift v3 lane B: every run's real cost is now recorded and trended, and the

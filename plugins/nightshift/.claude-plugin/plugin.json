@@ -1,10 +1,20 @@
 {
   "name": "nightshift",
-  "version": "2.4.0",
-  "description": "Coverage-driven, budget-aware assurance loop with two lanes — /nightshift:security (security review + mandatory refuter) and /nightshift:design (designer/UX). v2.1 adds a deterministic TypeScript core (bin/select·dedupe·record·rollup·validate + a read-only guard hook) that owns every checkable behavior, orchestrated by a thin Workflow shell on subscription billing. Built once as an engine; each codebase onboarded as a .nightshift/ pack.",
-  "author": {"name": "adambware"},
+  "version": "3.0.0",
+  "description": "Coverage-driven, budget-aware assurance loop with two lanes \u2014 /nightshift:security (security review + mandatory refuter) and /nightshift:design (designer/UX). v3 runs local-first behind one easy button (`ns run <repo> <lane>`): a deterministic TypeScript core owns every checkable behavior, a conditional-free dynamic Workflow fans out reviewer+refuter per surface, every run's real cost is recorded, and one self-contained local HTML dashboard is regenerated on every exit path. Built once as an engine; each codebase onboarded as a .nightshift/ pack.",
+  "author": {
+    "name": "adambware"
+  },
   "homepage": "https://github.com/adambware/agentic-tools",
   "repository": "https://github.com/adambware/agentic-tools",
   "license": "MIT",
-  "keywords": ["security", "assurance", "ux", "coverage", "review", "agents", "skills"]
+  "keywords": [
+    "security",
+    "assurance",
+    "ux",
+    "coverage",
+    "review",
+    "agents",
+    "skills"
+  ]
 }
