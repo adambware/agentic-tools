@@ -170,18 +170,21 @@ export function validateDailyMetrics(x: unknown): ValidationResult {
   ])
     reqNum(x, k, errors, "daily-metrics");
   for (const k of ["fpr_7d", "fpr_30d"])
-    if (x[k] !== null && typeof x[k] !== "number")
-      errors.push(`daily-metrics: ${k} must be a number or null`);
+    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number or null`);
   // cost_* fields are additive (v3 A2): optional, but typed when present.
   for (const k of ["cost_usd_7d", "cost_usd_30d"])
     if (x[k] !== undefined && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
       errors.push(`daily-metrics: ${k} must be a finite number`);
+  // Finite, like every other numeric field: NaN/Infinity here would ride into
+  // daily.jsonl and poison every cost average computed downstream of it.
   if (
     x.cost_usd_avg_per_run_30d !== undefined &&
     x.cost_usd_avg_per_run_30d !== null &&
-    typeof x.cost_usd_avg_per_run_30d !== "number"
+    (typeof x.cost_usd_avg_per_run_30d !== "number" ||
+      !Number.isFinite(x.cost_usd_avg_per_run_30d))
   )
-    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a number or null");
+    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
   return finish(errors);
 }
 

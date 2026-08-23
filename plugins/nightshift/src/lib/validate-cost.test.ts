@@ -143,12 +143,21 @@ describe("validateDailyMetrics — additive cost_* fields (v3 A2)", () => {
     expect(validateDailyMetrics(daily({ cost_usd_avg_per_run_30d: null })).ok).toBe(true);
   });
 
-  it("rejects a non-numeric cost_usd_avg_per_run_30d", () => {
-    const result = validateDailyMetrics(daily({ cost_usd_avg_per_run_30d: "1.375" }));
+  it.each([["1.375"], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+    "rejects a non-finite cost_usd_avg_per_run_30d (%s)",
+    (value) => {
+      const result = validateDailyMetrics(daily({ cost_usd_avg_per_run_30d: value }));
+      expect(result.ok).toBe(false);
+      expect(result.errors).toContain(
+        "daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null",
+      );
+    },
+  );
+
+  it.each([["fpr_7d"], ["fpr_30d"]])("rejects a non-finite %s", (field) => {
+    const result = validateDailyMetrics(daily({ [field]: Number.NaN }));
     expect(result.ok).toBe(false);
-    expect(result.errors).toContain(
-      "daily-metrics: cost_usd_avg_per_run_30d must be a number or null",
-    );
+    expect(result.errors).toContain(`daily-metrics: ${field} must be a finite number or null`);
   });
 });
 
