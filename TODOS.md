@@ -60,6 +60,7 @@
   - **What:** `$OPS/config.yml` identifies repos by filesystem path only. `ns run <repo>`, `$OPS/digests/<repo>.md`, and `$OPS/evidence/<repo>/` all key off a name derived from that path, so two repos with the same basename collide. YAML `~` expansion is also unspecified. Fix: require an explicit unique `slug` per config entry plus a canonicalized absolute path, and key every generated artifact on the slug.
   - **Why:** WS6's dashboard is explicitly multi-repo ("covering **all** onboarded repos"), so identity collisions corrupt the one artifact the whole delivery revamp exists to produce. Silent, too: a colliding digest just overwrites.
   - **Context:** Codex outside-voice (#14) during /plan-eng-review, 2026-08-23. Harmless while bearhost is the only onboarded repo, which is why it is deferred. Becomes live the moment a second repo is added to `config.yml`.
+  - **Update 2026-08-23 (v2.4.0):** `bin/dashboard` now derives a repo's display name from the path basename when `name` is absent, which fixes the "undefined" rendering but makes the collision this TODO describes MORE reachable, not less — two repos whose paths end in the same basename now share a name, a digest file, and an evidence directory. Still harmless with one onboarded repo; still must land before repo #2.
   - **Depends on / blocked by:** WS6/WS7 shipped. Do it before onboarding repo #2.
 
 - [ ] **"No cloud anywhere" contradicts WS8's scheduler option** [P3 docs]
@@ -67,6 +68,18 @@
   - **Why:** A stated non-negotiable and an open implementation choice that violates it cannot both be true. Whoever implements A9 will reasonably pick either one.
   - **Context:** Codex outside-voice (#15) during /plan-eng-review, 2026-08-23. One-line edit to WS8. Filed rather than fixed inline only because WS8 is the last workstream and gated on a two-week soak.
   - **Depends on / blocked by:** Nothing. Fix when A9 starts.
+
+- [ ] **`validateCandidateFinding` never type-checks `evidence`** [P1 correctness]
+  - **What:** `src/lib/validate.ts` validates a candidate finding without constraining `evidence` to a string. A model-emitted `evidence: []` (or a number, or an object) passes the gate and is persisted to `metrics/findings/`. `bin/dashboard` then hands that value straight to `isAbsolute()` in `src/lib/dashboard-cli.ts`, which throws on a non-string — so every subsequent dashboard rebuild dies until someone hand-edits the JSONL. Fix: require `evidence` to be a normalized relative `evidence/...` string, and reject URL schemes and `../` traversal while you are there.
+  - **Why:** The value is model-controlled and it lands in durable state, so one bad emission is permanently wedged in the pack. Nightshift v3 A6 raises the cost: the dashboard is now THE living document regenerated on every `ns` exit path, so a crash there means the operator's only view of every repo goes stale with no visible reason.
+  - **Context:** Codex adversarial pass during /ship of nightshift v3 lane B, 2026-08-23. Pre-existing in `validate.ts` (predates A6), but A6 added the crash surface, so it was deliberately kept out of lane B's diff rather than fixed inline. Start at `validateCandidateFinding` and the `evidence` field; `dashboard-cli.ts` `loadRepo()` is the consumer.
+  - **Depends on / blocked by:** None. Own branch, own tests.
+
+- [ ] **`atomicWrite` uses a fixed temp filename** [P1 correctness]
+  - **What:** `src/lib/io.ts` writes through a fixed `.<basename>.tmp` beside the target before renaming. Two processes writing the same path share that temp file: one can truncate the other's open inode, produce spliced output, or lose the race and fail its rename with `ENOENT`. Fix: generate a unique same-directory temp name per process (pid + counter, or `mkdtemp`) and rename that.
+  - **Why:** It is the single write primitive under every `bin/` command, so the blast radius is every artifact the engine produces. It becomes reachable in normal use with v3: `bin/dashboard` regenerates one shared `$OPS/dashboard.html` on every `ns` exit path, and two lanes finishing near-simultaneously is the ordinary case once more than one repo is onboarded.
+  - **Context:** Codex adversarial pass during /ship of nightshift v3 lane B, 2026-08-23. Pre-existing in `io.ts`, kept out of lane B's diff to hold the blast radius; note that changing the write primitive touches every bin, so it wants its own branch and a concurrent-writer test.
+  - **Depends on / blocked by:** None, but land it before A7 wires `ns` to regenerate the dashboard on every exit path.
 
 ## Completed
 

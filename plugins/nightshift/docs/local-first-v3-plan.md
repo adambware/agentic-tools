@@ -340,9 +340,9 @@ read-and-branch still pending), Codex distribution contract, onboardme LLM-judge
 
 1. **Ops home name.** Recommendation: `~/code/nightshift-ops` — short, pairs with
    `agentic-tools`, and generic enough to hold ops for future plugins, not just
-   nightshift. Alternatives: `~/code/_nightshift-ops` (underscore-prefix sorts beside
-   `_vendor`), or your original `~/code/nightshift-ops` (most explicit,
-   longest). Placeholder `$OPS` everywhere until chosen.
+   nightshift. Alternatives: an underscore prefix (`~/code/_nightshift-ops`) if you
+   want it sorting beside your vendored checkouts, or a fully explicit name like
+   `~/code/agentic-tools-ops`. Placeholder `$OPS` everywhere until chosen.
 2. **K budgets for novudesk** — proposal: security 6, design 4. Adjustable in the pack
    manifest at any time.
 3. **Dashboard auto-open** — `open_after_run: true` default, or leave the tab alone and
