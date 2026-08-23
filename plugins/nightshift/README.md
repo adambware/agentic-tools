@@ -138,7 +138,9 @@ bin/validate  schema-gate any artifact (aborts the run on failure)
 bin/run-meta  assemble run.json from surfaces + reviewed (ids actually covered) + candidates.proposed + candidates (survivors)
 bin/dedupe    candidates → new | recurring | suppressed (decisions.json)
 bin/record    append per-run record + finding lines; update registry state (atomic)
-bin/rollup    recompute + append the daily rollup (freshness / median / FPR)
+bin/rollup    recompute + append the daily rollup (freshness / median / FPR / cost windows)
+bin/record-cost  append one validated cost line per run (gates on is_error, never subtype)
+bin/dashboard    render the self-contained HTML living document across every onboarded repo
 hooks/guard   PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
 ```
 
