@@ -50,8 +50,17 @@ function reqNum(o: Obj, k: string, errors: string[], where: string): void {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
+/** A YYYY-MM-DD string that is also a REAL calendar date. The shape regex alone
+ *  admits 2026-99-99, which then silently falls outside every trailing-window
+ *  comparison instead of failing loudly at the gate. */
+function isRealDate(s: string): boolean {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number) as [number, number, number];
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 function reqDate(o: Obj, k: string, errors: string[], where: string): void {
-  if (typeof o[k] !== "string" || !DATE_RE.test(o[k] as string))
+  if (typeof o[k] !== "string" || !isRealDate(o[k] as string))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqDedupeKey(o: Obj, errors: string[], where: string): void {
@@ -183,14 +192,24 @@ export function validateCostRecord(x: unknown): ValidationResult {
   reqEnum(x, "lane", LANES, errors, "cost-record");
   reqDate(x, "date", errors, "cost-record");
   reqStr(x, "ts", errors, "cost-record");
+  reqNum(x, "usd", errors, "cost-record");
+  // Spend and token counters are physically nonnegative, and tokens are whole.
+  // Without this, `--usd -100` files as valid and drags every cost window down.
+  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
+    errors.push("cost-record: usd must be >= 0");
   for (const k of [
-    "usd",
     "input_tokens",
     "output_tokens",
     "cache_read_tokens",
     "cache_creation_tokens",
-  ])
+  ]) {
     reqNum(x, k, errors, "cost-record");
+    if (typeof x[k] === "number" && Number.isFinite(x[k] as number)) {
+      const n = x[k] as number;
+      if (n < 0 || !Number.isInteger(n))
+        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+    }
+  }
   reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
   reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
   if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");

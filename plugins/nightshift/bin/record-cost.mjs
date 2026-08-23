@@ -7451,8 +7451,14 @@ function reqNum(o, k, errors, where) {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
+function isRealDate(s) {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !DATE_RE.test(o[k]))
+  if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqDedupeKey(o, errors, where) {
@@ -7569,14 +7575,22 @@ function validateCostRecord(x) {
   reqEnum(x, "lane", LANES, errors, "cost-record");
   reqDate(x, "date", errors, "cost-record");
   reqStr(x, "ts", errors, "cost-record");
+  reqNum(x, "usd", errors, "cost-record");
+  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
+    errors.push("cost-record: usd must be >= 0");
   for (const k of [
-    "usd",
     "input_tokens",
     "output_tokens",
     "cache_read_tokens",
     "cache_creation_tokens"
-  ])
+  ]) {
     reqNum(x, k, errors, "cost-record");
+    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
+      const n = x[k];
+      if (n < 0 || !Number.isInteger(n))
+        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+    }
+  }
   reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
   reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
   if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
@@ -7618,6 +7632,9 @@ function buildCostRecord(envelope, meta) {
   const e = envelope;
   if (typeof e.is_error !== "boolean") {
     throw new Error("envelope: is_error must be a boolean");
+  }
+  if (e.is_error === false && !(typeof e.total_cost_usd === "number" && Number.isFinite(e.total_cost_usd))) {
+    throw new Error("envelope: total_cost_usd must be a finite number when is_error is false");
   }
   const usage = typeof e.usage === "object" && e.usage !== null ? e.usage : {};
   const record = {

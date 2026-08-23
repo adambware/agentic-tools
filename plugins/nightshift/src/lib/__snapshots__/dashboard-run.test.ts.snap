@@ -698,12 +698,16 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
   display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
 </style></head>
 <body><div class="page"><section class="verdict act" aria-labelledby="v-h">
-    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>1 thing needs you</h1>
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>2 things need you</h1>
     <ul class="v-list">
       <li>
         <span class="v-kind t-bad">config gap</span>
         <a href="#gap-novudesk">novudesk is configured but its .nightshift/ pack is missing</a>
         <span class="v-meta">path ~/Developer/novudesk · nothing can be reviewed until it is onboarded</span>
+      </li><li>
+        <span class="v-kind t-warn">due</span>
+        <a href="#quillbase">QB-SEC-02 — Dispatch command replay handling</a>
+        <span class="v-meta">quillbase · critical weight · 7d since review (interval 7d)</span>
       </li>
       
     </ul>
@@ -778,7 +782,7 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
 
 <section class="blk">
   <h2>Open findings</h2>
-  <div class="fd" id="FLOW-01">
+  <div class="fd" id="f-quillbase--flow-01--form-reset-on-error--shared-error-state--19ncu2k">
     <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>FLOW-01</span>
       <strong>Checkout: card errors clear the whole form</strong>
       <span class="fd-meta">quillbase · design · anchor: friction_delta +4 steps · first seen 2026-08-20</span></div>
@@ -941,11 +945,11 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
   display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
 </style></head>
 <body><div class="page"><section class="verdict act" aria-labelledby="v-h">
-    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>4 things need you</h1>
+    <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>6 things need you</h1>
     <ul class="v-list">
       <li>
         <span class="v-kind t-bad">verify</span>
-        <a href="#QB-SEC-02">QB-SEC-02 — Command replay exposure on dispatch endpoints</a>
+        <a href="#f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">QB-SEC-02 — Command replay exposure on dispatch endpoints</a>
         <span class="v-meta">quillbase · critical · awaiting your verification · 6d open</span>
       </li><li>
         <span class="v-kind t-bad">run failed</span>
@@ -960,7 +964,7 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
         <a href="#novudesk">ND-SEC-07 — Triage Gate review queue output handling</a>
         <span class="v-meta">novudesk · medium weight · 62d since review (interval 30d)</span>
       </li>
-      
+      <li class="v-more"><a href="#decisions">and 2 more below</a></li>
     </ul>
     <p class="v-sub">Dashboard rebuilt 2026-08-23 06:14 · covering 2 repos, 3 lanes</p>
   </section>
@@ -1033,7 +1037,7 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
         <td class="cov"><span class="pill p-ok">
           <span class="g" aria-hidden="true">✓</span>current</span></td>
         <td class="when">2026-08-22 <span class="ago">1d</span></td>
-        <td class="find"><a class="fpill s-bad" href="#QB-SEC-02">
+        <td class="find"><a class="fpill s-bad" href="#f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">
             <span class="sabbr">CRIT</span>QB-SEC-02<span class="verify" title="needs human verification">✋</span></a></td>
       </tr><tr class="c-current">
         <th scope="row" class="area"><code>app/Services/Webhooks/*</code></th>
@@ -1042,7 +1046,7 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
         <td class="cov"><span class="pill p-ok">
           <span class="g" aria-hidden="true">✓</span>current</span></td>
         <td class="when">2026-08-18 <span class="ago">5d</span></td>
-        <td class="find"><a class="fpill s-warn" href="#QB-SEC-06">
+        <td class="find"><a class="fpill s-warn" href="#f-quillbase--qb-sec-06--webhook-accepts-signatures-well-past-i-14uyua3">
             <span class="sabbr">MED</span>QB-SEC-06</a></td>
       </tr>
       </tbody>
@@ -1086,7 +1090,7 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
         <td class="cov"><span class="pill p-ok">
           <span class="g" aria-hidden="true">✓</span>current</span></td>
         <td class="when">2026-08-20 <span class="ago">3d</span></td>
-        <td class="find"><a class="fpill s-warn" href="#FLOW-01">
+        <td class="find"><a class="fpill s-warn" href="#f-quillbase--flow-01--card-errors-clear-the-entire-checkout-fo-1bg0a32">
             <span class="sabbr">MED</span>FLOW-01</a></td>
       </tr>
       </tbody>
@@ -1148,17 +1152,17 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--border);color
 
 <section class="blk">
   <h2>Open findings</h2>
-  <div class="fd" id="QB-SEC-02">
+  <div class="fd" id="f-quillbase--qb-sec-02--dispatch-endpoint-accepts-replayed-sig-1togu99">
     <div class="fd-hd"><span class="fpill s-bad"><span class="sabbr">CRIT</span>QB-SEC-02</span>
       <strong>Command replay exposure on dispatch endpoints</strong>
       <span class="fd-meta">quillbase · security · high confidence · first seen 2026-08-17 (6d, no movement)</span></div>
     <p class="fd-meta">✋ Needs human verification · not yet filed to Linear</p>
-  </div><div class="fd" id="FLOW-01">
+  </div><div class="fd" id="f-quillbase--flow-01--card-errors-clear-the-entire-checkout-fo-1bg0a32">
     <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>FLOW-01</span>
       <strong>Checkout: card errors clear the whole form</strong>
       <span class="fd-meta">quillbase · design · anchor: friction_delta +4 steps · first seen 2026-08-20</span></div>
     <a class="ev" href="evidence/quillbase/f3a91c02.png">📎 evidence: f3a91c02.png</a>
-  </div><div class="fd" id="QB-SEC-06">
+  </div><div class="fd" id="f-quillbase--qb-sec-06--webhook-accepts-signatures-well-past-i-14uyua3">
     <div class="fd-hd"><span class="fpill s-warn"><span class="sabbr">MED</span>QB-SEC-06</span>
       <strong>Webhook signature window too permissive</strong>
       <span class="fd-meta">quillbase · security · medium confidence · filed QB-318 · first seen 2026-08-10</span></div>

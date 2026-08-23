@@ -676,3 +676,68 @@ describe("both severity-chip paths present in populated", () => {
     expect((out.match(/<span class="fpill/g) ?? []).length).toBeGreaterThan(0);
   });
 });
+
+/* ================================================================== *
+ * 5. UNTRUSTED INPUT (the other half of "no script")                  *
+ * ================================================================== *
+ * The self-contained suite above runs on four clean fixtures, so its
+ * `<script` assertion proves the TEMPLATE carries no script — not that
+ * untrusted input cannot introduce one. The digest is LLM-written prose
+ * read off disk and rendered into a page the operator opens in a
+ * browser, which makes it the one genuine trust boundary on this
+ * surface. These tests pin the escaping so a future swap of fmtCopy()
+ * for a real markdown renderer fails loudly instead of silently
+ * shipping stored injection. */
+
+describe("untrusted digest copy is escaped", () => {
+  const HOSTILE = '<script>alert(1)</script><img src=x onerror=alert(2)>';
+
+  const hostileRender = (): string =>
+    renderDashboard({
+      ...coldStartFixture,
+      digests: [
+        {
+          repo: HOSTILE,
+          generated_at: HOSTILE,
+          runs_behind: 3,
+          age_days: 4,
+          items: [{ text: HOSTILE, repo: HOSTILE }],
+        },
+      ],
+    });
+
+  test("a hostile digest item introduces no executable markup", () => {
+    const out = hostileRender();
+    // Only live markup counts. `onerror=` survives as inert text inside
+    // `&lt;img ... &gt;`, which is the escaping working, not a leak — so the
+    // assertion is on tag openings and on the raw payload, never on a bare
+    // substring that reads the same escaped and unescaped.
+    for (const needle of ["<script", "<img", "<iframe", "<svg"]) {
+      expect(out.includes(needle), `hostile digest leaked live ${needle}`).toBe(false);
+    }
+    expect(out.includes(HOSTILE), "hostile payload rendered verbatim").toBe(false);
+  });
+
+  test("the hostile text still renders, escaped rather than dropped", () => {
+    expect(hostileRender()).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  test("backtick-to-<code> cannot be used to smuggle markup", () => {
+    // fmtCopy escapes BEFORE it converts `spans`, so a backtick-wrapped tag
+    // comes out as escaped text inside <code>, never as live markup.
+    const out = renderDashboard({
+      ...coldStartFixture,
+      digests: [
+        {
+          repo: "r1",
+          generated_at: "2026-08-19 06:00",
+          runs_behind: 1,
+          age_days: 1,
+          items: [{ text: "run `<script>alert(3)</script>` now", repo: "r1" }],
+        },
+      ],
+    });
+    expect(out).not.toContain("<script");
+    expect(out).toContain("<code>&lt;script&gt;alert(3)&lt;/script&gt;</code>");
+  });
+});

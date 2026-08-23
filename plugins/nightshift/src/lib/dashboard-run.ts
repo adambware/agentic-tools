@@ -19,6 +19,7 @@ import type {
   Severity,
   Suppression,
   Weight,
+  DedupeKey,
 } from "./types.js";
 import { WEIGHT_MULTIPLIER } from "./types.js";
 import { computeStaleness, daysBetween, intervalDays } from "./staleness.js";
@@ -64,6 +65,9 @@ export interface RepoInput {
   name: string;
   path?: string; // configured path, for the state-2 message
   pack_present: boolean;
+  // Set when the pack exists but could not be read (malformed YAML/JSONL).
+  // Distinct from pack_present:false, which means "nothing is there".
+  read_error?: string;
   lanes: LaneInput[];
   findings: OpenFinding[]; // open only (resolved_at unset)
   suppressions: SuppressionView[];
@@ -267,6 +271,28 @@ export function sparkline({ samples, windowDays, polarity, unit, id }: SparkOpts
  *  with the same constant so the copy ("older than N days") stays true. */
 export const ORPHAN_AGE_DAYS = 7;
 
+/** A DOM id for one finding card, unique across repos AND across findings that
+ *  share a surface. `dedupe_key.surface` alone is not unique twice over: the
+ *  full key is {surface, symptom, root_cause}, so one surface can carry several
+ *  findings, and taxonomy ids (QB-SEC-01) are meant to repeat across repos. A
+ *  bare id="<surface>" therefore produced duplicate ids, and every verdict and
+ *  coverage link jumped to whichever card the first repo happened to render. */
+export function findingAnchor(f: { repo?: string; dedupe_key: DedupeKey }): string {
+  const slug = (x: unknown) =>
+    String(x ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+  const key = [f.repo, f.dedupe_key.surface, f.dedupe_key.symptom, f.dedupe_key.root_cause]
+    .map(slug)
+    .join("--");
+  // Keep it bounded and collision-resistant: a readable prefix plus a short
+  // digest of the whole key, so two long symptoms that share a prefix differ.
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = ((h * 33) ^ key.charCodeAt(i)) >>> 0;
+  return `f-${key.slice(0, 60)}-${h.toString(36)}`;
+}
+
 /* ---------- verdict strip: the five-second answer ---------- */
 
 interface VerdictItem {
@@ -284,8 +310,15 @@ function verdictHtml(items: VerdictItem[], meta: string): string {
       <p class="v-sub">${esc(meta)}</p>
     </section>`;
   }
-  const shown = items.slice(0, 4),
-    rest = items.length - shown.length;
+  // The strip is the alarm, and only four items fit above the fold, so the four
+  // shown must be the four WORST — not the first four the sources happened to
+  // emit. Sort is stable, so insertion order still breaks ties within a tone.
+  const TONE_ORDER: Record<string, number> = { bad: 0, warn: 1, neutral: 2, ok: 3 };
+  const ranked = [...items].sort(
+    (a, b) => (TONE_ORDER[a.tone] ?? 9) - (TONE_ORDER[b.tone] ?? 9),
+  );
+  const shown = ranked.slice(0, 4),
+    rest = ranked.length - shown.length;
   return `<section class="verdict act" aria-labelledby="v-h">
     <h1 id="v-h"><span class="v-mark" aria-hidden="true">▲</span>${items.length} ${items.length === 1 ? "thing needs" : "things need"} you</h1>
     <ul class="v-list">
@@ -305,14 +338,29 @@ function verdictHtml(items: VerdictItem[], meta: string): string {
 }
 
 /** Latest cost row per (repo, lane) that is an error and not yet followed by a
- *  successful run — the strip's third source. */
+ *  successful run — the strip's third source.
+ *
+ *  Run records count as evidence of recovery, not just cost rows. An interactive
+ *  re-run records a run but no cost line (that is the documented `source:manual`
+ *  gap), so keying on cost rows alone would leave the strip screaming about a
+ *  failure the operator already fixed, while the repo header two sections down
+ *  reports the newer run as successful. */
 function latestFailedRuns(repo: RepoInput): CostRecord[] {
   const byLane = new Map<Lane, CostRecord>();
   for (const c of repo.costs) {
     const cur = byLane.get(c.lane);
     if (!cur || c.ts > cur.ts) byLane.set(c.lane, c);
   }
-  return [...byLane.values()].filter((c) => c.status === "error");
+  const newestRunByLane = new Map<Lane, string>();
+  for (const r of repo.run_records) {
+    const cur = newestRunByLane.get(r.lane);
+    if (!cur || r.ts > cur) newestRunByLane.set(r.lane, r.ts);
+  }
+  return [...byLane.values()].filter((c) => {
+    if (c.status !== "error") return false;
+    const newestRun = newestRunByLane.get(c.lane);
+    return !(newestRun && newestRun > c.ts);
+  });
 }
 
 function computeVerdict(input: DashboardInput): VerdictItem[] {
@@ -337,7 +385,7 @@ function computeVerdict(input: DashboardInput): VerdictItem[] {
           kind: "verify",
           tone: "bad",
           text: `${f.dedupe_key.surface} — ${f.title}`,
-          href: f.dedupe_key.surface,
+          href: findingAnchor(f),
           meta: `${repo.name} · ${f.severity} · awaiting your verification${f.age_days != null ? ` · ${f.age_days}d open` : ""}`,
         });
       }
@@ -355,16 +403,23 @@ function computeVerdict(input: DashboardInput): VerdictItem[] {
       });
     }
   }
-  // Source 2: registry entries past interval (overdue only; `due` waits).
+  // Source 2: registry entries past interval. `due` (1x-2x interval) counts —
+  // a6-dashboard.md defines this source as "registry entries past
+  // `interval_days`", and a due entry is past its interval by definition.
+  // `current` and `never` stay out: one is not due, the other has never been
+  // reviewed and is first-class-distinct from rotting (plan §15.9).
   for (const repo of input.repos) {
     for (const lane of repo.lanes) {
       if (lane.state !== "on") continue;
       for (const e of lane.entries) {
-        if (coverState(e, input.today) === "overdue") {
+        const cs = coverState(e, input.today);
+        if (cs === "overdue" || cs === "due") {
           const ago = daysBetween(e.last_reviewed!, input.today);
           items.push({
-            kind: "overdue",
-            tone: "bad",
+            kind: cs,
+            // due and overdue are both actionable but not equally urgent;
+            // reuse the coverage tones so the strip does not flatten them.
+            tone: COVER[cs].tone,
             text: `${e.id} — ${e.title}`,
             href: repo.name,
             meta: `${repo.name} · ${e.weight} weight · ${ago}d since review (interval ${intervalDays(e)}d)`,
@@ -491,7 +546,7 @@ function laneTableHtml(repo: RepoInput, lane: LaneInput, today: string): string 
           r.findings.length
             ? r.findings
                 .map(
-                  (f) => `<a class="fpill s-${SEV[f.severity].tone}" href="#${esc(f.dedupe_key.surface)}">
+                  (f) => `<a class="fpill s-${SEV[f.severity].tone}" href="#${esc(findingAnchor(f))}">
             <span class="sabbr">${SEV[f.severity].abbr}</span>${esc(f.dedupe_key.surface)}${f.needs_human_verification ? '<span class="verify" title="needs human verification">✋</span>' : ""}</a>`,
                 )
                 .join("")
@@ -580,9 +635,13 @@ interface TrendSeries {
 }
 
 function computeTrends(input: DashboardInput): TrendSeries {
-  const daily = maxTsDaily(input.repos.flatMap((r) => r.daily)).filter((l) =>
-    inTrendWindow(l.date, input.today),
-  );
+  // Reduce per repo, THEN flatten. Flattening first would let two repos'
+  // same-day rows for the same lane collide on the `date|lane` key, so one
+  // repo's numbers would silently stand in for every repo — the opposite of
+  // the per-date mean across (repo, lane) this function goes on to compute.
+  const daily = input.repos
+    .flatMap((r) => maxTsDaily(r.daily))
+    .filter((l) => inTrendWindow(l.date, input.today));
   const byDate = new Map<string, DailyMetrics[]>();
   for (const l of daily) byDate.set(l.date, [...(byDate.get(l.date) ?? []), l]);
   const dates = [...byDate.keys()].sort();
@@ -750,7 +809,7 @@ function findingsHtml(input: DashboardInput): string {
         f.needs_human_verification && !f.filed
           ? `<p class="fd-meta">✋ Needs human verification · not yet filed to Linear</p>`
           : "";
-      return `<div class="fd" id="${esc(f.dedupe_key.surface)}">
+      return `<div class="fd" id="${esc(findingAnchor(f))}">
     <div class="fd-hd"><span class="fpill s-${sev.tone}"><span class="sabbr">${sev.abbr}</span>${esc(f.dedupe_key.surface)}</span>
       <strong>${esc(f.title)}</strong>
       <span class="fd-meta">${esc(metaBits.join(" · "))}</span></div>
@@ -1029,6 +1088,15 @@ function coverageHtml(input: DashboardInput): string {
   }
   const articles = input.repos
     .map((repo) => {
+      if (repo.read_error) {
+        // The pack is there but unreadable. Naming the parse error beats the
+        // "not there" copy, which would send the operator to re-onboard a repo
+        // that is actually onboarded and merely has one corrupt line.
+        return `<article class="repo" id="gap-${esc(repo.name)}">
+    <div class="repo-hd"><h3>${esc(repo.name)}</h3><span class="repo-run fail">unreadable</span></div>
+    <p class="lane-off"><strong class="t-bad">Cannot read this repo.</strong> <code>.nightshift/</code> is present at <code>${esc(repo.path ?? "?")}</code> but could not be parsed: <code>${esc(repo.read_error)}</code>. Every other repo on this page is unaffected.</p>
+  </article>`;
+      }
       if (!repo.pack_present) {
         // state 2: configured but pack missing
         return `<article class="repo" id="gap-${esc(repo.name)}">
@@ -1066,7 +1134,27 @@ function verdictMeta(input: DashboardInput): string {
   return `${base} · ${cover}`;
 }
 
-export function renderDashboard(input: DashboardInput): string {
+/** costs.jsonl is append-only, so a retried `record-cost` legitimately leaves two
+ *  rows for one run. Nine separate places in this file aggregate `repo.costs`
+ *  (trends, footer totals, hygiene coverage, per-lane last-run, failure rows),
+ *  so the reduction happens ONCE here on the way in — patching the call sites
+ *  individually would leave the next one added silently double-counting. */
+function dedupeCostsByRunId(input: DashboardInput): DashboardInput {
+  return {
+    ...input,
+    repos: input.repos.map((r) => {
+      const best = new Map<string, (typeof r.costs)[number]>();
+      for (const c of r.costs) {
+        const cur = best.get(c.run_id);
+        if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+      }
+      return { ...r, costs: [...best.values()] };
+    }),
+  };
+}
+
+export function renderDashboard(rawInput: DashboardInput): string {
+  const input = dedupeCostsByRunId(rawInput);
   const items = computeVerdict(input);
   const trends = computeTrends(input);
   const body = [

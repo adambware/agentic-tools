@@ -3,7 +3,7 @@
 // costs.jsonl, run records), stat referenced evidence files, parse the latest
 // $OPS/digests/<repo>.md when present, then hand the assembled DashboardInput
 // to the pure renderer and atomically write the HTML. Pure of process.argv.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CostRecord, DailyMetrics, Finding, Lane, RunMetrics, Suppression } from "./types.js";
 import { readYaml, readJsonl, atomicWrite } from "./io.js";
@@ -25,18 +25,39 @@ const LANES: Lane[] = ["security", "design"];
 
 /* ---------- config ---------- */
 
+// $OPS/config.yml is written by hand. The documented shape (a7-ops-launcher.md
+// §config.yml, plan §WS7) is `{path, lanes: [security, design], enabled: true}`
+// — a lane ARRAY, a boolean `enabled`, and no `name`. Accept that shape as
+// canonical, and keep tolerating the lane-map form so neither spelling silently
+// produces a dashboard with both lanes off and a repo called "undefined".
 interface ConfigRepo {
-  name: string;
+  name?: string;
   path: string;
-  lanes?: Partial<Record<Lane, boolean | "on" | "off">>;
+  enabled?: boolean;
+  lanes?: Lane[] | Partial<Record<Lane, boolean | "on" | "off">>;
 }
 
 interface OpsConfig {
   repos?: ConfigRepo[];
 }
 
+/** Repo display name: explicit `name`, else the path's basename. Never "undefined". */
+function repoName(repo: ConfigRepo): string {
+  if (repo.name && repo.name.length > 0) return repo.name;
+  const cleaned = String(repo.path ?? "").replace(/\/+$/, "");
+  return cleaned.slice(cleaned.lastIndexOf("/") + 1) || "unnamed";
+}
+
+/** A repo is considered unless it opts out with `enabled: false`. */
+function repoEnabled(repo: ConfigRepo): boolean {
+  return repo.enabled !== false;
+}
+
 function laneEnabled(repo: ConfigRepo, lane: Lane): boolean {
-  const v = repo.lanes?.[lane];
+  const lanes = repo.lanes;
+  if (lanes === undefined) return false;
+  if (Array.isArray(lanes)) return lanes.includes(lane);
+  const v = lanes[lane];
   return v === true || v === "on";
 }
 
@@ -90,11 +111,16 @@ function loadRunRecords(metricsDir: string): RunMetrics[] {
   return out;
 }
 
-function loadSuppressions(packDir: string): Suppression[] {
+/** Only UNEXPIRED suppressions. The dedupe engine already treats an expired
+ *  entry as lifted (dedupekey.ts activeSuppression), so rendering it as an
+ *  "active suppression" would tell the operator a vulnerability is still
+ *  accepted-risk after the acceptance ran out — the auto-lift contract read
+ *  backwards. `expires` is inclusive, matching activeSuppression. */
+function loadSuppressions(packDir: string, today: string): Suppression[] {
   const doc = readYaml<{ suppressions?: Suppression[] }>(
     join(packDir, "findings", "suppressions.yml"),
   );
-  return doc?.suppressions ?? [];
+  return (doc?.suppressions ?? []).filter((s) => s.expires >= today);
 }
 
 function laneInput(packDir: string, lane: Lane, enabled: boolean): LaneInput {
@@ -132,7 +158,7 @@ function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
   const packDir = join(cfg.path, ".nightshift");
   if (!existsSync(packDir)) {
     return {
-      name: cfg.name,
+      name: repoName(cfg),
       path: cfg.path,
       pack_present: false,
       lanes: [],
@@ -163,7 +189,7 @@ function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
       : undefined;
     return {
       ...f,
-      repo: cfg.name,
+      repo: repoName(cfg),
       lane: lanesByEntryOwner.get(f.dedupe_key.surface) ?? (f.anchor ? "design" : "security"),
       title: f.dedupe_key.symptom,
       ...(evidencePath ? { evidence_present: existsSync(evidencePath) } : {}),
@@ -171,12 +197,12 @@ function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
     };
   });
   return {
-    name: cfg.name,
+    name: repoName(cfg),
     path: cfg.path,
     pack_present: true,
     lanes,
     findings,
-    suppressions: loadSuppressions(packDir),
+    suppressions: loadSuppressions(packDir, today),
     run_records,
     daily,
     costs,
@@ -201,7 +227,7 @@ function scanOrphanRunDirs(
         continue;
       }
       if (age_days >= ORPHAN_AGE_DAYS) {
-        out.push({ path: `${cfg.name}/.nightshift/.run/${d}/`, age_days });
+        out.push({ path: `${repoName(cfg)}/.nightshift/.run/${d}/`, age_days });
       }
     }
   }
@@ -214,13 +240,29 @@ function evidenceStats(opsHome: string, referenced: Set<string>) {
   let files = 0,
     bytes = 0,
     unreferenced = 0;
+  // lstat, never stat: a symlink cycle under evidence/ would recurse forever and
+  // hang every dashboard rebuild, and a link out to a large tree would silently
+  // bill someone else's bytes to the evidence store. Per-entry errors (broken
+  // link, permission) skip that entry rather than killing the whole scan.
   const walk = (dir: string, rel: string) => {
-    for (const name of readdirSync(dir).sort()) {
+    let names: string[];
+    try {
+      names = readdirSync(dir).sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
       const full = join(dir, name);
       const relPath = `${rel}${name}`;
-      const st = statSync(full);
+      let st;
+      try {
+        st = lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(full, `${relPath}/`);
-      else {
+      else if (st.isFile()) {
         files++;
         bytes += st.size;
         if (!referenced.has(`evidence/${relPath}`)) unreferenced++;
@@ -249,14 +291,40 @@ export function runDashboard(opts: DashboardOpts): { html: string; outPath: stri
   const opsHome = dirname(resolve(opts.configPath));
   const config = readYaml<OpsConfig>(opts.configPath) ?? {};
   const repoCfgs = config.repos ?? [];
-  const loaded = repoCfgs.map((cfg) => ({ cfg, input: loadRepo(cfg, opsHome, opts.today) }));
+  // Isolate per repo. One truncated JSONL line in ONE repo used to throw out of
+  // the whole map, so `bin/dashboard` exited non-zero and the operator kept
+  // staring at yesterday's HTML for every OTHER repo too — the multi-repo
+  // living document taken down by a single bad line.
+  const loaded = repoCfgs
+    .filter((cfg) => repoEnabled(cfg))
+    .map((cfg) => {
+      try {
+        return { cfg, input: loadRepo(cfg, opsHome, opts.today) };
+      } catch (err) {
+        return {
+          cfg,
+          input: {
+            name: repoName(cfg),
+            path: cfg.path,
+            pack_present: true,
+            read_error: err instanceof Error ? err.message : String(err),
+            lanes: [],
+            findings: [],
+            suppressions: [],
+            run_records: [],
+            daily: [],
+            costs: [],
+          } satisfies RepoInput,
+        };
+      }
+    });
 
   const digests: DigestInput[] = [];
   for (const { cfg, input } of loaded) {
-    const digestPath = join(opsHome, "digests", `${cfg.name}.md`);
+    const digestPath = join(opsHome, "digests", `${repoName(cfg)}.md`);
     const digest = parseDigest(
       digestPath,
-      cfg.name,
+      repoName(cfg),
       runsSinceDigest(digestPath, input.run_records),
       opts.today,
     );

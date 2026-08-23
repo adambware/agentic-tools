@@ -7399,7 +7399,7 @@ function resolveToday(args) {
 }
 
 // src/lib/dashboard-cli.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } from "node:fs";
+import { existsSync as existsSync3, lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } from "node:fs";
 import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
 
 // src/lib/io.ts
@@ -7526,8 +7526,14 @@ function reqNum(o, k, errors, where) {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
+function isRealDate(s) {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !DATE_RE.test(o[k]))
+  if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqDedupeKey(o, errors, where) {
@@ -7644,14 +7650,22 @@ function validateCostRecord(x) {
   reqEnum(x, "lane", LANES, errors, "cost-record");
   reqDate(x, "date", errors, "cost-record");
   reqStr(x, "ts", errors, "cost-record");
+  reqNum(x, "usd", errors, "cost-record");
+  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
+    errors.push("cost-record: usd must be >= 0");
   for (const k of [
-    "usd",
     "input_tokens",
     "output_tokens",
     "cache_read_tokens",
     "cache_creation_tokens"
-  ])
+  ]) {
     reqNum(x, k, errors, "cost-record");
+    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
+      const n = x[k];
+      if (n < 0 || !Number.isInteger(n))
+        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+    }
+  }
   reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
   reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
   if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
@@ -7840,6 +7854,13 @@ function sparkline({ samples, windowDays, polarity, unit, id }) {
   </div>`;
 }
 var ORPHAN_AGE_DAYS = 7;
+function findingAnchor(f) {
+  const slug = (x) => String(x ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const key = [f.repo, f.dedupe_key.surface, f.dedupe_key.symptom, f.dedupe_key.root_cause].map(slug).join("--");
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) h = (h * 33 ^ key.charCodeAt(i)) >>> 0;
+  return `f-${key.slice(0, 60)}-${h.toString(36)}`;
+}
 function verdictHtml(items, meta) {
   if (!items.length) {
     return `<section class="verdict clear" aria-labelledby="v-h">
@@ -7847,7 +7868,11 @@ function verdictHtml(items, meta) {
       <p class="v-sub">${esc(meta)}</p>
     </section>`;
   }
-  const shown = items.slice(0, 4), rest = items.length - shown.length;
+  const TONE_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
+  const ranked = [...items].sort(
+    (a, b) => (TONE_ORDER[a.tone] ?? 9) - (TONE_ORDER[b.tone] ?? 9)
+  );
+  const shown = ranked.slice(0, 4), rest = ranked.length - shown.length;
   return `<section class="verdict act" aria-labelledby="v-h">
     <h1 id="v-h"><span class="v-mark" aria-hidden="true">\u25B2</span>${items.length} ${items.length === 1 ? "thing needs" : "things need"} you</h1>
     <ul class="v-list">
@@ -7869,7 +7894,16 @@ function latestFailedRuns(repo) {
     const cur = byLane.get(c.lane);
     if (!cur || c.ts > cur.ts) byLane.set(c.lane, c);
   }
-  return [...byLane.values()].filter((c) => c.status === "error");
+  const newestRunByLane = /* @__PURE__ */ new Map();
+  for (const r of repo.run_records) {
+    const cur = newestRunByLane.get(r.lane);
+    if (!cur || r.ts > cur) newestRunByLane.set(r.lane, r.ts);
+  }
+  return [...byLane.values()].filter((c) => {
+    if (c.status !== "error") return false;
+    const newestRun = newestRunByLane.get(c.lane);
+    return !(newestRun && newestRun > c.ts);
+  });
 }
 function computeVerdict(input) {
   const items = [];
@@ -7891,7 +7925,7 @@ function computeVerdict(input) {
           kind: "verify",
           tone: "bad",
           text: `${f.dedupe_key.surface} \u2014 ${f.title}`,
-          href: f.dedupe_key.surface,
+          href: findingAnchor(f),
           meta: `${repo.name} \xB7 ${f.severity} \xB7 awaiting your verification${f.age_days != null ? ` \xB7 ${f.age_days}d open` : ""}`
         });
       }
@@ -7912,11 +7946,14 @@ function computeVerdict(input) {
     for (const lane of repo.lanes) {
       if (lane.state !== "on") continue;
       for (const e of lane.entries) {
-        if (coverState(e, input.today) === "overdue") {
+        const cs = coverState(e, input.today);
+        if (cs === "overdue" || cs === "due") {
           const ago = daysBetween(e.last_reviewed, input.today);
           items.push({
-            kind: "overdue",
-            tone: "bad",
+            kind: cs,
+            // due and overdue are both actionable but not equally urgent;
+            // reuse the coverage tones so the strip does not flatten them.
+            tone: COVER[cs].tone,
             text: `${e.id} \u2014 ${e.title}`,
             href: repo.name,
             meta: `${repo.name} \xB7 ${e.weight} weight \xB7 ${ago}d since review (interval ${intervalDays(e)}d)`
@@ -8018,7 +8055,7 @@ function laneTableHtml(repo, lane, today) {
           <span class="g" aria-hidden="true">${c.glyph}</span>${esc(c.label)}</span></td>
         <td class="when">${last ? `${esc(last)} <span class="ago">${esc(ago)}</span>` : '<span class="ago">never</span>'}</td>
         <td class="find">${r.findings.length ? r.findings.map(
-      (f) => `<a class="fpill s-${SEV[f.severity].tone}" href="#${esc(f.dedupe_key.surface)}">
+      (f) => `<a class="fpill s-${SEV[f.severity].tone}" href="#${esc(findingAnchor(f))}">
             <span class="sabbr">${SEV[f.severity].abbr}</span>${esc(f.dedupe_key.surface)}${f.needs_human_verification ? '<span class="verify" title="needs human verification">\u270B</span>' : ""}</a>`
     ).join("") : '<span class="none">\u2014</span>'}</td>
       </tr>`;
@@ -8078,9 +8115,7 @@ function inTrendWindow(date, today) {
   return d >= 0 && d < TREND_WINDOW_DAYS;
 }
 function computeTrends(input) {
-  const daily = maxTsDaily(input.repos.flatMap((r) => r.daily)).filter(
-    (l) => inTrendWindow(l.date, input.today)
-  );
+  const daily = input.repos.flatMap((r) => maxTsDaily(r.daily)).filter((l) => inTrendWindow(l.date, input.today));
   const byDate = /* @__PURE__ */ new Map();
   for (const l of daily) byDate.set(l.date, [...byDate.get(l.date) ?? [], l]);
   const dates = [...byDate.keys()].sort();
@@ -8149,8 +8184,8 @@ function trendsHtml(input, t) {
 function decisionsHtml(input) {
   const anyRuns = input.repos.some((r) => r.run_records.length > 0);
   if (!input.digests.length) {
-    const repoName = input.repos.find((r) => r.pack_present)?.name;
-    const cmd = `<code>ns digest ${esc(repoName ?? "<repo>")}</code>`;
+    const repoName2 = input.repos.find((r) => r.pack_present)?.name;
+    const cmd = `<code>ns digest ${esc(repoName2 ?? "<repo>")}</code>`;
     const copy = anyRuns ? `No digest yet \u2014 run ${cmd} to write the first one.` : `No digest yet \u2014 the first digest is written after the first run (${cmd}).`;
     return `<section class="blk" id="decisions">
   <h2>Decisions needed</h2>
@@ -8196,7 +8231,7 @@ function findingsHtml(input) {
       evidence = f.evidence_present === false ? `<span class="ev ev-gone">\u{1F4CE} evidence no longer on disk (pruned or never copied) \u2014 the anchor value above still stands</span>` : `<a class="ev" href="${esc(f.evidence)}">\u{1F4CE} evidence: ${esc(f.evidence.split("/").pop())}</a>`;
     }
     const verifyLine = f.needs_human_verification && !f.filed ? `<p class="fd-meta">\u270B Needs human verification \xB7 not yet filed to Linear</p>` : "";
-    return `<div class="fd" id="${esc(f.dedupe_key.surface)}">
+    return `<div class="fd" id="${esc(findingAnchor(f))}">
     <div class="fd-hd"><span class="fpill s-${sev.tone}"><span class="sabbr">${sev.abbr}</span>${esc(f.dedupe_key.surface)}</span>
       <strong>${esc(f.title)}</strong>
       <span class="fd-meta">${esc(metaBits.join(" \xB7 "))}</span></div>
@@ -8432,6 +8467,12 @@ function coverageHtml(input) {
 </section>`;
   }
   const articles = input.repos.map((repo) => {
+    if (repo.read_error) {
+      return `<article class="repo" id="gap-${esc(repo.name)}">
+    <div class="repo-hd"><h3>${esc(repo.name)}</h3><span class="repo-run fail">unreadable</span></div>
+    <p class="lane-off"><strong class="t-bad">Cannot read this repo.</strong> <code>.nightshift/</code> is present at <code>${esc(repo.path ?? "?")}</code> but could not be parsed: <code>${esc(repo.read_error)}</code>. Every other repo on this page is unaffected.</p>
+  </article>`;
+    }
     if (!repo.pack_present) {
       return `<article class="repo" id="gap-${esc(repo.name)}">
     <div class="repo-hd"><h3>${esc(repo.name)}</h3><span class="repo-run fail">pack missing</span></div>
@@ -8463,7 +8504,21 @@ function verdictMeta(input) {
   if (!anyRuns) return `${base} \xB7 ${cover} \xB7 no runs recorded yet`;
   return `${base} \xB7 ${cover}`;
 }
-function renderDashboard(input) {
+function dedupeCostsByRunId(input) {
+  return {
+    ...input,
+    repos: input.repos.map((r) => {
+      const best = /* @__PURE__ */ new Map();
+      for (const c of r.costs) {
+        const cur = best.get(c.run_id);
+        if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+      }
+      return { ...r, costs: [...best.values()] };
+    })
+  };
+}
+function renderDashboard(rawInput) {
+  const input = dedupeCostsByRunId(rawInput);
   const items = computeVerdict(input);
   const trends = computeTrends(input);
   const body = [
@@ -8485,8 +8540,19 @@ function renderDashboard(input) {
 
 // src/lib/dashboard-cli.ts
 var LANES2 = ["security", "design"];
+function repoName(repo) {
+  if (repo.name && repo.name.length > 0) return repo.name;
+  const cleaned = String(repo.path ?? "").replace(/\/+$/, "");
+  return cleaned.slice(cleaned.lastIndexOf("/") + 1) || "unnamed";
+}
+function repoEnabled(repo) {
+  return repo.enabled !== false;
+}
 function laneEnabled(repo, lane) {
-  const v2 = repo.lanes?.[lane];
+  const lanes = repo.lanes;
+  if (lanes === void 0) return false;
+  if (Array.isArray(lanes)) return lanes.includes(lane);
+  const v2 = lanes[lane];
   return v2 === true || v2 === "on";
 }
 function parseDigest(path, repo, runsSince, today) {
@@ -8523,11 +8589,11 @@ function loadRunRecords(metricsDir) {
   }
   return out;
 }
-function loadSuppressions(packDir) {
+function loadSuppressions(packDir, today) {
   const doc = readYaml(
     join3(packDir, "findings", "suppressions.yml")
   );
-  return doc?.suppressions ?? [];
+  return (doc?.suppressions ?? []).filter((s) => s.expires >= today);
 }
 function laneInput(packDir, lane, enabled) {
   if (!enabled) return { lane, state: "disabled", entries: [] };
@@ -8555,7 +8621,7 @@ function loadRepo(cfg, opsHome, today) {
   const packDir = join3(cfg.path, ".nightshift");
   if (!existsSync3(packDir)) {
     return {
-      name: cfg.name,
+      name: repoName(cfg),
       path: cfg.path,
       pack_present: false,
       lanes: [],
@@ -8581,7 +8647,7 @@ function loadRepo(cfg, opsHome, today) {
     const evidencePath = evidence ? isAbsolute(evidence) ? evidence : join3(opsHome, evidence) : void 0;
     return {
       ...f,
-      repo: cfg.name,
+      repo: repoName(cfg),
       lane: lanesByEntryOwner.get(f.dedupe_key.surface) ?? (f.anchor ? "design" : "security"),
       title: f.dedupe_key.symptom,
       ...evidencePath ? { evidence_present: existsSync3(evidencePath) } : {},
@@ -8589,12 +8655,12 @@ function loadRepo(cfg, opsHome, today) {
     };
   });
   return {
-    name: cfg.name,
+    name: repoName(cfg),
     path: cfg.path,
     pack_present: true,
     lanes,
     findings,
-    suppressions: loadSuppressions(packDir),
+    suppressions: loadSuppressions(packDir, today),
     run_records,
     daily,
     costs
@@ -8615,7 +8681,7 @@ function scanOrphanRunDirs(repos, now) {
         continue;
       }
       if (age_days >= ORPHAN_AGE_DAYS) {
-        out.push({ path: `${cfg.name}/.nightshift/.run/${d}/`, age_days });
+        out.push({ path: `${repoName(cfg)}/.nightshift/.run/${d}/`, age_days });
       }
     }
   }
@@ -8626,12 +8692,24 @@ function evidenceStats(opsHome, referenced) {
   if (!existsSync3(evDir)) return void 0;
   let files = 0, bytes = 0, unreferenced = 0;
   const walk = (dir, rel) => {
-    for (const name of readdirSync2(dir).sort()) {
+    let names;
+    try {
+      names = readdirSync2(dir).sort();
+    } catch {
+      return;
+    }
+    for (const name of names) {
       const full = join3(dir, name);
       const relPath = `${rel}${name}`;
-      const st = statSync(full);
+      let st;
+      try {
+        st = lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(full, `${relPath}/`);
-      else {
+      else if (st.isFile()) {
         files++;
         bytes += st.size;
         if (!referenced.has(`evidence/${relPath}`)) unreferenced++;
@@ -8648,13 +8726,33 @@ function runDashboard(opts) {
   const opsHome = dirname2(resolve(opts.configPath));
   const config = readYaml(opts.configPath) ?? {};
   const repoCfgs = config.repos ?? [];
-  const loaded = repoCfgs.map((cfg) => ({ cfg, input: loadRepo(cfg, opsHome, opts.today) }));
+  const loaded = repoCfgs.filter((cfg) => repoEnabled(cfg)).map((cfg) => {
+    try {
+      return { cfg, input: loadRepo(cfg, opsHome, opts.today) };
+    } catch (err) {
+      return {
+        cfg,
+        input: {
+          name: repoName(cfg),
+          path: cfg.path,
+          pack_present: true,
+          read_error: err instanceof Error ? err.message : String(err),
+          lanes: [],
+          findings: [],
+          suppressions: [],
+          run_records: [],
+          daily: [],
+          costs: []
+        }
+      };
+    }
+  });
   const digests = [];
   for (const { cfg, input: input2 } of loaded) {
-    const digestPath = join3(opsHome, "digests", `${cfg.name}.md`);
+    const digestPath = join3(opsHome, "digests", `${repoName(cfg)}.md`);
     const digest = parseDigest(
       digestPath,
-      cfg.name,
+      repoName(cfg),
       runsSinceDigest(digestPath, input2.run_records),
       opts.today
     );

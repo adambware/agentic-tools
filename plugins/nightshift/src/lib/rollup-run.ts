@@ -57,6 +57,19 @@ function computeFpr(
   return Math.round((rejected / created) * 100);
 }
 
+/** costs.jsonl is append-only, so a retried `record-cost` legitimately writes a
+ *  second row for the same run_id. Summing both would bill one run twice and
+ *  inflate every cost window with no error. Keep the max-ts row per run_id —
+ *  the same last-write-wins reduction daily.jsonl already relies on. */
+function dedupeByRunId(costs: CostRecord[]): CostRecord[] {
+  const best = new Map<string, CostRecord>();
+  for (const c of costs) {
+    const cur = best.get(c.run_id);
+    if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+  }
+  return [...best.values()];
+}
+
 function inWindow(recordDate: string, endDate: string, windowDays: number): boolean {
   const d = daysBetween(recordDate, endDate);
   return d >= 0 && d <= windowDays - 1;
@@ -134,7 +147,7 @@ export function computeDailyRollup(input: RollupInput): DailyMetrics {
   const fpr_30d = computeFpr(laneRuns, date, 30);
 
   // Cost windows — filter cost records to this lane only (v3 A2, additive).
-  const laneCosts = (input.costRecords ?? []).filter((c) => c.lane === lane);
+  const laneCosts = dedupeByRunId((input.costRecords ?? []).filter((c) => c.lane === lane));
   const cost_usd_7d = costSum(laneCosts, date, 7);
   const cost_usd_30d = costSum(laneCosts, date, 30);
   const cost_usd_avg_per_run_30d = costAvgPerRun(laneCosts, date, 30);

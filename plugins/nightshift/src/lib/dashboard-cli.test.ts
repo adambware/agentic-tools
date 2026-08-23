@@ -14,6 +14,7 @@ import {
   existsSync,
   readFileSync,
   unlinkSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -251,5 +252,124 @@ describe("runDashboard — missing config", () => {
     const configPath = join(dir, "config.yml");
     const outPath = join(dir, "dashboard.html");
     expect(() => runDashboard(baseOpts(configPath, outPath))).toThrow(/config not found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config contract: the shape the operator is actually told to write
+// ---------------------------------------------------------------------------
+
+describe("the documented $OPS/config.yml shape is consumable", () => {
+  /** Exactly the shape in docs/v3/a7-ops-launcher.md and plan §WS7:
+   *  a lane ARRAY, a boolean `enabled`, and no `name` key. */
+  function setupDocumentedConfig(enabled = true) {
+    const dir = makeTmpDir("ns-dashboard-doccfg-");
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir, { recursive: true });
+    const repoDir = join(dir, "novudesk");
+    cpSync(NOVUDESK_PACK, join(repoDir, ".nightshift"), { recursive: true });
+    const configPath = join(opsDir, "config.yml");
+    writeFileSync(
+      configPath,
+      [
+        "repos:",
+        `  - path: "${repoDir}"`,
+        "    lanes: [security, design]",
+        `    enabled: ${enabled}`,
+        "dashboard: { out: dashboard.html, open_after_run: true }",
+        "",
+      ].join("\n"),
+    );
+    return { configPath, outPath: join(opsDir, "dashboard.html") };
+  }
+
+  it("a lane ARRAY enables those lanes (not 'lane not enabled' for both)", () => {
+    const { configPath, outPath } = setupDocumentedConfig();
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).not.toContain("Lane not enabled for this repo.");
+  });
+
+  it("a missing `name` falls back to the path basename, never 'undefined'", () => {
+    const { configPath, outPath } = setupDocumentedConfig();
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("novudesk");
+    expect(html).not.toContain("undefined");
+  });
+
+  it("`enabled: false` drops the repo from the page entirely", () => {
+    const { configPath, outPath } = setupDocumentedConfig(false);
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).not.toContain("novudesk");
+  });
+
+  it("the lane-MAP spelling still works — both config dialects are accepted", () => {
+    const { configPath, outPath } = setupOps();
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).not.toContain("Lane not enabled for this repo.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One bad repo must not take down the multi-repo page
+// ---------------------------------------------------------------------------
+
+describe("per-repo failure isolation", () => {
+  it("a corrupt JSONL line in one repo leaves the other repos rendered", () => {
+    const dir = makeTmpDir("ns-dashboard-iso-");
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir, { recursive: true });
+    const goodRepo = join(dir, "goodrepo");
+    const badRepo = join(dir, "badrepo");
+    cpSync(NOVUDESK_PACK, join(goodRepo, ".nightshift"), { recursive: true });
+    cpSync(NOVUDESK_PACK, join(badRepo, ".nightshift"), { recursive: true });
+    // A truncated append — the realistic corruption for an append-only file.
+    appendFileSync(join(badRepo, ".nightshift", "metrics", "daily.jsonl"), '{"date":"2026-\n');
+
+    const configPath = join(opsDir, "config.yml");
+    writeFileSync(
+      configPath,
+      [
+        "repos:",
+        `  - path: "${goodRepo}"`,
+        "    lanes: [security]",
+        `  - path: "${badRepo}"`,
+        "    lanes: [security]",
+        "",
+      ].join("\n"),
+    );
+    const { html } = runDashboard(baseOpts(configPath, join(opsDir, "dashboard.html")));
+    // The bad repo is named and marked unreadable...
+    expect(html).toContain("badrepo");
+    expect(html).toContain("unreadable");
+    // ...and the good repo still rendered its real content.
+    expect(html).toContain("goodrepo");
+    expect(html).toContain("Every other repo on this page is unaffected.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence scan must not follow symlinks
+// ---------------------------------------------------------------------------
+
+describe("evidence scan is symlink-safe", () => {
+  it("a symlink cycle under evidence/ does not hang the rebuild", () => {
+    const { opsDir, configPath, outPath } = setupOps();
+    const evDir = join(opsDir, "evidence");
+    mkdirSync(join(evDir, "sub"), { recursive: true });
+    writeFileSync(join(evDir, "sub", "shot.png"), "x");
+    // evidence/sub/loop -> evidence  (a cycle: sub/loop/sub/loop/sub/...)
+    symlinkSync(evDir, join(evDir, "sub", "loop"), "dir");
+    // Completing at all IS the assertion — the pre-fix walk recursed forever.
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("<footer>");
+  });
+
+  it("a broken symlink is skipped rather than crashing the scan", () => {
+    const { opsDir, configPath, outPath } = setupOps();
+    const evDir = join(opsDir, "evidence");
+    mkdirSync(evDir, { recursive: true });
+    writeFileSync(join(evDir, "real.png"), "x");
+    symlinkSync(join(evDir, "does-not-exist.png"), join(evDir, "dangling.png"));
+    expect(() => runDashboard(baseOpts(configPath, outPath))).not.toThrow();
   });
 });

@@ -7535,6 +7535,14 @@ function computeFpr(runs, endDate, windowDays) {
   if (created === 0) return null;
   return Math.round(rejected / created * 100);
 }
+function dedupeByRunId(costs) {
+  const best = /* @__PURE__ */ new Map();
+  for (const c of costs) {
+    const cur = best.get(c.run_id);
+    if (!cur || c.ts > cur.ts) best.set(c.run_id, c);
+  }
+  return [...best.values()];
+}
 function inWindow(recordDate, endDate, windowDays) {
   const d = daysBetween(recordDate, endDate);
   return d >= 0 && d <= windowDays - 1;
@@ -7582,7 +7590,7 @@ function computeDailyRollup(input) {
   const laneRuns = runRecords.filter((r) => r.lane === lane);
   const fpr_7d = computeFpr(laneRuns, date, 7);
   const fpr_30d = computeFpr(laneRuns, date, 30);
-  const laneCosts = (input.costRecords ?? []).filter((c) => c.lane === lane);
+  const laneCosts = dedupeByRunId((input.costRecords ?? []).filter((c) => c.lane === lane));
   const cost_usd_7d = costSum(laneCosts, date, 7);
   const cost_usd_30d = costSum(laneCosts, date, 30);
   const cost_usd_avg_per_run_30d = costAvgPerRun(laneCosts, date, 30);
@@ -7635,8 +7643,14 @@ function reqNum(o, k, errors, where) {
   if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
     errors.push(`${where}: ${k} must be a finite number`);
 }
+function isRealDate(s) {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 function reqDate(o, k, errors, where) {
-  if (typeof o[k] !== "string" || !DATE_RE.test(o[k]))
+  if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
 function reqDedupeKey(o, errors, where) {
@@ -7753,14 +7767,22 @@ function validateCostRecord(x) {
   reqEnum(x, "lane", LANES, errors, "cost-record");
   reqDate(x, "date", errors, "cost-record");
   reqStr(x, "ts", errors, "cost-record");
+  reqNum(x, "usd", errors, "cost-record");
+  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
+    errors.push("cost-record: usd must be >= 0");
   for (const k of [
-    "usd",
     "input_tokens",
     "output_tokens",
     "cache_read_tokens",
     "cache_creation_tokens"
-  ])
+  ]) {
     reqNum(x, k, errors, "cost-record");
+    if (typeof x[k] === "number" && Number.isFinite(x[k])) {
+      const n = x[k];
+      if (n < 0 || !Number.isInteger(n))
+        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+    }
+  }
   reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
   reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
   if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
@@ -7812,7 +7834,14 @@ function runRollup(opts) {
   }
   const laneRunRecords = runRecords.filter((r) => r.lane === opts.lane);
   const openFindingsCount = openFindings(opts.metricsDir).length;
-  const costRecords = readJsonl(join3(opts.metricsDir, COSTS_FILENAME));
+  const costsPath = join3(opts.metricsDir, COSTS_FILENAME);
+  const costRecords = readJsonl(costsPath);
+  costRecords.forEach((c, i) => {
+    const res = validateCostRecord(c);
+    if (!res.ok) {
+      throw new Error(`${costsPath}:${i + 1}: invalid cost-record \u2014 ${res.errors.join("; ")}`);
+    }
+  });
   const rollup = computeDailyRollup({
     date,
     lane: opts.lane,
@@ -7823,6 +7852,10 @@ function runRollup(opts) {
     costRecords,
     today: opts.today
   });
+  const rollupCheck = validateDailyMetrics(rollup);
+  if (!rollupCheck.ok) {
+    throw new Error(`rollup produced an invalid daily-metrics row: ${rollupCheck.errors.join("; ")}`);
+  }
   const outPath = opts.outPath ?? join3(opts.metricsDir, "daily.jsonl");
   appendJsonl(outPath, rollup);
   return rollup;

@@ -47,6 +47,14 @@ export function buildCostRecord(envelope: unknown, meta: CostMeta): CostRecord {
     // than guess (subtype is NOT an acceptable fallback).
     throw new Error("envelope: is_error must be a boolean");
   }
+  if (e.is_error === false && !(typeof e.total_cost_usd === "number" && Number.isFinite(e.total_cost_usd))) {
+    // Same refusal as above, one field over. A successful run always reports its
+    // cost; coercing a missing or mistyped total_cost_usd to 0 would record that
+    // run as free — the exact "silently record as a free success" failure this
+    // module exists to prevent, just reached through the cost field instead of
+    // through subtype. An error run legitimately reports 0, so it is exempt.
+    throw new Error("envelope: total_cost_usd must be a finite number when is_error is false");
+  }
   const usage = (typeof e.usage === "object" && e.usage !== null ? e.usage : {}) as Record<
     string,
     unknown

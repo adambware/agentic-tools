@@ -3,7 +3,7 @@
 // envelope carries subtype:"success" next to is_error:true, and this suite is
 // the regression test that we never key on subtype.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,6 +83,27 @@ describe("buildCostRecord", () => {
     expect(validateCostRecord(record).ok).toBe(true);
   });
 
+  it("REGRESSION: a successful envelope with no total_cost_usd is refused, not recorded as free", () => {
+    // The mirror of the subtype trap: coercing a missing cost to 0 would file a
+    // real run as a $0 success and flatline the cost trend with no error.
+    expect(() => buildCostRecord({ is_error: false }, META)).toThrow(/total_cost_usd/);
+    expect(() => buildCostRecord({ is_error: false, total_cost_usd: "1.84" }, META)).toThrow(
+      /total_cost_usd/,
+    );
+    expect(() => buildCostRecord({ is_error: false, total_cost_usd: Number.NaN }, META)).toThrow(
+      /total_cost_usd/,
+    );
+  });
+
+  it("an error envelope is still exempt: total_cost_usd:0 is legitimate there", () => {
+    const record = buildCostRecord(
+      { is_error: true, total_cost_usd: 0, terminal_reason: "api_error" },
+      META,
+    );
+    expect(record.status).toBe("error");
+    expect(record.usd).toBe(0);
+  });
+
   it("throws when is_error is missing or non-boolean (no subtype fallback)", () => {
     expect(() => buildCostRecord({ subtype: "success", total_cost_usd: 1 }, META)).toThrow(
       /is_error/,
@@ -132,6 +153,17 @@ describe("runRecordCost", () => {
 
   it("throws when given neither an envelope nor a manual usd", () => {
     expect(() => runRecordCost({ metricsDir: dir, meta: META })).toThrow(/envelope or a manual/);
+  });
+
+  // The validator gate is the last line before the append. If it ever stops
+  // firing, a malformed row lands in costs.jsonl and every downstream cost
+  // window silently inherits it.
+  it("validates before appending: a bad meta throws and writes nothing", () => {
+    const badMeta = { ...META, lane: "marketing" } as unknown as CostMeta;
+    expect(() =>
+      runRecordCost({ metricsDir: dir, meta: badMeta, envelope: readJson(SUCCESS_ENVELOPE) }),
+    ).toThrow(/cost-record invalid/);
+    expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
   });
 });
 
