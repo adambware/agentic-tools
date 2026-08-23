@@ -7416,9 +7416,10 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
+var tmpSeq = 0;
 function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);
@@ -7503,7 +7504,12 @@ var SEVERITIES = WEIGHTS;
 var CONFIDENCES = ["low", "medium", "high"];
 var LANES = ["security", "design"];
 var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+var EFFORTS = ["low", "medium", "high"];
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function isSafeId(id) {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
 function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
@@ -7536,6 +7542,14 @@ function reqDate(o, k, errors, where) {
   if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
+function reqSafeId(o, k, errors, where) {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
+    );
+}
 function reqDedupeKey(o, errors, where) {
   const dk = o.dedupe_key;
   if (!isObj(dk)) {
@@ -7553,6 +7567,7 @@ function validateRegistryEntry(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
+  reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
   reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
   if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
@@ -7567,6 +7582,7 @@ function validateCandidateFinding(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -7677,11 +7693,21 @@ function validateSurface(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
+  reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
   reqNum(x, "staleness", errors, "surface");
   reqNum(x, "score", errors, "surface");
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
+  if (x.dispatch !== void 0) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
   return finish(errors);
 }
 var VALIDATORS = {
