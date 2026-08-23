@@ -45,7 +45,6 @@ plugins/nightshift/                # the ENGINE — project-agnostic, versioned 
   registries/{vectors,flows}.yml
   fixtures/                        # seeded test personas (design lane)
   metrics/                         # append-only runs + daily rollups + findings
-  dashboard.md                     # generated coverage view (disposable)
 ```
 
 ## Skills

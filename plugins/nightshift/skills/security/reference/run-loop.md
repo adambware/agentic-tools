@@ -186,7 +186,7 @@ All metrics live under `<repo>/.nightshift/metrics/` (committed text — **never
 | `metrics/runs/<YYYY-MM>.jsonl` | append-only | one per-run NDJSON object |
 | `metrics/findings/<YYYY-MM>.jsonl` | append-only | date-partitioned findings log |
 | `metrics/daily.jsonl` | append-only (last line wins per `date+lane`) | the day-over-day trend |
-| `dashboard.md` / `trends.md` | **disposable** regenerated projections | current-state / delta views |
+| *(no committed projections)* | the local HTML dashboard (`bin/dashboard`, ops home) is regenerated per run | current-state view |
 
 `.nightshift/.gitattributes` sets `metrics/**/*.jsonl merge=union` so concurrent branches
 just append and the reader dedupes on read.
@@ -206,8 +206,9 @@ just append and the reader dedupes on read.
   shape + the freshness / median-staleness / FPR formulas: `schemas/daily-metrics.yml`
   and `src/lib/rollup-run.ts`.
 
-`dashboard.md` and `trends.md` are **disposable** projections regenerated from the JSONL
-truth — never the source of record.
+Projections are never committed to the pack: the operator's local HTML dashboard
+(`bin/dashboard`) is a disposable view regenerated from the JSONL truth — never the
+source of record.
 
 ## Step 6 — Severity gates (single source)
 

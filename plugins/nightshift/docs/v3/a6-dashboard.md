@@ -90,7 +90,7 @@ Each state names why it is empty and what to do; no blank regions.
 | 6 | registry seeded but empty | "No areas registered yet. Run `/nightshift:garden` to propose entries." |
 | 7 | no open findings anywhere | verdict strip: "✓ Nothing needs you" + freshness line |
 | 8 | no digest yet | "The first digest is written after the first run." |
-| 9 | digest ≥2 runs behind | amber banner + per-item run-distance |
+| 9 | digest >2 runs behind (§15.1: "more than 2") | amber banner + per-item run-distance |
 | 10 | fewer than 2 trend points | value + "1 of 2 runs — trend starts next run" |
 | 11 | zero trend points | "no data" + why |
 | 12 | evidence referenced, file gone | missing-evidence line, anchor value retained |
@@ -153,19 +153,19 @@ enum split (TODOS P2) · a `DESIGN.md` (the contract above is the right size).
 
 ## Tasks
 
-- [ ] **T16 (P1)** — verdict strip + section order; cost only in the footer
+- [x] **T16 (P1)** — verdict strip + section order; cost only in the footer
   - Verify: populated snapshot shows the strip first
-- [ ] **T17 (P1)** — computed strip, dated digest
+- [x] **T17 (P1)** — computed strip, dated digest
   - Verify: strip derives with the digest file absent; a 4-run-old digest renders the staleness banner
-- [ ] **T18 (P1)** — split coverage from findings (two columns)
+- [x] **T18 (P1)** — split coverage from findings (two columns)
   - Verify: an area both overdue and carrying an open critical renders both facts
-- [ ] **T19 (P1)** — sparkline contract
+- [x] **T19 (P1)** — sparkline contract
   - Verify: 12-day gap renders as a gap; flat series no divide-by-zero; 1-point series shows its value
-- [ ] **T20 (P1)** — 13-state table + 4 fixtures
+- [x] **T20 (P1)** — 13-state table + 4 fixtures
   - Verify: four snapshots green; null `last_reviewed` never renders `overdue`
-- [ ] **T21 (P2)** — token + a11y contract, enforced (`src/lib/dashboard-a11y.test.ts`)
+- [x] **T21 (P2)** — token + a11y contract, enforced (`src/lib/dashboard-a11y.test.ts`)
   - Verify: 11 token pairs × 2 themes ≥4.5:1; non-colour channel everywhere; `caption` / `th scope` / `role="img"` + `<title>` asserted
-- [ ] **T23 (P2)** — evidence: self-contained definition + missing-file state
+- [x] **T23 (P2)** — evidence: self-contained definition + missing-file state
   - Verify: no-network open renders fully; deleted evidence renders the missing state, not a dead link
 
 (T22 — regenerate on every `ns` exit path — is launcher-side: session A7.)

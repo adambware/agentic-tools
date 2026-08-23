@@ -26,8 +26,6 @@ schemas) is built once and versioned elsewhere — referenced at run time as
     runs/<YYYY-MM>.jsonl    # append-only: one record per run, monthly partition
     daily.jsonl             # append-only daily rollups; reader takes the LAST line per (date,lane)
     findings/<YYYY-MM>.jsonl# append-only finding records, monthly partition
-  dashboard.md          # DISPOSABLE projection — regenerated current-state coverage view
-  trends.md             # DISPOSABLE projection — regenerated CHANGELOG-style delta lines
   .gitattributes        # sets `metrics/**/*.jsonl merge=union` so appends never conflict
 ```
 
@@ -36,9 +34,9 @@ Two lanes only: **security** (the `vectors.yml` spine, run via `/nightshift:secu
 manifest cadences/budgets.
 
 The durable truth is `metrics/runs/*.jsonl` + `metrics/daily.jsonl` + the git history of
-the registries. `dashboard.md` and `trends.md` are **disposable** — the engine regenerates
-them from those sources each run, so never hand-edit them and never treat them as the
-source of record.
+the registries. Projections are **not committed to the pack**: the operator's local HTML
+dashboard (`bin/dashboard`, regenerated every run in the ops home) is rebuilt from those
+sources, so never treat a rendered view as the source of record.
 
 ## How it relates to the engine
 
@@ -46,8 +44,8 @@ Each run the engine: loads these registries → computes `staleness*weight` and 
 change flags → selects the top-K per `manifest.window_budget_k` → fans out the matching
 reviewer subagent → dedupes against the findings log and honors suppressions → appends
 confirmed findings, appends a run record to `metrics/runs/<YYYY-MM>.jsonl`, recomputes the
-day's `metrics/daily.jsonl` rollup, updates the `(auto)` fields, and regenerates
-`dashboard.md`/`trends.md`.
+day's `metrics/daily.jsonl` rollup, updates the `(auto)` fields, and regenerates the
+operator's local HTML dashboard.
 
 ## Onboarding (how this got here)
 

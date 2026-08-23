@@ -16,7 +16,8 @@
 # (Rewrite-in-place under union would instead leave duplicate stale rollups.)
 #
 # The durable truth is metrics/runs/*.jsonl + this daily.jsonl + git history.
-# dashboard.md / trends.md are disposable projections regenerated from these.
+# The local HTML dashboard (bin/dashboard, in the ops home) is a disposable
+# projection regenerated from these — never committed to the pack.
 #
 # All fields are (auto) — engine-managed.
 # ---------------------------------------------------------------------------
