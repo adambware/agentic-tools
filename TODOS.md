@@ -2,11 +2,11 @@
 
 ## Pending
 
-- [ ] **Per-run artifact isolation + record run-id cross-check** [P2 concurrency]
-  - **What:** All run artifacts share `.nightshift/.run` (`run-id.txt`, `candidates*.json`, `run.json`, `decisions.json`), so two overlapping runs can mix proposed/survivor/decision files. `bin/record` never checks `decisions.run_id/lane/date` against `run.json` before appending durable metrics. Either restore a per-run_id subdir, or have record assert `decisions.run_id === runMeta.run_id` (and lane/date) before writing.
-  - **Why:** Concurrent or resumed runs append cleanly to metrics with mismatched provenance — silent corruption that no validate gate catches.
-  - **Context:** Codex adversarial during /ship of `nightshift-run-meta`. Pre-existing (run dir was always shared); run-meta makes the cross-check cheap since run.json now carries run_id.
-  - **Depends on / blocked by:** None.
+- [ ] **`ns digest` spends real money and records no cost row** [P2 cost-accounting]
+  - **What:** `cmd_digest` (`plugins/nightshift/bin/ns`) invokes `$CLAUDE_BIN -p` for a real model call but never calls `bin/record-cost.mjs` — the only two call sites are the run path and `ns cost add`. A live digest run on 2026-08-23 cost roughly $0.30-1 and left `costs.jsonl` at 5 rows, zero of them digest rows.
+  - **Why:** Same class as the orphan-spend gap already known for runs, but worse: this spend is not merely unjoined to a run row, it is never written at all. `ns status` and the dashboard cost trend under-report every week the operator produces a digest.
+  - **Context:** Found by the first live `ns digest` run during /ship of 3.0.0. Deliberately NOT fixed there because it needs a design call that should not be improvised at ship time: a digest is not a run, so what `run_id` and `lane` does its cost row carry, and does it belong in `costs.jsonl` at all or in a separate ledger? The sibling parser defect found by the same run WAS fixed in 3.0.0.
+  - **Depends on / blocked by:** None. Touches A2 (`record-cost`) territory.
 
 - [ ] **queue.jsonl scaling + last-write-wins correctness** [P3 prerequisite]
   - **What:** Before P3 builds the stateful backlog, decide queue.jsonl's growth + concurrency story — monthly sharding OR a `bin/rollup` compaction step (fold to one live record per `dedupe_key`) — and add a `ts` tiebreaker so "last-write-wins per `dedupe_key`" is well-defined after a branch merge.
@@ -76,6 +76,10 @@
   - **Depends on / blocked by:** None. Own branch, own tests.
 
 ## Completed
+
+- [x] **Per-run artifact isolation + record run-id cross-check** [P2 concurrency]
+  - Done (v3.0.0): BOTH halves of the either/or landed. A1 restored per-run isolation (each run gets its own `.nightshift/.run/<run-id>/` dir, self-cleaning on success and retained on failure), and `runRecord` now opens with a provenance assert — `src/lib/record-run.ts:118-132` refuses the run unless `decisions.run_id`, `decisions.lane` and `decisions.date` all match run-meta, so a stale or forged `decisions.json` can never be replayed into another run's durable appends. Backed by run_id uniqueness across every month shard and the per-repo lock around the append.
+  - **Completed:** v3.0.0 (2026-08-23)
 
 - [x] **reviewed_ids must reflect surfaces ACTUALLY reviewed, not all selected** [P1 correctness]
   - Done (v2.3.0): the reviewer now writes `reviewed.json` (ids actually covered); `bin/run-meta` takes a required `--reviewed` flag, gates the file (each id a unique member of the selected surfaces, abort exit 2 otherwise), and threads it into `run.json.reviewed_ids` — so `bin/record` stamps `last_reviewed`/`status` only for actually-reviewed entries. `selected` and `reviewed` are now independent counts. Cross-module test proves a K=3/reviewed=1 run stamps exactly one registry entry.
