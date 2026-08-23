@@ -8,3 +8,7 @@ node_modules/
 # Staged eval skills are copied from canonical plugin sources at test time.
 evals/onboardme/fixtures/repos/*/.claude/
 evals/onboardme/fixtures/repos/*/.agents/
+
+# Nightshift v3 planning docs are local-only (not published to the marketplace repo)
+plugins/nightshift/docs/v3/
+plugins/nightshift/docs/local-first-v3-plan.md
