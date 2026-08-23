@@ -7635,8 +7635,8 @@ function anyGlobMatch(globs, paths) {
 
 // src/lib/dispatch.ts
 var MODEL_BY_BAND = {
-  critical: { model: "opus", effort: "high", maxTurns: 80 },
-  high: { model: "opus", effort: "medium", maxTurns: 64 },
+  critical: { model: "opus", effort: "high", maxTurns: 56 },
+  high: { model: "opus", effort: "medium", maxTurns: 48 },
   medium: { model: "sonnet", effort: "medium", maxTurns: 24 },
   low: { model: "haiku", effort: "low", maxTurns: 16 }
 };

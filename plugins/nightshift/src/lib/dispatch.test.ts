@@ -7,12 +7,12 @@ describe("MODEL_BY_BAND", () => {
       {
         "critical": {
           "effort": "high",
-          "maxTurns": 80,
+          "maxTurns": 56,
           "model": "opus",
         },
         "high": {
           "effort": "medium",
-          "maxTurns": 64,
+          "maxTurns": 48,
           "model": "opus",
         },
         "low": {
@@ -32,8 +32,8 @@ describe("MODEL_BY_BAND", () => {
 
 describe("dispatchForBand", () => {
   it("returns the pinned entry for each band", () => {
-    expect(dispatchForBand("critical")).toEqual({ model: "opus", effort: "high", maxTurns: 80 });
-    expect(dispatchForBand("high")).toEqual({ model: "opus", effort: "medium", maxTurns: 64 });
+    expect(dispatchForBand("critical")).toEqual({ model: "opus", effort: "high", maxTurns: 56 });
+    expect(dispatchForBand("high")).toEqual({ model: "opus", effort: "medium", maxTurns: 48 });
     expect(dispatchForBand("medium")).toEqual({ model: "sonnet", effort: "medium", maxTurns: 24 });
     expect(dispatchForBand("low")).toEqual({ model: "haiku", effort: "low", maxTurns: 16 });
   });
@@ -43,6 +43,6 @@ describe("dispatchForBand", () => {
     d.model = "haiku";
     d.effort = "low";
     d.maxTurns = 1;
-    expect(MODEL_BY_BAND.critical).toEqual({ model: "opus", effort: "high", maxTurns: 80 });
+    expect(MODEL_BY_BAND.critical).toEqual({ model: "opus", effort: "high", maxTurns: 56 });
   });
 });

@@ -64,7 +64,7 @@ describe("agent turn budgets", () => {
 
   it("the REFUTERS' budgets are the load-bearing ones: nothing overrides them at dispatch", () => {
     // The reviewer's frontmatter value is a floor the dispatch replaces
-    // (MODEL_BY_BAND gives critical 80). A refuter gets exactly what its file
+    // (MODEL_BY_BAND gives critical 56). A refuter gets exactly what its file
     // says, so its file has to be big enough to finish the job on a real repo.
     for (const refuter of ["security-refuter", "security-refuter-2", "ux-refuter", "ux-refuter-2"]) {
       expect(Number(frontmatter(refuter).maxTurns), refuter).toBeGreaterThanOrEqual(40);
