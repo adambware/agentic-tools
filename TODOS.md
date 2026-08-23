@@ -75,12 +75,6 @@
   - **Context:** Codex adversarial pass during /ship of nightshift v3 lane B, 2026-08-23. Pre-existing in `validate.ts` (predates A6), but A6 added the crash surface, so it was deliberately kept out of lane B's diff rather than fixed inline. Start at `validateCandidateFinding` and the `evidence` field; `dashboard-cli.ts` `loadRepo()` is the consumer.
   - **Depends on / blocked by:** None. Own branch, own tests.
 
-- [ ] **`atomicWrite` uses a fixed temp filename** [P1 correctness]
-  - **What:** `src/lib/io.ts` writes through a fixed `.<basename>.tmp` beside the target before renaming. Two processes writing the same path share that temp file: one can truncate the other's open inode, produce spliced output, or lose the race and fail its rename with `ENOENT`. Fix: generate a unique same-directory temp name per process (pid + counter, or `mkdtemp`) and rename that.
-  - **Why:** It is the single write primitive under every `bin/` command, so the blast radius is every artifact the engine produces. It becomes reachable in normal use with v3: `bin/dashboard` regenerates one shared `$OPS/dashboard.html` on every `ns` exit path, and two lanes finishing near-simultaneously is the ordinary case once more than one repo is onboarded.
-  - **Context:** Codex adversarial pass during /ship of nightshift v3 lane B, 2026-08-23. Pre-existing in `io.ts`, kept out of lane B's diff to hold the blast radius; note that changing the write primitive touches every bin, so it wants its own branch and a concurrent-writer test.
-  - **Depends on / blocked by:** None, but land it before A7 wires `ns` to regenerate the dashboard on every exit path.
-
 ## Completed
 
 - [x] **reviewed_ids must reflect surfaces ACTUALLY reviewed, not all selected** [P1 correctness]
