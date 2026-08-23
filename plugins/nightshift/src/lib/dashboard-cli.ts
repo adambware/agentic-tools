@@ -83,14 +83,46 @@ export function parseDigest(
   const genDate = generated_at.slice(0, 10);
   const age_days = /^\d{4}-\d{2}-\d{2}/.test(genDate) ? Math.max(0, daysBetween(genDate, today)) : 0;
   const lines = text.split("\n");
-  const decisionsIdx = lines.findIndex((l) => /^#+\s*decisions/i.test(l));
+  // The heading the digest skill actually writes is "## 1. Top 3 human decisions
+  // needed" — numbered, with the word buried mid-phrase. The old anchored
+  // /^#+\s*decisions/ never matched it, so this fell through to the
+  // bullets-anywhere fallback and rendered the FINDINGS list as the decision
+  // queue: the living document confidently showing the wrong thing. Match a
+  // heading that CONTAINS the word instead.
+  const decisionsIdx = lines.findIndex((l) => /^#+\s.*\bdecisions?\b/i.test(l));
   const scope = decisionsIdx === -1 ? lines : lines.slice(decisionsIdx + 1);
+  // SKILL.md pins the digest's SECTIONS but deliberately not its bullet syntax,
+  // so an item legitimately arrives as "- ", "1. ", or "**1. ...**". Accept all
+  // three. `[-*]\s+` cannot swallow a "**1." lead because bold has no space
+  // after the first star.
+  const ITEM_START = /^\s*(?:[-*]\s+|(?:\*\*)?\d+[.)]\s+)(.*)$/;
   const items: string[] = [];
+  let current: string | null = null;
+  const flush = () => {
+    if (current !== null) {
+      const t = current.replace(/\*\*/g, "").trim();
+      if (t) items.push(t);
+    }
+    current = null;
+  };
   for (const line of scope) {
     if (decisionsIdx !== -1 && /^#+\s/.test(line)) break; // next heading ends the section
-    const m = line.match(/^\s*[-*]\s+(.+)$/);
-    if (m) items.push(m[1]!.trim());
+    const m = line.match(ITEM_START);
+    if (m) {
+      flush();
+      current = m[1]!;
+      continue;
+    }
+    // A hard-wrapped item continues on the next non-blank line. Without this
+    // every wrapped decision was truncated at its first line break and reached
+    // the dashboard as a sentence fragment.
+    if (current !== null && line.trim() !== "") {
+      current += " " + line.trim();
+      continue;
+    }
+    flush();
   }
+  flush();
   return {
     repo,
     generated_at,

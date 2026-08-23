@@ -8606,14 +8606,33 @@ function parseDigest(path, repo, runsSince, today) {
   const genDate = generated_at.slice(0, 10);
   const age_days = /^\d{4}-\d{2}-\d{2}/.test(genDate) ? Math.max(0, daysBetween(genDate, today)) : 0;
   const lines = text.split("\n");
-  const decisionsIdx = lines.findIndex((l) => /^#+\s*decisions/i.test(l));
+  const decisionsIdx = lines.findIndex((l) => /^#+\s.*\bdecisions?\b/i.test(l));
   const scope = decisionsIdx === -1 ? lines : lines.slice(decisionsIdx + 1);
+  const ITEM_START = /^\s*(?:[-*]\s+|(?:\*\*)?\d+[.)]\s+)(.*)$/;
   const items = [];
+  let current = null;
+  const flush = () => {
+    if (current !== null) {
+      const t = current.replace(/\*\*/g, "").trim();
+      if (t) items.push(t);
+    }
+    current = null;
+  };
   for (const line of scope) {
     if (decisionsIdx !== -1 && /^#+\s/.test(line)) break;
-    const m = line.match(/^\s*[-*]\s+(.+)$/);
-    if (m) items.push(m[1].trim());
+    const m = line.match(ITEM_START);
+    if (m) {
+      flush();
+      current = m[1];
+      continue;
+    }
+    if (current !== null && line.trim() !== "") {
+      current += " " + line.trim();
+      continue;
+    }
+    flush();
   }
+  flush();
   return {
     repo,
     generated_at,

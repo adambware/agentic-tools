@@ -165,6 +165,60 @@ describe("parseDigest", () => {
     expect(digest!.items.map((i) => i.text)).toEqual(["decision one", "decision two"]);
   });
 
+  // Regression: the FIRST live `ns digest` run rendered the dashboard's
+  // "Decisions needed" panel from the FINDINGS list, in truncated fragments.
+  // Two independent parser defects, both named here after the failure.
+  it("regression: a numbered 'Top 3 human decisions needed' heading was never matched", () => {
+    const dir = makeTmpDir("ns-digest-");
+    const digestPath = join(dir, "acme.md");
+    writeFileSync(
+      digestPath,
+      [
+        "generated: 2026-06-20 07:00",
+        "",
+        "## 1. Top 3 human decisions needed",
+        "",
+        "**1. Allowlist the engine's own helper scripts.**",
+        "",
+        "## 2. New findings",
+        "",
+        "- a finding, which is NOT a decision",
+      ].join("\n"),
+    );
+
+    const digest = parseDigest(digestPath, "acme", 0, TODAY);
+    // The old anchored /^#+\s*decisions/ missed this heading, fell through to
+    // bullets-anywhere, and returned the finding instead of the decision.
+    // The list marker is stripped, exactly as it is for a "- " bullet; what
+    // matters is that the DECISION comes back, not the finding below it.
+    expect(digest!.items.map((i) => i.text)).toEqual([
+      "Allowlist the engine's own helper scripts.",
+    ]);
+  });
+
+  it("regression: a hard-wrapped decision was truncated at its first line break", () => {
+    const dir = makeTmpDir("ns-digest-");
+    const digestPath = join(dir, "acme.md");
+    writeFileSync(
+      digestPath,
+      [
+        "generated: 2026-06-20 07:00",
+        "",
+        "## Decisions",
+        "",
+        "- the nightly is burning money",
+        "  without producing findings",
+        "- second decision",
+      ].join("\n"),
+    );
+
+    const digest = parseDigest(digestPath, "acme", 0, TODAY);
+    expect(digest!.items.map((i) => i.text)).toEqual([
+      "the nightly is burning money without producing findings",
+      "second decision",
+    ]);
+  });
+
   it("falls back to top-level bullets when there is no Decisions heading", () => {
     const dir = makeTmpDir("ns-digest-");
     const digestPath = join(dir, "novudesk.md");
