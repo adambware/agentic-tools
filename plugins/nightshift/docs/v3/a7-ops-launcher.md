@@ -217,7 +217,11 @@ The fixes, in the order they matter:
 5. **The session is made to block.** `TaskOutput` granted; the prompt makes the wait the
    task and names the blocking call.
 6. **Turn budgets, both deliberate pinned-constant changes.** `MODEL_BY_BAND` critical
-   40→80 and high 32→64 (snapshot). Refuters Tier-1 10→40, Tier-2 16→56 in agent
+   40→56 and high 32→48 (snapshot). 56 is the measured ceiling **plus headroom**: the
+   two reviewers on the run that passed the gate used 42 and 39 tool calls, so 42 is the
+   ceiling, and turns are the conservative proxy for a tool-call measurement. 48 is *not*
+   measured at all, only kept below critical because no high-band surface has ever run.
+   Refuters Tier-1 10→40, Tier-2 16→56 in agent
    frontmatter, newly pinned by `agent-budgets.test.ts` — the refuters' budget is the
    load-bearing one because *nothing overrides it at dispatch*, and nothing was testing it.
 7. **`bin/ns` follows its own symlink.** The runbook's documented install

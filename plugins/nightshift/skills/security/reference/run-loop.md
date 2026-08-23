@@ -140,14 +140,17 @@ Source: `src/bin/lane-plan.ts` + `src/lib/lane-plan.ts`; tests: `src/lib/lane-pl
 Per selected vector, dispatch the reviewer then run the **two-stage refuter gate**:
 
 1. **Reviewer** — `${CLAUDE_PLUGIN_ROOT}/agents/security-reviewer.md`
-   (**Opus 5, `maxTurns: 24`**; dispatch effort `high`, `xhigh` on the critical band). Reviews the
+   (**Opus 5**; frontmatter grants `maxTurns: 24` as a floor, which dispatch replaces per band
+   via `MODEL_BY_BAND` — critical 56, high 48, medium 24, low 16 — at effort `high` on the
+   critical band, `medium` on high). Reviews the
    mapped `area` defensively: *is this surface adequately protected?* Produces a candidate
    write-up with: `asvs_ref`, `location`, `why_abusable_under_preconditions`, and
    `preconditions: {required_role/session, tenant/account setup, affected path, impact,
    confidence}`.
 
 2. **Tier-1 refuter (ALWAYS)** — `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter.md`
-   (**Haiku 4.5, `maxTurns: 10`, dispatch effort `low`**). An independent second reviewer given the full
+   (**Haiku 4.5, `maxTurns: 40`, effort `low`** — a refuter gets exactly what its own
+   frontmatter says; nothing overrides it at dispatch). An independent second reviewer given the full
    proposed finding, but instructed to ignore the reviewer's narrative and re-read the
    source code itself. Must actively **refute** the candidate. Runs on **every** candidate. If it cannot refute (the finding
    survives), the candidate advances to the Tier-2 predicate. If it refutes, the candidate
@@ -155,8 +158,7 @@ Per selected vector, dispatch the reviewer then run the **two-stage refuter gate
    **No Tier-1 refute ⇒ no finding may be logged.**
 
 3. **Tier-2 refuter (CONDITIONAL)** — `${CLAUDE_PLUGIN_ROOT}/agents/security-refuter-2.md`
-   (**Opus 5, `maxTurns: 16`**; dispatch effort `high`, `xhigh` for critical/high
-   survivors). Runs **only** on a Tier-1 survivor that is
+   (**Opus 5, `maxTurns: 56`**, effort `high`). Runs **only** on a Tier-1 survivor that is
    **critical/high severity OR `confidence == low`** (union predicate). It re-reads
    independently; if it refutes, the candidate is dropped and counted in `rejected_tier2`.
    A Tier-1 survivor that does not meet the predicate skips Tier-2 and proceeds to dedupe.
@@ -183,14 +185,14 @@ security — the design lane is not exempt from it:
    violation | visual recommendation.
 
 2. **Tier-1 refuter (ALWAYS)** — `${CLAUDE_PLUGIN_ROOT}/agents/ux-refuter.md`
-   (**Haiku 4.5, `maxTurns: 10`, dispatch effort `low`**). Runs on **every** candidate,
+   (**Haiku 4.5, `maxTurns: 40`, effort `low`**). Runs on **every** candidate,
    re-deriving it from the flow itself rather than trusting the reviewer's narrative. If it
    refutes, the candidate is dropped and counted in `rejected_tier1`; if it cannot, the
    candidate advances to the Tier-2 predicate.
    **No Tier-1 refute ⇒ no finding may be logged** — the guarantee is identical to security's.
 
 3. **Tier-2 refuter (CONDITIONAL)** — `${CLAUDE_PLUGIN_ROOT}/agents/ux-refuter-2.md`
-   (**Opus 5, `maxTurns: 16`**, dispatch effort `high`). Runs **only** on a Tier-1 survivor
+   (**Opus 5, `maxTurns: 56`**, effort `high`). Runs **only** on a Tier-1 survivor
    that is **critical/high severity OR `confidence == low`** — the same union predicate,
    applied by the same `bin/tier2-gate`. A refutation drops the candidate and counts in
    `rejected_tier2`; a survivor that does not meet the predicate skips Tier-2 and proceeds

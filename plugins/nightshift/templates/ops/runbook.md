@@ -179,7 +179,7 @@ Questions to answer on YOUR first runs and record here:
 |---|---|---|
 | `PREFLIGHT REFUSED` | `bin/lane-plan` exited 2 | The reason under it is actionable; fix the pack. Nothing ran, nothing was spent. |
 | `nothing to review` | select picked 0 surfaces | A quiet night. Not a failure. The dashboard still refreshed. |
-| A run dir left in `.nightshift/.run/` | the run failed | Exactly one is kept for diagnosis; it is auto-pruned later. The log is `$OPS/logs/<run_id>.log`. |
+| A run dir left in `.nightshift/.run/` | the run failed | Up to 5 are kept for diagnosis, and none longer than 7 days; older ones are auto-pruned. The log is `$OPS/logs/<run_id>.log`. |
 | `validate` aborts mid-run | a model-written artifact broke schema | The run aborted **before** durable state was touched, by design. Re-run. |
 | Guard denials in the log | the guard blocked a write outside `.nightshift/` | Expected. If it blocked something legitimate, the agent's frontmatter is wrong, not the guard. |
 | A cost row with `status: error`, `usd: 0` | the headless envelope never arrived | The run failed; the row is a marker, not a measurement. |

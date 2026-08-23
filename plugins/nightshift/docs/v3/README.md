@@ -140,8 +140,12 @@ files are the tracker; the checklist in the original plan §14 is frozen.
 - One command (`ns run novudesk security`) from zero to refreshed dashboard, no cloud.
 - One browser tab (`$OPS/dashboard.html`) answers: what's covered, what's rotting, what
   needs me, what did this cost — across every onboarded repo.
-- A finished run leaves no scratch files anywhere; failures leave exactly one
-  diagnosable run dir, auto-pruned.
+- A finished run leaves no scratch files anywhere; failures leave diagnosable run dirs,
+  auto-pruned. **Amended against the code:** the original criterion said "exactly one",
+  but `src/lib/clean-run.ts` keeps the 5 most recent for up to 7 days (`KEEP = 5`,
+  `MAX_AGE_DAYS = 7`). That is deliberate and better — consecutive failures stay
+  comparable side by side, which is exactly what the bring-up runs needed. The wording
+  was the thing that was wrong, not the constant.
 - Reviews run on Opus 5 with real turn budgets; every finding still survived Tier-1
   refutation; FPR and cost are on the dashboard within a day of drifting.
 - Both lanes live on novudesk; the design lane refuses loudly when the dev server is down.
