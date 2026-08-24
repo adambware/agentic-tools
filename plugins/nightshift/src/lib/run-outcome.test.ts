@@ -1,16 +1,20 @@
 // lib/run-outcome — the success predicate `ns` gates on (v3 A7 Part 2).
 //
-// The invariant under test is narrow and deliberate: a run succeeded iff
-// bin/record left its row. Not "the CLI exited 0", not "the workflow returned
+// The invariant under test is narrow and deliberate: a run succeeded iff it left
+// BOTH halves of its durable evidence — bin/record's row AND bin/rollup's
+// completion sentinel. Not "the CLI exited 0", not "the workflow returned
 // complete", not "a result.json exists" — those were all TRUE for the first real
-// run, which reviewed nothing.
+// run, which reviewed nothing. And not the row on its own either: record appends
+// it before its own registry rewrite and before rollup, so a row with no
+// sentinel is a chain that stopped halfway.
 import { describe, it, expect, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runOutcome } from "./run-outcome.js";
+import { markRunComplete } from "./run-complete.js";
+import { runOutcome, runRowShortfall } from "./run-outcome.js";
 import type { RunMetrics } from "./types.js";
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -43,14 +47,28 @@ function row(runId: string, over: Partial<RunMetrics> = {}): RunMetrics {
   };
 }
 
-/** A metrics dir with the given run rows, keyed by month shard. */
-function metrics(shards: Record<string, RunMetrics[]> = {}): string {
+/**
+ * A metrics dir with the given run rows, keyed by month shard.
+ *
+ * Every row is ALSO stamped complete, because that is the state a finished run
+ * actually leaves on disk: record's row plus rollup's sentinel. Pass
+ * `{ stamp: false }` for the half-finished state — record ran, something after
+ * it did not — which is the whole reason the sentinel exists.
+ */
+function metrics(
+  shards: Record<string, RunMetrics[]> = {},
+  opts: { stamp?: boolean } = {},
+): string {
   const dir = mkdtempSync(join(tmpdir(), "run-outcome-"));
   tmpDirs.push(dir);
   const runsDir = join(dir, "runs");
   mkdirSync(runsDir, { recursive: true });
   for (const [month, rows] of Object.entries(shards)) {
     writeFileSync(join(runsDir, `${month}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    if (opts.stamp === false) continue;
+    for (const r of rows) {
+      markRunComplete(dir, r.run_id, { ts: r.ts, date: r.date, lane: r.lane });
+    }
   }
   return dir;
 }
@@ -101,6 +119,45 @@ describe("runOutcome", () => {
     expect(runOutcome(dir, "R1").recorded).toBe(true);
   });
 
+  it("a row with NO completion sentinel is not recorded — the chain stopped after record", () => {
+    // The exact shape of the bug: record appended its row, then its own registry
+    // rewrite (or the rollup chained after it) failed. Reading the row alone
+    // called that a success, which deleted the run dir holding the diagnosis.
+    const dir = metrics({ "2026-08": [row("R1")] }, { stamp: false });
+    const out = runOutcome(dir, "R1");
+    expect(out.recorded).toBe(false);
+    expect(out.reason).toMatch(/never stamped complete/);
+    // The row still comes back, so the launcher can log what DID get counted.
+    expect(out.run?.run_id).toBe("R1");
+  });
+
+  it("names the two steps that could have failed, so the log points somewhere", () => {
+    const dir = metrics({ "2026-08": [row("R1")] }, { stamp: false });
+    expect(runOutcome(dir, "R1").reason).toMatch(/registry rewrite, or rollup/);
+  });
+
+  it("one run's sentinel does not vouch for another's", () => {
+    const dir = metrics({ "2026-08": [row("R1"), row("R2")] }, { stamp: false });
+    markRunComplete(dir, "R1", { ts: "2026-08-23T20:00:00.000Z", date: "2026-08-23", lane: "security" });
+    expect(runOutcome(dir, "R1").recorded).toBe(true);
+    expect(runOutcome(dir, "R2").recorded).toBe(false);
+  });
+
+  it("a sentinel with no run row is still not a success — both halves or neither", () => {
+    const dir = metrics({}, { stamp: false });
+    markRunComplete(dir, "R1", { ts: "2026-08-23T20:00:00.000Z", date: "2026-08-23", lane: "security" });
+    const out = runOutcome(dir, "R1");
+    expect(out.recorded).toBe(false);
+    expect(out.reason).toMatch(/no run row/);
+  });
+
+  it("the row-level rule is reported ahead of the sentinel when both are wrong", () => {
+    // A reviewed-nothing run that ALSO never completed: the operator is better
+    // served by the specific "you paid for nothing" phrasing than by "incomplete".
+    const dir = metrics({ "2026-08": [row("R1", { selected: 2, reviewed: 0 })] }, { stamp: false });
+    expect(runOutcome(dir, "R1").reason).toMatch(/reviewed 0 of 2 selected/);
+  });
+
   it("a metrics dir with no runs/ at all is not recorded, not a crash", () => {
     const dir = mkdtempSync(join(tmpdir(), "run-outcome-"));
     tmpDirs.push(dir);
@@ -130,6 +187,33 @@ describe("runOutcome", () => {
     runOutcome(dir, "R1");
     runOutcome(dir, "NOPE");
     expect(spawnSync("find", [dir, "-type", "f"], { encoding: "utf8" }).stdout).toBe(before);
+  });
+});
+
+// The half of the outcome rule bin/dashboard also applies. It is exported so the
+// living document cannot render the launcher's failure as a green "ok" line —
+// which it did, with the dollar amount beside it, for exactly the rows below.
+describe("runRowShortfall", () => {
+  it("a row that reviewed 0 of 2 selected reports the shortfall", () => {
+    expect(runRowShortfall(row("R1", { selected: 2, reviewed: 0 }))).toBe(
+      "reviewed 0 of 2 selected",
+    );
+  });
+
+  it("a PARTIAL review has no shortfall — one surface reviewed is coverage earned", () => {
+    expect(runRowShortfall(row("R1", { selected: 2, reviewed: 1 }))).toBeUndefined();
+  });
+
+  it("selected 0 is a quiet night, not a shortfall", () => {
+    expect(runRowShortfall(row("R1", { selected: 0, reviewed: 0 }))).toBeUndefined();
+  });
+
+  it("runOutcome embeds the SAME phrase, so the two surfaces cannot word it differently", () => {
+    const r = row("R1", { selected: 3, reviewed: 0 });
+    const dir = metrics({ "2026-08": [r] });
+    const shortfall = runRowShortfall(r);
+    expect(shortfall).toBe("reviewed 0 of 3 selected");
+    expect(runOutcome(dir, "R1").reason).toContain(shortfall!);
   });
 });
 

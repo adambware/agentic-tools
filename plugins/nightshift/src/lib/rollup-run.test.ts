@@ -1,10 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeDailyRollup, type RollupInput } from "./rollup-run.js";
 import { runRollup } from "./rollup-cli.js";
 import { readJsonl } from "./io.js";
+import {
+  COMPLETE_DIRNAME,
+  isRunComplete,
+  runCompleteDir,
+  runCompletePath,
+} from "./run-complete.js";
+import { runOutcome } from "./run-outcome.js";
 import { MAX_STALENESS } from "./staleness.js";
 import type { DailyMetrics, Lane, RegistryEntry, RunMetrics } from "./types.js";
 
@@ -707,5 +714,154 @@ describe("Tier-2 rejections move the FPR", () => {
     );
     expect(clean.fpr_7d).toBe(0); // 0 / 3
     expect(tier2Only.fpr_7d).toBe(25); // 1 / 4
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The completion sentinel (run-complete.ts). rollup is the LAST durable step,
+// so it is the only step that can honestly stamp a run finished — see the
+// module header for the failure this closes.
+// ---------------------------------------------------------------------------
+
+describe("runRollup completion sentinel", () => {
+  let dir: string;
+
+  const REGISTRY_YML = `vectors:
+  - id: SEC-01
+    title: Auth
+    kind: vector
+    area: ["app/auth/*"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-20
+`;
+
+  function setup(): { registryPath: string; metricsDir: string } {
+    const registryPath = join(dir, "vectors.yml");
+    writeFileSync(registryPath, REGISTRY_YML);
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    return { registryPath, metricsDir };
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ns-rollup-complete-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stamps the run complete when a run id is supplied", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "20260621T070000Z-security-abcd1234",
+    });
+
+    expect(isRunComplete(metricsDir, "20260621T070000Z-security-abcd1234")).toBe(true);
+  });
+
+  it("records ts/date/lane in the marker for a human reading the directory", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      date: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-a",
+    });
+
+    const marker = JSON.parse(readFileSync(runCompletePath(metricsDir, "run-a"), "utf8"));
+    expect(marker).toEqual({ ts: "2026-06-21T07:00:00Z", date: "2026-06-21", lane: "security" });
+  });
+
+  it("stamps nothing when no run id is supplied — a standalone recompute is not a run", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+    });
+
+    expect(existsSync(runCompleteDir(metricsDir))).toBe(false);
+  });
+
+  it("does not stamp when the rollup itself throws — the marker means the chain FINISHED", () => {
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+
+    expect(() =>
+      runRollup({
+        registryPath: join(dir, "does-not-exist.yml"),
+        metricsDir,
+        lane: "security",
+        today: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        runId: "run-b",
+      }),
+    ).toThrow(/registry not found/);
+
+    expect(isRunComplete(metricsDir, "run-b")).toBe(false);
+  });
+
+  it("re-stamping is allowed — the marker is a statement of fact, not a uniqueness token", () => {
+    const { registryPath, metricsDir } = setup();
+    const opts = {
+      registryPath,
+      metricsDir,
+      lane: "security" as Lane,
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-c",
+    };
+
+    runRollup(opts);
+    expect(() => runRollup(opts)).not.toThrow();
+    expect(isRunComplete(metricsDir, "run-c")).toBe(true);
+  });
+
+  it("refuses a run id that is not filename-safe, before it can reach a path", () => {
+    const { registryPath, metricsDir } = setup();
+
+    expect(() =>
+      runRollup({
+        registryPath,
+        metricsDir,
+        lane: "security",
+        today: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        runId: "../../escape",
+      }),
+    ).toThrow(/filename-safe/);
+  });
+
+  it("keeps the sentinel dir out of the month-shard scans", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-d",
+    });
+
+    // The shard readers filter to *.jsonl; the sentinel dir must never look like one.
+    expect(COMPLETE_DIRNAME.endsWith(".jsonl")).toBe(false);
+    expect(runOutcome(metricsDir, "run-d").reason).toMatch(/no run row/);
   });
 });

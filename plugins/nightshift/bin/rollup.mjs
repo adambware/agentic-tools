@@ -7394,8 +7394,8 @@ function resolveToday(args) {
 }
 
 // src/lib/rollup-cli.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync4, readdirSync as readdirSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7847,25 +7847,48 @@ var SCHEMA_NAMES = Object.keys(VALIDATORS);
 // src/lib/record-cost-run.ts
 var COSTS_FILENAME = "costs.jsonl";
 
+// src/lib/run-complete.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+var COMPLETE_DIRNAME = ".complete";
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function assertValidRunId(runId) {
+  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
+    throw new Error(`run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and not "." or "..")`);
+  }
+}
+function runCompleteDir(metricsDir) {
+  return join3(metricsDir, "runs", COMPLETE_DIRNAME);
+}
+function runCompletePath(metricsDir, runId) {
+  assertValidRunId(runId);
+  return join3(runCompleteDir(metricsDir), runId);
+}
+function markRunComplete(metricsDir, runId, marker) {
+  const path = runCompletePath(metricsDir, runId);
+  mkdirSync2(runCompleteDir(metricsDir), { recursive: true });
+  writeFileSync(path, JSON.stringify(marker) + "\n");
+}
+
 // src/lib/rollup-cli.ts
 function runRollup(opts) {
   const date = opts.date ?? opts.today;
-  if (!existsSync3(opts.registryPath)) {
+  if (!existsSync4(opts.registryPath)) {
     throw new Error(`registry not found: ${opts.registryPath}`);
   }
   const doc = readYaml(opts.registryPath);
   const entries = extractEntries(doc, opts.lane);
-  const runsDir = join3(opts.metricsDir, "runs");
+  const runsDir = join4(opts.metricsDir, "runs");
   const runRecords = [];
-  if (existsSync3(runsDir)) {
+  if (existsSync4(runsDir)) {
     const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort();
     for (const shard of shards) {
-      runRecords.push(...readJsonl(join3(runsDir, shard)));
+      runRecords.push(...readJsonl(join4(runsDir, shard)));
     }
   }
   const laneRunRecords = runRecords.filter((r) => r.lane === opts.lane);
   const openFindingsCount = openFindings(opts.metricsDir).length;
-  const costsPath = join3(opts.metricsDir, COSTS_FILENAME);
+  const costsPath = join4(opts.metricsDir, COSTS_FILENAME);
   const costRecords = readJsonl(costsPath);
   costRecords.forEach((c, i) => {
     const res = validateCostRecord(c);
@@ -7887,8 +7910,11 @@ function runRollup(opts) {
   if (!rollupCheck.ok) {
     throw new Error(`rollup produced an invalid daily-metrics row: ${rollupCheck.errors.join("; ")}`);
   }
-  const outPath = opts.outPath ?? join3(opts.metricsDir, "daily.jsonl");
+  const outPath = opts.outPath ?? join4(opts.metricsDir, "daily.jsonl");
   appendJsonl(outPath, rollup);
+  if (opts.runId !== void 0) {
+    markRunComplete(opts.metricsDir, opts.runId, { ts: opts.ts, date, lane: opts.lane });
+  }
   return rollup;
 }
 
@@ -7906,7 +7932,8 @@ function main() {
       lane,
       today,
       date,
-      ts
+      ts,
+      runId: args["run-id"]
     });
     process.stderr.write(
       `rollup: ${res.date} ${res.lane} freshness=${res.coverage_freshness_pct}% open=${res.open_findings}

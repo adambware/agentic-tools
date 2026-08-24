@@ -104,6 +104,16 @@ export const meta = {
   ],
 };
 
+// Not a path: the LITERAL text `${CLAUDE_PLUGIN_ROOT}`, which the SHELL expands
+// when the Bash tool runs the command (the sandbox has no `process`, so this
+// file cannot interpolate a real path itself — `ns` exports the variable for
+// exactly this). Every use below is therefore DOUBLE-QUOTED. Unquoted, a plugin
+// root containing whitespace — an ordinary thing on a Mac, `~/Library/Mobile
+// Documents/...` — word-splits the executable path and every plumbing stage dies
+// at the shell, after the reviewers have already been billed. The same quoting
+// applies to REGISTRY, the other launcher-supplied path interpolated into these
+// commands. PACK and RUN are hardcoded repo-root-relative literals whose only
+// variable part (run_id) is asserted filename-safe by bin/workflow-args.
 const ENGINE = "${CLAUDE_PLUGIN_ROOT}";
 const PACK = ".nightshift";
 const RUN = `${PACK}/.run/${args.run_id}`;
@@ -178,9 +188,9 @@ phase("merge");
 await agent(
   `Run exactly this single chained command and return ONLY the final exit code and the last line of ` +
     `stderr (do not fix or retry on failure — a non-zero exit is the run aborting by design):\n` +
-    `node ${ENGINE}/bin/merge-candidates.mjs --run-dir ${RUN} ` +
-    `&& node ${ENGINE}/bin/validate.mjs --schema candidate-finding --file ${RUN}/candidates.proposed.json ` +
-    `&& node ${ENGINE}/bin/validate.mjs --schema candidate-finding --file ${RUN}/candidates.json`,
+    `node "${ENGINE}/bin/merge-candidates.mjs" --run-dir ${RUN} ` +
+    `&& node "${ENGINE}/bin/validate.mjs" --schema candidate-finding --file ${RUN}/candidates.proposed.json ` +
+    `&& node "${ENGINE}/bin/validate.mjs" --schema candidate-finding --file ${RUN}/candidates.json`,
   { label: "plumbing:merge", phase: "merge", model: "haiku", effort: "low" },
 );
 
@@ -195,7 +205,7 @@ await agent(
 phase("tier2");
 const gate = await agent(
   `Run exactly this and nothing else:\n` +
-    `node ${ENGINE}/bin/tier2-gate.mjs --run-dir ${RUN}\n` +
+    `node "${ENGINE}/bin/tier2-gate.mjs" --run-dir ${RUN}\n` +
     `If the exit code is non-zero, fail with the last line of stderr. Otherwise read ${RUN}/tier2.json ` +
     `(a JSON array of surface id strings — control-plane ids only) and return it via structured output ` +
     `as {"surfaces": [...]}.`,
@@ -217,7 +227,7 @@ await pipeline(gate.surfaces, (sid) =>
 );
 await agent(
   `Run exactly this and nothing else, then return ONLY the process exit code and the last line of stderr:\n` +
-    `node ${ENGINE}/bin/tier2-gate.mjs --run-dir ${RUN} --assemble`,
+    `node "${ENGINE}/bin/tier2-gate.mjs" --run-dir ${RUN} --assemble`,
   { label: "plumbing:tier2-assemble", phase: "tier2", model: "haiku", effort: "low" },
 );
 
@@ -228,10 +238,17 @@ await agent(
 // post-Tier-2 survivor set, dedupe it, record, rollup — `&&`-chained so any
 // failure aborts before durable state is touched (E6). dedupe/record consume
 // candidates.tier2.json: a finding is logged only if it survived BOTH tiers.
+//
+// rollup carries `--run-id` because it is the LAST link in that chain, and so
+// the only step that can honestly say the run finished: it stamps the completion
+// sentinel `bin/run-outcome` requires (lib/run-complete.ts). record's run row
+// cannot serve that purpose — it is appended before record's own registry
+// rewrite and before this rollup, so a failure in either leaves a row that reads
+// like success to the launcher.
 phase("record");
 await agent(
   `Run exactly this and nothing else, then return ONLY the process exit code and the last line of stderr:\n` +
-    `node ${ENGINE}/bin/run-meta.mjs --surfaces ${RUN}/surfaces.json ` +
+    `node "${ENGINE}/bin/run-meta.mjs" --surfaces ${RUN}/surfaces.json ` +
     `--proposed ${RUN}/candidates.proposed.json --survivors ${RUN}/candidates.json ` +
     `--reviewed ${RUN}/reviewed.json --tier2 ${RUN}/candidates.tier2.json ` +
     `--run-id "${args.run_id}" --lane ${args.lane} --pack ${PACK} --repo . --out ${RUN}/run.json`,
@@ -240,14 +257,14 @@ await agent(
 await agent(
   `Run exactly this single chained command and return ONLY the final exit code and the last line of ` +
     `stderr (do not fix or retry on failure — a non-zero exit is the run aborting by design):\n` +
-    `node ${ENGINE}/bin/validate.mjs --schema candidate-finding --file ${RUN}/candidates.tier2.json ` +
-    `&& node ${ENGINE}/bin/dedupe.mjs --candidates ${RUN}/candidates.tier2.json ` +
+    `node "${ENGINE}/bin/validate.mjs" --schema candidate-finding --file ${RUN}/candidates.tier2.json ` +
+    `&& node "${ENGINE}/bin/dedupe.mjs" --candidates ${RUN}/candidates.tier2.json ` +
     `--metrics-dir ${PACK}/metrics --suppressions ${PACK}/findings/suppressions.yml ` +
     `--out ${RUN}/decisions.json --run-id "${args.run_id}" --lane ${args.lane} ` +
-    `&& node ${ENGINE}/bin/record.mjs --decisions ${RUN}/decisions.json ` +
-    `--run-meta ${RUN}/run.json --metrics-dir ${PACK}/metrics --registry ${REGISTRY} ` +
-    `&& node ${ENGINE}/bin/rollup.mjs --registry ${REGISTRY} ` +
-    `--metrics-dir ${PACK}/metrics --lane ${args.lane}`,
+    `&& node "${ENGINE}/bin/record.mjs" --decisions ${RUN}/decisions.json ` +
+    `--run-meta ${RUN}/run.json --metrics-dir ${PACK}/metrics --registry "${REGISTRY}" ` +
+    `&& node "${ENGINE}/bin/rollup.mjs" --registry "${REGISTRY}" ` +
+    `--metrics-dir ${PACK}/metrics --lane ${args.lane} --run-id "${args.run_id}"`,
   { label: "plumbing:record", phase: "record", model: "haiku", effort: "low" },
 );
 

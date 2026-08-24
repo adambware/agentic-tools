@@ -7389,8 +7389,8 @@ function requireArg(args, key) {
 }
 
 // src/lib/run-outcome.ts
-import { existsSync as existsSync2, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync as existsSync3, readdirSync } from "node:fs";
+import { join as join2 } from "node:path";
 
 // src/lib/io.ts
 import {
@@ -7417,14 +7417,33 @@ function readJsonl(path) {
   return out;
 }
 
+// src/lib/run-complete.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, writeFileSync } from "node:fs";
+import { join } from "node:path";
+var COMPLETE_DIRNAME = ".complete";
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function runCompleteDir(metricsDir) {
+  return join(metricsDir, "runs", COMPLETE_DIRNAME);
+}
+function isRunComplete(metricsDir, runId) {
+  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) return false;
+  return existsSync2(join(runCompleteDir(metricsDir), runId));
+}
+
 // src/lib/run-outcome.ts
 function findRunRow(metricsDir, runId) {
-  const runsDir = join(metricsDir, "runs");
-  if (!existsSync2(runsDir)) return void 0;
+  const runsDir = join2(metricsDir, "runs");
+  if (!existsSync3(runsDir)) return void 0;
   for (const shard of readdirSync(runsDir).filter((f) => f.endsWith(".jsonl"))) {
-    for (const row of readJsonl(join(runsDir, shard))) {
+    for (const row of readJsonl(join2(runsDir, shard))) {
       if (row.run_id === runId) return row;
     }
+  }
+  return void 0;
+}
+function runRowShortfall(run) {
+  if (run.selected > 0 && run.reviewed === 0) {
+    return `reviewed 0 of ${run.selected} selected`;
   }
   return void 0;
 }
@@ -7440,12 +7459,21 @@ function runOutcome(metricsDir, runId) {
       reason: `no run row for "${runId}" in ${metricsDir}/runs/ \u2014 the record chain did not complete, so nothing was reviewed and nothing was stamped, whatever the session reported`
     };
   }
-  if (run.selected > 0 && run.reviewed === 0) {
+  const shortfall = runRowShortfall(run);
+  if (shortfall !== void 0) {
     return {
       recorded: false,
       run_id: runId,
       run,
-      reason: `run row exists but reviewed 0 of ${run.selected} selected \u2014 every reviewer was cut off before writing its artifacts, so nothing was stamped and the run was paid for nothing (raise the band's maxTurns, or narrow the surface)`
+      reason: `run row exists but ${shortfall} \u2014 every reviewer was cut off before writing its artifacts, so nothing was stamped and the run was paid for nothing (raise the band's maxTurns, or narrow the surface)`
+    };
+  }
+  if (!isRunComplete(metricsDir, runId)) {
+    return {
+      recorded: false,
+      run_id: runId,
+      run,
+      reason: `run row exists but "${runId}" was never stamped complete in ${metricsDir}/runs/${COMPLETE_DIRNAME}/ \u2014 record appended its row and then something after it failed (the registry rewrite, or rollup), so freshness or the daily metrics are incomplete; the run dir is kept, check the log`
     };
   }
   return {

@@ -4,7 +4,14 @@
 //
 // Usage:
 //   node bin/rollup.mjs --registry <vectors.yml> --metrics-dir <.nightshift/metrics> \
-//     --lane security --ts <iso> [--today YYYY-MM-DD] [--date YYYY-MM-DD]
+//     --lane security --ts <iso> [--today YYYY-MM-DD] [--date YYYY-MM-DD] \
+//     [--run-id <run_id>]
+//
+// --run-id is what makes this command the run's completion sentinel: rollup is
+// the last durable step, so it is the only place that can honestly stamp a run
+// complete (see lib/run-complete.ts). The launcher path always passes it; a
+// standalone recompute of some past day deliberately does not, and stamps
+// nothing.
 import { parseArgs, requireArg, resolveToday } from "../lib/args.js";
 import { runRollup } from "../lib/rollup-cli.js";
 import type { Lane } from "../lib/types.js";
@@ -23,6 +30,7 @@ function main(): void {
       today,
       date,
       ts,
+      runId: args["run-id"],
     });
     process.stderr.write(
       `rollup: ${res.date} ${res.lane} freshness=${res.coverage_freshness_pct}% open=${res.open_findings}\n`,

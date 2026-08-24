@@ -103,13 +103,15 @@ function writeClaudeStub(path: string): void {
       "if (mode === \"sleep\") { const until = Date.now() + 30000; while (Date.now() < until) { try { require('node:child_process').execFileSync('sleep', ['0.2']); } catch (e) { break; } } }",
       'if (mode === "fail") process.exit(1);',
       'if (mode === "badjson") { process.stdout.write(\'{"is_error\'); process.exit(1); }',
-      "// A REAL successful session leaves a run row: bin/record appends exactly one",
-      "// to metrics/runs/<YYYY-MM>.jsonl at the end of the chain, and that row — not",
-      "// this process's exit code — is what `ns` now reads to decide the outcome. The",
-      "// stub therefore has to leave one, or it is modelling an exit code rather than",
-      "// a run. Mode `hollow` is the same session WITHOUT the row: exits 0, emits a",
-      "// clean envelope, reviewed nothing. That is not a hypothetical — it is what the",
-      "// first real run did.",
+      "// A REAL successful session leaves TWO things, and `ns` reads both rather",
+      "// than this process's exit code: bin/record appends exactly one run row to",
+      "// metrics/runs/<YYYY-MM>.jsonl, and bin/rollup — the last link in the chain —",
+      "// stamps metrics/runs/.complete/<run_id>. The stub has to leave both, or it is",
+      "// modelling an exit code rather than a run. Two failure modes are modelled",
+      "// alongside it, neither hypothetical: `hollow` exits 0 with a clean envelope",
+      "// and NO row (what the first real run did), and `unstamped` leaves the row but",
+      "// not the sentinel (record ran, then the registry rewrite or rollup failed —",
+      "// the state that used to read as success and cost us the run dir).",
       'if (mode !== "hollow") {',
       '  const runsDir = process.env.NS_STUB_RUNS_DIR;',
       '  if (runsDir) {',
@@ -124,6 +126,11 @@ function writeClaudeStub(path: string): void {
       '      confirmed: 0, rejected_tier1: 0, rejected_tier2: 0, suppressed: 0,',
       '      usage_by_model: {}, usage_spent: 0, elapsed: 0,',
       '    }) + "\\n");',
+      '    if (mode !== "unstamped") {',
+      '      fs.mkdirSync(runsDir + "/.complete", { recursive: true });',
+      '      fs.writeFileSync(runsDir + "/.complete/" + process.env.NIGHTSHIFT_RUN_ID,',
+      '        JSON.stringify({ ts: new Date(0).toISOString(), date: process.env.NIGHTSHIFT_TODAY, lane: process.env.NS_STUB_LANE || "security" }) + "\\n");',
+      '    }',
       '  }',
       '}',
       "process.stdout.write(JSON.stringify({",
@@ -246,6 +253,65 @@ function setBrowser(fx: Fixture, baseUrl: string, environment: string | null): v
       : text.replace(/^(\s*)environment:.*$/m, `$1environment: ${environment}`);
   writeFileSync(p, text);
 }
+
+/**
+ * Is curl on this machine? The launcher's reachability probe uses curl and
+ * DEGRADES (says so and proceeds) when it is absent, so the probe's own tests
+ * would be vacuously green on a box without it — better to skip them and say so
+ * than to assert a refusal that could never fire.
+ */
+const HAS_CURL = spawnSync("curl", ["--version"], { encoding: "utf8" }).status === 0;
+
+let devServers: (() => void)[] = [];
+afterEach(() => {
+  for (const stop of devServers) stop();
+  devServers = [];
+});
+
+/**
+ * A dev server that is genuinely LISTENING, in a process of its own.
+ *
+ * It cannot be an http.Server in THIS process. runNs uses spawnSync, which
+ * blocks this process's event loop for the whole launcher run: the kernel would
+ * still complete the TCP handshake out of the listen backlog, so curl would
+ * connect and then wait for a response that no JS callback can ever write —
+ * which the launcher's bounded probe reads, correctly, as a wedged server. The
+ * port comes back through a FILE for the same reason: draining the child's
+ * stdout would also need the event loop.
+ *
+ * It answers 404 on every path deliberately. Any HTTP answer proves something
+ * is listening, and a dev server with no route for the pack's base_url origin
+ * is not a dev server that is down.
+ */
+function startDevServer(fx: Fixture): { baseUrl: string; stop: () => void } {
+  const portFile = join(fx.root, `devserver-${Math.random().toString(36).slice(2)}.port`);
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      [
+        'const http = require("node:http");',
+        'const fs = require("node:fs");',
+        'const s = http.createServer((_req, res) => { res.statusCode = 404; res.end("no route"); });',
+        's.listen(0, "127.0.0.1", () => fs.writeFileSync(process.argv[1], String(s.address().port)));',
+      ].join(""),
+      portFile,
+    ],
+    { stdio: "ignore" },
+  );
+  const stop = () => child.kill("SIGKILL");
+  devServers.push(stop);
+  let port = "";
+  for (let i = 0; i < 200 && port === ""; i++) {
+    if (existsSync(portFile)) port = readFileSync(portFile, "utf8").trim();
+    if (port === "") spawnSync("sleep", ["0.05"]);
+  }
+  if (port === "") throw new Error("the fixture dev server never reported a port");
+  return { baseUrl: `http://127.0.0.1:${port}`, stop };
+}
+
+/** A loopback address with nothing behind it — both lane-plan assertions hold. */
+const DEAD_BASE_URL = "http://127.0.0.1:1";
 
 // ---------------------------------------------------------------------------
 // Sanity — the harness itself is not vacuous
@@ -393,7 +459,10 @@ describe("T8: design preflight refuses an unsafe environment before a model is i
 
   it("runs the design lane when BOTH assertions hold (the refusals above are not blanket)", () => {
     const fx = setup();
-    setBrowser(fx, "http://novudesk.localhost:3000", "local");
+    // A REAL listener, not the pack's stock http://novudesk.localhost:3000:
+    // preflight's second half now also requires that something answers, so a
+    // design lane pointed at a port nobody is serving is refused on liveness.
+    setBrowser(fx, startDevServer(fx).baseUrl, "local");
     const { code } = runNs(fx, ["run", "novudesk", "design", "--no-open"]);
     expect(code).toBe(0);
     expect(claudeCalls(fx).length).toBe(1);
@@ -460,7 +529,8 @@ describe("launcher obligations", () => {
 
   it("OBLIGATION 3: `run <repo> all` pins ONE NIGHTSHIFT_TODAY across both lanes", () => {
     const fx = setup();
-    setBrowser(fx, "http://novudesk.localhost:3000", "local");
+    // The design half of `all` has to clear the liveness probe to reach a model.
+    setBrowser(fx, startDevServer(fx).baseUrl, "local");
     runNs(fx, ["run", "novudesk", "all", "--no-open"]);
     const calls = claudeCalls(fx);
     expect(calls.length).toBe(2);
@@ -705,7 +775,8 @@ describe("regression: an interrupt STOPS the run", () => {
 describe("regression: `ns run --due` does not feed its work list to the model session", () => {
   it("sweeps EVERY due pair — the first headless session must not eat the rest", () => {
     const fx = setup();
-    setBrowser(fx, "http://novudesk.localhost:3000", "local");
+    // Same reason as the `all` probe: the design pair needs a live target.
+    setBrowser(fx, startDevServer(fx).baseUrl, "local");
     const { code } = runNs(fx, ["run", "--due", "--no-open"]);
     expect(code).toBe(0);
     const calls = claudeCalls(fx);
@@ -1009,6 +1080,44 @@ describe("regression: a session that exited 0 having reviewed NOTHING was called
     expect(runNs(fx, ["run", "novudesk", "security", "--no-open"]).code).toBe(0);
     expect(runDirs(fx)).toEqual([]);
   });
+
+  // THE SAME BUG, ONE STEP FURTHER DOWN THE CHAIN. Reading the run row alone was
+  // still too generous: record appends that row and THEN rewrites the registry,
+  // and the workflow chains rollup after record. A failure in either leaves the
+  // row sitting there — so `ns` called it a success, deleted the run dir, and
+  // refreshed the dashboard to green, while freshness stamps or the daily
+  // metrics never landed. bin/rollup stamps runs/.complete/<run_id> as its last
+  // act; `unstamped` is that chain stopping just short of it.
+  it("a run row with no completion sentinel is a FAILURE — the chain stopped after record", () => {
+    const fx = setup();
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "security", "--no-open"], {
+      NS_STUB_MODE: "unstamped",
+    });
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/exited 0 but left NO run row/);
+  });
+
+  it("...so that run dir is KEPT too — it holds the only account of what failed", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "unstamped" });
+    expect(runDirs(fx).length).toBe(1);
+  });
+
+  it("...and the launcher log names the sentinel, not just the row", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "unstamped" });
+    const logsDir = join(fx.opsDir, "logs");
+    const logs = readdirSync(logsDir)
+      .map((f) => readFileSync(join(logsDir, f), "utf8"))
+      .join("\n");
+    expect(logs).toMatch(/never stamped complete/);
+  });
+
+  it("...and the dashboard still regenerates (T22 holds here too)", () => {
+    const fx = setup();
+    runNs(fx, ["run", "novudesk", "security", "--no-open"], { NS_STUB_MODE: "unstamped" });
+    expect(existsSync(fx.dashboard)).toBe(true);
+  });
 });
 
 describe("regression: `ns digest` is least-privilege", () => {
@@ -1050,5 +1159,134 @@ describe("regression: `ns digest` is least-privilege", () => {
     const { code, stderr } = runNs(fx, ["digest", "novudesk"], { NIGHTSHIFT_CLAUDE: stub });
     expect(code).toBe(2);
     expect(stderr).toMatch(/wrote no file/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T8, second half — the dev server has to actually be UP
+// ---------------------------------------------------------------------------
+
+describe("T8: a design run refuses when nothing is listening at base_url", () => {
+  // a7-ops-launcher.md's T8 ends "refuse when personas are missing or the dev
+  // server is down". The personas half shipped with lane-plan; this half did
+  // not, and "I forgot to `npm run dev`" was therefore a PAID failure — the
+  // safety gate passed, the fan-out dispatched Opus ux-reviewers at a dead port,
+  // and the run was billed for a screenful of connection refusals. The probe
+  // lives in the launcher, not in lane-plan: lane-plan is pure and unit-tested,
+  // and a socket in it would make its tests depend on the machine's free ports.
+  //
+  // Skipped, loudly, where curl is missing: the launcher degrades to "cannot
+  // check, continuing" there, so these assertions could never fire.
+  it.skipIf(!HAS_CURL)("refuses with a start-the-dev-server message and spends nothing", () => {
+    const fx = setup();
+    setBrowser(fx, DEAD_BASE_URL, "local");
+    const before = costLines(fx).length;
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "design", "--no-open"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/PREFLIGHT REFUSED/);
+    expect(stderr).toMatch(/start the dev server first/);
+    expect(stderr).toContain(DEAD_BASE_URL);
+    // The whole point: refused BEFORE a model call, so before any spend.
+    expect(claudeCalls(fx)).toEqual([]);
+    expect(costLines(fx).length).toBe(before);
+  });
+
+  it.skipIf(!HAS_CURL)("refuses on the preflight side of the mkdir — no scratch in the operator's repo", () => {
+    const fx = setup();
+    setBrowser(fx, DEAD_BASE_URL, "local");
+    runNs(fx, ["run", "novudesk", "design", "--no-open"]);
+    expect(runDirs(fx)).toEqual([]);
+    // ...and T22 still holds: the living document is refreshed on this path too.
+    expect(existsSync(fx.dashboard)).toBe(true);
+  });
+
+  it.skipIf(!HAS_CURL)("ANY answer counts as up — a 404 is a running server with no route, not a dead one", () => {
+    const fx = setup();
+    const dev = startDevServer(fx);
+    // The fixture server 404s every path, and the base_url names one.
+    setBrowser(fx, `${dev.baseUrl}/nothing-routes-here`, "local");
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "design", "--no-open"]);
+    expect(stderr).not.toMatch(/start the dev server first/);
+    expect(code).toBe(0);
+    expect(claudeCalls(fx).length).toBe(1);
+  });
+
+  it.skipIf(!HAS_CURL)("a listener that goes away between runs flips the same repo from ok to refused", () => {
+    // Non-vacuity for the pair above: same fixture, same manifest, one variable.
+    const fx = setup();
+    const dev = startDevServer(fx);
+    setBrowser(fx, dev.baseUrl, "local");
+    expect(runNs(fx, ["run", "novudesk", "design", "--no-open"]).code).toBe(0);
+    dev.stop();
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "design", "--no-open"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/start the dev server first/);
+  });
+
+  it.skipIf(!HAS_CURL)("the security lane never probes — it has no browser block and must not need one", () => {
+    const fx = setup();
+    setBrowser(fx, DEAD_BASE_URL, "local");
+    const { code, stderr } = runNs(fx, ["run", "novudesk", "security", "--no-open"]);
+    expect(code).toBe(0);
+    expect(stderr).not.toMatch(/start the dev server first/);
+    expect(claudeCalls(fx).length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `ns digest` is lane-agnostic
+// ---------------------------------------------------------------------------
+
+describe("regression: `ns digest` refused a repo that runs only the design lane", () => {
+  // The digest covers BOTH lanes and the fleet metrics — it is lane-agnostic by
+  // construction. It nevertheless resolved its paths by asking ops-target for
+  // `--lane security`, purely because it needed OPS_HOME, the repo path and the
+  // repo name, so an operator whose config says `lanes: [design]` (a subset
+  // config.yml explicitly allows) got "security is not enabled for repo" back
+  // from a command that has nothing to do with the security lane.
+
+  /** A stub `claude` that writes the digest the real session would write. */
+  function writeDigestStub(path: string): void {
+    writeFileSync(
+      path,
+      [
+        "#!/usr/bin/env node",
+        'const fs = require("node:fs");',
+        "const argv = process.argv.slice(2);",
+        'fs.appendFileSync(process.env.NS_PROBE_LOG, JSON.stringify({ argv, cwd: process.cwd(), env: {} }) + "\\n");',
+        'const out = /file path "([^"]+)"/.exec(argv.join(" "));',
+        'if (out) fs.writeFileSync(out[1], "# digest\\n");',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(path, 0o755);
+  }
+
+  it("produces the digest for a design-only repo", () => {
+    const fx = setup({ lanes: ["design"] });
+    const stub = join(fx.root, "digest-stub.js");
+    writeDigestStub(stub);
+    const { code, stderr } = runNs(fx, ["digest", "novudesk"], { NIGHTSHIFT_CLAUDE: stub });
+    expect(stderr).not.toMatch(/not enabled for repo/);
+    expect(code).toBe(0);
+    expect(existsSync(join(fx.opsDir, "digests", "novudesk.md"))).toBe(true);
+    // The session ran from the repo root, exactly as the lane-resolved path did.
+    expect(claudeCalls(fx)[0]!.cwd).toBe(realpathSync(fx.repoDir));
+  });
+
+  it("and for a security-only repo — dropping the hardcoded lane broke neither side", () => {
+    const fx = setup({ lanes: ["security"] });
+    const stub = join(fx.root, "digest-stub.js");
+    writeDigestStub(stub);
+    expect(runNs(fx, ["digest", "novudesk"], { NIGHTSHIFT_CLAUDE: stub }).code).toBe(0);
+    expect(existsSync(join(fx.opsDir, "digests", "novudesk.md"))).toBe(true);
+  });
+
+  it("still refuses a repo that is in no config at all, and names what it looked for", () => {
+    const fx = setup();
+    const { code, stderr } = runNs(fx, ["digest", "nosuchrepo"]);
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/no enabled repo named "nosuchrepo"/);
+    expect(claudeCalls(fx)).toEqual([]);
   });
 });

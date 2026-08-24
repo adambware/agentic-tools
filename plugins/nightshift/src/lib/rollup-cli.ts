@@ -9,6 +9,7 @@ import { extractEntries } from "./registry.js";
 import { openFindings } from "./findings-store.js";
 import { computeDailyRollup } from "./rollup-run.js";
 import { COSTS_FILENAME } from "./record-cost-run.js";
+import { markRunComplete } from "./run-complete.js";
 import { validateCostRecord, validateDailyMetrics } from "./validate.js";
 
 export interface RollupOpts {
@@ -19,6 +20,14 @@ export interface RollupOpts {
   date?: string;
   ts: string;
   outPath?: string;
+  /**
+   * The run this rollup completes. Supplied on the launcher path (the workflow's
+   * validate -> dedupe -> record -> rollup chain), omitted when rollup is invoked
+   * standalone to recompute a day. Present => the run is stamped complete once
+   * the append below succeeds; see run-complete.ts for why that stamp is the
+   * only trustworthy success signal a run leaves.
+   */
+  runId?: string;
 }
 
 export function runRollup(opts: RollupOpts): DailyMetrics {
@@ -84,6 +93,16 @@ export function runRollup(opts: RollupOpts): DailyMetrics {
   // Append to daily.jsonl
   const outPath = opts.outPath ?? join(opts.metricsDir, "daily.jsonl");
   appendJsonl(outPath, rollup);
+
+  // THE LAST THING THAT HAPPENS IN THE DURABLE CHAIN. rollup is the final step
+  // of the workflow's validate -> dedupe -> record -> rollup chain, so reaching
+  // this line is the only moment at which the whole chain is known to have run.
+  // Stamping earlier — in record, next to the run row — would mark a run
+  // complete while the registry rewrite and this rollup could still throw, which
+  // is precisely the gap the marker exists to close.
+  if (opts.runId !== undefined) {
+    markRunComplete(opts.metricsDir, opts.runId, { ts: opts.ts, date, lane: opts.lane });
+  }
 
   return rollup;
 }
