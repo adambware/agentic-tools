@@ -146,14 +146,16 @@ export function retainEvidence(opts: RetainEvidenceOpts): RetainEvidenceResult {
   const repoEvidenceDir = join(evidenceRoot, repoName);
 
   // ROOT GUARD, before any copy or prune touches repoEvidenceDir. The per-file
-  // symlink checks below (and prune.ts's lstat-not-stat walk) only defend
-  // symlink CHILDREN — a symlink or plain file sitting at $OPS/evidence/<repo>
-  // itself is never examined by either. mkdirSync({recursive:true}) FOLLOWS an
-  // existing symlink and no-ops instead of erroring, copyFileSync then writes
-  // through it, and prune()'s existsSync/readdirSync do the same — so a stale
-  // link (last night's repo rename, a bad manual mv) or a planted one turns
-  // ordinary retention into "copy evidence into, and lifecycle-delete every
-  // non-retained file under, wherever that link points". lstat, never
+  // symlink checks below only defend symlink CHILDREN — a symlink or plain file
+  // sitting at $OPS/evidence/<repo> itself is never examined by them.
+  // mkdirSync({recursive:true}) FOLLOWS an existing symlink and no-ops instead
+  // of erroring, and copyFileSync then writes through it — so a stale link
+  // (last night's repo rename, a bad manual mv) or a planted one turns ordinary
+  // retention into "copy evidence into wherever that link points". prune() now
+  // carries a root guard of its own and would refuse the lifecycle pass below,
+  // but only after those copies had already landed on the far side of the link:
+  // the deletes are the louder half of the damage, not the whole of it, so this
+  // guard earns its place ahead of the copy rather than delegating. lstat, never
   // stat/existsSync, so a dangling symlink (target already gone) is still
   // caught rather than read as "doesn't exist yet". A repo evidence dir that
   // doesn't exist at all is the normal first-run case (mkdirSync creates it

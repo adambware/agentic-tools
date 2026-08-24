@@ -317,6 +317,37 @@ describe("prune: symlink safety (lifecycle + time)", () => {
   });
 });
 
+describe("prune: refuses a symlinked or non-directory root", () => {
+  it("throws under the time policy when dir is a symlink to a real directory", () => {
+    const precious = join(dir, "precious");
+    touch(precious, "must-survive.txt", 0);
+    const linkedRoot = join(dir, "linked-root");
+    symlinkSync(precious, linkedRoot);
+
+    expect(() => prune(linkedRoot, { kind: "time", keep: 0, maxAgeDays: 0 }, { now: () => NOW })).toThrow();
+    expect(existsSync(join(precious, "must-survive.txt"))).toBe(true);
+  });
+
+  it("throws under the lifecycle policy when dir is a symlink to a real directory", () => {
+    const precious = join(dir, "precious");
+    touchNested(precious, "repo/must-survive.png");
+    const linkedRoot = join(dir, "linked-root");
+    symlinkSync(precious, linkedRoot);
+
+    expect(() => prune(linkedRoot, { kind: "lifecycle", retain: new Set() })).toThrow();
+    expect(existsSync(join(precious, "repo", "must-survive.png"))).toBe(true);
+  });
+
+  it("throws when dir exists but is a plain file, not a directory", () => {
+    const filePath = join(dir, "not-a-dir");
+    writeFileSync(filePath, "x");
+
+    expect(() => prune(filePath, { kind: "time", keep: 5, maxAgeDays: 7 }, { now: () => NOW })).toThrow();
+    expect(() => prune(filePath, { kind: "lifecycle", retain: new Set() })).toThrow();
+    expect(existsSync(filePath)).toBe(true);
+  });
+});
+
 describe("prune: retain-set canonicalization (refuter LOST cases)", () => {
   /** Run a lifecycle prune of evidence/ against a retain set built from one
    * open finding whose evidence field is `stored`, and return survival of

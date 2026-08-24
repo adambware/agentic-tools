@@ -47,6 +47,25 @@ export function prune(
   opts?: { now?: () => number },
 ): PruneResult {
   if (!existsSync(dir)) return { removed: [], kept: [] };
+
+  // ROOT GUARD. The lstat-not-stat discipline in computeTimeKeepSet and
+  // pruneLifecycle keeps the WALK from escaping through a symlinked child; it
+  // says nothing about `dir` itself, which readdirSync follows transparently.
+  // A symlinked $OPS/logs or .nightshift/.run therefore hands both policies a
+  // directory listing of someone else's tree and lets them delete from it.
+  // Throwing is the right refusal, not returning empty: callers treat a prune
+  // failure as non-fatal (bin/retain exits 2, finalize() logs and continues),
+  // so this surfaces a misconfigured root instead of silently pruning through
+  // it. Same contract as retain.ts's repoEvidenceDir guard.
+  const rootStat = lstatSync(dir);
+  if (!rootStat.isDirectory()) {
+    const what = rootStat.isSymbolicLink() ? "a symlink" : "not a directory";
+    throw new Error(
+      `prune: refusing to walk ${dir} — it is ${what}, not a real directory. ` +
+        `Deleting through it would follow the link and remove files outside the intended tree.`,
+    );
+  }
+
   if (policy.kind === "lifecycle") return pruneLifecycle(dir, policy.retain);
 
   const now = opts?.now ?? Date.now;
