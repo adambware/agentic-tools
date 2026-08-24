@@ -131,6 +131,96 @@ describe("design-lane readiness", () => {
     expect(html).toContain("personas.yml");
     expect(html).toContain("is missing");
   });
+
+  // The page's readiness verdict is bin/lane-plan's, not an approximation of it.
+  // Each pack below has BOTH of the things the old two-line check looked at —
+  // fixtures/personas.yml and a base_url — and is still one `ns` refuses every
+  // time. The dashboard is the operator's only view of the fleet, so rendering
+  // any of them as a live lane is the page lying about the one thing it is for.
+  function writeBrowserManifest(
+    repoDir: string,
+    browser: { tool?: string; base_url?: string; environment?: string },
+  ): void {
+    const line = (k: string, v: string | undefined) => (v === undefined ? [] : [`    ${k}: "${v}"`]);
+    writeFileSync(
+      join(repoDir, ".nightshift", "manifest.yml"),
+      [
+        "pack_format: 1",
+        "project: novudesk",
+        "stack_adapter:",
+        "  browser:",
+        ...line("tool", browser.tool),
+        ...line("base_url", browser.base_url),
+        ...line("environment", browser.environment),
+        "",
+      ].join("\n"),
+    );
+  }
+
+  const READY = {
+    tool: "playwright-mcp",
+    base_url: "http://novudesk.localhost:3000",
+    environment: "local",
+  };
+
+  it("a PRODUCTION environment is not-ready, and the page names the field", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, { ...READY, environment: "production" });
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("pack is not ready");
+    expect(html).toContain("<code>stack_adapter.browser.environment</code>");
+    expect(html).toContain("<code>production</code>");
+    expect(html).toContain("not a non-production environment");
+  });
+
+  it("a non-loopback base_url is not-ready, and the page names the host", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, { ...READY, base_url: "https://novudesk.example.com" });
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("pack is not ready");
+    expect(html).toContain("<code>novudesk.example.com</code>");
+    expect(html).toContain("is not loopback");
+  });
+
+  it("an unknown browser tool is not-ready — an adapter with no agent file is a refusal", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, { ...READY, tool: "cypress" });
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("pack is not ready");
+    expect(html).toContain("<code>cypress</code>");
+    expect(html).toContain("has no ux-reviewer agent");
+  });
+
+  it("a missing `environment` assertion is not-ready — silence is not consent", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, { tool: READY.tool, base_url: READY.base_url });
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("pack is not ready");
+    expect(html).toContain("<code>stack_adapter.browser.environment</code>");
+    expect(html).toContain("is unset");
+  });
+
+  it("two unmet prerequisites still join with ' and ', so the copy says 'until both exist'", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, { tool: READY.tool, base_url: READY.base_url });
+    unlinkSync(join(repoDir, ".nightshift", "fixtures", "personas.yml"));
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).toContain("until both exist");
+  });
+
+  it("a pack that clears every gate is still rendered 'on', not scared off by the new checks", () => {
+    const { repoDir, configPath, outPath } = setupOps();
+    writeBrowserManifest(repoDir, READY);
+
+    const { html } = runDashboard(baseOpts(configPath, outPath));
+    expect(html).not.toContain("pack is not ready");
+    expect(html).toContain("FLOW-01");
+  });
 });
 
 // ---------------------------------------------------------------------------

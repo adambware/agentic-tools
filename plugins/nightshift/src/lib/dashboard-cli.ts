@@ -10,6 +10,7 @@ import type { CostRecord, DailyMetrics, Finding, Lane, RunMetrics, Suppression }
 import { readYaml, readJsonl, atomicWrite } from "./io.js";
 import { expandPath } from "./ops-config.js";
 import { extractEntries } from "./registry.js";
+import { checkDesignPack } from "./lane-plan.js";
 import { openFindings } from "./findings-store.js";
 import { COSTS_FILENAME } from "./record-cost-run.js";
 import {
@@ -168,21 +169,38 @@ function laneInput(packDir: string, lane: Lane, enabled: boolean): LaneInput {
     ? extractEntries(readYaml(registryPath), lane)
     : [];
   if (lane === "design") {
-    // State 4: the design lane needs seeded personas AND a browser base_url
-    // before `ns` will run it — surface exactly what is missing.
-    const personas = existsSync(join(packDir, "fixtures", "personas.yml"));
-    const manifest = readYaml<{
-      stack_adapter?: { browser?: { base_url?: string } };
-    }>(join(packDir, "manifest.yml"));
-    const baseUrl = manifest?.stack_adapter?.browser?.base_url;
-    if (!personas || !baseUrl) {
-      const missing = [
-        personas ? null : "`fixtures/personas.yml` is missing",
-        baseUrl ? null : "`stack_adapter.browser.base_url` is unset",
-      ]
-        .filter(Boolean)
-        .join(" and ");
-      return { lane, state: "not-ready", not_ready_reason: missing, entries };
+    // State 4: readiness is the LAUNCHER's definition of it, not this page's
+    // approximation. checkDesignPack is the same predicate bin/lane-plan refuses
+    // on, so a lane rendered "on" here is a lane `ns` will actually run.
+    //
+    // It was two checks inline — personas.yml exists AND base_url is set — and
+    // that pair called a pack ready when its base_url pointed at staging, when
+    // the `environment` assertion was absent entirely, and when the browser tool
+    // named an adapter with no agent file. All three are permanent refusals in
+    // preflight, and the dashboard is the operator's ONLY view of the fleet: it
+    // was quietly promising a lane that could never run, on the one page a
+    // person reads to decide everything is fine.
+    //
+    // The registry is NOT re-read for this: `entries` above is already this
+    // page's read of it, and checkDesignPack deliberately leaves the flow ->
+    // persona cross-reference to the launcher rather than reading the file a
+    // second time.
+    const manifestPath = join(packDir, "manifest.yml");
+    const design = checkDesignPack({
+      packDir,
+      manifest: readYaml(manifestPath),
+      manifestPath,
+    });
+    if (!design.ok) {
+      // Every unmet prerequisite, joined the way this page has always joined
+      // them — laneTableHtml reads the " and " to decide between "until it
+      // exists" and "until both exist".
+      return {
+        lane,
+        state: "not-ready",
+        not_ready_reason: design.problems.map((p) => p.summary).join(" and "),
+        entries,
+      };
     }
   }
   return { lane, state: "on", entries };

@@ -7736,19 +7736,22 @@ function checkLoopbackBaseUrl(baseUrl, manifestPath) {
   } catch {
     return {
       ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`,
+      summary: "`stack_adapter.browser.base_url` is not an absolute URL"
     };
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return {
       ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` uses scheme \`${url.protocol}\`, not http/https`
     };
   }
   if (!isLoopbackHost(url.hostname)) {
     return {
       ok: false,
-      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` host \`${url.hostname}\` is not loopback`
     };
   }
   return { ok: true };
@@ -7759,7 +7762,8 @@ function checkNonProductionAssertion(browser, manifestPath) {
   if (!filled(raw)) {
     return {
       ok: false,
-      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`
+      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`,
+      summary: "`stack_adapter.browser.environment` is unset"
     };
   }
   const env = raw.trim().toLowerCase();
@@ -7767,12 +7771,14 @@ function checkNonProductionAssertion(browser, manifestPath) {
   if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
     return {
       ok: false,
-      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`
+      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`,
+      summary: `\`stack_adapter.browser.environment\` is \`${env}\`, not a non-production environment`
     };
   }
   return {
     ok: false,
-    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`
+    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`,
+    summary: `\`stack_adapter.browser.environment\` \`${env}\` is not a recognized non-production environment (allowed: ${supported})`
   };
 }
 function isObj2(x) {
@@ -7805,93 +7811,141 @@ function readYamlSafe(path, what) {
 function entryLabel(entry, index) {
   return filled(entry?.id) ? entry.id : `<entry #${index}>`;
 }
-function resolveDesignLane(input) {
-  const { packDir, manifest, manifestPath, registryPath, entries } = input;
+function checkDesignPack(input) {
+  const { packDir, manifestPath } = input;
+  const manifest = isObj2(input.manifest) ? input.manifest : {};
+  const problems = [];
   const stackAdapter = isObj2(manifest.stack_adapter) ? manifest.stack_adapter : void 0;
   const browser = stackAdapter !== void 0 && isObj2(stackAdapter.browser) ? stackAdapter.browser : void 0;
-  if (browser === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`
-    };
-  }
-  const tool = browser.tool;
   const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
-  if (!filled(tool)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`
-    };
-  }
-  const reviewer = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
-  if (reviewer === void 0) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`
-    };
-  }
-  const baseUrl = browser.base_url;
-  if (!filled(baseUrl)) {
-    return {
-      ok: false,
-      reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`
-    };
-  }
-  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
-  if (!loopback.ok) return loopback;
-  const nonProd = checkNonProductionAssertion(browser, manifestPath);
-  if (!nonProd.ok) return nonProd;
-  const personasPath = join2(packDir, PERSONAS_REL);
-  if (!insidePack(packDir, personasPath)) {
-    return {
-      ok: false,
-      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`
-    };
-  }
-  if (!existsSync2(personasPath)) {
-    if (existsSync2(join2(packDir, PERSONAS_EXAMPLE_REL))) {
-      return {
-        ok: false,
-        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`
-      };
+  let reviewer;
+  let toolId;
+  let resolvedBaseUrl;
+  let environment;
+  if (browser === void 0) {
+    problems.push({
+      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`,
+      summary: "`stack_adapter.browser` is missing"
+    });
+  } else {
+    const tool = browser.tool;
+    if (!filled(tool)) {
+      problems.push({
+        reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`,
+        summary: "`stack_adapter.browser.tool` is unset"
+      });
+    } else {
+      const found = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
+      if (found === void 0) {
+        problems.push({
+          reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`,
+          summary: `\`stack_adapter.browser.tool\` \`${tool.trim()}\` has no ux-reviewer agent (supported: ${supported})`
+        });
+      } else {
+        reviewer = found;
+        toolId = tool.trim();
+      }
     }
+    const baseUrl = browser.base_url;
+    if (!filled(baseUrl)) {
+      problems.push({
+        reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`,
+        summary: "`stack_adapter.browser.base_url` is unset"
+      });
+    } else {
+      const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
+      if (loopback.ok) resolvedBaseUrl = baseUrl.trim();
+      else problems.push({ reason: loopback.reason, summary: loopback.summary });
+    }
+    const nonProd = checkNonProductionAssertion(browser, manifestPath);
+    if (nonProd.ok) environment = nonProd.environment;
+    else problems.push({ reason: nonProd.reason, summary: nonProd.summary });
+  }
+  const personasPath = join2(packDir, PERSONAS_REL);
+  let seeded;
+  if (!insidePack(packDir, personasPath)) {
+    problems.push({
+      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`,
+      summary: `\`${PERSONAS_REL}\` resolves outside the pack`
+    });
+  } else if (!existsSync2(personasPath)) {
+    if (existsSync2(join2(packDir, PERSONAS_EXAMPLE_REL))) {
+      problems.push({
+        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`,
+        summary: `\`${PERSONAS_REL}\` is missing (copy \`${PERSONAS_EXAMPLE_REL}\`)`
+      });
+    } else {
+      problems.push({
+        reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`,
+        summary: `\`${PERSONAS_REL}\` is missing`
+      });
+    }
+  } else {
+    const personasRead = readYamlSafe(personasPath, "personas file");
+    if (!personasRead.ok) {
+      problems.push({
+        reason: personasRead.reason,
+        summary: `\`${PERSONAS_REL}\` is not valid YAML`
+      });
+    } else {
+      const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
+      if (!Array.isArray(personasList)) {
+        problems.push({
+          reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`,
+          summary: `\`${PERSONAS_REL}\` has no \`personas:\` list`
+        });
+      } else if (personasList.length === 0) {
+        problems.push({
+          reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`,
+          summary: `\`${PERSONAS_REL}\` seeds no personas`
+        });
+      } else {
+        const idless = [];
+        const ids = /* @__PURE__ */ new Set();
+        personasList.forEach((p, i) => {
+          const id = isObj2(p) ? p.id : void 0;
+          if (filled(id)) ids.add(id.trim());
+          else idless.push(i);
+        });
+        if (idless.length > 0) {
+          problems.push({
+            reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``,
+            summary: `\`${PERSONAS_REL}\` has persona entries with no \`id\` (index ${idless.join(", ")})`
+          });
+        } else {
+          seeded = ids;
+        }
+      }
+    }
+  }
+  if (problems.length > 0) return { ok: false, problems };
+  if (reviewer === void 0 || toolId === void 0 || resolvedBaseUrl === void 0 || environment === void 0 || seeded === void 0) {
     return {
       ok: false,
-      reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`
+      problems: [
+        {
+          reason: `design-pack check finished with no problem to report and an unresolved prerequisite (${manifestPath}) \u2014 that is a bug in src/lib/lane-plan.ts, not something the pack can fix`,
+          summary: "`manifest.yml` could not be evaluated"
+        }
+      ]
     };
   }
-  const personasRead = readYamlSafe(personasPath, "personas file");
-  if (!personasRead.ok) return personasRead;
-  const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
-  if (!Array.isArray(personasList)) {
-    return {
-      ok: false,
-      reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`
-    };
-  }
-  if (personasList.length === 0) {
-    return {
-      ok: false,
-      reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`
-    };
-  }
-  const idless = [];
-  const seeded = /* @__PURE__ */ new Set();
-  personasList.forEach((p, i) => {
-    const id = isObj2(p) ? p.id : void 0;
-    if (filled(id)) seeded.add(id.trim());
-    else idless.push(i);
-  });
-  if (idless.length > 0) {
-    return {
-      ok: false,
-      reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``
-    };
-  }
+  return {
+    ok: true,
+    reviewer,
+    browser: { tool: toolId, base_url: resolvedBaseUrl, environment },
+    personas: personasPath,
+    seeded
+  };
+}
+function resolveDesignLane(input) {
+  const { packDir, manifest, manifestPath, registryPath, entries } = input;
+  const pack = checkDesignPack({ packDir, manifest, manifestPath });
+  if (!pack.ok) return { ok: false, reason: pack.problems[0].reason };
   const unresolved = [];
   entries.forEach((entry, i) => {
     const persona = entry?.persona;
-    if (filled(persona) && seeded.has(persona.trim())) return;
+    if (filled(persona) && pack.seeded.has(persona.trim())) return;
     unresolved.push(
       `${entryLabel(entry, i)} -> ${filled(persona) ? persona : "(no persona: set)"}`
     );
@@ -7899,14 +7953,14 @@ function resolveDesignLane(input) {
   if (unresolved.length > 0) {
     return {
       ok: false,
-      reason: `${registryPath} references personas that are not seeded in ${personasPath}: ${unresolved.join("; ")} \u2014 seed the missing personas or fix each flow's \`persona:\` field`
+      reason: `${registryPath} references personas that are not seeded in ${pack.personas}: ${unresolved.join("; ")} \u2014 seed the missing personas or fix each flow's \`persona:\` field`
     };
   }
   return {
     ok: true,
-    reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
-    personas: personasPath
+    reviewer: pack.reviewer,
+    browser: pack.browser,
+    personas: pack.personas
   };
 }
 function buildLanePlan(opts) {

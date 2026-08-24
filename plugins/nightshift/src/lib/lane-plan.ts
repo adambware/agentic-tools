@@ -259,7 +259,7 @@ export function isLoopbackHost(host: string): boolean {
 function checkLoopbackBaseUrl(
   baseUrl: string,
   manifestPath: string,
-): { ok: true } | { ok: false; reason: string } {
+): { ok: true } | { ok: false; reason: string; summary: string } {
   const advice =
     `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no ` +
     `filesystem guard can undo a browser action — point base_url at a local dev ` +
@@ -274,6 +274,7 @@ function checkLoopbackBaseUrl(
       reason:
         `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an ` +
         `absolute URL — ${advice}`,
+      summary: "`stack_adapter.browser.base_url` is not an absolute URL",
     };
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -282,6 +283,7 @@ function checkLoopbackBaseUrl(
       reason:
         `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses ` +
         `scheme "${url.protocol}" — only http/https are drivable; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` uses scheme \`${url.protocol}\`, not http/https`,
     };
   }
   if (!isLoopbackHost(url.hostname)) {
@@ -291,6 +293,7 @@ function checkLoopbackBaseUrl(
         `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a ` +
         `LOOPBACK host (resolved host: "${url.hostname}") — the design lane refuses any ` +
         `remote environment, staging included; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` host \`${url.hostname}\` is not loopback`,
     };
   }
   return { ok: true };
@@ -303,7 +306,7 @@ function checkLoopbackBaseUrl(
 function checkNonProductionAssertion(
   browser: Obj,
   manifestPath: string,
-): { ok: true; environment: string } | { ok: false; reason: string } {
+): { ok: true; environment: string } | { ok: false; reason: string; summary: string } {
   const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
   const raw = browser.environment;
   if (!filled(raw)) {
@@ -315,6 +318,7 @@ function checkNonProductionAssertion(
         `browser that submits forms (allowed: ${supported}). No default is inferred: a ` +
         `reachable server is not the same claim as a disposable one, and only a human can ` +
         `make it`,
+      summary: "`stack_adapter.browser.environment` is unset",
     };
   }
   const env = raw.trim().toLowerCase();
@@ -327,6 +331,7 @@ function checkNonProductionAssertion(
         `design lane refuses it. A shared environment answers, looks right, and holds data ` +
         `that is not yours to submit forms against; "up" is not "safe to mutate". Point the ` +
         `lane at a local dev server and set environment to one of: ${supported}`,
+      summary: `\`stack_adapter.browser.environment\` is \`${env}\`, not a non-production environment`,
     };
   }
   return {
@@ -335,6 +340,9 @@ function checkNonProductionAssertion(
       `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a ` +
       `recognized non-production environment (allowed: ${supported}) — an unrecognized ` +
       `value asserts nothing, so it is refused rather than assumed safe`,
+    summary:
+      `\`stack_adapter.browser.environment\` \`${env}\` is not a recognized non-production ` +
+      `environment (allowed: ${supported})`,
   };
 }
 
@@ -392,10 +400,277 @@ function entryLabel(entry: RegistryEntry, index: number): string {
   return filled(entry?.id) ? entry.id : `<entry #${index}>`;
 }
 
+/** One unmet design-lane prerequisite, in both of the voices it gets read in. */
+export interface DesignPackProblem {
+  /** The launcher's refusal: long, absolute-pathed, and says how to fix it. */
+  reason: string;
+  /** The dashboard's one clause, markdown-backticked for the page's fmtCopy(). */
+  summary: string;
+}
+
+export type DesignPackCheck =
+  | {
+      ok: true;
+      reviewer: string;
+      browser: { tool: string; base_url: string; environment: string };
+      personas: string;
+      /** Persona ids a flow's `persona:` field is allowed to name. */
+      seeded: Set<string>;
+    }
+  | { ok: false; problems: DesignPackProblem[] };
+
+/**
+ * THE design-lane readiness gate — everything the lane needs from the PACK
+ * ITSELF: the browser adapter, T8's environment pair, and the seeded personas.
+ *
+ * WHY IT IS EXTRACTED. `ns` is not the only thing that answers "is this lane
+ * ready?". bin/dashboard answers it too, on the page that is the operator's ONLY
+ * view of the fleet, and it used to answer it with its own two-line guess:
+ * fixtures/personas.yml exists AND stack_adapter.browser.base_url is set. That
+ * guess printed the lane as "on" for a pack pointed at staging, for a pack with
+ * no `environment` assertion at all, and for a pack naming a browser tool that
+ * has no agent file — three packs the launcher refuses EVERY time. A living
+ * document that advertises a lane `ns` will always refuse is worse than one that
+ * says nothing, so both surfaces now derive readiness from this one function.
+ *
+ * IT DELIBERATELY DOES NOT READ THE FLOWS REGISTRY. The flow -> persona
+ * cross-reference is the one prerequisite that needs the entries, and it stays
+ * in resolveDesignLane below: the dashboard already loads the registry by its
+ * own path, and having this re-read it would give the two surfaces two separate
+ * reads of the same file at two different moments.
+ *
+ * PROBLEMS ARE A LIST, AND problems[0] IS LOAD-BEARING. The groups below run in
+ * the exact order these checks ran when they were inline in resolveDesignLane,
+ * and each group contributes AT MOST ONE problem, so problems[0] is the same
+ * refusal, byte for byte, that the launcher produced before the extraction —
+ * which is what lets the refusal-per-reason tests keep asserting on those
+ * strings. The launcher takes only that first one, because one refusal per run
+ * is what an operator can act on; the dashboard joins every `summary` with
+ * " and " so a pack being set up shows all of its remaining work at once
+ * instead of one item per fix-and-re-render cycle.
+ */
+export function checkDesignPack(input: {
+  packDir: string;
+  /** The parsed manifest.yml. A missing file or a non-mapping reads as empty. */
+  manifest: unknown;
+  manifestPath: string;
+}): DesignPackCheck {
+  const { packDir, manifestPath } = input;
+  const manifest = isObj(input.manifest) ? input.manifest : {};
+  const problems: DesignPackProblem[] = [];
+
+  const stackAdapter = isObj(manifest.stack_adapter) ? manifest.stack_adapter : undefined;
+  const browser = stackAdapter !== undefined && isObj(stackAdapter.browser)
+    ? stackAdapter.browser
+    : undefined;
+
+  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
+  let reviewer: string | undefined;
+  let toolId: string | undefined;
+  let resolvedBaseUrl: string | undefined;
+  let environment: string | undefined;
+
+  if (browser === undefined) {
+    // Every group up to the personas one reads a field off `browser`, so a
+    // missing browser block collapses them all into this single problem. The
+    // personas group below still runs: it never touches the manifest, and an
+    // operator fixing one of these will want to know about the other.
+    problems.push({
+      reason:
+        `manifest.stack_adapter.browser is missing in ${manifestPath} — the design lane ` +
+        `drives real flows, so it needs a browser adapter: add ` +
+        `stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run ` +
+        `/nightshift:onboard to fill them in)`,
+      summary: "`stack_adapter.browser` is missing",
+    });
+  } else {
+    const tool = browser.tool;
+    if (!filled(tool)) {
+      problems.push({
+        reason:
+          `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} — ` +
+          `set it to the browser adapter this pack drives (supported: ${supported})`,
+        summary: "`stack_adapter.browser.tool` is unset",
+      });
+    } else {
+      // One agent per adapter, resolved from the pinned table. No fallback: an
+      // agent without the adapter's tools in its frontmatter cannot drive the
+      // flow at all.
+      // tableGet, never a bare bracket read: `tool` is operator YAML, so
+      // "constructor" and friends must land in the refusal below, not on
+      // Object.prototype.
+      const found = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
+      if (found === undefined) {
+        problems.push({
+          reason:
+            `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent — ` +
+            `supported adapters: ${supported}. Subagent tools come from agent-file ` +
+            `frontmatter, so each adapter needs its own agent file; nothing is granted ` +
+            `at dispatch time`,
+          summary:
+            `\`stack_adapter.browser.tool\` \`${tool.trim()}\` has no ux-reviewer agent ` +
+            `(supported: ${supported})`,
+        });
+      } else {
+        reviewer = found;
+        toolId = tool.trim();
+      }
+    }
+
+    const baseUrl = browser.base_url;
+    if (!filled(baseUrl)) {
+      problems.push({
+        reason:
+          `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} — ` +
+          `set it to the LOCAL dev server URL the design lane should drive ` +
+          `(loopback only — never staging, never production)`,
+        summary: "`stack_adapter.browser.base_url` is unset",
+      });
+    } else {
+      // T8 — environment safety. Both halves are required and both are refusals;
+      // see the NON_PRODUCTION_ENVIRONMENTS header for why neither substitutes for
+      // the other. Placed before the PERSONAS checks, so an operator who has pointed
+      // the lane somewhere unsafe is not first sent off to seed fixtures for an
+      // environment the lane will refuse anyway.
+      //
+      // It is NOT first overall, and that is worth being honest about: buildLanePlan
+      // reads the registry and resolveDesignLane resolves the adapter before it gets
+      // here, so a pack that is BOTH missing its flows registry AND pointed at
+      // production hears about the registry. Every path still refuses and nothing
+      // runs — the cost is an operator doing one round of setup work before learning
+      // about the second problem. Reordering means moving the whole design branch
+      // ahead of the shared registry read, which changes A5's refusal ordering for
+      // every lane to fix an ergonomic wrinkle in one.
+      const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
+      if (loopback.ok) resolvedBaseUrl = baseUrl.trim();
+      else problems.push({ reason: loopback.reason, summary: loopback.summary });
+    }
+    const nonProd = checkNonProductionAssertion(browser, manifestPath);
+    if (nonProd.ok) environment = nonProd.environment;
+    else problems.push({ reason: nonProd.reason, summary: nonProd.summary });
+  }
+
+  const personasPath = join(packDir, PERSONAS_REL);
+  let seeded: Set<string> | undefined;
+  if (!insidePack(packDir, personasPath)) {
+    problems.push({
+      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`,
+      summary: `\`${PERSONAS_REL}\` resolves outside the pack`,
+    });
+  } else if (!existsSync(personasPath)) {
+    // The single likeliest operator state is "template copied with the pack,
+    // never filled in" — say so explicitly instead of a bare not-found.
+    if (existsSync(join(packDir, PERSONAS_EXAMPLE_REL))) {
+      problems.push({
+        reason:
+          `seeded personas not found: ${personasPath} — found the template ` +
+          `personas.example.yml but not personas.yml — copy it and fill in seeded ` +
+          `personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), ` +
+          `then re-run`,
+        summary: `\`${PERSONAS_REL}\` is missing (copy \`${PERSONAS_EXAMPLE_REL}\`)`,
+      });
+    } else {
+      problems.push({
+        reason:
+          `seeded personas not found: ${personasPath} — the design lane drives every ` +
+          `flow AS a seeded, non-production persona so it measures real friction and ` +
+          `not environment drift; create ${PERSONAS_REL} (see the pack template's ` +
+          `${PERSONAS_EXAMPLE_REL})`,
+        summary: `\`${PERSONAS_REL}\` is missing`,
+      });
+    }
+  } else {
+    const personasRead = readYamlSafe(personasPath, "personas file");
+    if (!personasRead.ok) {
+      problems.push({
+        reason: personasRead.reason,
+        summary: `\`${PERSONAS_REL}\` is not valid YAML`,
+      });
+    } else {
+      const personasList = isObj(personasRead.doc) ? personasRead.doc.personas : undefined;
+      if (!Array.isArray(personasList)) {
+        problems.push({
+          reason:
+            `${personasPath} has no \`personas:\` list — expected a top-level \`personas:\` ` +
+            `array whose entries each carry a string \`id\` the flow registry can reference`,
+          summary: `\`${PERSONAS_REL}\` has no \`personas:\` list`,
+        });
+      } else if (personasList.length === 0) {
+        problems.push({
+          reason:
+            `${personasPath} has an empty \`personas:\` list — seed at least one persona ` +
+            `(id, permissions, data_seed, credentials_ref, success_criteria) before the ` +
+            `design lane can run`,
+          summary: `\`${PERSONAS_REL}\` seeds no personas`,
+        });
+      } else {
+        // An id-less persona can never be referenced by a flow, so it is dead
+        // seed data — name the exact indices rather than silently skipping them.
+        const idless: number[] = [];
+        const ids = new Set<string>();
+        personasList.forEach((p, i) => {
+          const id = isObj(p) ? p.id : undefined;
+          if (filled(id)) ids.add(id.trim());
+          else idless.push(i);
+        });
+        if (idless.length > 0) {
+          problems.push({
+            reason:
+              `${personasPath}: persona entries at index ${idless.join(", ")} have no string ` +
+              `\`id\` — every persona needs a unique string id, because flows select one by ` +
+              `\`persona:\``,
+            summary: `\`${PERSONAS_REL}\` has persona entries with no \`id\` (index ${idless.join(", ")})`,
+          });
+        } else {
+          seeded = ids;
+        }
+      }
+    }
+  }
+
+  if (problems.length > 0) return { ok: false, problems };
+  if (
+    reviewer === undefined ||
+    toolId === undefined ||
+    resolvedBaseUrl === undefined ||
+    environment === undefined ||
+    seeded === undefined
+  ) {
+    // Narrowing, not defense in depth: an empty problems list means every group
+    // above took its success branch, so all five are set. The compiler cannot
+    // see that through the pushes, and one guard reads better than five `!`s —
+    // with the side benefit that a future edit which breaks the
+    // problem/value pairing refuses instead of emitting a plan with holes.
+    return {
+      ok: false,
+      problems: [
+        {
+          reason:
+            `design-pack check finished with no problem to report and an unresolved ` +
+            `prerequisite (${manifestPath}) — that is a bug in src/lib/lane-plan.ts, ` +
+            `not something the pack can fix`,
+          summary: "`manifest.yml` could not be evaluated",
+        },
+      ],
+    };
+  }
+  return {
+    ok: true,
+    reviewer,
+    browser: { tool: toolId, base_url: resolvedBaseUrl, environment },
+    personas: personasPath,
+    seeded,
+  };
+}
+
 /**
  * Design-lane prerequisites, checked in the operator's order of discovery:
  * browser adapter, then personas, then the flow -> persona references that tie
  * the two together. Returns the extra plan fields or the first refusal.
+ *
+ * The first two groups live in checkDesignPack above, which bin/dashboard shares
+ * so the page and the launcher cannot disagree about what "ready" means. Only
+ * the registry cross-reference is left here, because only it needs the entries.
  */
 function resolveDesignLane(input: {
   packDir: string;
@@ -413,148 +688,10 @@ function resolveDesignLane(input: {
   | { ok: false; reason: string } {
   const { packDir, manifest, manifestPath, registryPath, entries } = input;
 
-  const stackAdapter = isObj(manifest.stack_adapter) ? manifest.stack_adapter : undefined;
-  const browser = stackAdapter !== undefined && isObj(stackAdapter.browser)
-    ? stackAdapter.browser
-    : undefined;
-  if (browser === undefined) {
-    return {
-      ok: false,
-      reason:
-        `manifest.stack_adapter.browser is missing in ${manifestPath} — the design lane ` +
-        `drives real flows, so it needs a browser adapter: add ` +
-        `stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run ` +
-        `/nightshift:onboard to fill them in)`,
-    };
-  }
-
-  const tool = browser.tool;
-  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
-  if (!filled(tool)) {
-    return {
-      ok: false,
-      reason:
-        `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} — ` +
-        `set it to the browser adapter this pack drives (supported: ${supported})`,
-    };
-  }
-
-  // One agent per adapter, resolved from the pinned table. No fallback: an agent
-  // without the adapter's tools in its frontmatter cannot drive the flow at all.
-  // tableGet, never a bare bracket read: `tool` is operator YAML, so "constructor"
-  // and friends must land in the refusal below, not on Object.prototype.
-  const reviewer = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
-  if (reviewer === undefined) {
-    return {
-      ok: false,
-      reason:
-        `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent — ` +
-        `supported adapters: ${supported}. Subagent tools come from agent-file ` +
-        `frontmatter, so each adapter needs its own agent file; nothing is granted ` +
-        `at dispatch time`,
-    };
-  }
-
-  const baseUrl = browser.base_url;
-  if (!filled(baseUrl)) {
-    return {
-      ok: false,
-      reason:
-        `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} — ` +
-        `set it to the LOCAL dev server URL the design lane should drive ` +
-        `(loopback only — never staging, never production)`,
-    };
-  }
-
-  // T8 — environment safety. Both halves are required and both are refusals;
-  // see the NON_PRODUCTION_ENVIRONMENTS header for why neither substitutes for
-  // the other. Placed before the PERSONAS checks, so an operator who has pointed
-  // the lane somewhere unsafe is not first sent off to seed fixtures for an
-  // environment the lane will refuse anyway.
-  //
-  // It is NOT first overall, and that is worth being honest about: buildLanePlan
-  // reads the registry and resolveDesignLane resolves the adapter before it gets
-  // here, so a pack that is BOTH missing its flows registry AND pointed at
-  // production hears about the registry. Every path still refuses and nothing
-  // runs — the cost is an operator doing one round of setup work before learning
-  // about the second problem. Reordering means moving the whole design branch
-  // ahead of the shared registry read, which changes A5's refusal ordering for
-  // every lane to fix an ergonomic wrinkle in one.
-  const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
-  if (!loopback.ok) return loopback;
-  const nonProd = checkNonProductionAssertion(browser, manifestPath);
-  if (!nonProd.ok) return nonProd;
-
-  const personasPath = join(packDir, PERSONAS_REL);
-  if (!insidePack(packDir, personasPath)) {
-    return {
-      ok: false,
-      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`,
-    };
-  }
-  if (!existsSync(personasPath)) {
-    // The single likeliest operator state is "template copied with the pack,
-    // never filled in" — say so explicitly instead of a bare not-found.
-    if (existsSync(join(packDir, PERSONAS_EXAMPLE_REL))) {
-      return {
-        ok: false,
-        reason:
-          `seeded personas not found: ${personasPath} — found the template ` +
-          `personas.example.yml but not personas.yml — copy it and fill in seeded ` +
-          `personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), ` +
-          `then re-run`,
-      };
-    }
-    return {
-      ok: false,
-      reason:
-        `seeded personas not found: ${personasPath} — the design lane drives every ` +
-        `flow AS a seeded, non-production persona so it measures real friction and ` +
-        `not environment drift; create ${PERSONAS_REL} (see the pack template's ` +
-        `${PERSONAS_EXAMPLE_REL})`,
-    };
-  }
-
-  const personasRead = readYamlSafe(personasPath, "personas file");
-  if (!personasRead.ok) return personasRead;
-
-  const personasList = isObj(personasRead.doc) ? personasRead.doc.personas : undefined;
-  if (!Array.isArray(personasList)) {
-    return {
-      ok: false,
-      reason:
-        `${personasPath} has no \`personas:\` list — expected a top-level \`personas:\` ` +
-        `array whose entries each carry a string \`id\` the flow registry can reference`,
-    };
-  }
-  if (personasList.length === 0) {
-    return {
-      ok: false,
-      reason:
-        `${personasPath} has an empty \`personas:\` list — seed at least one persona ` +
-        `(id, permissions, data_seed, credentials_ref, success_criteria) before the ` +
-        `design lane can run`,
-    };
-  }
-
-  // An id-less persona can never be referenced by a flow, so it is dead seed
-  // data — name the exact indices rather than silently skipping them.
-  const idless: number[] = [];
-  const seeded = new Set<string>();
-  personasList.forEach((p, i) => {
-    const id = isObj(p) ? p.id : undefined;
-    if (filled(id)) seeded.add(id.trim());
-    else idless.push(i);
-  });
-  if (idless.length > 0) {
-    return {
-      ok: false,
-      reason:
-        `${personasPath}: persona entries at index ${idless.join(", ")} have no string ` +
-        `\`id\` — every persona needs a unique string id, because flows select one by ` +
-        `\`persona:\``,
-    };
-  }
+  const pack = checkDesignPack({ packDir, manifest, manifestPath });
+  // FIRST problem only — see checkDesignPack's header for why that one is the
+  // same string, in the same order, this function returned before the split.
+  if (!pack.ok) return { ok: false, reason: pack.problems[0]!.reason };
 
   // Every flow must resolve to a seeded persona. A flow naming an unseeded
   // persona (or naming none at all) cannot be driven deterministically, and a
@@ -562,7 +699,7 @@ function resolveDesignLane(input: {
   const unresolved: string[] = [];
   entries.forEach((entry, i) => {
     const persona = entry?.persona;
-    if (filled(persona) && seeded.has(persona.trim())) return;
+    if (filled(persona) && pack.seeded.has(persona.trim())) return;
     unresolved.push(
       `${entryLabel(entry, i)} -> ${filled(persona) ? persona : "(no persona: set)"}`,
     );
@@ -571,7 +708,7 @@ function resolveDesignLane(input: {
     return {
       ok: false,
       reason:
-        `${registryPath} references personas that are not seeded in ${personasPath}: ` +
+        `${registryPath} references personas that are not seeded in ${pack.personas}: ` +
         `${unresolved.join("; ")} — seed the missing personas or fix each flow's ` +
         `\`persona:\` field`,
     };
@@ -579,9 +716,9 @@ function resolveDesignLane(input: {
 
   return {
     ok: true,
-    reviewer,
-    browser: { tool: tool.trim(), base_url: baseUrl.trim(), environment: nonProd.environment },
-    personas: personasPath,
+    reviewer: pack.reviewer,
+    browser: pack.browser,
+    personas: pack.personas,
   };
 }
 

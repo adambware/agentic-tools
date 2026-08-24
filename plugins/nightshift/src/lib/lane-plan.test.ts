@@ -16,7 +16,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLanePlan, isLoopbackHost, NON_PRODUCTION_ENVIRONMENTS } from "./lane-plan.js";
+import {
+  buildLanePlan,
+  checkDesignPack,
+  isLoopbackHost,
+  NON_PRODUCTION_ENVIRONMENTS,
+} from "./lane-plan.js";
+import { readYaml } from "./io.js";
 import { isSafeAgentType, isSafeId } from "./validate.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -634,5 +640,142 @@ describe("buildLanePlan emitted-id safety", () => {
     expect(res.plan.registry.startsWith(dir)).toBe(true);
     const base = res.plan.registry.slice(res.plan.registry.lastIndexOf("/") + 1);
     expect(isSafeId(base)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkDesignPack — the static gate bin/dashboard shares with the launcher.
+//
+// The dashboard used to decide design-lane readiness on its own, from two
+// existsSync-shaped checks, and so advertised as "ready" packs that `ns` refuses
+// every single time (staging base_url, no `environment` assertion, a browser
+// tool with no agent file). These tests pin the two properties that make one
+// shared predicate safe: it produces the launcher's exact first refusal, in the
+// launcher's exact order, and it reaches its verdict without the flows registry.
+// ---------------------------------------------------------------------------
+
+describe("checkDesignPack", () => {
+  const manifestPath = (): string => join(dir, "manifest.yml");
+  const check = () =>
+    checkDesignPack({ packDir: dir, manifest: readYaml(manifestPath()), manifestPath: manifestPath() });
+
+  it("resolves a design-ready pack, including the persona ids flows may name", () => {
+    seedDesignPack(dir);
+    const res = check();
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.reviewer).toBe("ux-reviewer-playwright");
+    expect(res.browser).toEqual({
+      tool: "playwright-mcp",
+      base_url: "http://localhost:3000",
+      environment: "local",
+    });
+    expect([...res.seeded]).toEqual(["end-user"]);
+  });
+
+  // The ordering guard. Each case breaks ONE prerequisite; problems[0].reason
+  // must still be the string buildLanePlan refuses with, which is what stops a
+  // future edit from quietly reshuffling A5's refusal order.
+  const BROKEN: [string, () => void][] = [
+    ["no browser block", () => writeFileSync(join(dir, "manifest.yml"), MANIFEST_NO_BROWSER)],
+    ["blank tool", () => writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ tool: "" }))],
+    [
+      "unknown tool",
+      () => writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ tool: "cypress" })),
+    ],
+    [
+      "missing base_url",
+      () => writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ base_url: "" })),
+    ],
+    [
+      "remote base_url",
+      () =>
+        writeFileSync(
+          join(dir, "manifest.yml"),
+          manifestWithBrowser({ base_url: "https://novudesk.example.com" }),
+        ),
+    ],
+    [
+      "production environment",
+      () =>
+        writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "production" })),
+    ],
+    [
+      "missing environment",
+      () => writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "" })),
+    ],
+    ["no personas file", () => rmSync(join(dir, "fixtures", "personas.yml"))],
+    [
+      "empty personas list",
+      () => writeFileSync(join(dir, "fixtures", "personas.yml"), "personas: []\n"),
+    ],
+  ];
+
+  it.each(BROKEN)("%s: problems[0] is the launcher's refusal, verbatim", (_name, breakIt) => {
+    seedDesignPack(dir);
+    breakIt();
+    const res = check();
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    const plan = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(res.problems[0]!.reason).toBe(plan.reason);
+  });
+
+  it("every problem carries a markdown-backticked summary for the dashboard", () => {
+    seedDesignPack(dir);
+    writeFileSync(join(dir, "manifest.yml"), manifestWithBrowser({ environment: "staging" }));
+    const res = check();
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    for (const p of res.problems) expect(p.summary).toMatch(/`[^`]+`/);
+    expect(res.problems[0]!.summary).toContain("`stack_adapter.browser.environment`");
+    expect(res.problems[0]!.summary).toContain("`staging`");
+  });
+
+  it("collects EVERY independent prerequisite, so a setup shows all its remaining work", () => {
+    seedDesignPack(dir);
+    writeFileSync(
+      join(dir, "manifest.yml"),
+      manifestWithBrowser({
+        tool: "cypress",
+        base_url: "https://novudesk.example.com",
+        environment: "production",
+      }),
+    );
+    rmSync(join(dir, "fixtures", "personas.yml"));
+    const res = check();
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    const summaries = res.problems.map((p) => p.summary).join(" and ");
+    expect(summaries).toContain("`stack_adapter.browser.tool`");
+    expect(summaries).toContain("`stack_adapter.browser.base_url`");
+    expect(summaries).toContain("`stack_adapter.browser.environment`");
+    expect(summaries).toContain("`fixtures/personas.yml`");
+    // ...and the launcher still hears about exactly the first one.
+    const plan = buildLanePlan({ packDir: dir, lane: "design" });
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(res.problems[0]!.reason).toBe(plan.reason);
+  });
+
+  it("does not read the flows registry — the dashboard already has the entries", () => {
+    // buildLanePlan refuses this pack (no registry), but readiness of the PACK
+    // itself is unchanged by it. If this ever starts failing, the predicate has
+    // grown a second read of a file its other caller already loaded.
+    seedDesignPack(dir);
+    rmSync(join(dir, "registries", "flows.yml"));
+    expect(check().ok).toBe(true);
+    expect(buildLanePlan({ packDir: dir, lane: "design" }).ok).toBe(false);
+  });
+
+  it("a missing manifest.yml reads as an absent browser block, not a crash", () => {
+    seedDesignPack(dir);
+    rmSync(join(dir, "manifest.yml"));
+    const res = check();
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.problems[0]!.summary).toBe("`stack_adapter.browser` is missing");
   });
 });
