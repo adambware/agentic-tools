@@ -148,6 +148,74 @@ describe("readOpsConfig: defaults when sections are absent", () => {
 });
 
 // ---------------------------------------------------------------------------
+// dashboard.out containment — bin/ns only string-concatenates this value onto
+// $OPS_HOME (it never resolves it with node's path module) and atomically
+// overwrites the result on every finalization, so an escaping value is not a
+// cosmetic problem, it is silent data loss of a real operator file.
+// ---------------------------------------------------------------------------
+
+describe("readOpsConfig: dashboard.out containment", () => {
+  it("applies the documented default when the key is absent", () => {
+    write(`repos:\n  - path: ${dir}/a\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.config.dashboard.out).toBe("dashboard.html");
+  });
+
+  it("accepts a plain filename", () => {
+    write(`repos:\n  - path: ${dir}/a\ndashboard: { out: my-dashboard.html }\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.config.dashboard.out).toBe("my-dashboard.html");
+  });
+
+  it("refuses an absolute path", () => {
+    // bin/ns concatenates this onto $OPS_HOME rather than resolving it, so an
+    // absolute value replaces the ops home in that concatenation instead of
+    // naming a file inside it.
+    write(`repos:\n  - path: ${dir}/a\ndashboard: { out: /etc/passwd }\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/dashboard\.out ".*" is an absolute path/);
+    }
+  });
+
+  it("refuses a parent-traversal value that walks out of the ops home", () => {
+    // The exact scenario from the finding: $OPS/runbook.md is a real
+    // operator-authored file, and bin/ns would atomically overwrite it on
+    // every finalization if this were allowed through.
+    write(`repos:\n  - path: ${dir}/a\ndashboard: { out: "../runbook.md" }\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/dashboard\.out ".*" contains a "\.\." segment/);
+    }
+  });
+
+  it("refuses a value with an embedded \"..\" segment, not just a leading one", () => {
+    write(`repos:\n  - path: ${dir}/a\ndashboard: { out: "reports/../../escape.html" }\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/dashboard\.out ".*" contains a "\.\." segment/);
+    }
+  });
+
+  it("refuses a contained subpath — bin/ns never mkdir -p's an intermediate directory", () => {
+    // "reports/dashboard.html" would stay inside the ops home, but bin/ns
+    // writes it as a direct concatenation with no directory creation step, so
+    // letting it through here would just move the failure to write time.
+    write(`repos:\n  - path: ${dir}/a\ndashboard: { out: "reports/dashboard.html" }\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/dashboard\.out ".*" has more than one path segment/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // name fallback to path basename
 // ---------------------------------------------------------------------------
 
@@ -376,6 +444,32 @@ describe("readOpsConfig structural refusals", () => {
     if (!res.ok) {
       expect(res.reason).toMatch(/resolve to the display name/);
       expect(res.reason).toContain('"app"');
+    }
+  });
+
+  it("refuses a CASE-ONLY collision — \"Foo\" and \"foo\" resolve to the same path on this machine's case-insensitive filesystem", () => {
+    // $OPS/evidence/Foo/ and $OPS/evidence/foo/ are the same directory on the
+    // default macOS filesystem (APFS/HFS+), even though both names pass
+    // SAFE_NAME as distinct strings — so this has to be refused with the same
+    // force as a same-case collision, not merely warned about.
+    write(`repos:\n  - path: ${dir}/code/Foo\n    name: Foo\n  - path: ${dir}/other/foo\n    name: foo\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/resolve to the display name/);
+      // Both original spellings must be named — an operator who wrote "Foo"
+      // and "foo" needs to see both to recognize why they collided.
+      expect(res.reason).toContain('"Foo"');
+      expect(res.reason).toContain('"foo"');
+    }
+  });
+
+  it("still accepts two repos with genuinely distinct names", () => {
+    write(`repos:\n  - path: ${dir}/code/app\n    name: app-one\n  - path: ${dir}/other/app\n    name: app-two\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.repos.map((r) => r.name)).toEqual(["app-one", "app-two"]);
     }
   });
 

@@ -160,6 +160,75 @@ function parseNonNegativeInt(raw: unknown, fallback: number): number | undefined
   return n;
 }
 
+/** Default `dashboard.out` when config.yml does not set one. */
+const DASHBOARD_OUT_DEFAULT = "dashboard.html";
+
+/**
+ * Validate `dashboard.out` at read time.
+ *
+ * bin/ns never resolves this value through node's path module — it is
+ * concatenated verbatim as `"$OPS_HOME/$NS_DASHBOARD_OUT"` and the result is
+ * atomically overwritten on every finalization. A `..` segment therefore walks
+ * straight back out of the ops home: "../runbook.md" is not a cosmetic mistake
+ * but a real operator-authored file silently clobbered on every single run.
+ *
+ * An absolute value does NOT escape — shell concatenation is not
+ * path.resolve(), so "/etc/x" yields "$OPS_HOME//etc/x", harmlessly inside the
+ * ops home. It is refused anyway because it is unhonorable rather than
+ * dangerous: the operator plainly asked for one location and would silently
+ * get a mirrored tree under another, if the write succeeded at all.
+ *
+ * Config-read time is the only enforcement point available. bin/ns has no
+ * path-resolution logic of its own to lean on, only concatenation, so whatever
+ * this function lets through is exactly what gets written over.
+ *
+ * A single path segment (no "/" at all) is required, not merely "resolves
+ * inside the ops home" — bin/ns concatenates this value directly onto
+ * $OPS_HOME and never `mkdir -p`s an intermediate directory, so a CONTAINED
+ * subpath like "reports/dashboard.html" would pass a resolves-inside check
+ * and then fail at write time with a shell error the operator would have to
+ * trace back to this config file by hand. Refusing it here, with a reason
+ * that names the actual rule, is strictly better than a downstream write
+ * failure with no context.
+ */
+function validateDashboardOut(
+  raw: unknown,
+  configPath: string,
+): { ok: true; value: string } | { ok: false; reason: string } {
+  if (!filled(raw)) return { ok: true, value: DASHBOARD_OUT_DEFAULT };
+  const out = raw.trim();
+  if (isAbsolute(out)) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" is an absolute path — bin/ns concatenates it ` +
+        `onto $OPS_HOME rather than resolving it, so this would not write where you asked; ` +
+        `it names a file inside the ops home, and must be a plain filename`,
+    };
+  }
+  const segments = out.split(/[\\/]+/);
+  if (segments.includes("..")) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" contains a ".." segment — bin/ns concatenates ` +
+        `it onto $OPS_HOME and atomically overwrites whatever path results on every ` +
+        `finalization, so this would silently clobber a file outside the ops home (an ` +
+        `operator's runbook.md, for example) instead of writing the dashboard`,
+    };
+  }
+  if (segments.length > 1) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" has more than one path segment — bin/ns writes ` +
+        `it directly under $OPS_HOME and never creates intermediate directories, so a subpath ` +
+        `would fail at write time with a shell error; use a plain filename`,
+    };
+  }
+  return { ok: true, value: out };
+}
+
 /**
  * Read and normalize $OPS/config.yml. Read-only and total: an operator-fixable
  * problem is always {ok:false, reason}, never a throw and never a silent
@@ -211,7 +280,10 @@ export function readOpsConfig(
   const base = resolve(configPath, "..");
 
   const repos: OpsRepo[] = [];
-  const seenNames = new Set<string>();
+  // Keyed by the LOWERCASED name, valued by the first original spelling seen —
+  // see the comment at the collision check below for why the key is
+  // normalized but the message still needs the original spellings.
+  const seenNames = new Map<string, string>();
   for (let i = 0; i < rawRepos.length; i++) {
     const raw = rawRepos[i];
     if (!isObj(raw)) {
@@ -264,16 +336,34 @@ export function readOpsConfig(
     }
     // Two repos sharing a display name would collide in $OPS/evidence/<repo>/
     // and in $OPS/digests/<repo>.md — one would silently overwrite the other.
-    if (seenNames.has(name)) {
+    // The comparison key is lowercased before this lookup because the ops
+    // home is explicitly a fact about THIS machine (see the file banner
+    // above), and this machine's default filesystem (APFS/HFS+) is
+    // case-insensitive: "Foo" and "foo" both satisfy SAFE_NAME as distinct
+    // strings, but $OPS/evidence/Foo/ and $OPS/evidence/foo/ are the SAME
+    // directory on disk, so one repo's evidence prune and digest write would
+    // silently land on the other's. The refusal below still names the
+    // ORIGINAL spelling of each repo, not the normalized key: an operator who
+    // wrote "Foo" and "foo" needs to see both spellings to recognize why they
+    // collided — pointing at the lowercased key alone would look unrelated to
+    // what either of them typed.
+    const nameKey = name.toLowerCase();
+    const priorSpelling = seenNames.get(nameKey);
+    if (priorSpelling !== undefined) {
       return {
         ok: false,
         reason:
           `${configPath}: two repos resolve to the display name "${name}" — evidence and ` +
           `digests are stored per name, so one would overwrite the other; give one an ` +
-          `explicit \`name:\``,
+          `explicit \`name:\`` +
+          (priorSpelling !== name
+            ? ` (case-only collision with the earlier "${priorSpelling}" — names collide ` +
+              `case-insensitively here because they become paths on this machine's ` +
+              `case-insensitive filesystem)`
+            : ""),
       };
     }
-    seenNames.add(name);
+    seenNames.set(nameKey, name);
     repos.push({ name, path, enabled: parseBool(raw.enabled, true), lanes: parseLanes(raw.lanes) });
   }
 
@@ -289,6 +379,9 @@ export function readOpsConfig(
 
   const dashboardRaw = isObj(doc.dashboard) ? doc.dashboard : {};
   const sentinelRaw = isObj(doc.sentinel) ? doc.sentinel : {};
+
+  const dashboardOut = validateDashboardOut(dashboardRaw.out, configPath);
+  if (!dashboardOut.ok) return dashboardOut;
 
   const hour = parseNonNegativeInt(sentinelRaw.hour, 7);
   const cooldown = parseNonNegativeInt(sentinelRaw.cooldown_days, 2);
@@ -308,7 +401,7 @@ export function readOpsConfig(
     config: {
       repos,
       dashboard: {
-        out: filled(dashboardRaw.out) ? dashboardRaw.out.trim() : "dashboard.html",
+        out: dashboardOut.value,
         open_after_run: parseBool(dashboardRaw.open_after_run, true),
       },
       sentinel: {

@@ -26,6 +26,12 @@ repos:            # list[object], REQUIRED, non-empty. One entry per onboarded r
     name:         # string, optional. Display name; defaults to the path basename.
                   #   Two repos may not resolve to the same name — evidence and
                   #   digests are stored per name, so one would overwrite the other.
+                  #   This check is CASE-INSENSITIVE: "Foo" and "foo" collide too,
+                  #   because the ops home lives on this machine's default
+                  #   case-insensitive filesystem (APFS/HFS+), where
+                  #   $OPS/evidence/Foo/ and $OPS/evidence/foo/ are the same
+                  #   directory even though they satisfy the name pattern below
+                  #   as distinct strings.
                   #   Must be a single safe token: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.
                   #   No slashes, no "..", no leading dot, no spaces — the name
                   #   becomes a directory ($OPS/evidence/<name>/, which evidence
@@ -34,7 +40,20 @@ repos:            # list[object], REQUIRED, non-empty. One entry per onboarded r
                   #   the rule is refused too; give that entry an explicit name.
 
 dashboard:        # object, optional.
-  out:            # string, default "dashboard.html". Written inside the ops home.
+  out:            # string, default "dashboard.html". A single filename, written
+                  #   directly inside the ops home — NOT a path. bin/ns never
+                  #   resolves this value; it concatenates it onto $OPS_HOME
+                  #   verbatim and atomically overwrites the result on every
+                  #   finalization. A ".." segment therefore walks out of the ops
+                  #   home and silently clobbers a real file (an operator's
+                  #   runbook.md), so it is refused. An absolute path does not
+                  #   escape (concatenation is not path.resolve — "/etc/x" gives
+                  #   "$OPS//etc/x") but is refused too: it would quietly write
+                  #   somewhere other than where it plainly asks to. A subpath
+                  #   ("reports/dashboard.html") stays contained and is still
+                  #   refused, because bin/ns never creates intermediate
+                  #   directories and the write would fail later with a shell
+                  #   error no one would trace back to this file.
   open_after_run: # bool, default TRUE. `ns run --no-open` overrides it per run.
 
 sentinel:         # object, optional. Read by due-detection today; A9 adds the
