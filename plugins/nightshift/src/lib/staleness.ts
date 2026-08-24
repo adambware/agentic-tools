@@ -3,6 +3,7 @@
 import type { RegistryEntry, Surface, Weight, Band } from "./types.js";
 import { WEIGHT_MULTIPLIER, DEFAULT_INTERVAL_DAYS } from "./types.js";
 import { anyGlobMatch } from "./glob.js";
+import { dispatchForBand } from "./dispatch.js";
 
 // Never-reviewed entries are "maximally stale". A large FINITE sentinel (not
 // Infinity) so it sorts to the top yet still round-trips through JSON.
@@ -58,6 +59,7 @@ export function selectSurfaces(entries: RegistryEntry[], opts: SelectOpts): Surf
     const changed = changedFilesFor(entry);
     const change_flag: 0 | 1 = anyGlobMatch(entry.area, changed) ? 1 : 0;
     const score = computeScore(staleness, change_flag, entry.weight);
+    const band = computeBand(entry.weight, change_flag);
     return {
       id: entry.id,
       title: entry.title,
@@ -66,7 +68,8 @@ export function selectSurfaces(entries: RegistryEntry[], opts: SelectOpts): Surf
       staleness,
       change_flag,
       score,
-      band: computeBand(entry.weight, change_flag),
+      band,
+      dispatch: dispatchForBand(band),
       ...(entry.asvs_ref ? { asvs_ref: entry.asvs_ref } : {}),
       ...(entry.persona ? { persona: entry.persona } : {}),
     };

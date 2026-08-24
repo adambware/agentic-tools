@@ -3994,10 +3994,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4011,7 +4011,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4035,7 +4035,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4051,7 +4051,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4142,7 +4142,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4156,13 +4156,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -4205,18 +4205,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4270,8 +4270,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4294,8 +4294,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4312,7 +4312,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4492,7 +4492,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4509,24 +4509,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4708,25 +4708,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep = " ";
+      let sep2 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res += sep + match[1];
-          sep = " ";
+          res += sep2 + match[1];
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5536,14 +5536,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6710,18 +6710,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6874,15 +6874,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7076,13 +7076,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7362,7 +7362,7 @@ var require_dist = __commonJS({
 
 // src/bin/dashboard.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { dirname as dirname3, join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/lib/args.ts
@@ -7399,8 +7399,9 @@ function resolveToday(args) {
 }
 
 // src/lib/dashboard-cli.ts
-import { existsSync as existsSync3, lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync } from "node:fs";
-import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
+import { existsSync as existsSync4, lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7416,9 +7417,10 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
+var tmpSeq = 0;
 function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);
@@ -7448,6 +7450,16 @@ function basename(path) {
   return i === -1 ? path : path.slice(i + 1);
 }
 
+// src/lib/ops-config.ts
+import { isAbsolute, join as join2, resolve } from "node:path";
+function expandPath(raw, home, base) {
+  const p = raw.trim();
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join2(home, p.slice(2));
+  if (isAbsolute(p)) return resolve(p);
+  return resolve(base, p);
+}
+
 // src/lib/registry.ts
 function extractEntries(doc, lane) {
   if (doc === void 0 || doc === null) return [];
@@ -7467,35 +7479,9 @@ function extractEntries(doc, lane) {
   return list.filter((e) => !e.owner || e.owner === lane);
 }
 
-// src/lib/findings-store.ts
-import { existsSync as existsSync2, readdirSync } from "node:fs";
-import { join as join2 } from "node:path";
-
-// src/lib/dedupekey.ts
-function dedupeKeyString(k) {
-  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
-}
-function isOpen(f) {
-  return !f.resolved_at;
-}
-
-// src/lib/findings-store.ts
-function readAllFindings(metricsDir) {
-  const dir = join2(metricsDir, "findings");
-  if (!existsSync2(dir)) return [];
-  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
-  const out = [];
-  for (const shard of shards) out.push(...readJsonl(join2(dir, shard)));
-  return out;
-}
-function foldFindings(findings) {
-  const byKey = /* @__PURE__ */ new Map();
-  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
-  return byKey;
-}
-function openFindings(metricsDir) {
-  return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
-}
+// src/lib/lane-plan.ts
+import { existsSync as existsSync2, statSync } from "node:fs";
+import { join as join3, resolve as resolve2, sep } from "node:path";
 
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
@@ -7503,7 +7489,12 @@ var SEVERITIES = WEIGHTS;
 var CONFIDENCES = ["low", "medium", "high"];
 var LANES = ["security", "design"];
 var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+var EFFORTS = ["low", "medium", "high"];
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function isSafeId(id) {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
 function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
@@ -7536,6 +7527,14 @@ function reqDate(o, k, errors, where) {
   if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
+function reqSafeId(o, k, errors, where) {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
+    );
+}
 function reqDedupeKey(o, errors, where) {
   const dk = o.dedupe_key;
   if (!isObj(dk)) {
@@ -7553,6 +7552,7 @@ function validateRegistryEntry(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
+  reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
   reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
   if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
@@ -7567,6 +7567,7 @@ function validateCandidateFinding(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -7677,11 +7678,21 @@ function validateSurface(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
+  reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
   reqNum(x, "staleness", errors, "surface");
   reqNum(x, "score", errors, "surface");
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
+  if (x.dispatch !== void 0) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
   return finish(errors);
 }
 var VALIDATORS = {
@@ -7695,6 +7706,266 @@ var VALIDATORS = {
   "cost-record": validateCostRecord
 };
 var SCHEMA_NAMES = Object.keys(VALIDATORS);
+
+// src/lib/lane-plan.ts
+function tableGet(table, key) {
+  return Object.hasOwn(table, key) ? table[key] : void 0;
+}
+var UX_REVIEWER_BY_ADAPTER = {
+  "playwright-mcp": "ux-reviewer-playwright",
+  playwright: "ux-reviewer-playwright"
+};
+var PERSONAS_REL = "fixtures/personas.yml";
+var PERSONAS_EXAMPLE_REL = "fixtures/personas.example.yml";
+var NON_PRODUCTION_ENVIRONMENTS = ["local", "dev", "test"];
+var NAMED_PRODUCTION_ENVIRONMENTS = [
+  "staging",
+  "stage",
+  "production",
+  "prod",
+  "live"
+];
+function isLoopbackHost(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "::1" || /^(0*:)+0*1$/.test(h)) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4 === null) return false;
+  const octets = v4.slice(1).map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  return octets[0] === 127;
+}
+function checkLoopbackBaseUrl(baseUrl, manifestPath) {
+  const advice = `the design lane SUBMITS FORMS AND CHANGES STATE as a seeded persona, and no filesystem guard can undo a browser action \u2014 point base_url at a local dev server (e.g. http://localhost:3000) and start it before the run`;
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return {
+      ok: false,
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not an absolute URL \u2014 ${advice}`,
+      summary: "`stack_adapter.browser.base_url` is not an absolute URL"
+    };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return {
+      ok: false,
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} uses scheme "${url.protocol}" \u2014 only http/https are drivable; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` uses scheme \`${url.protocol}\`, not http/https`
+    };
+  }
+  if (!isLoopbackHost(url.hostname)) {
+    return {
+      ok: false,
+      reason: `manifest.stack_adapter.browser.base_url "${baseUrl}" in ${manifestPath} is not a LOOPBACK host (resolved host: "${url.hostname}") \u2014 the design lane refuses any remote environment, staging included; ${advice}`,
+      summary: `\`stack_adapter.browser.base_url\` host \`${url.hostname}\` is not loopback`
+    };
+  }
+  return { ok: true };
+}
+function checkNonProductionAssertion(browser, manifestPath) {
+  const supported = NON_PRODUCTION_ENVIRONMENTS.join(", ");
+  const raw = browser.environment;
+  if (!filled(raw)) {
+    return {
+      ok: false,
+      reason: `manifest.stack_adapter.browser.environment is missing in ${manifestPath} \u2014 the design lane requires an EXPLICIT non-production assertion before it will drive a browser that submits forms (allowed: ${supported}). No default is inferred: a reachable server is not the same claim as a disposable one, and only a human can make it`,
+      summary: "`stack_adapter.browser.environment` is unset"
+    };
+  }
+  const env = raw.trim().toLowerCase();
+  if (NON_PRODUCTION_ENVIRONMENTS.includes(env)) return { ok: true, environment: env };
+  if (NAMED_PRODUCTION_ENVIRONMENTS.includes(env)) {
+    return {
+      ok: false,
+      reason: `manifest.stack_adapter.browser.environment is "${raw}" in ${manifestPath} \u2014 the design lane refuses it. A shared environment answers, looks right, and holds data that is not yours to submit forms against; "up" is not "safe to mutate". Point the lane at a local dev server and set environment to one of: ${supported}`,
+      summary: `\`stack_adapter.browser.environment\` is \`${env}\`, not a non-production environment`
+    };
+  }
+  return {
+    ok: false,
+    reason: `manifest.stack_adapter.browser.environment "${raw}" in ${manifestPath} is not a recognized non-production environment (allowed: ${supported}) \u2014 an unrecognized value asserts nothing, so it is refused rather than assumed safe`,
+    summary: `\`stack_adapter.browser.environment\` \`${env}\` is not a recognized non-production environment (allowed: ${supported})`
+  };
+}
+function isObj2(x) {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+function filled(x) {
+  return typeof x === "string" && x.trim() !== "";
+}
+function insidePack(packDir, path) {
+  const root = resolve2(packDir);
+  const p = resolve2(path);
+  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+function readYamlSafe(path, what) {
+  try {
+    return { ok: true, doc: readYaml(path) };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `${what} is not valid YAML: ${path} \u2014 ${err.message}`
+    };
+  }
+}
+function checkDesignPack(input) {
+  const { packDir, manifestPath } = input;
+  const manifest = isObj2(input.manifest) ? input.manifest : {};
+  const problems = [];
+  const stackAdapter = isObj2(manifest.stack_adapter) ? manifest.stack_adapter : void 0;
+  const browser = stackAdapter !== void 0 && isObj2(stackAdapter.browser) ? stackAdapter.browser : void 0;
+  const supported = Object.keys(UX_REVIEWER_BY_ADAPTER).sort().join(", ");
+  let reviewer;
+  let toolId;
+  let resolvedBaseUrl;
+  let environment;
+  if (browser === void 0) {
+    problems.push({
+      reason: `manifest.stack_adapter.browser is missing in ${manifestPath} \u2014 the design lane drives real flows, so it needs a browser adapter: add stack_adapter.browser.tool and stack_adapter.browser.base_url (re-run /nightshift:onboard to fill them in)`,
+      summary: "`stack_adapter.browser` is missing"
+    });
+  } else {
+    const tool = browser.tool;
+    if (!filled(tool)) {
+      problems.push({
+        reason: `manifest.stack_adapter.browser.tool is missing or blank in ${manifestPath} \u2014 set it to the browser adapter this pack drives (supported: ${supported})`,
+        summary: "`stack_adapter.browser.tool` is unset"
+      });
+    } else {
+      const found = tableGet(UX_REVIEWER_BY_ADAPTER, tool.trim());
+      if (found === void 0) {
+        problems.push({
+          reason: `manifest.stack_adapter.browser.tool "${tool}" has no ux-reviewer agent \u2014 supported adapters: ${supported}. Subagent tools come from agent-file frontmatter, so each adapter needs its own agent file; nothing is granted at dispatch time`,
+          summary: `\`stack_adapter.browser.tool\` \`${tool.trim()}\` has no ux-reviewer agent (supported: ${supported})`
+        });
+      } else {
+        reviewer = found;
+        toolId = tool.trim();
+      }
+    }
+    const baseUrl = browser.base_url;
+    if (!filled(baseUrl)) {
+      problems.push({
+        reason: `manifest.stack_adapter.browser.base_url is missing or blank in ${manifestPath} \u2014 set it to the LOCAL dev server URL the design lane should drive (loopback only \u2014 never staging, never production)`,
+        summary: "`stack_adapter.browser.base_url` is unset"
+      });
+    } else {
+      const loopback = checkLoopbackBaseUrl(baseUrl.trim(), manifestPath);
+      if (loopback.ok) resolvedBaseUrl = baseUrl.trim();
+      else problems.push({ reason: loopback.reason, summary: loopback.summary });
+    }
+    const nonProd = checkNonProductionAssertion(browser, manifestPath);
+    if (nonProd.ok) environment = nonProd.environment;
+    else problems.push({ reason: nonProd.reason, summary: nonProd.summary });
+  }
+  const personasPath = join3(packDir, PERSONAS_REL);
+  let seeded;
+  if (!insidePack(packDir, personasPath)) {
+    problems.push({
+      reason: `resolved personas path escapes the pack: ${personasPath} is not inside ${packDir}`,
+      summary: `\`${PERSONAS_REL}\` resolves outside the pack`
+    });
+  } else if (!existsSync2(personasPath)) {
+    if (existsSync2(join3(packDir, PERSONAS_EXAMPLE_REL))) {
+      problems.push({
+        reason: `seeded personas not found: ${personasPath} \u2014 found the template personas.example.yml but not personas.yml \u2014 copy it and fill in seeded personas (cp ${PERSONAS_EXAMPLE_REL} ${PERSONAS_REL} inside ${packDir}), then re-run`,
+        summary: `\`${PERSONAS_REL}\` is missing (copy \`${PERSONAS_EXAMPLE_REL}\`)`
+      });
+    } else {
+      problems.push({
+        reason: `seeded personas not found: ${personasPath} \u2014 the design lane drives every flow AS a seeded, non-production persona so it measures real friction and not environment drift; create ${PERSONAS_REL} (see the pack template's ${PERSONAS_EXAMPLE_REL})`,
+        summary: `\`${PERSONAS_REL}\` is missing`
+      });
+    }
+  } else {
+    const personasRead = readYamlSafe(personasPath, "personas file");
+    if (!personasRead.ok) {
+      problems.push({
+        reason: personasRead.reason,
+        summary: `\`${PERSONAS_REL}\` is not valid YAML`
+      });
+    } else {
+      const personasList = isObj2(personasRead.doc) ? personasRead.doc.personas : void 0;
+      if (!Array.isArray(personasList)) {
+        problems.push({
+          reason: `${personasPath} has no \`personas:\` list \u2014 expected a top-level \`personas:\` array whose entries each carry a string \`id\` the flow registry can reference`,
+          summary: `\`${PERSONAS_REL}\` has no \`personas:\` list`
+        });
+      } else if (personasList.length === 0) {
+        problems.push({
+          reason: `${personasPath} has an empty \`personas:\` list \u2014 seed at least one persona (id, permissions, data_seed, credentials_ref, success_criteria) before the design lane can run`,
+          summary: `\`${PERSONAS_REL}\` seeds no personas`
+        });
+      } else {
+        const idless = [];
+        const ids = /* @__PURE__ */ new Set();
+        personasList.forEach((p, i) => {
+          const id = isObj2(p) ? p.id : void 0;
+          if (filled(id)) ids.add(id.trim());
+          else idless.push(i);
+        });
+        if (idless.length > 0) {
+          problems.push({
+            reason: `${personasPath}: persona entries at index ${idless.join(", ")} have no string \`id\` \u2014 every persona needs a unique string id, because flows select one by \`persona:\``,
+            summary: `\`${PERSONAS_REL}\` has persona entries with no \`id\` (index ${idless.join(", ")})`
+          });
+        } else {
+          seeded = ids;
+        }
+      }
+    }
+  }
+  if (problems.length > 0) return { ok: false, problems };
+  if (reviewer === void 0 || toolId === void 0 || resolvedBaseUrl === void 0 || environment === void 0 || seeded === void 0) {
+    return {
+      ok: false,
+      problems: [
+        {
+          reason: `design-pack check finished with no problem to report and an unresolved prerequisite (${manifestPath}) \u2014 that is a bug in src/lib/lane-plan.ts, not something the pack can fix`,
+          summary: "`manifest.yml` could not be evaluated"
+        }
+      ]
+    };
+  }
+  return {
+    ok: true,
+    reviewer,
+    browser: { tool: toolId, base_url: resolvedBaseUrl, environment },
+    personas: personasPath,
+    seeded
+  };
+}
+
+// src/lib/findings-store.ts
+import { existsSync as existsSync3, readdirSync } from "node:fs";
+import { join as join4 } from "node:path";
+
+// src/lib/dedupekey.ts
+function dedupeKeyString(k) {
+  return JSON.stringify([k.surface, k.symptom, k.root_cause]);
+}
+function isOpen(f) {
+  return !f.resolved_at;
+}
+
+// src/lib/findings-store.ts
+function readAllFindings(metricsDir) {
+  const dir = join4(metricsDir, "findings");
+  if (!existsSync3(dir)) return [];
+  const shards = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort();
+  const out = [];
+  for (const shard of shards) out.push(...readJsonl(join4(dir, shard)));
+  return out;
+}
+function foldFindings(findings) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const f of findings) byKey.set(dedupeKeyString(f.dedupe_key), f);
+  return byKey;
+}
+function openFindings(metricsDir) {
+  return [...foldFindings(readAllFindings(metricsDir)).values()].filter(isOpen);
+}
 
 // src/lib/record-cost-run.ts
 var COSTS_FILENAME = "costs.jsonl";
@@ -7735,6 +8006,14 @@ function tsNewer(a, b) {
   const tb = Date.parse(b);
   if (Number.isNaN(ta) || Number.isNaN(tb)) return a > b;
   return ta > tb;
+}
+
+// src/lib/run-outcome.ts
+function runRowShortfall(run) {
+  if (run.selected > 0 && run.reviewed === 0) {
+    return `reviewed 0 of ${run.selected} selected`;
+  }
+  return void 0;
 }
 
 // src/lib/dashboard-run.ts
@@ -8098,7 +8377,14 @@ function repoRunLine(repo) {
       );
     } else if (latestRun) {
       const costPart = latest && latest.status === "ok" && latest.run_id === latestRun.run_id ? ` \xB7 ${usdFmt(latest.usd)}` : ' \xB7 <span class="t-warn">cost not captured</span>';
-      parts.push(`${esc(lane.lane)} ok ${esc(fmtTs(latestRun.ts))}${costPart}`);
+      const shortfall = runRowShortfall(latestRun);
+      if (shortfall !== void 0) {
+        parts.push(
+          `<span class="fail">${esc(lane.lane)} FAILED ${esc(fmtTs(latestRun.ts))} (${esc(shortfall)})</span>${costPart}`
+        );
+      } else {
+        parts.push(`${esc(lane.lane)} ok ${esc(fmtTs(latestRun.ts))}${costPart}`);
+      }
     } else {
       parts.push(`${esc(lane.lane)}: never run`);
     }
@@ -8562,21 +8848,40 @@ function laneEnabled(repo, lane) {
   return v2 === true || v2 === "on";
 }
 function parseDigest(path, repo, runsSince, today) {
-  if (!existsSync3(path)) return null;
+  if (!existsSync4(path)) return null;
   const text = readFileSync2(path, "utf8");
   const genMatch = text.match(/^generated:\s*(.+)$/im);
-  const generated_at = genMatch ? genMatch[1].trim() : statSync(path).mtime.toISOString().slice(0, 16).replace("T", " ");
+  const generated_at = genMatch ? genMatch[1].trim() : statSync2(path).mtime.toISOString().slice(0, 16).replace("T", " ");
   const genDate = generated_at.slice(0, 10);
   const age_days = /^\d{4}-\d{2}-\d{2}/.test(genDate) ? Math.max(0, daysBetween(genDate, today)) : 0;
   const lines = text.split("\n");
-  const decisionsIdx = lines.findIndex((l) => /^#+\s*decisions/i.test(l));
+  const decisionsIdx = lines.findIndex((l) => /^#+\s.*\bdecisions?\b/i.test(l));
   const scope = decisionsIdx === -1 ? lines : lines.slice(decisionsIdx + 1);
+  const ITEM_START = /^\s*(?:[-*]\s+|(?:\*\*)?\d+[.)]\s+)(.*)$/;
   const items = [];
+  let current = null;
+  const flush = () => {
+    if (current !== null) {
+      const t = current.replace(/\*\*/g, "").trim();
+      if (t) items.push(t);
+    }
+    current = null;
+  };
   for (const line of scope) {
     if (decisionsIdx !== -1 && /^#+\s/.test(line)) break;
-    const m = line.match(/^\s*[-*]\s+(.+)$/);
-    if (m) items.push(m[1].trim());
+    const m = line.match(ITEM_START);
+    if (m) {
+      flush();
+      current = m[1];
+      continue;
+    }
+    if (current !== null && line.trim() !== "") {
+      current += " " + line.trim();
+      continue;
+    }
+    flush();
   }
+  flush();
   return {
     repo,
     generated_at,
@@ -8586,49 +8891,56 @@ function parseDigest(path, repo, runsSince, today) {
   };
 }
 function loadRunRecords(metricsDir) {
-  const runsDir = join3(metricsDir, "runs");
+  const runsDir = join5(metricsDir, "runs");
   const out = [];
-  if (existsSync3(runsDir)) {
+  if (existsSync4(runsDir)) {
     for (const shard of readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort()) {
-      out.push(...readJsonl(join3(runsDir, shard)));
+      out.push(...readJsonl(join5(runsDir, shard)));
     }
   }
   return out;
 }
 function loadSuppressions(packDir, today) {
   const doc = readYaml(
-    join3(packDir, "findings", "suppressions.yml")
+    join5(packDir, "findings", "suppressions.yml")
   );
   return (doc?.suppressions ?? []).filter((s) => s.expires >= today);
 }
 function laneInput(packDir, lane, enabled) {
   if (!enabled) return { lane, state: "disabled", entries: [] };
-  const registryPath = join3(
+  const registryPath = join5(
     packDir,
     "registries",
     lane === "security" ? "vectors.yml" : "flows.yml"
   );
-  const entries = existsSync3(registryPath) ? extractEntries(readYaml(registryPath), lane) : [];
+  const entries = existsSync4(registryPath) ? extractEntries(readYaml(registryPath), lane) : [];
   if (lane === "design") {
-    const personas = existsSync3(join3(packDir, "fixtures", "personas.yml"));
-    const manifest = readYaml(join3(packDir, "manifest.yml"));
-    const baseUrl = manifest?.stack_adapter?.browser?.base_url;
-    if (!personas || !baseUrl) {
-      const missing = [
-        personas ? null : "`fixtures/personas.yml` is missing",
-        baseUrl ? null : "`stack_adapter.browser.base_url` is unset"
-      ].filter(Boolean).join(" and ");
-      return { lane, state: "not-ready", not_ready_reason: missing, entries };
+    const manifestPath = join5(packDir, "manifest.yml");
+    const design = checkDesignPack({
+      packDir,
+      manifest: readYaml(manifestPath),
+      manifestPath
+    });
+    if (!design.ok) {
+      return {
+        lane,
+        state: "not-ready",
+        not_ready_reason: design.problems.map((p) => p.summary).join(" and "),
+        entries
+      };
     }
   }
   return { lane, state: "on", entries };
 }
+function repoRoot(cfg, opsHome) {
+  return expandPath(String(cfg.path ?? ""), homedir(), opsHome);
+}
 function loadRepo(cfg, opsHome, today) {
-  const packDir = join3(cfg.path, ".nightshift");
-  if (!existsSync3(packDir)) {
+  const packDir = join5(repoRoot(cfg, opsHome), ".nightshift");
+  if (!existsSync4(packDir)) {
     return {
       name: repoName(cfg),
-      path: cfg.path,
+      path: repoRoot(cfg, opsHome),
       pack_present: false,
       lanes: [],
       findings: [],
@@ -8638,10 +8950,10 @@ function loadRepo(cfg, opsHome, today) {
       costs: []
     };
   }
-  const metricsDir = join3(packDir, "metrics");
+  const metricsDir = join5(packDir, "metrics");
   const run_records = loadRunRecords(metricsDir);
-  const costs = readJsonl(join3(metricsDir, COSTS_FILENAME));
-  const daily = readJsonl(join3(metricsDir, "daily.jsonl"));
+  const costs = readJsonl(join5(metricsDir, COSTS_FILENAME));
+  const daily = readJsonl(join5(metricsDir, "daily.jsonl"));
   const lanesByEntryOwner = /* @__PURE__ */ new Map();
   const lanes = LANES2.map((lane) => {
     const li = laneInput(packDir, lane, laneEnabled(cfg, lane));
@@ -8650,19 +8962,19 @@ function loadRepo(cfg, opsHome, today) {
   });
   const findings = openFindings(metricsDir).map((f) => {
     const evidence = f.evidence;
-    const evidencePath = evidence ? isAbsolute(evidence) ? evidence : join3(opsHome, evidence) : void 0;
+    const evidencePath = evidence ? isAbsolute2(evidence) ? evidence : join5(opsHome, evidence) : void 0;
     return {
       ...f,
       repo: repoName(cfg),
       lane: lanesByEntryOwner.get(f.dedupe_key.surface) ?? (f.anchor ? "design" : "security"),
       title: f.dedupe_key.symptom,
-      ...evidencePath ? { evidence_present: existsSync3(evidencePath) } : {},
+      ...evidencePath ? { evidence_present: existsSync4(evidencePath) } : {},
       age_days: f.first_seen ? Math.max(0, daysBetween(f.first_seen, today)) : void 0
     };
   });
   return {
     name: repoName(cfg),
-    path: cfg.path,
+    path: repoRoot(cfg, opsHome),
     pack_present: true,
     lanes,
     findings,
@@ -8676,13 +8988,14 @@ function scanOrphanRunDirs(repos, now) {
   const out = [];
   for (const { cfg, input } of repos) {
     if (!input.pack_present) continue;
-    const runDir = join3(cfg.path, ".nightshift", ".run");
-    if (!existsSync3(runDir)) continue;
+    if (!input.path) continue;
+    const runDir = join5(input.path, ".nightshift", ".run");
+    if (!existsSync4(runDir)) continue;
     for (const d of readdirSync2(runDir).sort()) {
-      const full = join3(runDir, d);
+      const full = join5(runDir, d);
       let age_days;
       try {
-        age_days = Math.floor((now.getTime() - statSync(full).mtime.getTime()) / 864e5);
+        age_days = Math.floor((now.getTime() - statSync2(full).mtime.getTime()) / 864e5);
       } catch {
         continue;
       }
@@ -8694,8 +9007,8 @@ function scanOrphanRunDirs(repos, now) {
   return out;
 }
 function evidenceStats(opsHome, referenced) {
-  const evDir = join3(opsHome, "evidence");
-  if (!existsSync3(evDir)) return void 0;
+  const evDir = join5(opsHome, "evidence");
+  if (!existsSync4(evDir)) return void 0;
   let files = 0, bytes = 0, unreferenced = 0;
   const walk = (dir, rel) => {
     let names;
@@ -8705,7 +9018,7 @@ function evidenceStats(opsHome, referenced) {
       return;
     }
     for (const name of names) {
-      const full = join3(dir, name);
+      const full = join5(dir, name);
       const relPath = `${rel}${name}`;
       let st;
       try {
@@ -8726,10 +9039,10 @@ function evidenceStats(opsHome, referenced) {
   return { files, bytes, unreferenced };
 }
 function runDashboard(opts) {
-  if (!existsSync3(opts.configPath)) {
+  if (!existsSync4(opts.configPath)) {
     throw new Error(`config not found: ${opts.configPath}`);
   }
-  const opsHome = dirname2(resolve(opts.configPath));
+  const opsHome = dirname2(resolve3(opts.configPath));
   const config = readYaml(opts.configPath) ?? {};
   const repoCfgs = config.repos ?? [];
   const loaded = repoCfgs.filter((cfg) => repoEnabled(cfg)).map((cfg) => {
@@ -8740,7 +9053,7 @@ function runDashboard(opts) {
         cfg,
         input: {
           name: repoName(cfg),
-          path: cfg.path,
+          path: repoRoot(cfg, opsHome),
           pack_present: true,
           read_error: err instanceof Error ? err.message : String(err),
           lanes: [],
@@ -8755,7 +9068,7 @@ function runDashboard(opts) {
   });
   const digests = [];
   for (const { cfg, input: input2 } of loaded) {
-    const digestPath = join3(opsHome, "digests", `${repoName(cfg)}.md`);
+    const digestPath = join5(opsHome, "digests", `${repoName(cfg)}.md`);
     const digest = parseDigest(
       digestPath,
       repoName(cfg),
@@ -8783,15 +9096,15 @@ function runDashboard(opts) {
   return { html, outPath: opts.outPath };
 }
 function runsSinceDigest(digestPath, runs) {
-  if (!existsSync3(digestPath)) return 0;
-  const mtime = statSync(digestPath).mtime.toISOString();
+  if (!existsSync4(digestPath)) return 0;
+  const mtime = statSync2(digestPath).mtime.toISOString();
   return runs.filter((r) => tsNewer(r.ts, mtime)).length;
 }
 
 // src/bin/dashboard.ts
 function defaultEngineVersion() {
   try {
-    const pkgPath = join4(dirname3(fileURLToPath(import.meta.url)), "..", "package.json");
+    const pkgPath = join6(dirname3(fileURLToPath(import.meta.url)), "..", "package.json");
     const pkg = JSON.parse(readFileSync3(pkgPath, "utf8"));
     return pkg.version ?? "unknown";
   } catch {

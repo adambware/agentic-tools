@@ -58,13 +58,26 @@ anchors (`friction_delta`, `a11y`, `evidence`) depend on the screenshot survivin
 
 ## Tasks
 
-- [ ] **T5 (P0)** — `bin/record` — per-repo lock + run_id uniqueness
+- [x] **T5 (P0)** — `bin/record` — per-repo lock + run_id uniqueness
   - Files: `src/lib/record-run.ts` (+ lock helper in `src/lib/`); `ns` wiring lands at A7
   - Verify: duplicate run_id exits 2; interleaved-run fixture proves no cross-contamination
-- [ ] **T10 (P2)** — `prune()` — one mechanism, lifecycle rule for evidence
+  - Landed hardened beyond spec after adversarial review: nonce-based lock with
+    atomic link(2) create + mutex-serialized stale recovery (`src/lib/lock.ts`),
+    an atomic `runs/.claims/<run_id>` marker so a crash mid-append refuses the
+    retry loudly, date/run_id format validation before any path is built, and
+    `assertHeld()` re-checks before each durable mutation section.
+- [x] **T10 (P2)** — `prune()` — one mechanism, lifecycle rule for evidence
   - Files: new `src/lib/prune.ts` + tests, `bin/clean` (`ns` call sites at A7)
   - Verify: open finding retains evidence past 7 days; resolved finding's evidence prunes
-- [ ] Per-run dirs + provenance assert (WS1 core, above)
+  - Lifecycle mode is recursive with relpath+basename+ancestor retention (the
+    real layout is `evidence/<repo>/<hash>.png`), never follows symlinks, unions
+    evidence across every line of an open key, and fails loud on a missing
+    metrics dir instead of pruning everything against an empty retain set.
+- [x] Per-run dirs + provenance assert (WS1 core, above) — `bin/record` asserts
+  decisions run_id/lane/date match run-meta before any append; `bin/clean`
+  deletes `.run/<run_id>/` (containment-checked) on success and time-prunes the
+  run root. The workflow-side composition of `.run/<run_id>/` paths lands with
+  the A4 workflow rewrite (the spike workflow still writes flat `.run/`).
 
 ## Reuse
 

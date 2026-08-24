@@ -23,7 +23,13 @@ stack_adapter:
   build: "bin/rails assets:precompile"
   browser:
     tool: playwright-mcp
-    base_url: "https://staging.novudesk.example"   # seeded staging, never production
+    # LOOPBACK ONLY (A7/T8). bin/lane-plan refuses any remote host — staging
+    # included — because the design lane submits forms and changes state as a
+    # seeded persona, and no filesystem guard can undo a browser action.
+    base_url: "http://novudesk.localhost:3000"
+    # The explicit non-production assertion. Loopback is a network fact; only a
+    # human can state that the data behind it is disposable. Missing = refused.
+    environment: local             # local | dev | test
 
 # Least-privilege tool grants for reviewer agents (read/test-oriented only).
 allowlist:

@@ -1058,3 +1058,85 @@ describe("failed-run verdict is cleared by a later successful run", () => {
     expect(html).not.toContain("Nothing needs you");
   });
 });
+
+/* ---------- a recorded run is not automatically a successful run ---------- */
+
+describe("a run row that reviewed nothing renders as the failure it is", () => {
+  /** The third real run's shape: both reviewers cut off before writing, so the
+   *  chain completed, the row is honest, and nothing was stamped. */
+  const nothingReviewed = (date: string) => ({
+    ...miniRun(date),
+    selected: 2,
+    reviewed: 0,
+  });
+
+  const okCost = (run_id: string, ts: string, usd: number) => ({
+    run_id,
+    lane: "security" as const,
+    date: ts.slice(0, 10),
+    ts,
+    usd,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json" as const,
+    status: "ok" as const,
+  });
+
+  it("says FAILED with the shortfall instead of 'security ok'", () => {
+    const run = nothingReviewed(daysAgo(1));
+    const html = renderDashboard(
+      miniInput({
+        repos: [
+          miniRepo("r1", { run_records: [run], costs: [okCost(run.run_id, run.ts, 1.24)] }),
+        ],
+      }),
+    );
+    expect(html).toContain("security FAILED");
+    expect(html).toContain("reviewed 0 of 2 selected");
+    expect(html).not.toContain("security ok");
+    // The money stays on the line: a run that reviewed nothing still cost
+    // something, and that is the most useful number on the row.
+    expect(html).toContain("$1.24");
+  });
+
+  it("a normal run still renders ok with its cost", () => {
+    const run = miniRun(daysAgo(1));
+    const html = renderDashboard(
+      miniInput({
+        repos: [
+          miniRepo("r1", { run_records: [run], costs: [okCost(run.run_id, run.ts, 0.42)] }),
+        ],
+      }),
+    );
+    expect(html).toContain("security ok");
+    expect(html).toContain("$0.42");
+    expect(html).not.toContain("FAILED");
+  });
+
+  it("never fires alongside the cost-error branch — one lane, one failure line", () => {
+    // An error cost row NEWER than the run takes the branch above; the run row's
+    // own shortfall takes this one. They are mutually exclusive by construction,
+    // and this pins that a lane can never print two failure spans.
+    const run = nothingReviewed(daysAgo(2));
+    const html = renderDashboard(
+      miniInput({
+        repos: [
+          miniRepo("r1", {
+            run_records: [run],
+            costs: [
+              {
+                ...okCost(run.run_id, `${daysAgo(1)}T07:00:00Z`, 0),
+                status: "error" as const,
+                terminal_reason: "api_error",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect((html.match(/<span class="fail">/g) ?? []).length).toBe(1);
+    expect(html).toContain("security FAILED");
+  });
+});

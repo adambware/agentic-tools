@@ -41,7 +41,17 @@ stack_adapter:
   build: "make build"        # REQUIRED. Build command. e.g. "npm run build".
   browser:                   # REQUIRED for the design lane (omit if security-only).
     tool: playwright-mcp     #   Browser automation tool the engine drives flows with.
-    base_url: "https://staging.my-project.example"  # Staging/seeded env ONLY — never prod.
+    # LOOPBACK ONLY. bin/lane-plan (the design-lane preflight) REFUSES the run on
+    # any non-loopback host: localhost, *.localhost, 127.0.0.0/8 or ::1, nothing
+    # else. NOT "https://staging.my-project.example" — a remote host is refused
+    # even when it is staging, because the design lane submits forms and changes
+    # state as a seeded persona and no filesystem guard can undo a browser action.
+    base_url: "http://my-project.localhost:3000"    # your local dev server
+    # REQUIRED alongside base_url: the EXPLICIT non-production assertion.
+    # Allowed: local | dev | test. Missing is a refusal, not a default — loopback
+    # is a network fact, and only a human can state that the data behind it is
+    # disposable (a tunnel or a port-forward makes localhost remote).
+    environment: local
 
 # Tool permissions granted to reviewer agents (least-privilege; Claude Code syntax).
 # Keep read/test-oriented. No destructive or offensive tooling.

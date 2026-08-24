@@ -8,6 +8,7 @@
 //     --proposed <run-dir>/candidates.proposed.json \
 //     --survivors <run-dir>/candidates.json \
 //     --reviewed <run-dir>/reviewed.json \
+//     [--tier2 <run-dir>/candidates.tier2.json] \
 //     --run-id "$NIGHTSHIFT_RUN_ID" \
 //     --lane security \
 //     --pack .nightshift \
@@ -26,6 +27,11 @@ function main(): void {
       surfacesPath: requireArg(args, "surfaces"),
       proposedPath: requireArg(args, "proposed"),
       survivorsPath: requireArg(args, "survivors"),
+      // Optional: omitted -> rejected_tier2 = 0 (no Tier-2 pass this run).
+      // A bare `--tier2` parses to the string "true", which then fails the
+      // existsSync check with `tier2 candidates file not found: true` — loud,
+      // not a silent fall back to 0.
+      tier2Path: args.tier2,
       reviewedPath: requireArg(args, "reviewed"),
       runId: requireArg(args, "run-id"),
       lane,
@@ -38,6 +44,7 @@ function main(): void {
       `run-meta: run_id=${res.meta.run_id} lane=${lane} ` +
         `selected=${res.meta.selected} reviewed=${res.meta.reviewed} ` +
         `rejected_tier1=${res.meta.rejected_tier1} ` +
+        `rejected_tier2=${res.meta.rejected_tier2} ` +
         `-> ${requireArg(args, "out")}\n`,
     );
     process.exit(0);

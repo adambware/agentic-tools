@@ -34,7 +34,7 @@ rationale only.
 | Model ceiling | **Opus 5** for judgment (reviewer, Tier-2, UX); **Haiku 4.5** for Tier-1 + plumbing; no Fable |
 | Orchestration | Dynamic Workflow (`nightshift.workflow.js`), full-K dispatch |
 | Living document | One local HTML file in the ops home, regenerated per run, all repos |
-| Ops home | Fresh directory outside all repos (`$OPS` until named — open question 1) |
+| Ops home | Fresh directory outside all repos, named **`agentic-nightshift`** (A7). `$OPS` stays the placeholder in prose — the absolute path is operator-specific and uncommitted |
 | Runbook | `$OPS/runbook.md`, never committed |
 
 ## Target architecture
@@ -92,7 +92,7 @@ CI; the local half of A7, plus A8–A9, run on the operator's machine. Release 3
 | A4 | [a4-workflow-v2.md](a4-workflow-v2.md) | Workflow v2, dispatch on select, Tier-2 end-to-end, `merge-candidates`, `tier2-gate` | A1 | New bins full-branch tested; thin-shell holds (zero conditionals); dry chain on fixtures; partial-fan-out test green |
 | A5 | [a5-design-lane-engine.md](a5-design-lane-engine.md) | Lane-parameterized workflow, per-adapter ux-reviewer, onboard design branch | A4 | Lane gating refuses correctly on a pack missing browser/personas |
 | A6 | [a6-dashboard.md](a6-dashboard.md) | `bin/dashboard` + render lib + 4 fixture snapshots; retire pack dashboard.md | A2 | 4 snapshots green; all token pairs ≥4.5:1 both themes; non-colour channel everywhere; no-network open passes |
-| A7 | [a7-ops-launcher.md](a7-ops-launcher.md) | Engine half: committed `ns`, preflight, chunking, exit-path dashboard. Local half: `$OPS`, runbook, **first real run** | A1–A4, A6 | End-to-end real run: cost captured, dashboard regenerated, run dir cleaned, only reviewed ids stamped, guard + permission flags verified & recorded |
+| A7 | [a7-ops-launcher.md](a7-ops-launcher.md) | Engine half: committed `ns`, preflight, chunking, exit-path dashboard. Local half: `$OPS`, runbook, **first real run** | A1–A4, A6 | **done 2026-08-23** — gate passed on the 5th real run; the first four each exposed an engine defect (see the session file) |
 | — | **Release nightshift 3.0.0** | CHANGELOG, marketplace bump | A7 | CI green on main |
 | A8 | [a8-design-lane-pack.md](a8-design-lane-pack.md) | **LOCAL** novudesk pack: onboard reconcile, personas, base_url; first design run | A5, A7 | Design run against local dev server; findings anchored or clean; evidence copied + pruned |
 | A9 | [a9-sentinel.md](a9-sentinel.md) | **LOCAL** `bin/sentinel` + schedule + notification | ≥2-week soak of A7/A8 | Simulated activity triggers a run; quiet day free no-op; weekly floor fires |
@@ -140,8 +140,12 @@ files are the tracker; the checklist in the original plan §14 is frozen.
 - One command (`ns run novudesk security`) from zero to refreshed dashboard, no cloud.
 - One browser tab (`$OPS/dashboard.html`) answers: what's covered, what's rotting, what
   needs me, what did this cost — across every onboarded repo.
-- A finished run leaves no scratch files anywhere; failures leave exactly one
-  diagnosable run dir, auto-pruned.
+- A finished run leaves no scratch files anywhere; failures leave diagnosable run dirs,
+  auto-pruned. **Amended against the code:** the original criterion said "exactly one",
+  but `src/lib/clean-run.ts` keeps the 5 most recent for up to 7 days (`KEEP = 5`,
+  `MAX_AGE_DAYS = 7`). That is deliberate and better — consecutive failures stay
+  comparable side by side, which is exactly what the bring-up runs needed. The wording
+  was the thing that was wrong, not the constant.
 - Reviews run on Opus 5 with real turn budgets; every finding still survived Tier-1
   refutation; FPR and cost are on the dashboard within a day of drifting.
 - Both lanes live on novudesk; the design lane refuses loudly when the dev server is down.
@@ -150,7 +154,12 @@ files are the tracker; the checklist in the original plan §14 is frozen.
 
 ## Open questions for the operator
 
-1. **Ops home name** — recommendation `~/code/nightshift-ops`. Placeholder `$OPS` until chosen.
+1. ~~**Ops home name**~~ — **DECIDED (A7): `agentic-nightshift`**, created alongside the
+   operator's repo checkouts rather than inside any of them. The name sorts immediately
+   before `agentic-tools`, so the ops home sits next to the engine it drives; it
+   deliberately does NOT start with `agentic-tools-`, because that prefix already means
+   "a git worktree of the engine" and the ops home is not a git repo at all. `$OPS` stays
+   the placeholder in prose — the absolute path is operator-specific and uncommitted.
 2. **K budgets for novudesk** — proposal: security 6, design 4 (pack manifest, adjustable anytime).
 3. **Dashboard auto-open** — `open_after_run: true` default, or rely on `ns dashboard`?
 4. **Digest cadence** — manual (`ns digest`) in phase 1, or auto-refresh each run? The

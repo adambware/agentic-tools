@@ -1,6 +1,13 @@
 // Pure logic for bin/run-meta: assemble the run.json (RunMeta) object from inputs.
 // No process.argv; no process.exit. Fully testable (E7 full-branch coverage).
 // The CLI shell (src/bin/run-meta.ts) only parses args and calls this.
+//
+// Refuter accounting: rejected_tier1 = proposed - Tier-1 survivors, always.
+// rejected_tier2 = Tier-1 survivors - Tier-2 survivors, but ONLY when the caller
+// passes tier2Path (bin/tier2-gate --assemble output). Absent it, rejected_tier2
+// is 0 — the correct value for a lane that runs no Tier-2 pass (design) and for
+// a security run where nothing was gated. Both tiers get the SAME identity gate:
+// a refuter may only remove candidates, never add or substitute them.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Lane, RunMeta } from "./types.js";
@@ -23,6 +30,11 @@ export interface RunMetaBuildOpts {
   surfacesPath: string;
   proposedPath: string;
   survivorsPath: string;
+  /**
+   * candidates.tier2.json — the post-Tier-2 survivor set (bin/tier2-gate
+   * --assemble). OMIT when the run had no Tier-2 pass: rejected_tier2 is then 0.
+   */
+  tier2Path?: string;
   /** reviewed.json — the surface ids the review phase ACTUALLY covered. */
   reviewedPath: string;
   runId: string;
@@ -90,6 +102,12 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
   if (!existsSync(opts.reviewedPath)) {
     throw new Error(`reviewed file not found: ${opts.reviewedPath}`);
   }
+  // Only checked when Tier-2 was requested. A path that was passed but does not
+  // exist must abort rather than fall back to rejected_tier2=0: that fallback
+  // would quietly credit every Tier-2 rejection as a confirmed finding.
+  if (opts.tier2Path !== undefined && !existsSync(opts.tier2Path)) {
+    throw new Error(`tier2 candidates file not found: ${opts.tier2Path}`);
+  }
 
   // --- Read surfaces.json ---
   const surfaces = readJson<MinimalSurface[]>(opts.surfacesPath);
@@ -149,11 +167,54 @@ export function buildRunMeta(opts: RunMetaBuildOpts): RunMetaBuildResult {
     proposedKeys.set(k, remaining - 1);
   });
 
+  // --- Tier-2 survivors (optional second refute pass) ---
+  // Same two guards as Tier-1, for the same reason: a Tier-2 refuter that grows
+  // or swaps the set would drive rejected_tier2 negative or hide real rejections
+  // behind valid-looking substitutes, and bin/record folds rejected_tier2 into
+  // findings_created — the FPR denominator. The gate is verbatim: count first,
+  // then canonical dedupe_key identity with multiset semantics.
+  let rejected_tier2 = 0;
+  if (opts.tier2Path !== undefined) {
+    const tier2 = readJson<unknown[]>(opts.tier2Path);
+    if (!Array.isArray(tier2)) {
+      throw new Error(`candidates.tier2.json must be a JSON array: ${opts.tier2Path}`);
+    }
+    if (tier2.length > survivors.length) {
+      throw new Error(
+        `tier-2 survivors (${tier2.length}) exceed tier-1 survivors (${survivors.length}): ` +
+          `the Tier-2 refuter must only remove candidates, never add them`,
+      );
+    }
+    // Every Tier-1 survivor has a well-formed key by now (the block above throws
+    // otherwise), so this multiset is complete.
+    const survivorKeys = new Map<string, number>();
+    for (const s of survivors) {
+      const k = candidateKey(s);
+      if (k !== null) survivorKeys.set(k, (survivorKeys.get(k) ?? 0) + 1);
+    }
+    tier2.forEach((t, i) => {
+      const k = candidateKey(t);
+      if (k === null) {
+        throw new Error(
+          `tier-2 survivor [${i}] has no well-formed dedupe_key {surface, symptom, root_cause}`,
+        );
+      }
+      const remaining = survivorKeys.get(k) ?? 0;
+      if (remaining === 0) {
+        throw new Error(
+          `tier-2 survivor [${i}] dedupe_key ${k} does not match any tier-1 survivor: ` +
+            `the Tier-2 refuter must only remove candidates, never substitute them`,
+        );
+      }
+      survivorKeys.set(k, remaining - 1);
+    });
+    rejected_tier2 = survivors.length - tier2.length;
+  }
+
   // --- Derive counts ---
   const proposed_count = proposed.length;
   const survivors_count = survivors.length;
   const rejected_tier1 = proposed_count - survivors_count;
-  const rejected_tier2 = 0; // Tier-2 not wired in current scope
   // findings_created is NOT computed here: run-meta runs before dedupe and
   // therefore cannot know how many survivors will be suppressed vs
   // confirmed/recurring. bin/record derives it from its own counts.

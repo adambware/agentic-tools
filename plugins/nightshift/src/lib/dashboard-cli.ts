@@ -4,10 +4,13 @@
 // $OPS/digests/<repo>.md when present, then hand the assembled DashboardInput
 // to the pure renderer and atomically write the HTML. Pure of process.argv.
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CostRecord, DailyMetrics, Finding, Lane, RunMetrics, Suppression } from "./types.js";
 import { readYaml, readJsonl, atomicWrite } from "./io.js";
+import { expandPath } from "./ops-config.js";
 import { extractEntries } from "./registry.js";
+import { checkDesignPack } from "./lane-plan.js";
 import { openFindings } from "./findings-store.js";
 import { COSTS_FILENAME } from "./record-cost-run.js";
 import {
@@ -81,14 +84,46 @@ export function parseDigest(
   const genDate = generated_at.slice(0, 10);
   const age_days = /^\d{4}-\d{2}-\d{2}/.test(genDate) ? Math.max(0, daysBetween(genDate, today)) : 0;
   const lines = text.split("\n");
-  const decisionsIdx = lines.findIndex((l) => /^#+\s*decisions/i.test(l));
+  // The heading the digest skill actually writes is "## 1. Top 3 human decisions
+  // needed" — numbered, with the word buried mid-phrase. The old anchored
+  // /^#+\s*decisions/ never matched it, so this fell through to the
+  // bullets-anywhere fallback and rendered the FINDINGS list as the decision
+  // queue: the living document confidently showing the wrong thing. Match a
+  // heading that CONTAINS the word instead.
+  const decisionsIdx = lines.findIndex((l) => /^#+\s.*\bdecisions?\b/i.test(l));
   const scope = decisionsIdx === -1 ? lines : lines.slice(decisionsIdx + 1);
+  // SKILL.md pins the digest's SECTIONS but deliberately not its bullet syntax,
+  // so an item legitimately arrives as "- ", "1. ", or "**1. ...**". Accept all
+  // three. `[-*]\s+` cannot swallow a "**1." lead because bold has no space
+  // after the first star.
+  const ITEM_START = /^\s*(?:[-*]\s+|(?:\*\*)?\d+[.)]\s+)(.*)$/;
   const items: string[] = [];
+  let current: string | null = null;
+  const flush = () => {
+    if (current !== null) {
+      const t = current.replace(/\*\*/g, "").trim();
+      if (t) items.push(t);
+    }
+    current = null;
+  };
   for (const line of scope) {
     if (decisionsIdx !== -1 && /^#+\s/.test(line)) break; // next heading ends the section
-    const m = line.match(/^\s*[-*]\s+(.+)$/);
-    if (m) items.push(m[1]!.trim());
+    const m = line.match(ITEM_START);
+    if (m) {
+      flush();
+      current = m[1]!;
+      continue;
+    }
+    // A hard-wrapped item continues on the next non-blank line. Without this
+    // every wrapped decision was truncated at its first line break and reached
+    // the dashboard as a sentence fragment.
+    if (current !== null && line.trim() !== "") {
+      current += " " + line.trim();
+      continue;
+    }
+    flush();
   }
+  flush();
   return {
     repo,
     generated_at,
@@ -134,32 +169,71 @@ function laneInput(packDir: string, lane: Lane, enabled: boolean): LaneInput {
     ? extractEntries(readYaml(registryPath), lane)
     : [];
   if (lane === "design") {
-    // State 4: the design lane needs seeded personas AND a browser base_url
-    // before `ns` will run it — surface exactly what is missing.
-    const personas = existsSync(join(packDir, "fixtures", "personas.yml"));
-    const manifest = readYaml<{
-      stack_adapter?: { browser?: { base_url?: string } };
-    }>(join(packDir, "manifest.yml"));
-    const baseUrl = manifest?.stack_adapter?.browser?.base_url;
-    if (!personas || !baseUrl) {
-      const missing = [
-        personas ? null : "`fixtures/personas.yml` is missing",
-        baseUrl ? null : "`stack_adapter.browser.base_url` is unset",
-      ]
-        .filter(Boolean)
-        .join(" and ");
-      return { lane, state: "not-ready", not_ready_reason: missing, entries };
+    // State 4: readiness is the LAUNCHER's definition of it, not this page's
+    // approximation. checkDesignPack is the same predicate bin/lane-plan refuses
+    // on, so a lane rendered "on" here is a lane `ns` will actually run.
+    //
+    // It was two checks inline — personas.yml exists AND base_url is set — and
+    // that pair called a pack ready when its base_url pointed at staging, when
+    // the `environment` assertion was absent entirely, and when the browser tool
+    // named an adapter with no agent file. All three are permanent refusals in
+    // preflight, and the dashboard is the operator's ONLY view of the fleet: it
+    // was quietly promising a lane that could never run, on the one page a
+    // person reads to decide everything is fine.
+    //
+    // The registry is NOT re-read for this: `entries` above is already this
+    // page's read of it, and checkDesignPack deliberately leaves the flow ->
+    // persona cross-reference to the launcher rather than reading the file a
+    // second time.
+    const manifestPath = join(packDir, "manifest.yml");
+    const design = checkDesignPack({
+      packDir,
+      manifest: readYaml(manifestPath),
+      manifestPath,
+    });
+    if (!design.ok) {
+      // Every unmet prerequisite, joined the way this page has always joined
+      // them — laneTableHtml reads the " and " to decide between "until it
+      // exists" and "until both exist".
+      return {
+        lane,
+        state: "not-ready",
+        not_ready_reason: design.problems.map((p) => p.summary).join(" and "),
+        entries,
+      };
     }
   }
   return { lane, state: "on", entries };
 }
 
+/**
+ * The repo root as every OTHER bin resolves it.
+ *
+ * `config.yml` paths are operator-written and the documented, templated form is
+ * `~/code/my-project`. `join("~/code/x", ".nightshift")` is a RELATIVE path that
+ * resolves against the dashboard process's cwd, so it never exists — and this
+ * function's own not-found branch then renders the repo as "pack missing /
+ * Cannot read this repo".
+ *
+ * Found on the first real bring-up, by a verifier reading the generated page:
+ * the dashboard showed the one onboarded repo as missing, with no runs and no
+ * cost, minutes after a successful run of that exact repo — while `ns status`,
+ * which goes through `readOpsConfig`, read the same pack perfectly. A living
+ * document that reports a healthy repo as absent is worse than a stale one.
+ *
+ * `expandPath` is the shared, tested resolver `ops-config` uses: leading `~`
+ * against home, relative against the config file's own directory (never cwd).
+ */
+function repoRoot(cfg: ConfigRepo, opsHome: string): string {
+  return expandPath(String(cfg.path ?? ""), homedir(), opsHome);
+}
+
 function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
-  const packDir = join(cfg.path, ".nightshift");
+  const packDir = join(repoRoot(cfg, opsHome), ".nightshift");
   if (!existsSync(packDir)) {
     return {
       name: repoName(cfg),
-      path: cfg.path,
+      path: repoRoot(cfg, opsHome),
       pack_present: false,
       lanes: [],
       findings: [],
@@ -198,7 +272,7 @@ function loadRepo(cfg: ConfigRepo, opsHome: string, today: string): RepoInput {
   });
   return {
     name: repoName(cfg),
-    path: cfg.path,
+    path: repoRoot(cfg, opsHome),
     pack_present: true,
     lanes,
     findings,
@@ -216,7 +290,18 @@ function scanOrphanRunDirs(
   const out: { path: string; age_days: number }[] = [];
   for (const { cfg, input } of repos) {
     if (!input.pack_present) continue;
-    const runDir = join(cfg.path, ".nightshift", ".run");
+    // THE EXPANDED ROOT, never the raw `cfg.path`. `~` means nothing to `join`,
+    // so a documented `~/code/...` entry used verbatim here is just a relative
+    // path resolved against the dashboard process's cwd — which does not throw,
+    // it simply finds no `.nightshift/.run` and reports the repo as having no
+    // orphans. That is the same silent-omission the `repoRoot` comment above
+    // narrates for the pack itself, at the one site that kept reading the raw
+    // value after loadRepo was fixed. Taking the root off `input` rather than
+    // re-expanding `cfg` is what keeps the two from drifting apart again.
+    // (`path` is optional on RepoInput for the state-2 message; every branch
+    // that builds one sets it, so this guard is narrowing, not a fallback.)
+    if (!input.path) continue;
+    const runDir = join(input.path, ".nightshift", ".run");
     if (!existsSync(runDir)) continue;
     for (const d of readdirSync(runDir).sort()) {
       const full = join(runDir, d);
@@ -305,7 +390,7 @@ export function runDashboard(opts: DashboardOpts): { html: string; outPath: stri
           cfg,
           input: {
             name: repoName(cfg),
-            path: cfg.path,
+            path: repoRoot(cfg, opsHome),
             pack_present: true,
             read_error: err instanceof Error ? err.message : String(err),
             lanes: [],

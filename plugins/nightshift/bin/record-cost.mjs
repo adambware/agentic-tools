@@ -7428,7 +7428,12 @@ var SEVERITIES = WEIGHTS;
 var CONFIDENCES = ["low", "medium", "high"];
 var LANES = ["security", "design"];
 var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+var EFFORTS = ["low", "medium", "high"];
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function isSafeId(id) {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
 function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
@@ -7461,6 +7466,14 @@ function reqDate(o, k, errors, where) {
   if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
+function reqSafeId(o, k, errors, where) {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
+    );
+}
 function reqDedupeKey(o, errors, where) {
   const dk = o.dedupe_key;
   if (!isObj(dk)) {
@@ -7478,6 +7491,7 @@ function validateRegistryEntry(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
+  reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
   reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
   if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
@@ -7492,6 +7506,7 @@ function validateCandidateFinding(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -7602,11 +7617,21 @@ function validateSurface(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
+  reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
   reqNum(x, "staleness", errors, "surface");
   reqNum(x, "score", errors, "surface");
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
+  if (x.dispatch !== void 0) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
   return finish(errors);
 }
 var VALIDATORS = {
@@ -7625,6 +7650,18 @@ var SCHEMA_NAMES = Object.keys(VALIDATORS);
 function num(x) {
   return typeof x === "number" && Number.isFinite(x) ? x : 0;
 }
+function envelopeUsd(e) {
+  const reported = num(e.total_cost_usd);
+  const mu = e.modelUsage;
+  if (typeof mu !== "object" || mu === null || Array.isArray(mu)) return reported;
+  let summed = 0;
+  for (const entry of Object.values(mu)) {
+    if (typeof entry === "object" && entry !== null) {
+      summed += num(entry.costUSD);
+    }
+  }
+  return Math.max(reported, summed);
+}
 function buildCostRecord(envelope, meta) {
   if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) {
     throw new Error("envelope: not an object");
@@ -7642,7 +7679,7 @@ function buildCostRecord(envelope, meta) {
     lane: meta.lane,
     date: meta.date,
     ts: meta.ts,
-    usd: num(e.total_cost_usd),
+    usd: envelopeUsd(e),
     input_tokens: num(usage.input_tokens),
     output_tokens: num(usage.output_tokens),
     cache_read_tokens: num(usage.cache_read_input_tokens),
@@ -7670,11 +7707,35 @@ function buildManualCostRecord(meta, usd, tokens) {
     status: "ok"
   };
 }
+function buildFallbackErrorRecord(meta, reason) {
+  return {
+    run_id: meta.runId,
+    lane: meta.lane,
+    date: meta.date,
+    ts: meta.ts,
+    usd: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status: "error",
+    terminal_reason: reason
+  };
+}
 var COSTS_FILENAME = "costs.jsonl";
 function runRecordCost(opts) {
   let record;
   if (opts.envelope !== void 0) {
-    record = buildCostRecord(opts.envelope, opts.meta);
+    try {
+      record = buildCostRecord(opts.envelope, opts.meta);
+    } catch (err) {
+      if (opts.fallbackErrorReason === void 0) throw err;
+      record = buildFallbackErrorRecord(
+        opts.meta,
+        `${opts.fallbackErrorReason}: ${err.message}`
+      );
+    }
   } else if (opts.manualUsd !== void 0) {
     record = buildManualCostRecord(opts.meta, opts.manualUsd, opts.manualTokens);
   } else {
@@ -7717,18 +7778,27 @@ function main() {
     process.exit(2);
   }
   try {
+    const fallbackErrorReason = args["fallback-error-reason"];
     let envelope;
     if (args.json !== void 0) {
       if (!existsSync2(args.json)) {
-        throw new Error(`envelope not found: ${args.json}`);
+        if (fallbackErrorReason === void 0) throw new Error(`envelope not found: ${args.json}`);
+        envelope = null;
+      } else {
+        try {
+          envelope = readJson(args.json);
+        } catch (err) {
+          if (fallbackErrorReason === void 0) throw err;
+          envelope = null;
+        }
       }
-      envelope = readJson(args.json);
     }
     const record = runRecordCost({
       metricsDir,
       meta,
       envelope,
       manualUsd: optNum(args, "usd"),
+      ...fallbackErrorReason === void 0 ? {} : { fallbackErrorReason },
       manualTokens: {
         input_tokens: optNum(args, "input-tokens"),
         output_tokens: optNum(args, "output-tokens"),

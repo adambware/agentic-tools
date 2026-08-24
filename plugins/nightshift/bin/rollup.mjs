@@ -7394,8 +7394,8 @@ function resolveToday(args) {
 }
 
 // src/lib/rollup-cli.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync4, readdirSync as readdirSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // src/lib/io.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -7626,7 +7626,12 @@ var SEVERITIES = WEIGHTS;
 var CONFIDENCES = ["low", "medium", "high"];
 var LANES = ["security", "design"];
 var ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+var EFFORTS = ["low", "medium", "high"];
 var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function isSafeId(id) {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
 function v() {
   const errors = [];
   return { errors, out: { ok: true, errors } };
@@ -7659,6 +7664,14 @@ function reqDate(o, k, errors, where) {
   if (typeof o[k] !== "string" || !isRealDate(o[k]))
     errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
 }
+function reqSafeId(o, k, errors, where) {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." (it is used as a path segment)`
+    );
+}
 function reqDedupeKey(o, errors, where) {
   const dk = o.dedupe_key;
   if (!isObj(dk)) {
@@ -7676,6 +7689,7 @@ function validateRegistryEntry(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["registry-entry: not an object"]);
   reqStr(x, "id", errors, "registry-entry");
+  reqSafeId(x, "id", errors, "registry-entry");
   reqStr(x, "title", errors, "registry-entry");
   reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
   if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
@@ -7690,6 +7704,7 @@ function validateCandidateFinding(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["finding: not an object"]);
   reqDedupeKey(x, errors, "finding");
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
   reqEnum(x, "severity", SEVERITIES, errors, "finding");
   reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
   reqBool(x, "needs_human_verification", errors, "finding");
@@ -7800,11 +7815,21 @@ function validateSurface(x) {
   const { errors } = v();
   if (!isObj(x)) return finish(["surface: not an object"]);
   reqStr(x, "id", errors, "surface");
+  reqSafeId(x, "id", errors, "surface");
   reqEnum(x, "weight", WEIGHTS, errors, "surface");
   reqNum(x, "staleness", errors, "surface");
   reqNum(x, "score", errors, "surface");
   if (x.change_flag !== 0 && x.change_flag !== 1)
     errors.push("surface: change_flag must be 0 or 1");
+  if (x.dispatch !== void 0) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
   return finish(errors);
 }
 var VALIDATORS = {
@@ -7822,25 +7847,48 @@ var SCHEMA_NAMES = Object.keys(VALIDATORS);
 // src/lib/record-cost-run.ts
 var COSTS_FILENAME = "costs.jsonl";
 
+// src/lib/run-complete.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+var COMPLETE_DIRNAME = ".complete";
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function assertValidRunId(runId) {
+  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
+    throw new Error(`run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and not "." or "..")`);
+  }
+}
+function runCompleteDir(metricsDir) {
+  return join3(metricsDir, "runs", COMPLETE_DIRNAME);
+}
+function runCompletePath(metricsDir, runId) {
+  assertValidRunId(runId);
+  return join3(runCompleteDir(metricsDir), runId);
+}
+function markRunComplete(metricsDir, runId, marker) {
+  const path = runCompletePath(metricsDir, runId);
+  mkdirSync2(runCompleteDir(metricsDir), { recursive: true });
+  writeFileSync(path, JSON.stringify(marker) + "\n");
+}
+
 // src/lib/rollup-cli.ts
 function runRollup(opts) {
   const date = opts.date ?? opts.today;
-  if (!existsSync3(opts.registryPath)) {
+  if (!existsSync4(opts.registryPath)) {
     throw new Error(`registry not found: ${opts.registryPath}`);
   }
   const doc = readYaml(opts.registryPath);
   const entries = extractEntries(doc, opts.lane);
-  const runsDir = join3(opts.metricsDir, "runs");
+  const runsDir = join4(opts.metricsDir, "runs");
   const runRecords = [];
-  if (existsSync3(runsDir)) {
+  if (existsSync4(runsDir)) {
     const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl")).sort();
     for (const shard of shards) {
-      runRecords.push(...readJsonl(join3(runsDir, shard)));
+      runRecords.push(...readJsonl(join4(runsDir, shard)));
     }
   }
   const laneRunRecords = runRecords.filter((r) => r.lane === opts.lane);
   const openFindingsCount = openFindings(opts.metricsDir).length;
-  const costsPath = join3(opts.metricsDir, COSTS_FILENAME);
+  const costsPath = join4(opts.metricsDir, COSTS_FILENAME);
   const costRecords = readJsonl(costsPath);
   costRecords.forEach((c, i) => {
     const res = validateCostRecord(c);
@@ -7862,8 +7910,11 @@ function runRollup(opts) {
   if (!rollupCheck.ok) {
     throw new Error(`rollup produced an invalid daily-metrics row: ${rollupCheck.errors.join("; ")}`);
   }
-  const outPath = opts.outPath ?? join3(opts.metricsDir, "daily.jsonl");
+  const outPath = opts.outPath ?? join4(opts.metricsDir, "daily.jsonl");
   appendJsonl(outPath, rollup);
+  if (opts.runId !== void 0) {
+    markRunComplete(opts.metricsDir, opts.runId, { ts: opts.ts, date, lane: opts.lane });
+  }
   return rollup;
 }
 
@@ -7881,7 +7932,8 @@ function main() {
       lane,
       today,
       date,
-      ts
+      ts,
+      runId: args["run-id"]
     });
     process.stderr.write(
       `rollup: ${res.date} ${res.lane} freshness=${res.coverage_freshness_pct}% open=${res.open_findings}

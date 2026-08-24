@@ -11,6 +11,7 @@ import {
 } from "./staleness.js";
 import type { RegistryEntry } from "./types.js";
 import { WEIGHT_MULTIPLIER } from "./types.js";
+import { MODEL_BY_BAND } from "./dispatch.js";
 
 function entry(p: Partial<RegistryEntry> & { id: string }): RegistryEntry {
   return {
@@ -116,6 +117,10 @@ describe("selectSurfaces", () => {
       { today, k: 2 },
     );
     expect(out.map((s) => s.id)).toEqual(["CRIT", "LOW"]);
+    // band == weight here (change_flag=0), so dispatch must match the pinned
+    // per-band table for both the "critical" and "low" bands.
+    expect(out[0]!.dispatch).toEqual(MODEL_BY_BAND.critical);
+    expect(out[1]!.dispatch).toEqual(MODEL_BY_BAND.low);
   });
 
   it("breaks weight ties by id for a total order", () => {
@@ -124,6 +129,9 @@ describe("selectSurfaces", () => {
       { today, k: 2 },
     );
     expect(out.map((s) => s.id)).toEqual(["A", "B"]);
+    // both are band "high" (change_flag=0) -> dispatch matches MODEL_BY_BAND.high
+    expect(out[0]!.dispatch).toEqual(MODEL_BY_BAND.high);
+    expect(out[1]!.dispatch).toEqual(MODEL_BY_BAND.high);
   });
 
   it("sets change_flag=1 on a glob hit and 0 on a miss", () => {
@@ -157,6 +165,22 @@ describe("selectSurfaces", () => {
     );
     expect(out[0]!.asvs_ref).toBe("ASVS 4.0.3 V4.2");
     expect(out[0]!.persona).toBe("support-agent");
+  });
+
+  it("emits dispatch from MODEL_BY_BAND[band] on every produced surface", () => {
+    // entry() defaults to weight "medium"; change_flag=0 -> band "medium".
+    const out = selectSurfaces([entry({ id: "A" })], { today, k: 1 });
+    expect(out[0]!.band).toBe("medium");
+    expect(out[0]!.dispatch).toEqual(MODEL_BY_BAND.medium);
+  });
+
+  it("upgrades a changed high-weight entry to band critical and dispatches accordingly", () => {
+    const out = selectSurfaces(
+      [entry({ id: "A", weight: "high", area: ["app/a/*"] })],
+      { today, k: 1, changedFilesFor: () => ["app/a/x.rb"] },
+    );
+    expect(out[0]!.band).toBe("critical");
+    expect(out[0]!.dispatch).toEqual(MODEL_BY_BAND.critical);
   });
 });
 

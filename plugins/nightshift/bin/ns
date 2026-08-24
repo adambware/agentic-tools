@@ -1,0 +1,790 @@
+#!/bin/sh
+# ns — the nightshift easy button (v3 A7 / T4).
+#
+# COMMITTED IN THE ENGINE REPO, shellchecked in CI, versioned with the engine.
+# Only operator-specific files (config.yml, runbook.md, generated artifacts) live
+# in $OPS. Nothing here is operator-specific; nothing in $OPS is logic.
+#
+# THIN SHELL (plan §9.4). Every decision this script LOOKS like it makes is made
+# in vitest-covered TypeScript and handed back as a flat value to echo into the
+# next command:
+#
+#   which repos/lanes exist, where their packs are   -> bin/ops-target.mjs
+#   is this repo+lane due right now                  -> bin/due.mjs
+#   may this lane run at all (design env safety, T8) -> bin/lane-plan.mjs
+#   which surfaces, in what chunks (T11)             -> bin/workflow-args.mjs
+#   what a run's cost row says                       -> bin/record-cost.mjs
+#   what survives the run                            -> bin/retain.mjs, bin/clean.mjs
+#
+# What is left here is sequencing, environment, and exit paths — the three things
+# a shell is actually good at. A9's sentinel reuses bin/due.mjs rather than
+# reimplementing due-detection, for exactly the same reason.
+#
+# FOUR LAUNCHER OBLIGATIONS THE WORKFLOW CANNOT MEET ITSELF (its ARGS CONTRACT
+# header states the first three; the sandbox has no `process` and no fs):
+#
+#   1. --pack .nightshift WITH CWD AT THE REPO ROOT. bin/lane-plan carries --pack
+#      through verbatim (absolute in, absolute out) while the workflow's PACK/RUN
+#      are hardcoded repo-root-relative literals interpolated into the SAME
+#      record and rollup command lines. Any other --pack silently pairs one
+#      pack's registry with another pack's metrics dir. So: cd first, then pass
+#      the literal `.nightshift` — never an absolute path, never from elsewhere.
+#   2. ARM THE GUARD. NIGHTSHIFT_LANE_RUN=1 + NIGHTSHIFT_RUN_ID are exported here
+#      because the PreToolUse guard cannot self-arm from inside the run.
+#   3. LOAD THE ENGINE'S OWN PLUGIN. The bins come from $ENGINE, but the AGENTS
+#      the workflow dispatches to and the PreToolUse guard come from whatever
+#      nightshift plugin the session resolves — which is the globally INSTALLED
+#      one, at whatever version was last installed. That is the same version
+#      skew the symlink rule exists to prevent, one layer up: a 3.0 engine
+#      dispatching to 2.1's reviewer frontmatter, with 2.1's guard armed. So
+#      every session `ns` starts is given `--plugin-dir "$ENGINE"` (session-
+#      scoped, nothing installed), and the bins, the agents and the guard are
+#      then one tree. Note this grants NO tools: agent tools come from agent-file
+#      frontmatter only, and the session's grant is still `--allowedTools`.
+#   4. PIN THE DATE, MINT THE RUN ID. NIGHTSHIFT_TODAY is exported ONCE per
+#      invocation: run-meta and dedupe resolve "today" in separate agent turns,
+#      and a run straddling UTC midnight would otherwise abort at record's
+#      provenance date assert. The run id is minted FRESH for every attempt,
+#      retries included — merge-candidates has no notion of artifact freshness,
+#      so a reused run dir would resurrect a prior aborted attempt's artifacts as
+#      this run's coverage.
+#
+# THE DASHBOARD REGENERATES ON EVERY EXIT PATH (T22, plan §15.8). It happens in
+# an EXIT trap, after the cost row is written, so it also covers the paths no
+# `if` can enumerate: a preflight refusal, a crash, a Ctrl-C. A failed run that
+# left yesterday's dashboard looking fresh is the exact silent staleness this
+# system exists to prevent. bin/clean stays success-only.
+#
+# Usage:
+#   ns run <repo> [security|design|all]        the easy button
+#   ns run --due                               every repo/lane whose staleness/change warrants it
+#   ns run <repo> <lane> --interactive         same env + args, foreground session (debug)
+#   ns status                                  what select WOULD pick, per repo/lane. No model calls.
+#   ns dashboard                               regenerate the living document
+#   ns digest <repo>                           regenerate $OPS/digests/<repo>.md
+#   ns cost add <repo> <lane> <run_id> <usd>   manual cost line for a non-JSON run
+#
+# Flags: --ops <dir>  --no-open  --version  --help
+#
+# Environment:
+#   NIGHTSHIFT_OPS            the ops home (or pass --ops <dir>). REQUIRED.
+#   NIGHTSHIFT_ENGINE         plugin root; defaults to this script's parent dir.
+#   NIGHTSHIFT_CLAUDE         claude binary; defaults to `claude` on PATH.
+#   NIGHTSHIFT_ALLOWED_TOOLS  --allowedTools value for headless runs. PROVISIONAL
+#                             (A7 Part 2, empirical question 4): the working set
+#                             is validated on the operator's machine and recorded
+#                             in the runbook. Scoped grants, not the fail-open
+#                             guard, are the real perimeter (plan §9.12).
+#   NIGHTSHIFT_TODAY          override the run date (tests, backfills).
+set -eu
+
+
+die() {
+  printf 'ns: %s\n' "$*" >&2
+  exit 2
+}
+
+info() {
+  printf 'ns: %s\n' "$*" >&2
+}
+
+# ── private temp files ──────────────────────────────────────────────────────
+# Every scratch file this script writes is created HERE, by mktemp, and the
+# result is left in $NS_TMP for the caller to copy into its own variable.
+#
+# The old spelling was "${TMPDIR:-/tmp}/ns-<what>.$$.sh" — fully predictable,
+# because $$ is just the pid. On a shared /tmp any other local user can pre-
+# create that exact name as a SYMLINK, and the `>` redirect then follows it: at
+# best `ns` truncates a file the operator owns, and for the four fragments this
+# script SOURCES (the ops-target emissions in run_lane, dashboard, digest and
+# cost add) it is arbitrary shell executed as the operator, on a nightly
+# unattended sweep, with the guard armed. mktemp will not open a name that
+# already exists and creates the file 0600, which closes both halves.
+#
+# A missing or failing mktemp is a broken machine, and it DIES rather than
+# falling back to a guessable name — a fallback would be the same hole under a
+# different spelling, reached exactly when nobody is watching. It sets a global
+# instead of printing, because `die` inside a command substitution would only
+# exit the subshell.
+ns_mktemp() {
+  NS_TMP=$(mktemp "${TMPDIR:-/tmp}/ns-$1.XXXXXXXX" 2>/dev/null) || NS_TMP=""
+  [ -n "$NS_TMP" ] || die "cannot create a private temp file in ${TMPDIR:-/tmp} (mktemp failed)"
+}
+
+# ── locations ───────────────────────────────────────────────────────────────
+# The DOCUMENTED install is a SYMLINK onto PATH (`ln -s <checkout>/plugins/
+# nightshift/bin/ns ~/bin/ns`) — never a copy, because `ns` must stay versioned
+# with the engine it launches. So $0 is normally a link, and the engine is found
+# by resolving it: a plain `dirname $0` would make ENGINE the PATH directory's
+# parent ($HOME for ~/bin/ns), and because $HOME/bin exists, require_engine's
+# first check PASSES and the run dies on "missing bin/lane-plan.mjs (run npm run
+# build)" — an error blaming the engine build for a link the launcher never
+# followed. `readlink -f` would do this in one call but is GNU-only (absent on
+# macOS), so walk the chain one link at a time.
+ns_script_dir() {
+  _p=$0
+  _hops=0
+  while [ -L "$_p" ]; do
+    _hops=$((_hops + 1))
+    [ "$_hops" -lt 64 ] || die "symlink loop resolving $0"
+    _link=$(readlink -- "$_p")
+    case $_link in
+      /*) _p=$_link ;;
+      *) _p=$(dirname -- "$_p")/$_link ;;
+    esac
+  done
+  _d=$(dirname -- "$_p")
+  (cd -- "$_d" && pwd)
+}
+ENGINE=${NIGHTSHIFT_ENGINE:-$(cd -- "$(ns_script_dir)/.." && pwd)}
+CLAUDE_BIN=${NIGHTSHIFT_CLAUDE:-claude}
+# VALIDATED ON REAL RUNS (A7 Part 2, empirical question 4), not guessed:
+#   Workflow    launch the run.
+#   TaskOutput  BLOCK on it. Workflow returns a task id and the workflow dies
+#               with the session, so without this the session can answer early
+#               and kill its own review. Not optional.
+#   Bash        every plumbing stage is `node bin/<name>.mjs`.
+#   Read Glob Grep Write   what the reviewer/refuter subagents need to read the
+#               surface and write their artifacts.
+#   Agent       reserved for the dispatch path; harmless and cheap to keep.
+# This is the SESSION's grant. It is not what the subagents get: agent tools come
+# from agent-file frontmatter only, and no dispatch API here accepts a tool list.
+ALLOWED_TOOLS=${NIGHTSHIFT_ALLOWED_TOOLS:-Workflow,TaskOutput,Read,Glob,Grep,Bash,Write,Agent}
+
+# Read one top-level string field out of a JSON file. Not a decision — a field
+# read, kept here so the shell never has to parse JSON itself.
+json_field() {
+  node -e 'const f=require("node:fs");const d=JSON.parse(f.readFileSync(process.argv[1],"utf8"));const v=d[process.argv[2]];if(typeof v!=="string"||v===""){console.error("json_field: "+process.argv[2]+" missing in "+process.argv[1]);process.exit(2);}process.stdout.write(v);' "$1" "$2"
+}
+
+# Read one NESTED, OPTIONAL string field (json_opt_path <file> <key> <key>...):
+# prints the value when the whole path resolves to a non-empty string, prints
+# nothing otherwise, and never fails. Separate from json_field on purpose —
+# json_field dies on a missing key because everything it reads is mandatory,
+# while `browser.base_url` is legitimately absent from a security lane plan and
+# must not be an error there.
+json_opt_path() {
+  _f=$1
+  shift
+  node -e 'const f=require("node:fs");let v;try{v=JSON.parse(f.readFileSync(process.argv[1],"utf8"));}catch(e){process.exit(0);}for(const k of process.argv.slice(2)){if(v===null||typeof v!=="object"){process.exit(0);}v=v[k];}if(typeof v==="string"){process.stdout.write(v);}' "$_f" "$@"
+}
+
+# `ns` ships WITH the engine and is meaningless apart from it, so it reports the
+# engine's version rather than carrying one of its own that could drift.
+ns_version() {
+  _v=$(node -e 'try{process.stdout.write(require(process.argv[1]+"/package.json").version)}catch(e){process.stdout.write("unknown")}' "$ENGINE" 2>/dev/null || printf 'unknown')
+  printf 'ns (nightshift engine %s)\n' "$_v"
+}
+
+# ── ops home ────────────────────────────────────────────────────────────────
+# Deliberately no default. The ops home is NAMED (`agentic-nightshift`, docs/v3
+# README.md open question 1) but its parent directory is the operator's own, and
+# it deliberately lives outside every repo — so there is no absolute path to
+# guess. Guessing one would not fail, it would silently create a second, empty
+# ops home and quietly maintain two of everything.
+resolve_ops() {
+  [ -n "$OPS_HOME" ] || OPS_HOME=${NIGHTSHIFT_OPS:-}
+  [ -n "$OPS_HOME" ] || die "no ops home — set NIGHTSHIFT_OPS or pass --ops <dir> (see runbook.md)"
+  [ -d "$OPS_HOME" ] || die "ops home is not a directory: $OPS_HOME"
+  # ABSOLUTE, always. A run `cd`s to the repo root partway through, so a relative
+  # --ops (or NIGHTSHIFT_OPS) would silently start resolving against the repo
+  # instead: the log becomes unwritable, retention and clean fail, and the
+  # dashboard is never regenerated — every symptom pointing somewhere else.
+  OPS_HOME=$(cd -- "$OPS_HOME" && pwd)
+  OPS_CONFIG="$OPS_HOME/config.yml"
+  [ -f "$OPS_CONFIG" ] || die "no config.yml in $OPS_HOME (see a7-ops-launcher.md, section config.yml)"
+  mkdir -p "$OPS_HOME/logs" "$OPS_HOME/evidence" "$OPS_HOME/digests"
+  # Resolve the dashboard filename HERE, not per-target: the finalizer has to
+  # regenerate the living document even on a refusal that never resolved a
+  # target, and writing the hardcoded default there would quietly maintain a
+  # SECOND dashboard beside the configured one — the stale-looking page problem
+  # again, one filename over.
+  _dash=$(node "$ENGINE/bin/ops-target.mjs" --config "$OPS_CONFIG" --dashboard-out 2>/dev/null || true)
+  [ -n "$_dash" ] && NS_DASHBOARD_OUT=$_dash
+  NS_OPS_OK=1
+}
+
+# ── engine preflight ────────────────────────────────────────────────────────
+# Checked once, up front, by name: a missing bin is a broken install, and
+# discovering it three steps into a headless run wastes the whole attempt.
+require_engine() {
+  [ -d "$ENGINE/bin" ] || die "engine bin/ not found at $ENGINE/bin (set NIGHTSHIFT_ENGINE)"
+  for _b in lane-plan select workflow-args record-cost retain clean dashboard ops-target due run-outcome; do
+    [ -f "$ENGINE/bin/$_b.mjs" ] || die "engine incomplete: missing bin/$_b.mjs (run npm run build)"
+  done
+  [ -f "$ENGINE/nightshift.workflow.js" ] || die "engine incomplete: missing nightshift.workflow.js"
+}
+
+# ── run id ──────────────────────────────────────────────────────────────────
+# Filename-safe by construction (the bins re-assert RUN_ID_RE). Minted per ATTEMPT.
+mint_run_id() {
+  _stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  _rand=$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
+  [ -n "$_rand" ] || _rand=$$
+  printf '%s-%s-%s' "$_stamp" "$1" "$_rand"
+}
+
+# ── the finalizer (T22) ─────────────────────────────────────────────────────
+# Armed as an EXIT trap the moment a run has a resolved target, so it covers
+# refusal, crash and interrupt as well as ordinary success/failure. The order is
+# load-bearing: the cost row is written BEFORE the dashboard reads it, or a
+# failed run renders with no verdict at all. Nothing in here may abort the
+# finalizer — a retention hiccup must not cost us the dashboard regeneration.
+NS_OPS_OK=0
+NS_TARGET_OK=0
+NS_FINALIZED=1
+NS_MODEL_INVOKED=0
+NS_COST_RECORDED=0
+NS_STATUS=failure
+NS_OPEN=0
+NS_RUN_ID=-
+NS_LANE=-
+NS_REPO_NAME=-
+NS_DASHBOARD_OUT=dashboard.html
+NS_LOG=/dev/null
+
+finalize() {
+  if [ "$NS_FINALIZED" = "1" ] || [ "$NS_OPS_OK" = "0" ]; then
+    return 0
+  fi
+  NS_FINALIZED=1
+  set +e
+
+  # A refusal that never resolved a target (unknown repo, repo disabled, lane not
+  # enabled, the clone or the pack gone) has no run to account for — but it is
+  # EXACTLY the state the living document must show, so it still gets step 3.
+  # Skipping it here is how "the pack vanished" ends up looking like a fresh
+  # green dashboard the next morning.
+  if [ "$NS_TARGET_OK" = "0" ]; then
+    node "$ENGINE/bin/dashboard.mjs" \
+      --config "$OPS_CONFIG" --out "$OPS_HOME/$NS_DASHBOARD_OUT" >/dev/null 2>&1 ||
+      info "dashboard regeneration FAILED — the living document is now stale"
+    set -e
+    return 0
+  fi
+
+  # 1. Cost — only when a model was actually invoked. A preflight refusal costs
+  #    nothing, and a $0 row would drag the cost trend toward zero for free.
+  if [ "$NS_MODEL_INVOKED" = "1" ] && [ "$NS_COST_RECORDED" = "0" ]; then
+    node "$ENGINE/bin/record-cost.mjs" \
+      --metrics-dir "$NS_METRICS_DIR" --run-id "$NS_RUN_ID" --lane "$NS_LANE" \
+      --json "$NS_RUN_DIR/result.json" \
+      --fallback-error-reason "launcher: headless result envelope unusable or absent" \
+      >>"$NS_LOG" 2>&1
+    NS_COST_RECORDED=1
+  fi
+
+  # 2. Retention — evidence out of the run dir before clean deletes it, then the
+  #    log store. Reported, never fatal.
+  if [ -d "$NS_RUN_DIR" ]; then
+    node "$ENGINE/bin/retain.mjs" \
+      --evidence-root "$OPS_HOME/evidence" --repo "$NS_REPO_NAME" \
+      --repo-root "$NS_REPO_PATH" --metrics-dir "$NS_METRICS_DIR" \
+      --run-dir "$NS_RUN_DIR" --logs "$OPS_HOME/logs" >>"$NS_LOG" 2>&1 ||
+      info "retention reported a problem (see $NS_LOG) — continuing to the dashboard"
+  else
+    node "$ENGINE/bin/retain.mjs" --logs "$OPS_HOME/logs" >>"$NS_LOG" 2>&1 || true
+  fi
+
+  # 3. THE DASHBOARD — unconditionally, on every exit path.
+  node "$ENGINE/bin/dashboard.mjs" \
+    --config "$OPS_CONFIG" --out "$OPS_HOME/$NS_DASHBOARD_OUT" >>"$NS_LOG" 2>&1 ||
+    info "dashboard regeneration FAILED (see $NS_LOG) — the living document is now stale"
+
+  # 4. Housekeeping — success drops the scratch dir, failure keeps exactly one
+  #    diagnosable run dir. Either way the run root is time-pruned.
+  node "$ENGINE/bin/clean.mjs" \
+    --run-root "$NS_RUN_ROOT" --run-id "$NS_RUN_ID" --status "$NS_STATUS" \
+    >>"$NS_LOG" 2>&1 || info "clean reported a problem (see $NS_LOG)"
+
+  # 5. Open the dashboard, unless asked not to.
+  if [ "$NS_STATUS" = "success" ] && [ "$NS_OPEN" = "1" ]; then
+    if command -v open >/dev/null 2>&1; then
+      open "$OPS_HOME/$NS_DASHBOARD_OUT" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  info "run $NS_RUN_ID ($NS_REPO_NAME/$NS_LANE) -> $NS_STATUS; log: $NS_LOG"
+  set -e
+}
+
+# Signal handler. Records the interrupt as a FAILURE (the run did not finish),
+# then exits with the conventional 128+signal code so a wrapper can tell an
+# interrupt from an ordinary failure. The EXIT trap does the finalizing.
+ns_interrupt() {
+  NS_STATUS=failure
+  info "interrupted — recording the attempt as a failure and refreshing the dashboard"
+  exit "$1"
+}
+
+# ── design preflight, second half: is anything actually THERE? ──────────────
+# a7-ops-launcher.md's T8 ends "refuse when personas are missing or the dev
+# server is down". lane-plan shipped the first half and the safety half of the
+# second (base_url must be loopback, the manifest must assert a non-production
+# environment) — but it is a PURE module: it opens no socket, and it must not
+# start, or every one of its unit tests would begin depending on which ports
+# happen to be bound on the machine running them. So the liveness half lives
+# here, where the launcher already talks to the outside world.
+#
+# Without it, "I forgot to `npm run dev`" is a paid failure: preflight passes,
+# the fan-out dispatches Opus ux-reviewers at a dead port, and the whole run is
+# billed for a screenful of connection refusals before anything notices.
+#
+# ANY answer counts. A 404 or a 500 is a running dev server that does not route
+# the pack's base_url origin, which is emphatically not "the server is down";
+# requiring 2xx would refuse packs whose base_url is a bare origin the app has
+# no handler for. Only "nothing answered" is a refusal.
+probe_dev_server() {
+  _base=$1
+  if ! command -v curl >/dev/null 2>&1; then
+    # Degraded, not fatal. curl is the probe, not the gate: refusing a run
+    # because the MACHINE lacks curl would turn a missing tool into a missed
+    # night, which is a worse failure than the one this check prevents.
+    info "curl not found — cannot check that $_base is up; continuing without the check"
+    return 0
+  fi
+  # Bounded at BOTH ends. A dev server that accepts the connection and then
+  # never answers (a wedged watcher mid-rebuild) would hang an unattended sweep
+  # forever on --connect-timeout alone.
+  curl --silent --output /dev/null --connect-timeout 3 --max-time 5 "$_base" >/dev/null 2>&1
+}
+
+# ── one lane run ────────────────────────────────────────────────────────────
+run_lane() {
+  _repo=$1
+  _lane=$2
+
+  # An attempt has begun: the finalizer is live from HERE, not from wherever the
+  # target happens to resolve. A refusal that never got a target still has to
+  # refresh the living document (finalize's own NS_TARGET_OK branch handles the
+  # rest), and leaving this at its "between attempts" value made finalize
+  # short-circuit on exactly those paths.
+  NS_FINALIZED=0
+  NS_TARGET_OK=0
+
+  # Resolve the target in tested code, then SOURCE the flat result. Sourcing (not
+  # eval) keeps a malformed emission a shell syntax error at a known line.
+  ns_mktemp target
+  _target_sh=$NS_TMP
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$_repo" --lane "$_lane" --format sh >"$_target_sh"; then
+    rm -f "$_target_sh"
+    return 2
+  fi
+  # shellcheck source=/dev/null
+  . "$_target_sh"
+  rm -f "$_target_sh"
+
+  NS_RUN_ID=$(mint_run_id "$NS_LANE")
+  NS_RUN_DIR="$NS_RUN_ROOT/$NS_RUN_ID"
+  NS_LOG="$OPS_HOME/logs/$NS_RUN_ID.log"
+  NS_STATUS=failure
+  NS_MODEL_INVOKED=0
+  NS_COST_RECORDED=0
+  NS_TARGET_OK=1
+  if [ "$NS_NO_OPEN" = "1" ]; then
+    NS_OPEN=0
+  else
+    NS_OPEN=$NS_DASHBOARD_OPEN
+  fi
+  : >"$NS_LOG"
+
+  # From here on, every exit path regenerates the dashboard.
+  #
+  # INT/TERM get their OWN handler, and it ENDS IN `exit`. A POSIX shell resumes
+  # the script at the next command when a trap handler merely returns — so a
+  # handler that only ran finalize() would regenerate the dashboard, mark the
+  # attempt finalized, and then let the run carry on and invoke the model anyway,
+  # spending money after the operator (or `timeout`) asked it to stop, with the
+  # cost row already written off as "no model invoked". Exiting here re-enters
+  # the EXIT trap, so finalize() still runs exactly once — with the real status.
+  trap 'ns_interrupt 130' INT
+  trap 'ns_interrupt 143' TERM
+  trap finalize EXIT
+
+  # ARM THE GUARD + PIN THE RUN. Exported for the headless session and every
+  # bin/ command it spawns; the sandboxed workflow can do none of this itself.
+  #
+  # CLAUDE_PLUGIN_ROOT is exported for the same reason and is just as load-
+  # bearing. nightshift.workflow.js builds its plumbing commands from the LITERAL
+  # text `${CLAUDE_PLUGIN_ROOT}` and relies on the SHELL to expand it when the
+  # Bash tool runs them — the workflow sandbox has no `process`, so it cannot
+  # interpolate a real path itself. That variable is NOT set inside a Workflow
+  # agent()'s Bash environment: the first real run proved it (`echo
+  # "CLAUDE_PLUGIN_ROOT: ${CLAUDE_PLUGIN_ROOT}"` came back empty), so every
+  # plumbing bin ran as `node /bin/<name>.mjs` and died MODULE_NOT_FOUND — while
+  # the workflow still returned {"status":"complete"}. Exporting it here makes
+  # the expansion resolve to the same $ENGINE the launcher used, with no edit to
+  # the workflow (which stays conditional-free and A4/A5-owned).
+  NIGHTSHIFT_RUN_ID=$NS_RUN_ID
+  NIGHTSHIFT_LANE_RUN=1
+  CLAUDE_PLUGIN_ROOT=$ENGINE
+  export NIGHTSHIFT_RUN_ID NIGHTSHIFT_LANE_RUN NIGHTSHIFT_TODAY CLAUDE_PLUGIN_ROOT
+
+  info "run $NS_RUN_ID: $NS_REPO_NAME/$NS_LANE (today=$NIGHTSHIFT_TODAY, cap=$NS_MAX_CONCURRENT)"
+  printf 'run_id=%s\nrepo=%s\nlane=%s\ntoday=%s\nengine=%s\nallowed_tools=%s\n' \
+    "$NS_RUN_ID" "$NS_REPO_NAME" "$NS_LANE" "$NIGHTSHIFT_TODAY" "$ENGINE" "$ALLOWED_TOOLS" \
+    >>"$NS_LOG"
+
+  # OBLIGATION 1: cwd at the repo root, --pack passed as the literal .nightshift.
+  cd "$NS_REPO_PATH" || return 2
+
+  # PREFLIGHT — the lane gate. For the design lane this is also T8: a
+  # non-loopback base_url or a missing/production `environment` assertion refuses
+  # HERE, before a single model call, with the tool's own reason.
+  # The run dir is minted only AFTER preflight passes. A refused run must not
+  # leave scratch inside the operator's own repository — four refused attempts
+  # used to mean four untracked .run/<id>/ directories in their working tree,
+  # kept (correctly) by clean's failure policy and accumulating every attempt.
+  ns_mktemp plan
+  _plan_tmp=$NS_TMP
+  ns_mktemp plan-err
+  _plan_err=$NS_TMP
+  if ! node "$ENGINE/bin/lane-plan.mjs" \
+    --pack .nightshift --lane "$NS_LANE" >"$_plan_tmp" 2>"$_plan_err"; then
+    cat "$_plan_err" >>"$NS_LOG"
+    info "PREFLIGHT REFUSED — run not started:"
+    sed 's/^/  /' "$_plan_err" >&2
+    rm -f "$_plan_tmp" "$_plan_err"
+    return 2
+  fi
+  cat "$_plan_err" >>"$NS_LOG"
+  rm -f "$_plan_err"
+
+  # T8's LIVENESS half, and it belongs on this side of the mkdir below for the
+  # same reason the rest of preflight does: a refused attempt must leave no
+  # scratch in the operator's own repository. The plan is still in the temp file
+  # here, so the base_url is read from there rather than from the run dir that
+  # does not exist yet. Design only — a security lane has no browser block and
+  # must never be made to need one.
+  if [ "$NS_LANE" = "design" ]; then
+    _base_url=$(json_opt_path "$_plan_tmp" browser base_url)
+    if [ -n "$_base_url" ] && ! probe_dev_server "$_base_url"; then
+      printf 'preflight: nothing answered at %s\n' "$_base_url" >>"$NS_LOG"
+      info "PREFLIGHT REFUSED — run not started:"
+      printf '  nothing is listening at %s — start the dev server first, then re-run\n' \
+        "$_base_url" >&2
+      rm -f "$_plan_tmp"
+      return 2
+    fi
+  fi
+
+  mkdir -p "$NS_RUN_DIR"
+  mv "$_plan_tmp" "$NS_RUN_DIR/lane-plan.json"
+  NS_REGISTRY=$(json_field "$NS_RUN_DIR/lane-plan.json" registry) || return 2
+
+  # SELECT — deterministic, pre-workflow, launcher-side.
+  if ! node "$ENGINE/bin/select.mjs" \
+    --vectors "$NS_REGISTRY" --manifest .nightshift/manifest.yml \
+    --lane "$NS_LANE" --repo . --out "$NS_RUN_DIR/surfaces.json" >>"$NS_LOG" 2>&1; then
+    info "select failed (see $NS_LOG)"
+    return 2
+  fi
+
+  # CHUNK + ASSEMBLE ARGS (T11). Exit 3 is "nothing to review" — a quiet night,
+  # not a failure: skip the model entirely, still refresh the dashboard.
+  set +e
+  node "$ENGINE/bin/workflow-args.mjs" \
+    --plan "$NS_RUN_DIR/lane-plan.json" --surfaces "$NS_RUN_DIR/surfaces.json" \
+    --run-id "$NS_RUN_ID" --max-concurrent "$NS_MAX_CONCURRENT" \
+    --out "$NS_RUN_DIR/args.json" >>"$NS_LOG" 2>&1
+  _rc=$?
+  set -e
+  if [ "$_rc" = "3" ]; then
+    info "nothing to review for $NS_REPO_NAME/$NS_LANE — skipping the model call"
+    NS_STATUS=success
+    return 0
+  fi
+  if [ "$_rc" != "0" ]; then
+    info "workflow-args refused (see $NS_LOG)"
+    return 2
+  fi
+
+  # THE WORKFLOW RUNS IN THE BACKGROUND, AND IT DIES WITH THE SESSION. The
+  # Workflow tool returns a task id immediately, not a result. A session that
+  # answers as soon as it has that id ends the turn, `claude -p` exits 0 having
+  # said something perfectly reasonable, and the whole review is killed
+  # mid-flight — the second real run got as far as reviewing a surface and
+  # gating Tier-2 before it was cut off. So the prompt makes the WAIT the task,
+  # names the blocking call that does it, and states the finishing condition in
+  # terms of durable state rather than in terms of anything the model believes.
+  # TaskOutput is granted for exactly this (it is otherwise unused).
+  _prompt="Run the nightshift lane review for this repository.
+Step 1. Read $NS_RUN_DIR/args.json.
+Step 2. Invoke the Workflow tool ONCE with scriptPath \"$ENGINE/nightshift.workflow.js\" and, as \`args\`, the exact parsed JSON contents of that file (pass it as a JSON value, not as a string).
+Step 3. The Workflow tool returns a task id, NOT a result, and the workflow is killed if this session ends before it finishes. So you MUST now block: call TaskOutput with that task_id, block=true and timeout=600000, and keep calling it until it reports the task is no longer running. Do not answer, summarise, or end your turn while the task is still running — a reply at this point cancels the review.
+Step 4. Only once the task has completed, reply with its final status and nothing else.
+Change nothing in this repository yourself and run no other command."
+
+  if [ "$NS_INTERACTIVE" = "1" ]; then
+    info "interactive mode: foreground session (add the cost afterwards with \`ns cost add\`)"
+    set +e
+    "$CLAUDE_BIN" --allowedTools "$ALLOWED_TOOLS" --plugin-dir "$ENGINE" "$_prompt"
+    _rc=$?
+    set -e
+    # Status must follow the session, not the fact that one was started: a debug
+    # run recorded as a success gets its run dir DELETED by clean — the exact dir
+    # the operator opened interactive mode to look at.
+    if [ "$_rc" != "0" ]; then
+      info "interactive session exited $_rc — keeping the run dir for diagnosis"
+      return 1
+    fi
+    NS_STATUS=success
+    return 0
+  fi
+
+  # HEADLESS. The exit code is captured, never allowed to abort the script:
+  # everything after this — the cost row above all — must still happen.
+  NS_MODEL_INVOKED=1
+  set +e
+  # </dev/null as well as the fd-3 loop above: whatever `ns` was invoked with on
+  # stdin is not this session's input either, and a headless CLI that blocks on
+  # an inherited pipe hangs the whole night.
+  "$CLAUDE_BIN" -p "$_prompt" --output-format json --allowedTools "$ALLOWED_TOOLS" \
+    --plugin-dir "$ENGINE" \
+    </dev/null >"$NS_RUN_DIR/result.json" 2>>"$NS_LOG"
+  _rc=$?
+  set -e
+  if [ "$_rc" != "0" ]; then
+    info "headless run exited $_rc — recording the failure and refreshing the dashboard"
+    return 1
+  fi
+
+  # THE CLI EXITING 0 IS NOT THE RUN SUCCEEDING. A session can invoke the
+  # workflow, have every reviewer dispatch and every plumbing bin fail, get back
+  # {"status":"complete"} because the last stages ran, and exit 0 — which is
+  # exactly what the first real run did. Calling that a success wrote a
+  # status:"ok" cost row, DELETED the run dir that held the evidence, and
+  # refreshed the living document to say all was well while nothing had been
+  # reviewed. The predicate lives in bin/run-outcome (tested): a run succeeded
+  # iff bin/record left its row in the metrics, which only happens after
+  # validate and dedupe passed under A1's lock. Nothing the model said counts.
+  if ! node "$ENGINE/bin/run-outcome.mjs" \
+    --metrics-dir "$NS_METRICS_DIR" --run-id "$NS_RUN_ID" >>"$NS_LOG" 2>&1; then
+    info "the session exited 0 but left NO run row — treating this as a FAILURE (see $NS_LOG)"
+    return 1
+  fi
+  NS_STATUS=success
+  return 0
+}
+
+# One attempt, finalized, without letting a non-zero return kill a `--due` sweep.
+run_lane_finalized() {
+  set +e
+  run_lane "$1" "$2"
+  _attempt_rc=$?
+  finalize
+  set -e
+  trap - EXIT INT TERM
+  NS_FINALIZED=1
+  NS_TARGET_OK=0
+  return "$_attempt_rc"
+}
+
+# ── commands ────────────────────────────────────────────────────────────────
+cmd_run() {
+  require_engine
+  resolve_ops
+  # OBLIGATION 3: one date for the whole invocation. Two lanes of the same
+  # invocation share it deliberately — accounting that shifts mid-sweep is worse
+  # than accounting that is a few hours behind.
+  NIGHTSHIFT_TODAY=${NIGHTSHIFT_TODAY:-$(date -u +%Y-%m-%d)}
+  export NIGHTSHIFT_TODAY
+
+  _worst=0
+  if [ "$NS_DUE" = "1" ]; then
+    ns_mktemp due
+    _pairs=$NS_TMP
+    if ! node "$ENGINE/bin/due.mjs" --config "$OPS_CONFIG" --format sh >"$_pairs"; then
+      rm -f "$_pairs"
+      die "due sweep failed"
+    fi
+    if [ ! -s "$_pairs" ]; then
+      rm -f "$_pairs"
+      info "nothing is due"
+      return 0
+    fi
+    # fd 3, NOT stdin. `claude -p` reads piped stdin, so a loop that fed itself
+    # from stdin would have the FIRST lane's headless session swallow the rest of
+    # the sweep: the remaining repo/lane pairs then silently never run, with no
+    # run id, no cost row and no dashboard row — and `ns` still exits 0.
+    while IFS=' ' read -r _r _l <&3; do
+      [ -n "$_r" ] || continue
+      run_lane_finalized "$_r" "$_l" || _worst=1
+    done 3<"$_pairs"
+    rm -f "$_pairs"
+    return "$_worst"
+  fi
+
+  [ -n "$NS_ARG1" ] || die "usage: ns run <repo> [security|design|all] | ns run --due"
+  _lanes=$NS_ARG2
+  [ -n "$_lanes" ] || _lanes=security
+  if [ "$_lanes" = "all" ]; then
+    _lanes="security design"
+  fi
+  for _l in $_lanes; do
+    run_lane_finalized "$NS_ARG1" "$_l" || _worst=1
+  done
+  return "$_worst"
+}
+
+cmd_status() {
+  require_engine
+  resolve_ops
+  node "$ENGINE/bin/due.mjs" --config "$OPS_CONFIG" --all
+}
+
+cmd_dashboard() {
+  require_engine
+  resolve_ops
+  # ops-target with any configured repo/lane also carries the dashboard settings;
+  # --list avoids needing one, so read the out name the same way `run` does.
+  _first=$(node "$ENGINE/bin/ops-target.mjs" --config "$OPS_CONFIG" --list | head -1)
+  [ -n "$_first" ] || die "no enabled repo/lane in $OPS_CONFIG"
+  ns_mktemp dash
+  _sh=$NS_TMP
+  # shellcheck disable=SC2086
+  set -- $_first
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$1" --lane "$2" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "$_sh"
+  rm -f "$_sh"
+  node "$ENGINE/bin/dashboard.mjs" --config "$OPS_CONFIG" --out "$OPS_HOME/$NS_DASHBOARD_OUT"
+  info "dashboard: $OPS_HOME/$NS_DASHBOARD_OUT"
+}
+
+cmd_digest() {
+  require_engine
+  resolve_ops
+  [ -n "$NS_ARG1" ] || die "usage: ns digest <repo>"
+  # THE DIGEST IS LANE-AGNOSTIC — it folds over fleet metrics and covers both
+  # lanes — so it must not demand a lane the operator never enabled. Asking
+  # ops-target for `--lane security` (which is all this needs it for: OPS_HOME,
+  # the repo path and the repo name) refused a repo configured `lanes: [design]`
+  # with "security is not enabled for repo", on a command that has nothing to do
+  # with the security lane. config.yml explicitly allows any subset of lanes.
+  #
+  # So resolve the lane the same way cmd_dashboard does, from --list, which is
+  # the tested lane-independent surface: take whichever enabled lane this repo
+  # actually has and use it purely as the key that unlocks the paths.
+  _lane=$(node "$ENGINE/bin/ops-target.mjs" --config "$OPS_CONFIG" --list |
+    awk -v repo="$NS_ARG1" '$1 == repo { print $2; exit }')
+  [ -n "$_lane" ] || die "no enabled repo named \"$NS_ARG1\" in $OPS_CONFIG (see \`ns status\`)"
+  ns_mktemp digest
+  _sh=$NS_TMP
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$NS_ARG1" --lane "$_lane" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "$_sh"
+  rm -f "$_sh"
+  _out="$OPS_HOME/digests/$NS_REPO_NAME.md"
+  cd "$NS_REPO_PATH" || die "cannot cd to $NS_REPO_PATH"
+  # A NARROWER grant than a review run gets: the digest skill is Read/Glob/Grep
+  # and produces one markdown file, so it has no business holding Bash or Agent.
+  # The read-only guard is deliberately NOT armed here — it denies writes outside
+  # .nightshift/, which is precisely where the digest has to land, so arming it
+  # would block the one write this command exists to make. Scope, not the guard,
+  # is the perimeter (plan §9.12).
+  "$CLAUDE_BIN" -p "Produce the weekly nightshift digest for the .nightshift pack in this repository using the nightshift digest skill, and write it to the file path \"$_out\" (that exact path, nothing appended). Read only — change nothing in this repository." \
+    --allowedTools "Read,Glob,Grep,Write" --plugin-dir "$ENGINE" </dev/null >/dev/null
+  [ -f "$_out" ] || die "digest session finished but wrote no file at $_out"
+  info "digest: $_out"
+}
+
+cmd_cost_add() {
+  require_engine
+  resolve_ops
+  # A plain if, not `A && B || C`: under `A && B || C` the C branch also runs when
+  # A succeeds and B fails, which for a usage guard means the error message can
+  # fire on a perfectly valid invocation. (shellcheck SC2015, reported by 0.9.0
+  # in CI; 0.11.0 no longer flags it, which is how it reached a push.)
+  if [ -z "$NS_ARG2" ] || [ -z "$NS_ARG3" ] || [ -z "$NS_ARG4" ] || [ -z "$NS_ARG5" ]; then
+    die "usage: ns cost add <repo> <lane> <run_id> <usd>"
+  fi
+  ns_mktemp cost
+  _sh=$NS_TMP
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$NS_ARG2" --lane "$NS_ARG3" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "$_sh"
+  rm -f "$_sh"
+  node "$ENGINE/bin/record-cost.mjs" \
+    --metrics-dir "$NS_METRICS_DIR" --run-id "$NS_ARG4" --lane "$NS_ARG3" --usd "$NS_ARG5"
+}
+
+usage() {
+  sed -n '/^# Usage:/,/^# Environment:/p' "$0" | sed -e 's/^#\{1,\} \{0,1\}//' -e '$d'
+  exit "${1:-0}"
+}
+
+# ── argv ────────────────────────────────────────────────────────────────────
+[ "$#" -ge 1 ] || usage 2
+
+CMD=$1
+shift
+
+NS_DUE=0
+NS_INTERACTIVE=0
+NS_NO_OPEN=0
+NS_ARG1=""
+NS_ARG2=""
+NS_ARG3=""
+NS_ARG4=""
+NS_ARG5=""
+OPS_HOME=""
+_n=0
+
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --due) NS_DUE=1 ;;
+    --interactive) NS_INTERACTIVE=1 ;;
+    --no-open) NS_NO_OPEN=1 ;;
+    --ops)
+      shift
+      [ "$#" -ge 1 ] || die "--ops needs a directory"
+      OPS_HOME=$1
+      ;;
+    --version)
+      ns_version
+      exit 0
+      ;;
+    -h | --help) usage 0 ;;
+    --*) die "unknown flag: $1" ;;
+    *)
+      _n=$((_n + 1))
+      case $_n in
+        1) NS_ARG1=$1 ;;
+        2) NS_ARG2=$1 ;;
+        3) NS_ARG3=$1 ;;
+        4) NS_ARG4=$1 ;;
+        5) NS_ARG5=$1 ;;
+        *) die "too many arguments (at \"$1\")" ;;
+      esac
+      ;;
+  esac
+  shift
+done
+
+case $CMD in
+  run) cmd_run ;;
+  status) cmd_status ;;
+  dashboard) cmd_dashboard ;;
+  digest) cmd_digest ;;
+  cost)
+    [ "$NS_ARG1" = "add" ] || die "usage: ns cost add <repo> <lane> <run_id> <usd>"
+    cmd_cost_add
+    ;;
+  -h | --help | help) usage 0 ;;
+  --version) ns_version ;;
+  *) die "unknown command: $CMD (try: ns --help)" ;;
+esac

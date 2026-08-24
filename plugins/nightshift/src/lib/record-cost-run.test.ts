@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildCostRecord,
+  buildFallbackErrorRecord,
   buildManualCostRecord,
   runRecordCost,
   COSTS_FILENAME,
@@ -168,6 +169,94 @@ describe("runRecordCost", () => {
 });
 
 // ---------------------------------------------------------------------------
+// A7: fallbackErrorReason. A crashed headless run's envelope goes missing or
+// arrives unusable; without a fallback, `ns` had exactly two options — write no
+// cost row at all (the dashboard's verdict strip then reads "no run happened",
+// not "a run failed"), or let the shell synthesize one (decision logic §9.4
+// keeps out of `ns`). The opt-in keeps every pre-A7 caller's strict throw.
+// ---------------------------------------------------------------------------
+
+describe("buildFallbackErrorRecord", () => {
+  it("shape: usd/tokens 0, source cli-json, status error, terminal_reason set, meta passed through, and it validates", () => {
+    const record = buildFallbackErrorRecord(META, "envelope missing");
+    expect(record).toMatchObject({
+      run_id: META.runId,
+      lane: META.lane,
+      date: META.date,
+      ts: META.ts,
+      usd: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      source: "cli-json",
+      status: "error",
+      terminal_reason: "envelope missing",
+    });
+    // The whole point of a fallback row is that it is a LEGAL cost record, not a
+    // special case the rest of the pipeline (rollup, dashboard) has to know
+    // about. If this ever stops validating, the fallback becomes a second kind
+    // of malformed row instead of the uniform "error" row it is meant to be.
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+});
+
+describe("runRecordCost: fallbackErrorReason", () => {
+  it("unusable envelope + fallbackErrorReason set: appends ONE error row whose terminal_reason names both the caller's reason and the underlying failure", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: { is_error: "false" }, // is_error must be boolean -> buildCostRecord throws
+      fallbackErrorReason: "envelope unusable",
+    });
+    expect(record.status).toBe("error");
+    // Both halves must survive: the caller's own label (why record-cost was told
+    // to fall back) AND the actual parse/shape failure (what specifically broke).
+    // Losing either one turns every crashed-run row into the same opaque string.
+    expect(record.terminal_reason).toContain("envelope unusable");
+    expect(record.terminal_reason).toContain("is_error must be a boolean");
+    const lines = readJsonl<CostRecord>(join(dir, COSTS_FILENAME));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.status).toBe("error");
+  });
+
+  it("GOOD envelope + fallbackErrorReason set: records the real ok row, never masked by the fallback", () => {
+    // The fallback must be a last resort, not a shortcut that swallows a perfectly
+    // usable envelope. If this regressed, every successful run would file as an
+    // opaque error the moment a caller happened to pass the flag.
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(SUCCESS_ENVELOPE),
+      fallbackErrorReason: "should not be used",
+    });
+    expect(record.status).toBe("ok");
+    expect(record.usd).toBe(1.8421);
+    expect(record.terminal_reason).toBeUndefined();
+  });
+
+  it("unusable envelope WITHOUT fallbackErrorReason: still throws (pre-A7 strict path unweakened)", () => {
+    expect(() =>
+      runRecordCost({ metricsDir: dir, meta: META, envelope: { is_error: "false" } }),
+    ).toThrow(/is_error must be a boolean/);
+    expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
+  });
+
+  it("REGRESSION (restates the A2 rule): is_error:true + subtype:'success' still records status:'error' even with fallbackErrorReason set — subtype is never consulted, fallback or not", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(ERROR_ENVELOPE),
+      fallbackErrorReason: "should not be reached", // envelope IS usable; fallback must stay unused
+    });
+    expect(record.status).toBe("error");
+    expect(record.terminal_reason).toBe("api_error");
+    // Proof the fallback path was never entered: its reason string is absent.
+    expect(record.terminal_reason).not.toContain("should not be reached");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // A2 gate: round-trip on a NovuDesk copy including the cost join.
 // Copy the example pack, append a fresh cost line via runRecordCost, run the
 // real rollup, and assert the daily line carries cost fields joined from
@@ -228,5 +317,68 @@ describe("NovuDesk round-trip (cost join)", () => {
     expect(rollup.cost_usd_7d).toBeCloseTo(1.14 + 1.02, 4);
     expect(rollup.cost_usd_30d).toBeCloseTo(2.16, 4);
     expect(rollup.cost_usd_avg_per_run_30d).toBeCloseTo(1.08, 4);
+  });
+});
+
+describe("regression: an early-returning session under-reported its own cost by $4.10", () => {
+  // Measured, not hypothetical. A real run's session answered as soon as the
+  // Workflow tool handed back a task id; the envelope reported total_cost_usd
+  // 0.3633 while its own modelUsage summed to 4.4681813. The ledger whose entire
+  // job is making spend visible would have recorded the smaller number.
+  const meta = { runId: "R1", lane: "security" as const, date: "2026-08-23", ts: "2026-08-23T20:26:58.525Z" };
+
+  it("records the modelUsage sum when total_cost_usd is smaller", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 0.3633,
+        modelUsage: {
+          "claude-haiku-4-5-20251001": { costUSD: 0.33057804999999996 },
+          "claude-opus-5[1m]": { costUSD: 4.13760325 },
+        },
+      },
+      meta,
+    );
+    expect(rec.usd).toBeCloseTo(4.4681813, 6);
+  });
+
+  it("leaves a normal run alone — the two agree to floating-point noise", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 4.652074950000001,
+        modelUsage: { "claude-opus-5[1m]": { costUSD: 4.652074949999999 } },
+      },
+      meta,
+    );
+    expect(rec.usd).toBe(4.652074950000001);
+  });
+
+  it("only ever revises UPWARD: a larger total_cost_usd wins", () => {
+    // total_cost_usd stays the primary figure. This is a floor-raiser, not a
+    // replacement — it must never talk a reported cost down.
+    const rec = buildCostRecord(
+      { is_error: false, total_cost_usd: 9, modelUsage: { a: { costUSD: 1 } } },
+      meta,
+    );
+    expect(rec.usd).toBe(9);
+  });
+
+  it("tolerates a missing, empty, or malformed modelUsage", () => {
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5 }, meta).usd).toBe(1.5);
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5, modelUsage: {} }, meta).usd).toBe(1.5);
+    const junk = { is_error: false, total_cost_usd: 1.5, modelUsage: [1, 2] } as unknown;
+    expect(buildCostRecord(junk, meta).usd).toBe(1.5);
+    const junk2 = { is_error: false, total_cost_usd: 1.5, modelUsage: { a: null, b: { costUSD: "x" } } } as unknown;
+    expect(buildCostRecord(junk2, meta).usd).toBe(1.5);
+  });
+
+  it("still gates status on is_error alone — this changes the amount, never the verdict", () => {
+    const rec = buildCostRecord(
+      { is_error: true, total_cost_usd: 0, modelUsage: { a: { costUSD: 3 } } },
+      meta,
+    );
+    expect(rec.status).toBe("error");
+    expect(rec.usd).toBe(3);
   });
 });

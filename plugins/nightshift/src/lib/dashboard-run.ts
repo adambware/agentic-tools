@@ -23,6 +23,7 @@ import type {
 } from "./types.js";
 import { WEIGHT_MULTIPLIER } from "./types.js";
 import { computeStaleness, daysBetween, intervalDays, tsNewer } from "./staleness.js";
+import { runRowShortfall } from "./run-outcome.js";
 
 /* ---------- input model (assembled by dashboard-cli, or a test fixture) ---------- */
 
@@ -597,7 +598,27 @@ function repoRunLine(repo: RepoInput): string {
         latest && latest.status === "ok" && latest.run_id === latestRun.run_id
           ? ` · ${usdFmt(latest.usd)}`
           : ' · <span class="t-warn">cost not captured</span>';
-      parts.push(`${esc(lane.lane)} ok ${esc(fmtTs(latestRun.ts))}${costPart}`);
+      // THE ROW EXISTING IS NOT THE SAME CLAIM AS THE RUN SUCCEEDING. This
+      // branch used to print "<lane> ok <ts>" for any run row at all, plus the
+      // dollar amount whenever a matching cost row said status:"ok" — including
+      // for the run run-outcome.ts declares a FAILURE (a row that reviewed 0 of
+      // N selected, which makes `ns` exit non-zero and keep the run dir). The
+      // launcher reported failure, the living document reported success and a
+      // price, and the operator only ever reads the second one.
+      //
+      // The two failure paths cannot collide: the cost-error branch above fires
+      // only when the error cost row is NEWER than this run (or there is no run
+      // at all), so a lane never renders both. The cost part stays on either
+      // label deliberately — money spent on a run that reviewed nothing is the
+      // most useful number on the line.
+      const shortfall = runRowShortfall(latestRun);
+      if (shortfall !== undefined) {
+        parts.push(
+          `<span class="fail">${esc(lane.lane)} FAILED ${esc(fmtTs(latestRun.ts))} (${esc(shortfall)})</span>${costPart}`,
+        );
+      } else {
+        parts.push(`${esc(lane.lane)} ok ${esc(fmtTs(latestRun.ts))}${costPart}`);
+      }
     } else {
       parts.push(`${esc(lane.lane)}: never run`);
     }

@@ -1,6 +1,8 @@
 {
   "name": "agentic-tools",
-  "owner": { "name": "adambware" },
+  "owner": {
+    "name": "adambware"
+  },
   "metadata": {
     "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code"
   },
@@ -8,38 +10,67 @@
     {
       "name": "plan-critique",
       "source": "./plugins/plan-critique",
-      "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
-      "keywords": ["hooks", "code-review", "planning"]
+      "description": "Parallel critique system \u2014 spawns Opus + Codex reviewers for plan files",
+      "keywords": [
+        "hooks",
+        "code-review",
+        "planning"
+      ]
     },
     {
       "name": "ab-code-review",
       "source": "./plugins/ab-code-review",
-      "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
-      "keywords": ["skills", "code-review", "diff"]
+      "description": "Parallel code review \u2014 spawns Opus + Codex to review your branch diff against main",
+      "keywords": [
+        "skills",
+        "code-review",
+        "diff"
+      ]
     },
     {
       "name": "onboardme",
       "source": "./plugins/onboardme",
-      "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
-      "keywords": ["skills", "onboarding", "codebase"]
+      "description": "Onboarding one-pager \u2014 traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
+      "keywords": [
+        "skills",
+        "onboarding",
+        "codebase"
+      ]
     },
     {
       "name": "pr-test-reviewer",
       "source": "./plugins/pr-test-reviewer",
-      "description": "Test-focused PR review — grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
-      "keywords": ["skills", "testing", "code-review", "pr"]
+      "description": "Test-focused PR review \u2014 grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
+      "keywords": [
+        "skills",
+        "testing",
+        "code-review",
+        "pr"
+      ]
     },
     {
       "name": "test-plan-explorer",
       "source": "./plugins/test-plan-explorer",
-      "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
-      "keywords": ["skills", "testing", "tdd", "planning"]
+      "description": "Risk-prioritized test plan for under-tested code \u2014 decides what is worth testing and why, produces a reviewable plan before any tests are written",
+      "keywords": [
+        "skills",
+        "testing",
+        "tdd",
+        "planning"
+      ]
     },
     {
       "name": "nightshift",
       "source": "./plugins/nightshift",
-      "description": "Budget-aware, two-lane assurance loop — /nightshift:security (security review + mandatory refuter) and /nightshift:design (UX) — that keeps security surfaces and user flows continuously fresh, refuted, and visible. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
-      "keywords": ["skills", "agents", "security", "assurance", "ux", "coverage"]
+      "description": "Budget-aware, two-lane assurance loop \u2014 /nightshift:security (security review + mandatory refuter) and /nightshift:design (UX) \u2014 that keeps security surfaces and user flows continuously fresh, refuted, and visible. Local-first: one easy button (`ns run`), cost recorded per run, one self-contained HTML dashboard. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
+      "keywords": [
+        "skills",
+        "agents",
+        "security",
+        "assurance",
+        "ux",
+        "coverage"
+      ]
     }
   ]
 }

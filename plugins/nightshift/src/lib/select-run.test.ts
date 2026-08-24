@@ -6,6 +6,7 @@ import { runSelect } from "./select-run.js";
 import { readJson } from "./io.js";
 import type { GitRunner } from "./git.js";
 import type { Surface } from "./types.js";
+import { MODEL_BY_BAND } from "./dispatch.js";
 
 let dir: string;
 const noGit: GitRunner = { changedFilesSince: () => [] };
@@ -67,6 +68,14 @@ describe("runSelect", () => {
     const surfaces = readJson<Surface[]>(out)!;
     // B never reviewed => maximally stale => sorts above freshly-reviewed A
     expect(surfaces.map((s) => s.id)).toEqual(["B", "A"]);
+    // Every surface bin/select writes carries a dispatch pulled from the
+    // pinned per-band table (A4/T1: dispatch is always emitted, never decided
+    // downstream). A is band "critical", B is band "low".
+    for (const s of surfaces) {
+      expect(s.dispatch).toEqual(MODEL_BY_BAND[s.band]);
+    }
+    expect(surfaces.find((s) => s.id === "A")!.dispatch).toEqual(MODEL_BY_BAND.critical);
+    expect(surfaces.find((s) => s.id === "B")!.dispatch).toEqual(MODEL_BY_BAND.low);
   });
 
   it("honors change_flag from the injected git runner", () => {
@@ -83,6 +92,8 @@ describe("runSelect", () => {
     });
     const surfaces = readJson<Surface[]>(out)!;
     expect(surfaces.find((s) => s.id === "A")!.change_flag).toBe(1);
+    // change_flag=1 on a critical entry keeps it band "critical" -> same dispatch tier.
+    expect(surfaces.find((s) => s.id === "A")!.dispatch).toEqual(MODEL_BY_BAND.critical);
   });
 
   it("throws when the registry file is missing", () => {

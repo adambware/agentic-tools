@@ -7361,7 +7361,7 @@ var require_dist = __commonJS({
 });
 
 // src/bin/record.ts
-import { existsSync as existsSync4 } from "node:fs";
+import { existsSync as existsSync5 } from "node:fs";
 
 // src/lib/args.ts
 function parseArgs(argv) {
@@ -7405,9 +7405,10 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
+var tmpSeq = 0;
 function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);
@@ -7443,6 +7444,7 @@ function basename(path) {
 
 // src/lib/record-run.ts
 import { join as join3 } from "node:path";
+import { existsSync as existsSync4, readdirSync as readdirSync2, mkdirSync as mkdirSync3, openSync as openSync2, writeSync as writeSync2, closeSync as closeSync2 } from "node:fs";
 
 // src/lib/findings-store.ts
 import { existsSync as existsSync2, readdirSync } from "node:fs";
@@ -7495,60 +7497,285 @@ function updateRegistryState(path, updates) {
   atomicWrite(path, String(doc));
 }
 
+// src/lib/lock.ts
+import { writeFileSync, readFileSync as readFileSync3, unlinkSync, renameSync as renameSync2, linkSync, mkdirSync as mkdirSync2 } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname as dirname2 } from "node:path";
+var DEFAULT_STALE_MS = 30 * 6e4;
+var DEFAULT_TIMEOUT_MS = 6e4;
+var DEFAULT_POLL_MS = 200;
+var RECOVERY_MUTEX_STALE_MS = 5e3;
+function defaultIsPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function defaultSleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+var MISSING = { text: void 0, record: void 0 };
+function observeLock(path) {
+  let text;
+  try {
+    text = readFileSync3(path, "utf8");
+  } catch {
+    return MISSING;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.pid !== "number" || typeof parsed.nonce !== "string" || typeof parsed.acquired_at_ms !== "number") {
+      return { text, record: void 0 };
+    }
+    return { text, record: { pid: parsed.pid, nonce: parsed.nonce, acquired_at_ms: parsed.acquired_at_ms } };
+  } catch {
+    return { text, record: void 0 };
+  }
+}
+function sameBytes(a, b) {
+  return a.text !== void 0 && a.text === b.text;
+}
+function isStale(observed, nowMs, staleMs, isPidAlive) {
+  const record = observed.record;
+  if (record === void 0) return true;
+  if (!isPidAlive(record.pid)) return true;
+  return nowMs - record.acquired_at_ms >= staleMs;
+}
+function unlinkQuiet(path) {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+}
+function acquireLock(lockPath, opts = {}) {
+  const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? defaultSleep;
+  const pid = opts.pid ?? process.pid;
+  const isPidAlive = opts.isPidAlive ?? defaultIsPidAlive;
+  mkdirSync2(dirname2(lockPath), { recursive: true });
+  const nonce = randomBytes(12).toString("hex");
+  const tmpPath = `${lockPath}.${pid}.${nonce}.tmp`;
+  const deadline = now() + timeoutMs;
+  for (; ; ) {
+    const record = { pid, nonce, acquired_at_ms: now() };
+    let created = false;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(record));
+      try {
+        linkSync(tmpPath, lockPath);
+        created = true;
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+      }
+    } finally {
+      unlinkQuiet(tmpPath);
+    }
+    const observed = observeLock(lockPath);
+    if (observed.record?.nonce === nonce) return makeHandle(lockPath, nonce, pid);
+    if (created) continue;
+    if (isStale(observed, now(), staleMs, isPidAlive)) {
+      const acted = recoverStale(lockPath, tmpPath, record, observed, pid, nonce, now, opts.onRecoverySubstitute);
+      if (acted) continue;
+    }
+    if (now() >= deadline) {
+      const ownerPid = observeLock(lockPath).record?.pid ?? observed.record?.pid ?? "unknown";
+      throw new Error(`nightshift: timed out waiting for lock at ${lockPath} (held by pid ${ownerPid})`);
+    }
+    sleep(pollMs);
+  }
+}
+function recoverStale(lockPath, tmpPath, record, observed, pid, nonce, now, onSubstitute) {
+  const mutexPath = `${lockPath}.recovery`;
+  if (!tryAcquireRecoveryMutex(mutexPath, pid, nonce, now)) return false;
+  try {
+    if (!sameBytes(observeLock(lockPath), observed)) return true;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(record));
+      renameSync2(tmpPath, lockPath);
+      onSubstitute?.();
+    } finally {
+      unlinkQuiet(tmpPath);
+    }
+    return true;
+  } finally {
+    releaseRecoveryMutex(mutexPath, nonce);
+  }
+}
+function tryAcquireRecoveryMutex(mutexPath, pid, nonce, now) {
+  const tmp = `${mutexPath}.${pid}.${nonce}.tmp`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let linked = false;
+    try {
+      writeFileSync(tmp, JSON.stringify({ pid, nonce, acquired_at_ms: now() }));
+      try {
+        linkSync(tmp, mutexPath);
+        linked = true;
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+      }
+    } finally {
+      unlinkQuiet(tmp);
+    }
+    if (linked) return true;
+    const holder = observeLock(mutexPath).record;
+    const age = holder === void 0 ? Number.NaN : now() - holder.acquired_at_ms;
+    const fresh = holder !== void 0 && age >= 0 && age < RECOVERY_MUTEX_STALE_MS;
+    if (fresh) return false;
+    unlinkQuiet(mutexPath);
+  }
+  return false;
+}
+function releaseRecoveryMutex(mutexPath, nonce) {
+  const record = observeLock(mutexPath).record;
+  if (record === void 0 || record.nonce !== nonce) return;
+  unlinkQuiet(mutexPath);
+}
+function makeHandle(lockPath, nonce, pid) {
+  return {
+    release() {
+      const record = observeLock(lockPath).record;
+      if (record === void 0 || record.nonce !== nonce) return;
+      unlinkQuiet(lockPath);
+    },
+    assertHeld() {
+      const record = observeLock(lockPath).record;
+      if (record === void 0 || record.nonce !== nonce) {
+        const holder = record === void 0 ? "no one" : `pid ${record.pid}`;
+        throw new Error(
+          `nightshift: lock at ${lockPath} lost by pid ${pid} (now held by ${holder}); aborting before any further durable write`
+        );
+      }
+    }
+  };
+}
+
 // src/lib/record-run.ts
 function monthOf(date) {
   return date.slice(0, 7);
 }
+var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
+function assertValidDate(date, field) {
+  if (!DATE_RE.test(date)) {
+    throw new Error(`${field} "${date}" must match YYYY-MM-DD`);
+  }
+}
+function assertValidRunId(runId) {
+  if (runId === "." || runId === ".." || !RUN_ID_RE.test(runId)) {
+    throw new Error(`run_id "${runId}" must be filename-safe (matches ${RUN_ID_RE} and not "." or "..")`);
+  }
+}
+function findExistingRunId(metricsDir, runId) {
+  const runsDir = join3(metricsDir, "runs");
+  if (!existsSync4(runsDir)) return false;
+  const shards = readdirSync2(runsDir).filter((f) => f.endsWith(".jsonl"));
+  for (const shard of shards) {
+    const records = readJsonl(join3(runsDir, shard));
+    if (records.some((r) => r.run_id === runId)) return true;
+  }
+  return false;
+}
 function runRecord(opts) {
-  const month = monthOf(opts.date);
-  const findingsPath = join3(opts.metricsDir, "findings", `${month}.jsonl`);
-  const runsPath = join3(opts.metricsDir, "runs", `${month}.jsonl`);
-  let findingsAppended = 0;
-  let recurringBumped = 0;
-  for (const d of opts.decisions.decisions) {
-    if (d.decision === "suppressed") continue;
-    const first_seen = d.decision === "recurring" ? d.first_seen : opts.date;
-    const finding = {
-      ...d.finding,
-      first_seen,
-      last_seen: opts.date,
-      run_id: opts.runId
-    };
-    appendJsonl(findingsPath, finding);
-    if (d.decision === "new") findingsAppended++;
-    else recurringBumped++;
+  if (opts.decisions.run_id !== opts.runId) {
+    throw new Error(
+      `decisions.run_id "${opts.decisions.run_id}" does not match run-meta run_id "${opts.runId}"`
+    );
   }
-  const findings_created = opts.decisions.counts.confirmed + opts.decisions.counts.recurring + opts.rejectedTier1 + opts.rejectedTier2;
-  const runRecord2 = {
-    run_id: opts.runId,
-    ts: opts.ts,
-    date: opts.date,
-    lane: opts.lane,
-    pack_sha: opts.packSha,
-    selected: opts.selected,
-    reviewed: opts.reviewed,
-    findings_created,
-    confirmed: opts.decisions.counts.confirmed,
-    rejected_tier1: opts.rejectedTier1,
-    rejected_tier2: opts.rejectedTier2,
-    suppressed: opts.decisions.counts.suppressed,
-    usage_by_model: opts.usageByModel,
-    usage_spent: opts.usageSpent,
-    elapsed: opts.elapsed
-  };
-  appendJsonl(runsPath, runRecord2);
-  if (opts.registryPath && opts.reviewedIds.length > 0) {
-    const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
-    const updates = /* @__PURE__ */ new Map();
-    for (const id of opts.reviewedIds) {
-      updates.set(id, {
-        last_reviewed: opts.date,
-        status: openSurfaces.has(id) ? "open-findings" : "green"
-      });
+  if (opts.decisions.lane !== opts.lane) {
+    throw new Error(
+      `decisions.lane "${opts.decisions.lane}" does not match run-meta lane "${opts.lane}"`
+    );
+  }
+  if (opts.decisions.date !== opts.date) {
+    throw new Error(
+      `decisions.date "${opts.decisions.date}" does not match run-meta date "${opts.date}"`
+    );
+  }
+  assertValidDate(opts.date, "date");
+  assertValidDate(opts.decisions.date, "decisions.date");
+  assertValidRunId(opts.runId);
+  const lockPath = opts.lockPath ?? join3(opts.metricsDir, ".lock");
+  const lock = acquireLock(lockPath, opts.lock);
+  try {
+    if (findExistingRunId(opts.metricsDir, opts.runId)) {
+      throw new Error(`run_id already recorded: ${opts.runId}`);
     }
-    updateRegistryState(opts.registryPath, updates);
+    const claimsDir = join3(opts.metricsDir, "runs", ".claims");
+    mkdirSync3(claimsDir, { recursive: true });
+    const claimPath = join3(claimsDir, opts.runId);
+    try {
+      const fd = openSync2(claimPath, "wx");
+      try {
+        writeSync2(fd, JSON.stringify({ ts: opts.ts, date: opts.date, lane: opts.lane }) + "\n");
+      } finally {
+        closeSync2(fd);
+      }
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        throw new Error(`run_id already recorded (claim exists): ${opts.runId}`);
+      }
+      throw err;
+    }
+    lock.assertHeld();
+    const month = monthOf(opts.date);
+    const findingsPath = join3(opts.metricsDir, "findings", `${month}.jsonl`);
+    const runsPath = join3(opts.metricsDir, "runs", `${month}.jsonl`);
+    let findingsAppended = 0;
+    let recurringBumped = 0;
+    for (const d of opts.decisions.decisions) {
+      if (d.decision === "suppressed") continue;
+      const first_seen = d.decision === "recurring" ? d.first_seen : opts.date;
+      const finding = {
+        ...d.finding,
+        first_seen,
+        last_seen: opts.date,
+        run_id: opts.runId
+      };
+      appendJsonl(findingsPath, finding);
+      if (d.decision === "new") findingsAppended++;
+      else recurringBumped++;
+    }
+    const findings_created = opts.decisions.counts.confirmed + opts.decisions.counts.recurring + opts.rejectedTier1 + opts.rejectedTier2;
+    const runRecordRow = {
+      run_id: opts.runId,
+      ts: opts.ts,
+      date: opts.date,
+      lane: opts.lane,
+      pack_sha: opts.packSha,
+      selected: opts.selected,
+      reviewed: opts.reviewed,
+      findings_created,
+      confirmed: opts.decisions.counts.confirmed,
+      rejected_tier1: opts.rejectedTier1,
+      rejected_tier2: opts.rejectedTier2,
+      suppressed: opts.decisions.counts.suppressed,
+      usage_by_model: opts.usageByModel,
+      usage_spent: opts.usageSpent,
+      elapsed: opts.elapsed
+    };
+    appendJsonl(runsPath, runRecordRow);
+    if (opts.registryPath && opts.reviewedIds.length > 0) {
+      const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
+      const updates = /* @__PURE__ */ new Map();
+      for (const id of opts.reviewedIds) {
+        updates.set(id, {
+          last_reviewed: opts.date,
+          status: openSurfaces.has(id) ? "open-findings" : "green"
+        });
+      }
+      lock.assertHeld();
+      updateRegistryState(opts.registryPath, updates);
+    }
+    return { runRecord: runRecordRow, findingsAppended, recurringBumped };
+  } finally {
+    lock.release();
   }
-  return { runRecord: runRecord2, findingsAppended, recurringBumped };
 }
 
 // src/bin/record.ts
@@ -7557,8 +7784,8 @@ function main() {
   try {
     const decisionsPath = requireArg(args, "decisions");
     const runMetaPath = requireArg(args, "run-meta");
-    if (!existsSync4(decisionsPath)) throw new Error(`decisions not found: ${decisionsPath}`);
-    if (!existsSync4(runMetaPath)) throw new Error(`run-meta not found: ${runMetaPath}`);
+    if (!existsSync5(decisionsPath)) throw new Error(`decisions not found: ${decisionsPath}`);
+    if (!existsSync5(runMetaPath)) throw new Error(`run-meta not found: ${runMetaPath}`);
     const decisions = readJson(decisionsPath);
     const m = readJson(runMetaPath);
     const res = runRecord({

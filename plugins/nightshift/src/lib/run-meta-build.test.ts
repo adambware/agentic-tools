@@ -1103,3 +1103,201 @@ describe("cross-module findings_created identity (run-meta → record)", () => {
     expect(runs[0]!.findings_created).toBe(3);
   });
 });
+
+// ─── Tier-2 accounting (optional tier2Path) ──────────────────────────────────
+// rejected_tier2 is only real when a Tier-2 pass actually ran. Omitting
+// tier2Path must keep the historical value (0) byte-for-byte: the design lane
+// and a security run with nothing gated both take that path. When it IS passed,
+// the Tier-2 survivor set gets the SAME guards as Tier-1 — count, then canonical
+// dedupe_key identity with multiset semantics — because bin/record folds
+// rejected_tier2 into findings_created, the FPR denominator.
+
+describe("tier2 accounting", () => {
+  const t2key = (symptom: string) => ({
+    dedupe_key: { surface: "s", symptom, root_cause: "rc" },
+  });
+
+  function build(opts: {
+    proposed: unknown[];
+    survivors: unknown[];
+    tier2?: unknown[] | "missing";
+  }) {
+    const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
+    const proposedPath = writeJsonFile("candidates.proposed.json", opts.proposed);
+    const survivorsPath = writeJsonFile("candidates.json", opts.survivors);
+    const reviewedPath = writeReviewed(["s1"]);
+    const outPath = join(dir, "run.json");
+    let tier2Path: string | undefined;
+    if (opts.tier2 === "missing") {
+      tier2Path = join(dir, "no-such-candidates.tier2.json");
+    } else if (opts.tier2 !== undefined) {
+      tier2Path = writeJsonFile("candidates.tier2.json", opts.tier2);
+    }
+    return {
+      outPath,
+      run: () =>
+        buildRunMeta({
+          surfacesPath,
+          proposedPath,
+          survivorsPath,
+          tier2Path,
+          reviewedPath,
+          runId: RUN_ID,
+          lane: "security" as const,
+          packDir: dir,
+          outPath,
+          args: { today: FIXED_DATE },
+          nowTs: FIXED_TS,
+          gitRevParse: noGitRevParse,
+        }),
+    };
+  }
+
+  it("rejected_tier2 is 0 when tier2Path is omitted (no Tier-2 pass)", () => {
+    const { run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a")],
+    });
+    const { meta } = run();
+    expect(meta.rejected_tier2).toBe(0);
+    expect(meta.rejected_tier1).toBe(1);
+  });
+
+  it("rejected_tier2 = 1 when 2 of 3 Tier-1 survivors survive Tier-2", () => {
+    const { run } = build({
+      proposed: [t2key("a"), t2key("b"), t2key("c"), t2key("d")],
+      survivors: [t2key("a"), t2key("b"), t2key("c")],
+      tier2: [t2key("a"), t2key("c")],
+    });
+    const { meta } = run();
+    // Tier-1 accounting is untouched by the Tier-2 pass: 4 proposed - 3 survivors.
+    expect(meta.rejected_tier1).toBe(1);
+    expect(meta.rejected_tier2).toBe(1);
+  });
+
+  it("rejected_tier2 is 0 when Tier-2 rejects nothing", () => {
+    const { run } = build({
+      proposed: [t2key("a")],
+      survivors: [t2key("a")],
+      tier2: [t2key("a")],
+    });
+    expect(run().meta.rejected_tier2).toBe(0);
+  });
+
+  it("rejected_tier2 counts every survivor when Tier-2 rejects them all", () => {
+    const { run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a"), t2key("b")],
+      tier2: [],
+    });
+    expect(run().meta.rejected_tier2).toBe(2);
+  });
+
+  it("throws when tier2Path is passed but the file does not exist", () => {
+    const { outPath, run } = build({
+      proposed: [t2key("a")],
+      survivors: [t2key("a")],
+      tier2: "missing",
+    });
+    expect(run).toThrow(/tier2 candidates file not found/);
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws when candidates.tier2.json is not a JSON array", () => {
+    const surfacesPath = writeJsonFile("surfaces.json", [makeSurface("s1")]);
+    const proposedPath = writeJsonFile("candidates.proposed.json", [t2key("a")]);
+    const survivorsPath = writeJsonFile("candidates.json", [t2key("a")]);
+    const tier2Path = writeJsonFile("candidates.tier2.json", { nope: true });
+    const reviewedPath = writeReviewed(["s1"]);
+    const outPath = join(dir, "run.json");
+    expect(() =>
+      buildRunMeta({
+        surfacesPath,
+        proposedPath,
+        survivorsPath,
+        tier2Path,
+        reviewedPath,
+        runId: RUN_ID,
+        lane: "security",
+        packDir: dir,
+        outPath,
+        args: { today: FIXED_DATE },
+        nowTs: FIXED_TS,
+        gitRevParse: noGitRevParse,
+      }),
+    ).toThrow(/candidates\.tier2\.json must be a JSON array/);
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws rather than emit a negative rejected_tier2 when tier2 > survivors", () => {
+    const { outPath, run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a")],
+      tier2: [t2key("a"), t2key("b")],
+    });
+    expect(run).toThrow(
+      /tier-2 survivors \(2\) exceed tier-1 survivors \(1\).*never add them/,
+    );
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws when a tier-2 survivor's key matches no tier-1 survivor (substitution)", () => {
+    const { outPath, run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a"), t2key("b")],
+      tier2: [t2key("swapped-in")],
+    });
+    expect(run).toThrow(
+      /tier-2 survivor \[0\].*does not match any tier-1 survivor.*never substitute them/,
+    );
+    expect(existsSync(outPath)).toBe(false);
+  });
+
+  it("throws when a duplicated tier-2 key outnumbers its tier-1 occurrences", () => {
+    const { run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a"), t2key("b")],
+      tier2: [t2key("a"), t2key("a")],
+    });
+    expect(run).toThrow(/does not match any tier-1 survivor/);
+  });
+
+  it("allows duplicate tier-2 keys when tier-1 carried the same duplicates", () => {
+    const { run } = build({
+      proposed: [t2key("a"), t2key("a")],
+      survivors: [t2key("a"), t2key("a")],
+      tier2: [t2key("a"), t2key("a")],
+    });
+    expect(run().meta.rejected_tier2).toBe(0);
+  });
+
+  it("throws when a tier-2 entry lacks a well-formed dedupe_key", () => {
+    const { run } = build({
+      proposed: [t2key("a")],
+      survivors: [t2key("a")],
+      tier2: [{ dedupe_key: {} }],
+    });
+    expect(run).toThrow(/tier-2 survivor \[0\] has no well-formed dedupe_key/);
+  });
+
+  it("identity is the dedupe_key alone: a re-scored tier-2 survivor still matches", () => {
+    const { run } = build({
+      proposed: [{ ...t2key("a"), severity: "low" }],
+      survivors: [{ ...t2key("a"), severity: "low" }],
+      tier2: [{ ...t2key("a"), severity: "critical" }],
+    });
+    expect(run().meta.rejected_tier2).toBe(0);
+  });
+
+  it("writes rejected_tier2 into run.json, not just the returned meta", () => {
+    const { outPath, run } = build({
+      proposed: [t2key("a"), t2key("b")],
+      survivors: [t2key("a"), t2key("b")],
+      tier2: [t2key("a")],
+    });
+    run();
+    const written = readJson<RunMeta>(outPath)!;
+    expect(written.rejected_tier2).toBe(1);
+    expect(written.rejected_tier1).toBe(0);
+  });
+});

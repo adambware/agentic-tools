@@ -7411,9 +7411,10 @@ import {
   appendFileSync
 } from "node:fs";
 import { dirname, join } from "node:path";
+var tmpSeq = 0;
 function atomicWrite(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);
@@ -7476,6 +7477,9 @@ function buildRunMeta(opts) {
   if (!existsSync2(opts.reviewedPath)) {
     throw new Error(`reviewed file not found: ${opts.reviewedPath}`);
   }
+  if (opts.tier2Path !== void 0 && !existsSync2(opts.tier2Path)) {
+    throw new Error(`tier2 candidates file not found: ${opts.tier2Path}`);
+  }
   const surfaces = readJson(opts.surfacesPath);
   if (!Array.isArray(surfaces)) {
     throw new Error(`surfaces.json must be a JSON array: ${opts.surfacesPath}`);
@@ -7513,10 +7517,42 @@ function buildRunMeta(opts) {
     }
     proposedKeys.set(k, remaining - 1);
   });
+  let rejected_tier2 = 0;
+  if (opts.tier2Path !== void 0) {
+    const tier2 = readJson(opts.tier2Path);
+    if (!Array.isArray(tier2)) {
+      throw new Error(`candidates.tier2.json must be a JSON array: ${opts.tier2Path}`);
+    }
+    if (tier2.length > survivors.length) {
+      throw new Error(
+        `tier-2 survivors (${tier2.length}) exceed tier-1 survivors (${survivors.length}): the Tier-2 refuter must only remove candidates, never add them`
+      );
+    }
+    const survivorKeys = /* @__PURE__ */ new Map();
+    for (const s of survivors) {
+      const k = candidateKey(s);
+      if (k !== null) survivorKeys.set(k, (survivorKeys.get(k) ?? 0) + 1);
+    }
+    tier2.forEach((t, i) => {
+      const k = candidateKey(t);
+      if (k === null) {
+        throw new Error(
+          `tier-2 survivor [${i}] has no well-formed dedupe_key {surface, symptom, root_cause}`
+        );
+      }
+      const remaining = survivorKeys.get(k) ?? 0;
+      if (remaining === 0) {
+        throw new Error(
+          `tier-2 survivor [${i}] dedupe_key ${k} does not match any tier-1 survivor: the Tier-2 refuter must only remove candidates, never substitute them`
+        );
+      }
+      survivorKeys.set(k, remaining - 1);
+    });
+    rejected_tier2 = survivors.length - tier2.length;
+  }
   const proposed_count = proposed.length;
   const survivors_count = survivors.length;
   const rejected_tier1 = proposed_count - survivors_count;
-  const rejected_tier2 = 0;
   const reviewedRaw = readJson(opts.reviewedPath);
   if (!Array.isArray(reviewedRaw)) {
     throw new Error(`reviewed.json must be a JSON array of surface ids: ${opts.reviewedPath}`);
@@ -7571,6 +7607,11 @@ function main() {
       surfacesPath: requireArg(args, "surfaces"),
       proposedPath: requireArg(args, "proposed"),
       survivorsPath: requireArg(args, "survivors"),
+      // Optional: omitted -> rejected_tier2 = 0 (no Tier-2 pass this run).
+      // A bare `--tier2` parses to the string "true", which then fails the
+      // existsSync check with `tier2 candidates file not found: true` — loud,
+      // not a silent fall back to 0.
+      tier2Path: args.tier2,
       reviewedPath: requireArg(args, "reviewed"),
       runId: requireArg(args, "run-id"),
       lane,
@@ -7580,7 +7621,7 @@ function main() {
       nowTs: args.ts
     });
     process.stderr.write(
-      `run-meta: run_id=${res.meta.run_id} lane=${lane} selected=${res.meta.selected} reviewed=${res.meta.reviewed} rejected_tier1=${res.meta.rejected_tier1} -> ${requireArg(args, "out")}
+      `run-meta: run_id=${res.meta.run_id} lane=${lane} selected=${res.meta.selected} reviewed=${res.meta.reviewed} rejected_tier1=${res.meta.rejected_tier1} rejected_tier2=${res.meta.rejected_tier2} -> ${requireArg(args, "out")}
 `
     );
     process.exit(0);

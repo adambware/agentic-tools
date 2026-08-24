@@ -16,12 +16,18 @@ import {
 import { dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+// Monotonic per-process suffix so two atomicWrite calls in one process (even to
+// the same target) never share a temp path.
+let tmpSeq = 0;
+
 /** Atomic write: temp + fsync + rename. Never leaves a partial target file. */
 export function atomicWrite(path: string, data: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  // Same directory so rename(2) is atomic (same filesystem). pid-free name keeps
-  // builds reproducible; a stray temp from a crash is harmless and overwritten.
-  const tmp = join(dirname(path), `.${basename(path)}.tmp`);
+  // Same directory so rename(2) is atomic (same filesystem). The temp name is
+  // unique per call (pid + counter): a shared name lets two concurrent writers
+  // of the same target truncate each other's temp mid-write and then both
+  // rename, publishing a spliced file. A stray temp from a crash is harmless.
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${tmpSeq++}.tmp`);
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, data);

@@ -5,6 +5,12 @@
 // Tests spawn the already-built bin/run-meta.mjs (committed artifact).
 // bin/run-meta.ts is a pure argv shell over lib/run-meta-build (E4); the
 // only decision logic tested here is the requireArg exit-2 contract.
+//
+// A4/T2 note: --tier2 is an OPTIONAL passthrough, so its behavior (rejected_tier2
+// accounting, the tier-2 identity gate, the "file not found" abort) is covered in
+// run-meta-build.test.ts against the lib directly. Only the flag's exit-code
+// contract is asserted here — this file runs against the committed .mjs, which
+// carries --tier2 only after the next `npm run build`.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,6 +128,17 @@ describe("bin/run-meta argv exit-2 paths", () => {
     expect(stderr).toMatch(/lane=security/);
     const meta = JSON.parse(readFileSync(outPath, "utf8")) as { lane: string };
     expect(meta.lane).toBe("security");
+  });
+
+  it("exits 0 when the optional --tier2 flag points at a valid candidates file", () => {
+    // Both halves of the run's refuter accounting present. Asserts the exit
+    // contract only: the shell must accept the optional flag, not reject it as
+    // unknown. The rejected_tier2 value itself is asserted in the lib tests.
+    const tier2Path = join(dir, "candidates.tier2.json");
+    writeFileSync(tier2Path, JSON.stringify([]) + "\n");
+    const argv = fullArgs({ "--tier2": tier2Path });
+    const { code } = runCli(argv);
+    expect(code).toBe(0);
   });
 
   it("exits 2 via the catch path when --surfaces points at a nonexistent file", () => {

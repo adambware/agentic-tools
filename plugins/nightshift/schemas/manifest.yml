@@ -33,9 +33,25 @@ stack_adapter:    # object, REQUIRED. How the engine interacts with this project
                   #   test that demonstrates a violated invariant.
   build:          # string, REQUIRED. Build command, e.g. "npm run build".
   browser:        # object, REQUIRED for the Designer lane (optional if security-only).
-    tool:         # string. Browser automation tool, e.g. "playwright-mcp".
-    base_url:     # string. Environment to drive, e.g. "https://staging.example...".
-                  #   Use a staging/seeded environment, never production.
+    tool:         # string, REQUIRED for design. Browser automation tool, e.g.
+                  #   "playwright-mcp". Resolved by bin/lane-plan to the concrete
+                  #   ux-reviewer-<adapter> agent whose OWN frontmatter grants that
+                  #   adapter's tools; an adapter with no agent file is a refusal.
+    base_url:     # string, REQUIRED for design. The environment to drive.
+                  #   LOOPBACK ONLY (A7/T8) — "localhost", any "*.localhost" name,
+                  #   127.0.0.0/8, or ::1. e.g. "http://my-project.localhost:3000".
+                  #   The design preflight REFUSES anything else, staging included.
+    environment:  # string, REQUIRED for design. The EXPLICIT non-production
+                  #   assertion: one of local | dev | test. Absent is a refusal,
+                  #   never a default, and "staging"/"production" refuse by name.
+                  #   WHY a second field when base_url is already loopback-gated:
+                  #   the design reviewer SUBMITS FORMS AND CHANGES STATE as a
+                  #   seeded persona, and browser actions never touch the
+                  #   read-only filesystem guard. Loopback is a machine-checkable
+                  #   network fact that cannot answer "is this data real?" — a
+                  #   tunnel or a port-forward makes localhost remote. Only a
+                  #   human can make that claim, so the manifest must state it in
+                  #   a field whose only job is to state it.
 
 allowlist:        # list[string], REQUIRED. Tool permissions granted to reviewer agents.
                   # Least-privilege; mirrors Claude Code permission syntax. Example:

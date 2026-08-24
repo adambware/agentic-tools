@@ -61,7 +61,8 @@ Match every field name byte-exact to `${CLAUDE_PLUGIN_ROOT}/schemas/manifest.yml
 | `stack_adapter.test` | string, REQUIRED | detected test cmd (confirmed at Card 2). |
 | `stack_adapter.build` | string, REQUIRED | detected build cmd (confirmed at Card 2). |
 | `stack_adapter.browser.tool` | string | Design lane only — e.g. `playwright-mcp`. |
-| `stack_adapter.browser.base_url` | string | Design lane only — staging URL, never prod. |
+| `stack_adapter.browser.base_url` | string | Design lane only — **loopback** dev URL (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`). Anything else, staging included, is refused at preflight. |
+| `stack_adapter.browser.environment` | string | Design lane only — the explicit non-production assertion: `local` \| `dev` \| `test`. Absent is a refusal, never a default. |
 | `allowlist` | list[string], REQUIRED | `Read, Grep, Glob`, the scoped test cmd, `WebFetch`; browser/MCP tool only if Design. |
 | `linear.project` | string | Linear project key, or omit if "Skip / no Linear". |
 | `linear.labels.security` | string | e.g. `sec-review`. |
@@ -148,9 +149,15 @@ No PM option — the PM lane is dropped from core.
 ### Design-lane branch (only if Design selected at Card 1)
 
 Confirm/seed `fixtures/personas.example.yml` → `personas.yml`, and capture
-`stack_adapter.browser.base_url` (staging). If Design is NOT selected, auto-defer with
-ONE explanatory line (never a question): e.g. "Design lane deferred — set
-`cadences.design: off`; re-run onboard once you have a staging URL + seeded personas."
+`stack_adapter.browser.base_url` — a **LOOPBACK** dev-server URL (`localhost`,
+`*.localhost`, `127.0.0.0/8`, `::1`) — together with `stack_adapter.browser.environment`
+(`local` | `dev` | `test`). Both are hard preflight gates (A7/T8): a remote base_url is
+refused even when it is staging, and a missing `environment` is a refusal rather than a
+default. Do not offer `https://staging.my-project.example` as a value; it is kept in the
+template only as the counter-example the comment names. If Design is NOT selected,
+auto-defer with ONE explanatory line (never a question): e.g. "Design lane deferred —
+set `cadences.design: off`; re-run onboard once you have a local dev server + seeded
+personas."
 
 ### REVIEW card · proposed vectors (multiSelect)
 
@@ -191,8 +198,10 @@ Sentinels to grep for:
 - any `# REQUIRED` marker left in a value position
 - REQUIRED keys still empty: `project`, `repos[].path`, `repos[].stack`,
   `stack_adapter.test`, `stack_adapter.build`, `allowlist`, `pack_format`
-- if Design selected: `personas.yml` still equal to the `.example` content, or
-  `stack_adapter.browser.base_url` still the sentinel staging URL
+- if Design selected: `personas.yml` still equal to the `.example` content,
+  `stack_adapter.browser.base_url` still carrying a `my-project` sentinel host (or any
+  non-loopback host — the template's `https://staging.my-project.example` counter-example
+  is refused at preflight), or `stack_adapter.browser.environment` missing
 
 ---
 
