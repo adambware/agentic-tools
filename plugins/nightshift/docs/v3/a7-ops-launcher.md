@@ -133,12 +133,21 @@ sentinel behavior and how to pause it.
     (33 tests, real bins, stubbed `claude`): `--pack .nightshift` with cwd at the repo
     root (proven by the emitted registry being repo-root-relative), the guard armed
     launcher-side, one pinned `NIGHTSHIFT_TODAY` with a fresh run id per attempt.
-- [x] **T8 (P1)** — preflight — loopback + non-prod assertion **(A8 unblocked)**
+- [x] **T8 (P1)** — preflight — loopback + non-prod assertion + dev-server liveness **(A8 unblocked)**
   - Landed in `src/lib/lane-plan.ts` (`isLoopbackHost`, `checkLoopbackBaseUrl`,
     `checkNonProductionAssertion`) rather than in `ns`, so the gate is the same tested
     binary the launcher already had to call and `ns` stays a thin shell. `schemas/manifest.yml`
     gains `stack_adapter.browser.environment` (`local|dev|test`); the template and the
     novudesk example now ship a loopback `base_url`.
+  - The third refusal in this section's spec — "refuse when \u2026 the dev server is down" —
+    landed in `ns` rather than in `lane-plan.ts`: it is a network probe, and putting one
+    inside the pure, deterministic module every other gate lives in would poison the thing
+    that makes those gates testable. `probe_dev_server()` runs a bounded `curl`
+    (`--connect-timeout 3 --max-time 5`) against the plan's `base_url` after preflight
+    passes and BEFORE the run dir is minted or any model is invoked, so a refusal costs
+    nothing and leaves no scratch. ANY HTTP answer counts as up — a 404 is a running
+    server with no route, not a dead one — and a host with no `curl` logs that it could
+    not check and proceeds, because a missing tool is not evidence of a down server.
   - Two INDEPENDENT gates, both mandatory, neither a warn-and-proceed. base_url is parsed
     with WHATWG `URL`, so `http://localhost@prod.example/` is refused on its real hostname.
     `staging` and `production` are refused BY NAME. Verified: non-loopback refuses;
@@ -204,6 +213,14 @@ The fixes, in the order they matter:
    and dedupe — and `ns` gates on its exit code. A row with `reviewed: 0` against a
    non-zero `selected` is also a failure. This is the fix that made the other four
    survivable: without it every one of them was a green dashboard.
+   - **Amended after review:** the row alone was still too generous. record appends it
+     BEFORE its own registry rewrite, and the workflow chains `bin/rollup` after record,
+     so a failure in either left a row that read as completion — and `ns` deleted the run
+     dir and refreshed the dashboard to green while freshness stamps or the daily metrics
+     never landed. `bin/rollup` now takes `--run-id` and stamps a completion sentinel at
+     `metrics/runs/.complete/<run_id>` as its last act; `run-outcome` requires it. See
+     `src/lib/run-complete.ts`. Rollup is the only honest place for that stamp, because it
+     is the only step with nothing fallible after it.
 2. **Obligation 4: `--plugin-dir "$ENGINE"` on every session `ns` starts.** The bins came
    from `$ENGINE` but the agents and the PreToolUse guard came from whatever nightshift
    plugin was globally installed — here 2.1.0 against a 3.0 engine. Session-scoped;
@@ -353,6 +370,16 @@ homographs, percent-encoding and suffix confusion was run through the real
   shell-held lock needs a companion holder process that outlives each `bin/` invocation
   and survives an hours-long headless run — i.e. a new `bin/lock --hold` command with its
   own stale policy. Decide it with the first real concurrent run in front of you.
+  - **Sharpened by review:** the economic framing above undersells one case. `bin/dedupe`
+    READS the findings store to classify each candidate `new`/`recurring`/`suppressed`,
+    and it is a separate process that runs BEFORE `bin/record` takes the lock. Two
+    concurrent runs can therefore both read before either writes, both call the same
+    candidate `new`, and serialize only the appends. The findings list still folds
+    last-write-wins per `dedupe_key`, so what corrupts is the COUNTS — both runs stamp
+    `confirmed` and both feed the FPR denominator. That is a correctness gap, not just a
+    cosmetic one, and record's lock does not close it: it closes the write race, not the
+    read-classify-write one. Tracked in `TODOS.md`; still the same launcher-held-lock
+    decision, so still deferred here rather than half-fixed.
 - **Evidence prune is per-repo, never store-wide.** The retain set can only be built from
   a repo's OWN metrics dir; pruning all of `$OPS/evidence/` from one repo's findings
   would delete every other repo's evidence, silently, on the night a second clone
