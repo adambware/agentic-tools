@@ -7426,6 +7426,7 @@ function expandPath(raw, home, base) {
   if (isAbsolute(p)) return resolve(p);
   return resolve(base, p);
 }
+var SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function basenameOf(path) {
   const cleaned = path.replace(/[/\\]+$/, "");
   const cut = Math.max(cleaned.lastIndexOf("/"), cleaned.lastIndexOf("\\"));
@@ -7503,7 +7504,27 @@ function readOpsConfig(configPath, opts) {
       return { ok: false, reason: `${configPath}: repos[${i}] has no \`path:\`` };
     }
     const path = expandPath(raw.path, home, base);
-    const name = filled(raw.name) ? raw.name.trim() : basenameOf(path);
+    const rawName = raw.name;
+    if (rawName !== void 0 && rawName !== null && typeof rawName !== "string") {
+      return {
+        ok: false,
+        reason: `${configPath}: repos[${i}] \`name:\` must be a string, got ${typeof rawName} \u2014 quote it if you meant a literal like "2024"`
+      };
+    }
+    const name = typeof rawName === "string" ? rawName.trim() : basenameOf(path);
+    if (!SAFE_NAME.test(name)) {
+      const rule = `it must match ${SAFE_NAME.source} \u2014 ASCII letters, digits, dot, underscore and hyphen, starting with a letter or digit. No slashes, no "..", no leading dot, no spaces: the name becomes a directory ($OPS/evidence/<name>/, $OPS/digests/<name>.md, which evidence retention PRUNES) and a word in the "<repo> <lane>" pairs \`ns run --due\` reads back`;
+      if (typeof rawName === "string") {
+        return {
+          ok: false,
+          reason: `${configPath}: repos[${i}] has an unusable \`name:\` "${name}" \u2014 ${rule}`
+        };
+      }
+      return {
+        ok: false,
+        reason: `${configPath}: repos[${i}] has no \`name:\`, and the basename of its path (${path}) is "${name}", which is unusable as a display name \u2014 ${rule}. Add an explicit \`name:\` to this entry; renaming the checkout is not required`
+      };
+    }
     if (seenNames.has(name)) {
       return {
         ok: false,

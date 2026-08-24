@@ -7607,6 +7607,18 @@ function sha256File(path) {
 function retainEvidence(opts) {
   const { runDir, repoRoot, metricsDir, evidenceRoot, repoName } = opts;
   const repoEvidenceDir = join3(evidenceRoot, repoName);
+  let rootStat;
+  try {
+    rootStat = lstatSync2(repoEvidenceDir);
+  } catch {
+    rootStat = void 0;
+  }
+  if (rootStat !== void 0 && !rootStat.isDirectory()) {
+    const what = rootStat.isSymbolicLink() ? "a symlink" : "not a directory";
+    throw new Error(
+      `retainEvidence: refusing to touch ${repoEvidenceDir} \u2014 it exists and is ${what}, not a real directory. Copying through it or pruning through it could write or delete files outside the evidence store. Remove or fix it by hand before the next run.`
+    );
+  }
   const copied = [];
   const skipped = [];
   for (const recorded of openEvidenceValues(metricsDir)) {

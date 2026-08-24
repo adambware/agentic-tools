@@ -305,6 +305,74 @@ describe("retainEvidence: symlink safety", () => {
   });
 });
 
+describe("retainEvidence: SECURITY — refuses a symlinked repo evidence ROOT", () => {
+  it("$OPS/evidence/<repo> is a symlink to a directory elsewhere: throws, and nothing under the target is touched", () => {
+    // The scenario the module header's ROOT GUARD comment names: a stale or
+    // planted $OPS/evidence/<repo> link. Without the guard, mkdirSync/
+    // copyFileSync would write THROUGH the link, and the trailing lifecycle
+    // prune() — whose symlink defense only makes symlink CHILDREN leaves, and
+    // never validates the root it's handed — would existsSync/readdirSync
+    // straight through it and delete every non-retained file at the link's
+    // TARGET. The outside file below stands in for exactly that: it must
+    // survive, and the call must refuse loudly instead of silently no-oping.
+    const l = makeLayout();
+    const outsideTarget = join(dir, "elsewhere-evidence-store");
+    mkdirSync(outsideTarget, { recursive: true });
+    const outsideFile = join(outsideTarget, "unrelated-and-must-survive.png");
+    writeFileSync(outsideFile, "bytes that must not be deleted");
+    mkdirSync(l.evidenceRoot, { recursive: true });
+    symlinkSync(outsideTarget, l.repoEvidenceDir);
+
+    const newContent = "brand new evidence for a still-open finding";
+    writeRunFile(l.runDir, "surfaces/s1/evidence/new.png", newContent);
+    writeFinding(
+      l.metricsDir,
+      baseFinding({ dedupe_key: { surface: "s1", symptom: "x", root_cause: "y" }, evidence: "surfaces/s1/evidence/new.png" }),
+    );
+
+    expect(() =>
+      retainEvidence({
+        runDir: l.runDir,
+        repoRoot: l.repoRoot,
+        metricsDir: l.metricsDir,
+        evidenceRoot: l.evidenceRoot,
+        repoName: l.repoName,
+      }),
+    ).toThrow(/symlink/);
+
+    // Nothing at the link's target was deleted, and nothing was copied through it.
+    expect(existsSync(outsideFile)).toBe(true);
+    expect(readdirSync(outsideTarget)).toEqual(["unrelated-and-must-survive.png"]);
+  });
+});
+
+describe("retainEvidence: SECURITY — refuses a repo evidence ROOT that is a plain file", () => {
+  it("$OPS/evidence/<repo> exists as a regular file (not a directory): throws rather than mkdir/copy through it", () => {
+    const l = makeLayout();
+    mkdirSync(l.evidenceRoot, { recursive: true });
+    writeFileSync(l.repoEvidenceDir, "not a directory");
+
+    writeRunFile(l.runDir, "surfaces/s1/evidence/new.png", "content");
+    writeFinding(
+      l.metricsDir,
+      baseFinding({ dedupe_key: { surface: "s1", symptom: "x", root_cause: "y" }, evidence: "surfaces/s1/evidence/new.png" }),
+    );
+
+    expect(() =>
+      retainEvidence({
+        runDir: l.runDir,
+        repoRoot: l.repoRoot,
+        metricsDir: l.metricsDir,
+        evidenceRoot: l.evidenceRoot,
+        repoName: l.repoName,
+      }),
+    ).toThrow(/not a directory/);
+
+    // The file was left exactly as it was — no truncation, no directory swap.
+    expect(readFileSync(l.repoEvidenceDir, "utf8")).toBe("not a directory");
+  });
+});
+
 describe("retainEvidence: missing file", () => {
   it("a recorded value naming a file that does not exist is reported in `skipped`, not thrown", () => {
     const l = makeLayout();

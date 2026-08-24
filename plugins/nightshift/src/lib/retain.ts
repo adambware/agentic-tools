@@ -135,10 +135,53 @@ function sha256File(path: string): string {
  * directory the dashboard publishes links to". Symlinks are refused for the
  * same reason — the link may resolve inside the run dir while its target does
  * not. Everything refused is reported in `skipped`, never dropped in silence.
+ *
+ * The evidence ROOT gets the same suspicion before any of that: if
+ * $OPS/evidence/<repo> already exists and is a symlink or a plain file rather
+ * than a real directory, this throws instead of copying or pruning through
+ * it — see the guard at the top of the function body for why.
  */
 export function retainEvidence(opts: RetainEvidenceOpts): RetainEvidenceResult {
   const { runDir, repoRoot, metricsDir, evidenceRoot, repoName } = opts;
   const repoEvidenceDir = join(evidenceRoot, repoName);
+
+  // ROOT GUARD, before any copy or prune touches repoEvidenceDir. The per-file
+  // symlink checks below (and prune.ts's lstat-not-stat walk) only defend
+  // symlink CHILDREN — a symlink or plain file sitting at $OPS/evidence/<repo>
+  // itself is never examined by either. mkdirSync({recursive:true}) FOLLOWS an
+  // existing symlink and no-ops instead of erroring, copyFileSync then writes
+  // through it, and prune()'s existsSync/readdirSync do the same — so a stale
+  // link (last night's repo rename, a bad manual mv) or a planted one turns
+  // ordinary retention into "copy evidence into, and lifecycle-delete every
+  // non-retained file under, wherever that link points". lstat, never
+  // stat/existsSync, so a dangling symlink (target already gone) is still
+  // caught rather than read as "doesn't exist yet". A repo evidence dir that
+  // doesn't exist at all is the normal first-run case (mkdirSync creates it
+  // below); a real directory is the normal steady-state case; anything else
+  // is refused. Refusing must be LOUD, not a silent no-op that leaves the
+  // caller believing evidence was retained when it wasn't -- so this throws,
+  // same as openEvidenceRetainSet's MISCONFIG GUARD in prune.ts. bin/retain.ts
+  // already catches thrown errors here, prints them to stderr, and sets exit
+  // 2; bin/ns's finalize() (step 2) already treats a non-zero retain.mjs exit
+  // as non-fatal and logs "retention reported a problem ... continuing to the
+  // dashboard" — so throwing costs nothing on the "must not abort the
+  // finalizer" contract while making the refusal impossible to miss in the
+  // run log, unlike folding it into `skipped` (which is scoped to individual
+  // recorded evidence values, not the whole store).
+  let rootStat: ReturnType<typeof lstatSync> | undefined;
+  try {
+    rootStat = lstatSync(repoEvidenceDir);
+  } catch {
+    rootStat = undefined; // ENOENT — nothing there yet, the normal first-run case
+  }
+  if (rootStat !== undefined && !rootStat.isDirectory()) {
+    const what = rootStat.isSymbolicLink() ? "a symlink" : "not a directory";
+    throw new Error(
+      `retainEvidence: refusing to touch ${repoEvidenceDir} — it exists and is ${what}, not a real directory. ` +
+        `Copying through it or pruning through it could write or delete files outside the evidence store. ` +
+        `Remove or fix it by hand before the next run.`,
+    );
+  }
 
   const copied: CopiedEvidence[] = [];
   const skipped: { recorded: string; reason: string }[] = [];

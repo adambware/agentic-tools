@@ -26,6 +26,12 @@ repos:            # list[object], REQUIRED, non-empty. One entry per onboarded r
     name:         # string, optional. Display name; defaults to the path basename.
                   #   Two repos may not resolve to the same name — evidence and
                   #   digests are stored per name, so one would overwrite the other.
+                  #   Must be a single safe token: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.
+                  #   No slashes, no "..", no leading dot, no spaces — the name
+                  #   becomes a directory ($OPS/evidence/<name>/, which evidence
+                  #   retention PRUNES) and a word in the "<repo> <lane>" pairs
+                  #   `ns run --due` reads back. A checkout whose BASENAME breaks
+                  #   the rule is refused too; give that entry an explicit name.
 
 dashboard:        # object, optional.
   out:            # string, default "dashboard.html". Written inside the ops home.

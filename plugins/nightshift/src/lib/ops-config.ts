@@ -33,7 +33,11 @@ export const LANES: readonly Lane[] = ["security", "design"];
 export const DEFAULT_MAX_CONCURRENT_REVIEWERS = 3;
 
 export interface OpsRepo {
-  /** Display name — explicit `name`, else the path's basename. Never "undefined". */
+  /**
+   * Display name — explicit `name`, else the path's basename. Never "undefined",
+   * never empty, and always a single SAFE_NAME token: it is used unquoted as a
+   * path segment and as a word in a space-delimited line protocol.
+   */
   name: string;
   /** Absolute, tilde-expanded repo root. */
   path: string;
@@ -91,6 +95,29 @@ export function expandPath(raw: string, home: string, base: string): string {
   if (isAbsolute(p)) return resolve(p);
   return resolve(base, p);
 }
+
+/**
+ * The only shape a repo display name may take: ASCII letters and digits, plus
+ * `.`, `_` and `-` after the first character.
+ *
+ * WHY AN ALLOWLIST AND NOT A BLOCKLIST. The display name is never quoted by
+ * anything downstream, and it is spliced into two protocols that both take
+ * whatever bytes it holds. (1) It is a PATH SEGMENT: `$OPS/evidence/<name>/`
+ * and `$OPS/digests/<name>.md`. retain.ts joins the evidence root with the name
+ * and then lifecycle-PRUNES the directory that comes out, so a name of
+ * "../logs" is not merely evidence filed in the wrong place — it is a delete of
+ * files that belong to something else entirely. Barring `/` and `\`, and
+ * barring a leading dot, makes "..", "." and every escaping spelling of them
+ * unrepresentable rather than merely unlikely. (2) It is a WORD IN A
+ * SPACE-DELIMITED LINE PROTOCOL: `bin/due.mjs --format sh` emits "<repo>
+ * <lane>" lines that `ns` reads back with `while IFS=' ' read -r _r _l`, so a
+ * name like "My App" splits into the pair ("My", "App") and the nightly sweep
+ * runs a repo that does not exist — quietly, still exiting 0. Barring
+ * whitespace keeps the name one word there, and the allowlist incidentally
+ * bars the shell metacharacters ($, `, *, quotes, ~) that the same unquoted
+ * value would otherwise hand to the shell that interpolates it.
+ */
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** Basename of a path with trailing slashes stripped; never empty. */
 function basenameOf(path: string): string {
@@ -194,7 +221,47 @@ export function readOpsConfig(
       return { ok: false, reason: `${configPath}: repos[${i}] has no \`path:\`` };
     }
     const path = expandPath(raw.path, home, base);
-    const name = filled(raw.name) ? raw.name.trim() : basenameOf(path);
+    // An ABSENT `name:` means "use the path's basename" — the documented
+    // default, and the same undefined/null-is-not-set rule the numeric fields
+    // use. A `name:` that is present but blank, or present but not a string,
+    // is a typo the operator wants to hear about; treating it as a second way
+    // of spelling the default is how a config ends up naming a repo something
+    // its author never wrote.
+    const rawName = raw.name;
+    if (rawName !== undefined && rawName !== null && typeof rawName !== "string") {
+      return {
+        ok: false,
+        reason:
+          `${configPath}: repos[${i}] \`name:\` must be a string, got ${typeof rawName} — ` +
+          `quote it if you meant a literal like "2024"`,
+      };
+    }
+    const name = typeof rawName === "string" ? rawName.trim() : basenameOf(path);
+    // The display name is a path segment AND a word in a space-delimited line
+    // protocol (see SAFE_NAME) — refuse anything else here, at read time,
+    // rather than sanitizing it into something the operator did not ask for
+    // and will not recognize in `$OPS/evidence/`.
+    if (!SAFE_NAME.test(name)) {
+      const rule =
+        `it must match ${SAFE_NAME.source} — ASCII letters, digits, dot, underscore and ` +
+        `hyphen, starting with a letter or digit. No slashes, no "..", no leading dot, ` +
+        `no spaces: the name becomes a directory ($OPS/evidence/<name>/, ` +
+        `$OPS/digests/<name>.md, which evidence retention PRUNES) and a word in the ` +
+        `"<repo> <lane>" pairs \`ns run --due\` reads back`;
+      if (typeof rawName === "string") {
+        return {
+          ok: false,
+          reason: `${configPath}: repos[${i}] has an unusable \`name:\` "${name}" — ${rule}`,
+        };
+      }
+      return {
+        ok: false,
+        reason:
+          `${configPath}: repos[${i}] has no \`name:\`, and the basename of its path ` +
+          `(${path}) is "${name}", which is unusable as a display name — ${rule}. ` +
+          `Add an explicit \`name:\` to this entry; renaming the checkout is not required`,
+      };
+    }
     // Two repos sharing a display name would collide in $OPS/evidence/<repo>/
     // and in $OPS/digests/<repo>.md — one would silently overwrite the other.
     if (seenNames.has(name)) {

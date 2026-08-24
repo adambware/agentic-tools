@@ -162,17 +162,16 @@ describe("readOpsConfig: display name fallback", () => {
     expect(res.config.repos[0]!.name).not.toBe("");
   });
 
-  it("falls back to the basename when name is a blank string, not the literal blank", () => {
+  it("REFUSES a blank explicit name rather than quietly falling back to the basename", () => {
     // A repo whose display name comes out "" or "undefined" would corrupt
-    // $OPS/evidence/<name>/ paths — this must never happen, even from a
-    // config that "sort of" set a name.
+    // $OPS/evidence/<name>/ paths. The fix is not to paper over it with the
+    // basename: `name: "   "` is a typo, and an operator who is told nothing
+    // will keep looking for evidence under the name they thought they set.
     write(`repos:\n  - path: ${dir}/repos/novudesk\n    name: "   "\n`);
     const res = readOpsConfig(configPath, { home: HOME });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(res.config.repos[0]!.name).toBe("novudesk");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/unusable `name:`/);
   });
-
   it("sanity — an explicit name is honored over the basename (fallback isn't hardcoded)", () => {
     write(`repos:\n  - path: ${dir}/repos/novudesk\n    name: custom-name\n`);
     const res = readOpsConfig(configPath, { home: HOME });
@@ -187,6 +186,90 @@ describe("readOpsConfig: display name fallback", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.config.repos[0]!.name).toBe("novudesk");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Display-name safety. The name is spliced UNQUOTED into two protocols:
+// $OPS/evidence/<name>/ + $OPS/digests/<name>.md (path segments — and
+// retain.ts lifecycle-PRUNES the evidence dir it builds, so an escaping name
+// DELETES unrelated files), and the "<repo> <lane>" lines `bin/due.mjs
+// --format sh` emits for `ns` to read back with `IFS=' ' read -r _r _l` (so a
+// space silently runs the wrong pair, or none, while still exiting 0).
+// Refusal, not sanitizing: a silently rewritten name sends the operator
+// looking for evidence under a directory that does not exist.
+// ---------------------------------------------------------------------------
+
+describe("readOpsConfig: display-name safety", () => {
+  it.each([
+    ["../logs", "escapes $OPS/evidence/ into a sibling ops directory"],
+    ["../../archive", "escapes the ops home entirely"],
+    ["a/b", "a forward slash makes it two path segments"],
+    ["..", "the parent directory itself"],
+    [".", "the evidence root itself — prune would target the whole tree"],
+    [".hidden", "a leading dot"],
+    ["My App", "a space splits the --due line protocol"],
+    ["tab\there", "any whitespace, not just the space character"],
+    ["", "empty after trim"],
+    ["   ", "whitespace-only after trim"],
+    ["$HOME", "a shell metacharacter in a value nothing quotes"],
+    ["a*b", "a glob character"],
+  ])("refuses the explicit name %j (%s)", (bad) => {
+    write(`repos:\n  - path: ${dir}/repos/novudesk\n    name: "${bad}"\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/unusable `name:`/);
+      // The reason has to teach the rule, not just say "no".
+      expect(res.reason).toMatch(/No slashes, no "\.\.", no leading dot, no spaces/);
+    }
+  });
+
+  it("applies the SAME rule to a name DERIVED from the path basename", () => {
+    // The `--due` corruption does not care whether the operator typed the
+    // name or the filesystem did: a checkout at ~/code/My App produces the
+    // same broken "<repo> <lane>" line either way.
+    write(`repos:\n  - path: "${dir}/repos/My App"\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/has no `name:`/);
+      expect(res.reason).toContain('"My App"');
+    }
+  });
+
+  it("tells the operator to add `name:` when the BASENAME is the unusable part", () => {
+    // They did not write this name — the actionable instruction is "add an
+    // explicit name:", not "fix your name:", and definitely not "rename the
+    // directory you have been working in for two years".
+    write(`repos:\n  - path: "${dir}/repos/.dotted"\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toMatch(/Add an explicit `name:`/);
+      expect(res.reason).not.toMatch(/unusable `name:` "/);
+    }
+  });
+
+  it("refuses a `name:` that is not a string at all", () => {
+    // YAML will happily hand back a number here; coercing it silently is the
+    // same class of mistake as sanitizing a bad string.
+    write(`repos:\n  - path: ${dir}/repos/novudesk\n    name: [a, b]\n`);
+    const res = readOpsConfig(configPath, { home: HOME });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/`name:` must be a string, got object/);
+  });
+
+  it("accepts hyphens, underscores and interior dots — ordinary repo names still load", () => {
+    // Sanity that the safe-name rule is not so tight it rejects the names
+    // people actually give checkouts. If this ever fails, the rule got
+    // narrower than the ecosystem it has to describe.
+    for (const good of ["novudesk", "my-project", "my_project", "app.v2", "repo2", "A1"]) {
+      write(`repos:\n  - path: ${dir}/repos/x\n    name: ${good}\n`);
+      const res = readOpsConfig(configPath, { home: HOME });
+      expect(res.ok, `expected "${good}" to be accepted`).toBe(true);
+      if (res.ok) expect(res.config.repos[0]!.name).toBe(good);
+    }
   });
 });
 
