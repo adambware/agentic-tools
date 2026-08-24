@@ -7462,6 +7462,31 @@ function parseNonNegativeInt(raw, fallback) {
   if (!Number.isInteger(n) || n < 0) return void 0;
   return n;
 }
+var DASHBOARD_OUT_DEFAULT = "dashboard.html";
+function validateDashboardOut(raw, configPath) {
+  if (!filled(raw)) return { ok: true, value: DASHBOARD_OUT_DEFAULT };
+  const out = raw.trim();
+  if (isAbsolute(out)) {
+    return {
+      ok: false,
+      reason: `${configPath}: dashboard.out "${out}" is an absolute path \u2014 bin/ns concatenates it onto $OPS_HOME rather than resolving it, so this would not write where you asked; it names a file inside the ops home, and must be a plain filename`
+    };
+  }
+  const segments = out.split(/[\\/]+/);
+  if (segments.includes("..")) {
+    return {
+      ok: false,
+      reason: `${configPath}: dashboard.out "${out}" contains a ".." segment \u2014 bin/ns concatenates it onto $OPS_HOME and atomically overwrites whatever path results on every finalization, so this would silently clobber a file outside the ops home (an operator's runbook.md, for example) instead of writing the dashboard`
+    };
+  }
+  if (segments.length > 1) {
+    return {
+      ok: false,
+      reason: `${configPath}: dashboard.out "${out}" has more than one path segment \u2014 bin/ns writes it directly under $OPS_HOME and never creates intermediate directories, so a subpath would fail at write time with a shell error; use a plain filename`
+    };
+  }
+  return { ok: true, value: out };
+}
 function readOpsConfig(configPath, opts) {
   const home = opts?.home ?? process.env.HOME ?? "";
   if (!existsSync2(configPath)) {
@@ -7494,7 +7519,7 @@ function readOpsConfig(configPath, opts) {
   }
   const base = resolve(configPath, "..");
   const repos = [];
-  const seenNames = /* @__PURE__ */ new Set();
+  const seenNames = /* @__PURE__ */ new Map();
   for (let i = 0; i < rawRepos.length; i++) {
     const raw = rawRepos[i];
     if (!isObj(raw)) {
@@ -7525,13 +7550,15 @@ function readOpsConfig(configPath, opts) {
         reason: `${configPath}: repos[${i}] has no \`name:\`, and the basename of its path (${path}) is "${name}", which is unusable as a display name \u2014 ${rule}. Add an explicit \`name:\` to this entry; renaming the checkout is not required`
       };
     }
-    if (seenNames.has(name)) {
+    const nameKey = name.toLowerCase();
+    const priorSpelling = seenNames.get(nameKey);
+    if (priorSpelling !== void 0) {
       return {
         ok: false,
-        reason: `${configPath}: two repos resolve to the display name "${name}" \u2014 evidence and digests are stored per name, so one would overwrite the other; give one an explicit \`name:\``
+        reason: `${configPath}: two repos resolve to the display name "${name}" \u2014 evidence and digests are stored per name, so one would overwrite the other; give one an explicit \`name:\`` + (priorSpelling !== name ? ` (case-only collision with the earlier "${priorSpelling}" \u2014 names collide case-insensitively here because they become paths on this machine's case-insensitive filesystem)` : "")
       };
     }
-    seenNames.add(name);
+    seenNames.set(nameKey, name);
     repos.push({ name, path, enabled: parseBool(raw.enabled, true), lanes: parseLanes(raw.lanes) });
   }
   const maxConcurrent = parsePositiveInt(doc.max_concurrent_reviewers, DEFAULT_MAX_CONCURRENT_REVIEWERS);
@@ -7543,6 +7570,8 @@ function readOpsConfig(configPath, opts) {
   }
   const dashboardRaw = isObj(doc.dashboard) ? doc.dashboard : {};
   const sentinelRaw = isObj(doc.sentinel) ? doc.sentinel : {};
+  const dashboardOut = validateDashboardOut(dashboardRaw.out, configPath);
+  if (!dashboardOut.ok) return dashboardOut;
   const hour = parseNonNegativeInt(sentinelRaw.hour, 7);
   const cooldown = parseNonNegativeInt(sentinelRaw.cooldown_days, 2);
   const weeklyFloor = parsePositiveInt(sentinelRaw.weekly_floor_days, 7);
@@ -7560,7 +7589,7 @@ function readOpsConfig(configPath, opts) {
     config: {
       repos,
       dashboard: {
-        out: filled(dashboardRaw.out) ? dashboardRaw.out.trim() : "dashboard.html",
+        out: dashboardOut.value,
         open_after_run: parseBool(dashboardRaw.open_after_run, true)
       },
       sentinel: {

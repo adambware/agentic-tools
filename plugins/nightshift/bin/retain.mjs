@@ -7458,6 +7458,13 @@ import { join as join2, relative, sep } from "node:path";
 var MS_PER_DAY = 24 * 60 * 60 * 1e3;
 function prune(dir, policy, opts) {
   if (!existsSync3(dir)) return { removed: [], kept: [] };
+  const rootStat = lstatSync(dir);
+  if (!rootStat.isDirectory()) {
+    const what = rootStat.isSymbolicLink() ? "a symlink" : "not a directory";
+    throw new Error(
+      `prune: refusing to walk ${dir} \u2014 it is ${what}, not a real directory. Deleting through it would follow the link and remove files outside the intended tree.`
+    );
+  }
   if (policy.kind === "lifecycle") return pruneLifecycle(dir, policy.retain);
   const now = opts?.now ?? Date.now;
   const entries = readdirSync2(dir);

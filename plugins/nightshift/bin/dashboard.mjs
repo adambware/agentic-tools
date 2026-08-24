@@ -8988,7 +8988,8 @@ function scanOrphanRunDirs(repos, now) {
   const out = [];
   for (const { cfg, input } of repos) {
     if (!input.pack_present) continue;
-    const runDir = join5(cfg.path, ".nightshift", ".run");
+    if (!input.path) continue;
+    const runDir = join5(input.path, ".nightshift", ".run");
     if (!existsSync4(runDir)) continue;
     for (const d of readdirSync2(runDir).sort()) {
       const full = join5(runDir, d);
