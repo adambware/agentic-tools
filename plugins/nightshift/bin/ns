@@ -88,6 +88,29 @@ info() {
   printf 'ns: %s\n' "$*" >&2
 }
 
+# ── private temp files ──────────────────────────────────────────────────────
+# Every scratch file this script writes is created HERE, by mktemp, and the
+# result is left in $NS_TMP for the caller to copy into its own variable.
+#
+# The old spelling was "${TMPDIR:-/tmp}/ns-<what>.$$.sh" — fully predictable,
+# because $$ is just the pid. On a shared /tmp any other local user can pre-
+# create that exact name as a SYMLINK, and the `>` redirect then follows it: at
+# best `ns` truncates a file the operator owns, and for the four fragments this
+# script SOURCES (the ops-target emissions in run_lane, dashboard, digest and
+# cost add) it is arbitrary shell executed as the operator, on a nightly
+# unattended sweep, with the guard armed. mktemp will not open a name that
+# already exists and creates the file 0600, which closes both halves.
+#
+# A missing or failing mktemp is a broken machine, and it DIES rather than
+# falling back to a guessable name — a fallback would be the same hole under a
+# different spelling, reached exactly when nobody is watching. It sets a global
+# instead of printing, because `die` inside a command substitution would only
+# exit the subshell.
+ns_mktemp() {
+  NS_TMP=$(mktemp "${TMPDIR:-/tmp}/ns-$1.XXXXXXXX" 2>/dev/null) || NS_TMP=""
+  [ -n "$NS_TMP" ] || die "cannot create a private temp file in ${TMPDIR:-/tmp} (mktemp failed)"
+}
+
 # ── locations ───────────────────────────────────────────────────────────────
 # The DOCUMENTED install is a SYMLINK onto PATH (`ln -s <checkout>/plugins/
 # nightshift/bin/ns ~/bin/ns`) — never a copy, because `ns` must stay versioned
@@ -132,6 +155,18 @@ ALLOWED_TOOLS=${NIGHTSHIFT_ALLOWED_TOOLS:-Workflow,TaskOutput,Read,Glob,Grep,Bas
 # read, kept here so the shell never has to parse JSON itself.
 json_field() {
   node -e 'const f=require("node:fs");const d=JSON.parse(f.readFileSync(process.argv[1],"utf8"));const v=d[process.argv[2]];if(typeof v!=="string"||v===""){console.error("json_field: "+process.argv[2]+" missing in "+process.argv[1]);process.exit(2);}process.stdout.write(v);' "$1" "$2"
+}
+
+# Read one NESTED, OPTIONAL string field (json_opt_path <file> <key> <key>...):
+# prints the value when the whole path resolves to a non-empty string, prints
+# nothing otherwise, and never fails. Separate from json_field on purpose —
+# json_field dies on a missing key because everything it reads is mandatory,
+# while `browser.base_url` is legitimately absent from a security lane plan and
+# must not be an error there.
+json_opt_path() {
+  _f=$1
+  shift
+  node -e 'const f=require("node:fs");let v;try{v=JSON.parse(f.readFileSync(process.argv[1],"utf8"));}catch(e){process.exit(0);}for(const k of process.argv.slice(2)){if(v===null||typeof v!=="object"){process.exit(0);}v=v[k];}if(typeof v==="string"){process.stdout.write(v);}' "$_f" "$@"
 }
 
 # `ns` ships WITH the engine and is meaningless apart from it, so it reports the
@@ -282,6 +317,38 @@ ns_interrupt() {
   exit "$1"
 }
 
+# ── design preflight, second half: is anything actually THERE? ──────────────
+# a7-ops-launcher.md's T8 ends "refuse when personas are missing or the dev
+# server is down". lane-plan shipped the first half and the safety half of the
+# second (base_url must be loopback, the manifest must assert a non-production
+# environment) — but it is a PURE module: it opens no socket, and it must not
+# start, or every one of its unit tests would begin depending on which ports
+# happen to be bound on the machine running them. So the liveness half lives
+# here, where the launcher already talks to the outside world.
+#
+# Without it, "I forgot to `npm run dev`" is a paid failure: preflight passes,
+# the fan-out dispatches Opus ux-reviewers at a dead port, and the whole run is
+# billed for a screenful of connection refusals before anything notices.
+#
+# ANY answer counts. A 404 or a 500 is a running dev server that does not route
+# the pack's base_url origin, which is emphatically not "the server is down";
+# requiring 2xx would refuse packs whose base_url is a bare origin the app has
+# no handler for. Only "nothing answered" is a refusal.
+probe_dev_server() {
+  _base=$1
+  if ! command -v curl >/dev/null 2>&1; then
+    # Degraded, not fatal. curl is the probe, not the gate: refusing a run
+    # because the MACHINE lacks curl would turn a missing tool into a missed
+    # night, which is a worse failure than the one this check prevents.
+    info "curl not found — cannot check that $_base is up; continuing without the check"
+    return 0
+  fi
+  # Bounded at BOTH ends. A dev server that accepts the connection and then
+  # never answers (a wedged watcher mid-rebuild) would hang an unattended sweep
+  # forever on --connect-timeout alone.
+  curl --silent --output /dev/null --connect-timeout 3 --max-time 5 "$_base" >/dev/null 2>&1
+}
+
 # ── one lane run ────────────────────────────────────────────────────────────
 run_lane() {
   _repo=$1
@@ -297,7 +364,8 @@ run_lane() {
 
   # Resolve the target in tested code, then SOURCE the flat result. Sourcing (not
   # eval) keeps a malformed emission a shell syntax error at a known line.
-  _target_sh="${TMPDIR:-/tmp}/ns-target.$$.sh"
+  ns_mktemp target
+  _target_sh=$NS_TMP
   if ! node "$ENGINE/bin/ops-target.mjs" \
     --config "$OPS_CONFIG" --repo "$_repo" --lane "$_lane" --format sh >"$_target_sh"; then
     rm -f "$_target_sh"
@@ -368,8 +436,10 @@ run_lane() {
   # leave scratch inside the operator's own repository — four refused attempts
   # used to mean four untracked .run/<id>/ directories in their working tree,
   # kept (correctly) by clean's failure policy and accumulating every attempt.
-  _plan_tmp="${TMPDIR:-/tmp}/ns-plan.$$.json"
-  _plan_err="${TMPDIR:-/tmp}/ns-plan.$$.err"
+  ns_mktemp plan
+  _plan_tmp=$NS_TMP
+  ns_mktemp plan-err
+  _plan_err=$NS_TMP
   if ! node "$ENGINE/bin/lane-plan.mjs" \
     --pack .nightshift --lane "$NS_LANE" >"$_plan_tmp" 2>"$_plan_err"; then
     cat "$_plan_err" >>"$NS_LOG"
@@ -380,6 +450,25 @@ run_lane() {
   fi
   cat "$_plan_err" >>"$NS_LOG"
   rm -f "$_plan_err"
+
+  # T8's LIVENESS half, and it belongs on this side of the mkdir below for the
+  # same reason the rest of preflight does: a refused attempt must leave no
+  # scratch in the operator's own repository. The plan is still in the temp file
+  # here, so the base_url is read from there rather than from the run dir that
+  # does not exist yet. Design only — a security lane has no browser block and
+  # must never be made to need one.
+  if [ "$NS_LANE" = "design" ]; then
+    _base_url=$(json_opt_path "$_plan_tmp" browser base_url)
+    if [ -n "$_base_url" ] && ! probe_dev_server "$_base_url"; then
+      printf 'preflight: nothing answered at %s\n' "$_base_url" >>"$NS_LOG"
+      info "PREFLIGHT REFUSED — run not started:"
+      printf '  nothing is listening at %s — start the dev server first, then re-run\n' \
+        "$_base_url" >&2
+      rm -f "$_plan_tmp"
+      return 2
+    fi
+  fi
+
   mkdir -p "$NS_RUN_DIR"
   mv "$_plan_tmp" "$NS_RUN_DIR/lane-plan.json"
   NS_REGISTRY=$(json_field "$NS_RUN_DIR/lane-plan.json" registry) || return 2
@@ -504,9 +593,12 @@ cmd_run() {
 
   _worst=0
   if [ "$NS_DUE" = "1" ]; then
-    _pairs="${TMPDIR:-/tmp}/ns-due.$$.txt"
-    node "$ENGINE/bin/due.mjs" --config "$OPS_CONFIG" --format sh >"$_pairs" ||
+    ns_mktemp due
+    _pairs=$NS_TMP
+    if ! node "$ENGINE/bin/due.mjs" --config "$OPS_CONFIG" --format sh >"$_pairs"; then
+      rm -f "$_pairs"
       die "due sweep failed"
+    fi
     if [ ! -s "$_pairs" ]; then
       rm -f "$_pairs"
       info "nothing is due"
@@ -549,11 +641,15 @@ cmd_dashboard() {
   # --list avoids needing one, so read the out name the same way `run` does.
   _first=$(node "$ENGINE/bin/ops-target.mjs" --config "$OPS_CONFIG" --list | head -1)
   [ -n "$_first" ] || die "no enabled repo/lane in $OPS_CONFIG"
-  _sh="${TMPDIR:-/tmp}/ns-dash.$$.sh"
+  ns_mktemp dash
+  _sh=$NS_TMP
   # shellcheck disable=SC2086
   set -- $_first
-  node "$ENGINE/bin/ops-target.mjs" \
-    --config "$OPS_CONFIG" --repo "$1" --lane "$2" --format sh >"$_sh" || exit 2
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$1" --lane "$2" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
   # shellcheck source=/dev/null
   . "$_sh"
   rm -f "$_sh"
@@ -565,9 +661,26 @@ cmd_digest() {
   require_engine
   resolve_ops
   [ -n "$NS_ARG1" ] || die "usage: ns digest <repo>"
-  _sh="${TMPDIR:-/tmp}/ns-digest.$$.sh"
-  node "$ENGINE/bin/ops-target.mjs" \
-    --config "$OPS_CONFIG" --repo "$NS_ARG1" --lane security --format sh >"$_sh" || exit 2
+  # THE DIGEST IS LANE-AGNOSTIC — it folds over fleet metrics and covers both
+  # lanes — so it must not demand a lane the operator never enabled. Asking
+  # ops-target for `--lane security` (which is all this needs it for: OPS_HOME,
+  # the repo path and the repo name) refused a repo configured `lanes: [design]`
+  # with "security is not enabled for repo", on a command that has nothing to do
+  # with the security lane. config.yml explicitly allows any subset of lanes.
+  #
+  # So resolve the lane the same way cmd_dashboard does, from --list, which is
+  # the tested lane-independent surface: take whichever enabled lane this repo
+  # actually has and use it purely as the key that unlocks the paths.
+  _lane=$(node "$ENGINE/bin/ops-target.mjs" --config "$OPS_CONFIG" --list |
+    awk -v repo="$NS_ARG1" '$1 == repo { print $2; exit }')
+  [ -n "$_lane" ] || die "no enabled repo named \"$NS_ARG1\" in $OPS_CONFIG (see \`ns status\`)"
+  ns_mktemp digest
+  _sh=$NS_TMP
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$NS_ARG1" --lane "$_lane" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
   # shellcheck source=/dev/null
   . "$_sh"
   rm -f "$_sh"
@@ -595,9 +708,13 @@ cmd_cost_add() {
   if [ -z "$NS_ARG2" ] || [ -z "$NS_ARG3" ] || [ -z "$NS_ARG4" ] || [ -z "$NS_ARG5" ]; then
     die "usage: ns cost add <repo> <lane> <run_id> <usd>"
   fi
-  _sh="${TMPDIR:-/tmp}/ns-cost.$$.sh"
-  node "$ENGINE/bin/ops-target.mjs" \
-    --config "$OPS_CONFIG" --repo "$NS_ARG2" --lane "$NS_ARG3" --format sh >"$_sh" || exit 2
+  ns_mktemp cost
+  _sh=$NS_TMP
+  if ! node "$ENGINE/bin/ops-target.mjs" \
+    --config "$OPS_CONFIG" --repo "$NS_ARG2" --lane "$NS_ARG3" --format sh >"$_sh"; then
+    rm -f "$_sh"
+    exit 2
+  fi
   # shellcheck source=/dev/null
   . "$_sh"
   rm -f "$_sh"
