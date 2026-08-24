@@ -208,9 +208,21 @@ export function laneDue(
   const overdue = surfaces.filter((s) => s.staleness >= 1).length;
   const changed = surfaces.filter((s) => s.change_flag === 1).length;
   const metricsDir = join(packDir, "metrics");
-  const last = lastRunDate(metricsDir, lane);
+  // readdirSyncSafe (above) already keeps a missing or unreadable runs dir
+  // from aborting the sweep; this catches the other half of that same
+  // failure mode — readJsonl's JSON.parse is unguarded, so one malformed
+  // line in a runs shard or in costs.jsonl throws, and without this catch
+  // that throw would propagate out of laneDue and take dueSweep's whole
+  // fleet loop down with it, not just this repo+lane.
+  let last: string | undefined;
+  let cost: CostRecord | undefined;
+  try {
+    last = lastRunDate(metricsDir, lane);
+    cost = lastCost(metricsDir, lane);
+  } catch (err) {
+    return unrunnable(repo, lane, `metrics in ${metricsDir} are malformed: ${(err as Error).message}`);
+  }
   const sinceRun = last === undefined ? undefined : daysBetween(last, today);
-  const cost = lastCost(metricsDir, lane);
   const base = {
     repo: repo.name,
     lane,

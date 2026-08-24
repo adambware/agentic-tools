@@ -356,6 +356,81 @@ describe("laneDue: unrunnable (never throws)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Malformed metrics — a corrupt runs shard or costs.jsonl must isolate to
+// THIS repo+lane (unrunnable), never propagate out of laneDue/dueSweep.
+// ---------------------------------------------------------------------------
+
+describe("laneDue: malformed metrics are isolated at the target boundary", () => {
+  it("a malformed line in a runs shard -> unrunnable, not a throw", () => {
+    const repoPath = makeRepoDir("malformed-runs-repo");
+    writeManifest(repoPath, { security: 1 });
+    writeRegistry(repoPath, "security", vectorsYaml([vectorEntry("V1")]));
+    const shard = join(repoPath, ".nightshift", "metrics", "runs", "2026-06.jsonl");
+    writeFileSync(shard, '{"not valid json\n');
+    const repo = makeOpsRepo("malformed-runs-repo", repoPath);
+    const config = makeConfig([repo]);
+
+    let verdict: ReturnType<typeof laneDue> | undefined;
+    expect(() => {
+      verdict = laneDue(repo, "security", { config, today: TODAY, gitFor: () => gitStub([]) });
+    }).not.toThrow();
+
+    expect(verdict?.due).toBe(false);
+    expect(verdict?.reason).toBe("unrunnable");
+    expect(verdict?.detail).toMatch(/metrics in .*metrics are malformed/);
+  });
+
+  it("a malformed costs.jsonl -> unrunnable, not a throw", () => {
+    const repoPath = makeRepoDir("malformed-costs-repo");
+    writeManifest(repoPath, { security: 1 });
+    writeRegistry(repoPath, "security", vectorsYaml([vectorEntry("V1")]));
+    writeFileSync(join(repoPath, ".nightshift", "metrics", "costs.jsonl"), "{broken\n");
+    const repo = makeOpsRepo("malformed-costs-repo", repoPath);
+    const config = makeConfig([repo]);
+
+    let verdict: ReturnType<typeof laneDue> | undefined;
+    expect(() => {
+      verdict = laneDue(repo, "security", { config, today: TODAY, gitFor: () => gitStub([]) });
+    }).not.toThrow();
+
+    expect(verdict?.due).toBe(false);
+    expect(verdict?.reason).toBe("unrunnable");
+    expect(verdict?.detail).toMatch(/metrics in .*metrics are malformed/);
+  });
+
+  it("dueSweep: repo #1's corrupt metrics do not stop repo #2 from being evaluated", () => {
+    const corruptPath = makeRepoDir("corrupt-repo");
+    writeManifest(corruptPath, { security: 1 });
+    writeRegistry(corruptPath, "security", vectorsYaml([vectorEntry("V1")]));
+    writeFileSync(
+      join(corruptPath, ".nightshift", "metrics", "runs", "2026-06.jsonl"),
+      "not json at all\n",
+    );
+
+    const okPath = makeRepoDir("later-repo");
+    writeManifest(okPath, { security: 1 });
+    writeRegistry(okPath, "security", vectorsYaml([vectorEntry("V1")]));
+
+    const config = makeConfig([makeOpsRepo("corrupt-repo", corruptPath), makeOpsRepo("later-repo", okPath)]);
+
+    let verdicts: ReturnType<typeof dueSweep> = [];
+    expect(() => {
+      verdicts = dueSweep({ config, today: TODAY, gitFor: () => gitStub([]) });
+    }).not.toThrow();
+
+    expect(verdicts).toHaveLength(2);
+    const corrupt = verdicts.find((v) => v.repo === "corrupt-repo");
+    const later = verdicts.find((v) => v.repo === "later-repo");
+    expect(corrupt?.due).toBe(false);
+    expect(corrupt?.reason).toBe("unrunnable");
+    // The second repo, entirely unrelated to the first's corruption, still
+    // gets a real verdict — this is the fleet-sweep-continues guarantee.
+    expect(later?.due).toBe(true);
+    expect(later?.reason).toBe("never-run");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // lastRunDate — max by the DATE FIELD across shards, never by shard filename,
 // and scoped to the requested lane only.
 // ---------------------------------------------------------------------------
