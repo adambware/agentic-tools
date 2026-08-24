@@ -290,7 +290,18 @@ function scanOrphanRunDirs(
   const out: { path: string; age_days: number }[] = [];
   for (const { cfg, input } of repos) {
     if (!input.pack_present) continue;
-    const runDir = join(cfg.path, ".nightshift", ".run");
+    // THE EXPANDED ROOT, never the raw `cfg.path`. `~` means nothing to `join`,
+    // so a documented `~/code/...` entry used verbatim here is just a relative
+    // path resolved against the dashboard process's cwd — which does not throw,
+    // it simply finds no `.nightshift/.run` and reports the repo as having no
+    // orphans. That is the same silent-omission the `repoRoot` comment above
+    // narrates for the pack itself, at the one site that kept reading the raw
+    // value after loadRepo was fixed. Taking the root off `input` rather than
+    // re-expanding `cfg` is what keeps the two from drifting apart again.
+    // (`path` is optional on RepoInput for the state-2 message; every branch
+    // that builds one sets it, so this guard is narrowing, not a fallback.)
+    if (!input.path) continue;
+    const runDir = join(input.path, ".nightshift", ".run");
     if (!existsSync(runDir)) continue;
     for (const d of readdirSync(runDir).sort()) {
       const full = join(runDir, d);

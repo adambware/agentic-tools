@@ -15,12 +15,14 @@ import {
   readFileSync,
   unlinkSync,
   symlinkSync,
+  utimesSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runDashboard, parseDigest, type DashboardOpts } from "./dashboard-cli.js";
 import { readYaml } from "./io.js";
+import { ORPHAN_AGE_DAYS } from "./dashboard-run.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, "..", "..");
@@ -594,5 +596,32 @@ describe("regression: a `~/…` or relative repo path rendered as 'pack missing'
     );
     const { html } = runDashboard(baseOpts(configPath, join(opsDir, "dashboard.html")));
     expect(html).toMatch(/pack missing/);
+  });
+
+  it("finds an orphaned run dir under a `~/…` repo path, not just its pack", () => {
+    // scanOrphanRunDirs used to build `.nightshift/.run` from the raw
+    // `cfg.path` even after loadRepo was fixed to expand it — so a `~/…`
+    // config still hid orphaned run dirs, silently, one level below the bug
+    // this describe block is named for. Same fixture shape as the sibling
+    // "expands a leading ~" test, plus a stale `.run/<id>` dir to find.
+    const fakeHome = makeTmpDir("ns-home-");
+    const realHome = process.env.HOME;
+    try {
+      process.env.HOME = fakeHome;
+      const { configPath, outPath } = opsWith("~/novudesk", fakeHome);
+      const runDir = join(fakeHome, "novudesk", ".nightshift", ".run", "stale-run-1");
+      mkdirSync(runDir, { recursive: true });
+      const now = new Date(`${TODAY}T12:00:00Z`);
+      const staleMtime = new Date(now.getTime() - (ORPHAN_AGE_DAYS + 3) * 86_400_000);
+      utimesSync(runDir, staleMtime, staleMtime);
+
+      const { html } = runDashboard({ ...baseOpts(configPath, outPath), now });
+
+      expect(html).toContain(`orphaned run dir older than ${ORPHAN_AGE_DAYS} days`);
+      expect(html).toContain("novudesk/.nightshift/.run/stale-run-1/");
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+    }
   });
 });
