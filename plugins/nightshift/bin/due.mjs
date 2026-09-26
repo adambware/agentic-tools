@@ -7758,6 +7758,11 @@ function tsNewer(a, b) {
 
 // src/lib/git.ts
 import { execFileSync } from "node:child_process";
+
+// src/lib/sha.ts
+var SHA_RE = /^[0-9a-f]{7,64}$/i;
+
+// src/lib/git.ts
 function makeGitRunner(repo) {
   const cache = /* @__PURE__ */ new Map();
   function diffFromCommit(commit) {
@@ -7794,7 +7799,7 @@ function makeGitRunner(repo) {
   }
   return {
     changedFilesSince({ sha, date }) {
-      if (sha) {
+      if (sha && SHA_RE.test(sha)) {
         const cacheKey = `sha:${sha}`;
         const cached = cache.get(cacheKey);
         if (cached) return cached;
@@ -7888,7 +7893,10 @@ function validateRegistryEntry(x) {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES2, errors, "registry-entry");
   if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
-  if (x.last_reviewed_sha !== void 0) reqStr(x, "last_reviewed_sha", errors, "registry-entry");
+  if (x.last_reviewed_sha !== void 0) {
+    if (typeof x.last_reviewed_sha !== "string" || !SHA_RE.test(x.last_reviewed_sha))
+      errors.push("registry-entry: last_reviewed_sha must be a hex git commit sha (7-64 chars)");
+  }
   return finish(errors);
 }
 function validateCandidateFinding(x) {

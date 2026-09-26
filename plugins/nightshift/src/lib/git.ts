@@ -2,6 +2,7 @@
 // so selection stays deterministic under test (pass a stub GitRunner; the "no-git"
 // branch is just a runner that returns []).
 import { execFileSync } from "node:child_process";
+import { SHA_RE } from "./sha.js";
 
 export interface ReviewBaseline {
   /** Exact commit reviewed last time (registry `last_reviewed_sha`), when known. */
@@ -67,7 +68,7 @@ export function makeGitRunner(repo: string): GitRunner {
 
   return {
     changedFilesSince({ sha, date }) {
-      if (sha) {
+      if (sha && SHA_RE.test(sha)) {
         const cacheKey = `sha:${sha}`;
         const cached = cache.get(cacheKey);
         if (cached) return cached;

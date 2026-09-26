@@ -7483,6 +7483,9 @@ function extractEntries(doc, lane) {
 import { existsSync as existsSync2, statSync } from "node:fs";
 import { join as join3, resolve as resolve2, sep } from "node:path";
 
+// src/lib/sha.ts
+var SHA_RE = /^[0-9a-f]{7,64}$/i;
+
 // src/lib/validate.ts
 var WEIGHTS = ["critical", "high", "medium", "low"];
 var SEVERITIES = WEIGHTS;
@@ -7561,7 +7564,10 @@ function validateRegistryEntry(x) {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES, errors, "registry-entry");
   if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
-  if (x.last_reviewed_sha !== void 0) reqStr(x, "last_reviewed_sha", errors, "registry-entry");
+  if (x.last_reviewed_sha !== void 0) {
+    if (typeof x.last_reviewed_sha !== "string" || !SHA_RE.test(x.last_reviewed_sha))
+      errors.push("registry-entry: last_reviewed_sha must be a hex git commit sha (7-64 chars)");
+  }
   return finish(errors);
 }
 function validateCandidateFinding(x) {

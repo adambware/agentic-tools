@@ -4,7 +4,7 @@
 // --before semantics, which a stub can't exhibit.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeGitRunner } from "./git.js";
@@ -109,5 +109,17 @@ describe("makeGitRunner", () => {
     // A later commit must not change an already-cached answer for this sha.
     commit("c.txt", "1", "2026-06-03");
     expect(runner.changedFilesSince({ sha: reviewedSha })).toEqual(["b.txt"]);
+  });
+
+  it("never passes a non-hex last_reviewed_sha to git (option injection / ref names)", () => {
+    commit("a.txt", "1", "2026-06-01");
+    commit("b.txt", "1", "2026-06-02");
+    const runner = makeGitRunner(dir);
+    const outFile = join(dir, "pwned");
+    // Would be `git diff --name-only --output=<dir>/pwned..HEAD` if interpolated.
+    expect(runner.changedFilesSince({ sha: `--output=${outFile}` })).toEqual([]);
+    expect(existsSync(`${outFile}..HEAD`)).toBe(false);
+    // A ref name resolves in git but is not a reviewed sha: fall back to the date.
+    expect(runner.changedFilesSince({ sha: "HEAD", date: "2026-06-01" })).toEqual(["b.txt"]);
   });
 });

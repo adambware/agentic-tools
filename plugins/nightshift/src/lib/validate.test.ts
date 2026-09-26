@@ -145,6 +145,14 @@ describe("validateRegistryEntry: last_reviewed_sha", () => {
     expect(r.errors.some((e) => e.includes("last_reviewed_sha"))).toBe(true);
   });
 
+  it("rejects a non-hex value (a git option or a ref name)", () => {
+    for (const bad of ["--output=/tmp/x", "main", "HEAD~1", "abc12"]) {
+      const r = validateRegistryEntry({ ...VALID_ENTRY, last_reviewed_sha: bad });
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.includes("last_reviewed_sha"))).toBe(true);
+    }
+  });
+
   it("rejects an empty string", () => {
     const r = validateRegistryEntry({ ...VALID_ENTRY, last_reviewed_sha: "" });
     expect(r.ok).toBe(false);

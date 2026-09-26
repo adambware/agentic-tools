@@ -252,7 +252,7 @@ export function runRecord(opts: RecordOpts): RecordResult {
     if (opts.registryPath && opts.reviewedIds.length > 0) {
       const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
       // packSha is the reviewed repo's HEAD sha (run-meta's `git rev-parse HEAD`
-      // against `--repo`), captured before this run's own edits could move it —
+      // against `--pack`, the `.nightshift/` dir inside the reviewed repo), captured before this run's own edits could move it —
       // the exact commit these entries were reviewed AT. defaultGitRevParse
       // falls back to the literal string "no-git" when git is unavailable; that
       // is not a sha, so leave last_reviewed_sha untouched (undefined) rather

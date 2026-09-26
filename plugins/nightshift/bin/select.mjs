@@ -7564,6 +7564,11 @@ function selectSurfaces(entries, opts) {
 
 // src/lib/git.ts
 import { execFileSync } from "node:child_process";
+
+// src/lib/sha.ts
+var SHA_RE = /^[0-9a-f]{7,64}$/i;
+
+// src/lib/git.ts
 function makeGitRunner(repo) {
   const cache = /* @__PURE__ */ new Map();
   function diffFromCommit(commit) {
@@ -7600,7 +7605,7 @@ function makeGitRunner(repo) {
   }
   return {
     changedFilesSince({ sha, date }) {
-      if (sha) {
+      if (sha && SHA_RE.test(sha)) {
         const cacheKey = `sha:${sha}`;
         const cached = cache.get(cacheKey);
         if (cached) return cached;
