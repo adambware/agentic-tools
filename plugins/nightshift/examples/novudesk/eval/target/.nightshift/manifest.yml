@@ -1,0 +1,17 @@
+# .nightshift/manifest.yml — NovuDesk (security-lane scratch target)
+pack_format: 1
+project: novudesk
+repos:
+  - path: .
+    stack: rails+hotwire
+stack_adapter:
+  test: "bin/rails test"
+  build: "bin/rails assets:precompile"
+allowlist:
+  - "Read"
+  - "Grep"
+  - "Glob"
+cadences:
+  security: nightly
+window_budget_k:
+  security: 7                  # every registry entry below, in one run

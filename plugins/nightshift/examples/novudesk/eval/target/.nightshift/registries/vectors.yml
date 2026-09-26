@@ -1,0 +1,68 @@
+# .nightshift/registries/vectors.yml — NovuDesk security registry (never reviewed).
+# Conforms to ${CLAUDE_PLUGIN_ROOT}/schemas/registry-entry.yml (kind: vector, owner: security).
+# last_reviewed / status are (auto) and absent: every entry is due on the first run.
+
+vectors:
+
+  - id:            ASVS-INPV-04
+    title:         "Input validation & injection (SQLi, command, template injection)"
+    kind:          vector
+    area:          ["app/controllers/**", "app/models/**", "app/queries/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Validation, Sanitization / Output Encoding & Injection)"
+
+  - id:            ND-SEC-01
+    title:         "Stored customer OAuth tokens for workspace integrations"
+    kind:          vector
+    area:          ["app/models/integration_token.rb", "app/services/vault/*"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V6.4 (Stored Cryptography / Secret Management)"
+
+  - id:            ND-SEC-02
+    title:         "Control-plane -> nova-worker command channel auth / replay"
+    kind:          vector
+    area:          ["app/services/dispatch/*", "app/jobs/dispatch_triage_command_job.rb"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V9.2 (Communications / Server Communication Security)"
+
+  - id:            ND-SEC-03
+    title:         "SSRF via \"monitor this webhook URL\" fetchers"
+    kind:          vector
+    area:          ["app/services/webhooks/url_fetcher.rb", "app/controllers/webhook_monitors_controller.rb"]
+    weight:        high
+    interval_days: 14
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V12.6 (Files and Resources / SSRF Protection)"
+
+  - id:            ND-SEC-05
+    title:         "Multi-tenant isolation / IDOR on ticket-scoped resources"
+    kind:          vector
+    area:          ["app/controllers/tickets_controller.rb", "app/policies/*", "app/models/ticket.rb"]
+    weight:        critical
+    interval_days: 7
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V4.2 (Access Control / Operation Level)"
+
+  - id:            ND-SEC-06
+    title:         "Webhook / callback authenticity from integrations"
+    kind:          vector
+    area:          ["app/controllers/webhooks_controller.rb", "app/controllers/concerns/verify_webhook_signature.rb"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V13.2 (API / RESTful Web Service)"
+
+  - id:            ND-SEC-07
+    title:         "Triage Gate output encoding / XSS in review queue UI"
+    kind:          vector
+    area:          ["app/services/triage_gate/review_queue.rb", "app/views/triage/*"]
+    weight:        medium
+    interval_days: 30
+    owner:         security
+    asvs_ref:      "ASVS 4.0.3 V5.3 (Output Encoding & Injection Prevention)"
