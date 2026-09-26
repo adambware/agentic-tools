@@ -7512,6 +7512,7 @@ function validateRegistryEntry(x) {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES, errors, "registry-entry");
   if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
+  if (x.last_reviewed_sha !== void 0) reqStr(x, "last_reviewed_sha", errors, "registry-entry");
   return finish(errors);
 }
 function validateCandidateFinding(x) {

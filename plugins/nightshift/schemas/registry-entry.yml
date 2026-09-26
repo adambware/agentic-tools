@@ -73,6 +73,18 @@ last_reviewed: # date (YYYY-MM-DD), (auto), engine-managed.
                # Set when the engine completes a review run for this entry.
                # Drives staleness. Unset/absent => treated as maximally stale.
 
+last_reviewed_sha: # string (git commit sha), (auto), engine-managed.
+               # The reviewed repo's exact HEAD sha at the moment `last_reviewed`
+               # was stamped. change_flag diffs from THIS sha (`<sha>..HEAD`)
+               # when present, falling back to a date-derived baseline only when
+               # absent (older entries) or unresolvable (shallow clone, rewritten
+               # history). A date baseline resolves to "the commit at/before
+               # 23:59:59 on that day," so a same-day commit landing AFTER the
+               # review became its own baseline and its changes were invisible
+               # to change_flag until the surface next went stale on staleness
+               # alone. The exact sha has no such blind spot. Absent when the
+               # run had no git available (never overwritten with a bogus value).
+
 status:        # enum, (auto), engine-managed.
                # One of: green | stale | overdue | open-findings
                #   green         -> reviewed within interval, no open findings
@@ -97,6 +109,7 @@ linear:        # list[string], (auto on file), engine-managed.
 #   interval_days: 7
 #   owner:         security
 #   last_reviewed: 2026-06-14   # (auto)
+#   last_reviewed_sha: a1b2c3d # (auto)
 #   status:        green        # (auto)
 #   linear:        [NOVU-410]   # (auto on file)
 #

@@ -43,7 +43,7 @@ export function runSelect(opts: RunSelectOpts): RunSelectResult {
   const surfaces = selectSurfaces(entries, {
     today: opts.today,
     k,
-    changedFilesFor: (e) => git.changedFilesSince(e.last_reviewed),
+    changedFilesFor: (e) => git.changedFilesSince({ sha: e.last_reviewed_sha, date: e.last_reviewed }),
   });
   writeJson(opts.outPath, surfaces);
   return { k, selected: surfaces.length, surfaces };

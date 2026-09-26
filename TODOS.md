@@ -68,12 +68,6 @@
   - **Context:** Codex outside-voice (#7) during /plan-eng-review of `plugins/nightshift/docs/local-first-v3-plan.md`, 2026-08-23. Verified by reading `src/lib/run-meta-build.ts:112-132` — the comment there explicitly reasons about substitution and count, never about field mutation. Pre-existing in v2.3.0; deliberately deferred out of v3 so A4 does not absorb a sixth concern. Start at `candidateKey()` and the `proposedKeys` multiset.
   - **Depends on / blocked by:** None. Cleanest as its own branch with its own tests.
 
-- [ ] **Change detection uses a date, not the reviewed SHA** [P1 correctness]
-  - **What:** `src/lib/git.ts:24` derives the diff baseline as `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD`. A commit landing the SAME DAY but AFTER a review is at-or-before that timestamp, so it becomes its own baseline and its changes never appear in the diff. Fix: store the exact reviewed HEAD sha on the registry entry at record time and diff from `<sha>..HEAD`.
-  - **Why:** Those edits are invisible to `change_flag` until pure staleness eventually re-selects the surface — up to `interval_days` later (90 days for a low-weight vector). Worse for v3: WS8's sentinel is specified as due when "commits touching any registry area since last run", so the sentinel inherits this blind spot directly and a same-day hotfix to a critical surface would not trigger a run.
-  - **Context:** Codex outside-voice (#11) during /plan-eng-review, 2026-08-23. Verified by reading `src/lib/git.ts:11-40`. `registry-entry.yml` already carries `last_reviewed` as `(auto)`; adding `last_reviewed_sha` alongside it is the natural shape. `bin/record` is where the stamp is written, `bin/select` is where the baseline is read.
-  - **Depends on / blocked by:** None, but should land BEFORE WS8/A9 or the sentinel ships with the blind spot.
-
 - [ ] **Multi-repo identity: config entries need a stable slug** [P2 scale]
   - **What:** `$OPS/config.yml` identifies repos by filesystem path only. `ns run <repo>`, `$OPS/digests/<repo>.md`, and `$OPS/evidence/<repo>/` all key off a name derived from that path, so two repos with the same basename collide. YAML `~` expansion is also unspecified. Fix: require an explicit unique `slug` per config entry plus a canonicalized absolute path, and key every generated artifact on the slug.
   - **Why:** WS6's dashboard is explicitly multi-repo ("covering **all** onboarded repos"), so identity collisions corrupt the one artifact the whole delivery revamp exists to produce. Silent, too: a colliding digest just overwrites.
@@ -94,6 +88,10 @@
   - **Depends on / blocked by:** None. Own branch, own tests.
 
 ## Completed
+
+- [x] **Change detection uses a date, not the reviewed SHA** [P1 correctness]
+  - Done: registry entries now carry `last_reviewed_sha` (`schemas/registry-entry.yml`, `RegistryEntry.last_reviewed_sha`) alongside `last_reviewed`. `bin/record` stamps it from the reviewed repo's HEAD sha (`run.json.pack_sha`, itself `git rev-parse HEAD` against `--repo`) for every actually-reviewed entry, leaving it untouched when git was unavailable (`pack_sha === "no-git"`) rather than stamping a bogus baseline. `src/lib/git.ts`'s `GitRunner.changedFilesSince` now takes `{ sha, date }`: it diffs `<sha>..HEAD` directly when a sha is present, and falls back to the old date-derived `--before=<date>T23:59:59` baseline only when no sha is recorded yet or the sha fails to resolve (shallow clone, rewritten history) — closing the same-day-commit blind spot the TODO described. Both selection call sites (`bin/select` / `src/lib/select-run.ts` and `bin/due` / `src/lib/due.ts`) pass both fields. Covered by `src/lib/git.test.ts` (new) plus updated `src/lib/record-run.test.ts` and `src/lib/select-run.test.ts` assertions.
+  - **Completed:** unreleased (2026-09-26)
 
 - [x] **Per-run artifact isolation + record run-id cross-check** [P2 concurrency]
   - Done (v3.0.0): BOTH halves of the either/or landed. A1 restored per-run isolation (each run gets its own `.nightshift/.run/<run-id>/` dir, self-cleaning on success and retained on failure), and `runRecord` now opens with a provenance assert — `src/lib/record-run.ts:118-132` refuses the run unless `decisions.run_id`, `decisions.lane` and `decisions.date` all match run-meta, so a stale or forged `decisions.json` can never be replayed into another run's durable appends. Backed by run_id uniqueness across every month shard and the per-repo lock around the append.

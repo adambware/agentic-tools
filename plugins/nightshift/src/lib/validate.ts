@@ -152,6 +152,12 @@ export function validateRegistryEntry(x: unknown): ValidationResult {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES, errors, "registry-entry");
   if (x.last_reviewed !== undefined) reqDate(x, "last_reviewed", errors, "registry-entry");
+  // last_reviewed_sha is engine-managed (bin/record stamps it) and feeds
+  // straight into `git diff --name-only <sha>..HEAD` as an argv element (never
+  // shell-interpolated), so this is a shape gate, not an injection gate: catch
+  // a non-string/empty value before it becomes a confusing git error deep in
+  // change-flag detection.
+  if (x.last_reviewed_sha !== undefined) reqStr(x, "last_reviewed_sha", errors, "registry-entry");
   return finish(errors);
 }
 

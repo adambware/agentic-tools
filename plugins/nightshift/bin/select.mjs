@@ -7566,31 +7566,52 @@ function selectSurfaces(entries, opts) {
 import { execFileSync } from "node:child_process";
 function makeGitRunner(repo) {
   const cache = /* @__PURE__ */ new Map();
+  function diffFromCommit(commit) {
+    try {
+      const out = execFileSync(
+        "git",
+        ["-C", repo, "diff", "--name-only", `${commit}..HEAD`],
+        // stdio: ignore stderr so "fatal: bad revision" etc. never leaks to the
+        // workflow's output; a failure here is an expected fallback trigger.
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      );
+      return out.split("\n").map((s) => s.trim()).filter(Boolean);
+    } catch {
+      return void 0;
+    }
+  }
+  function changedFilesSinceDate(date) {
+    const cacheKey = `date:${date}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    let files = [];
+    try {
+      const commit = execFileSync(
+        "git",
+        ["-C", repo, "rev-list", "-1", `--before=${date}T23:59:59`, "HEAD"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+      if (commit) files = diffFromCommit(commit) ?? [];
+    } catch {
+      files = [];
+    }
+    cache.set(cacheKey, files);
+    return files;
+  }
   return {
-    changedFilesSince(sinceDate) {
-      if (!sinceDate) return [];
-      const cached = cache.get(sinceDate);
-      if (cached) return cached;
-      let files = [];
-      try {
-        const commit = execFileSync(
-          "git",
-          ["-C", repo, "rev-list", "-1", `--before=${sinceDate}T23:59:59`, "HEAD"],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-        ).trim();
-        if (commit) {
-          const out = execFileSync(
-            "git",
-            ["-C", repo, "diff", "--name-only", `${commit}..HEAD`],
-            { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-          );
-          files = out.split("\n").map((s) => s.trim()).filter(Boolean);
+    changedFilesSince({ sha, date }) {
+      if (sha) {
+        const cacheKey = `sha:${sha}`;
+        const cached = cache.get(cacheKey);
+        if (cached) return cached;
+        const files = diffFromCommit(sha);
+        if (files !== void 0) {
+          cache.set(cacheKey, files);
+          return files;
         }
-      } catch {
-        files = [];
       }
-      cache.set(sinceDate, files);
-      return files;
+      if (!date) return [];
+      return changedFilesSinceDate(date);
     }
   };
 }
@@ -7613,7 +7634,7 @@ function runSelect(opts) {
   const surfaces = selectSurfaces(entries, {
     today: opts.today,
     k,
-    changedFilesFor: (e) => git.changedFilesSince(e.last_reviewed)
+    changedFilesFor: (e) => git.changedFilesSince({ sha: e.last_reviewed_sha, date: e.last_reviewed })
   });
   writeJson(opts.outPath, surfaces);
   return { k, selected: surfaces.length, surfaces };

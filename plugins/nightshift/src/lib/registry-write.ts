@@ -7,6 +7,10 @@ import { atomicWrite } from "./io.js";
 
 export interface EntryState {
   last_reviewed?: string;
+  /** Exact reviewed-repo HEAD sha at record time. Omit (undefined) to leave
+   *  whatever sha is already on the entry untouched — e.g. when the run had
+   *  no git available and can't say what the real HEAD was. */
+  last_reviewed_sha?: string;
   status?: string;
 }
 
@@ -25,6 +29,7 @@ export function updateRegistryState(path: string, updates: Map<string, EntryStat
     const upd = updates.get(id);
     if (!upd) continue;
     if (upd.last_reviewed !== undefined) item.set("last_reviewed", upd.last_reviewed);
+    if (upd.last_reviewed_sha !== undefined) item.set("last_reviewed_sha", upd.last_reviewed_sha);
     if (upd.status !== undefined) item.set("status", upd.status);
   }
 

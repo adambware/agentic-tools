@@ -199,7 +199,7 @@ export function laneDue(
     surfaces = selectSurfaces(entries, {
       today,
       k,
-      changedFilesFor: (e) => git.changedFilesSince(e.last_reviewed),
+      changedFilesFor: (e) => git.changedFilesSince({ sha: e.last_reviewed_sha, date: e.last_reviewed }),
     });
   } catch (err) {
     return unrunnable(repo, lane, `selection failed for ${registryPath}: ${(err as Error).message}`);

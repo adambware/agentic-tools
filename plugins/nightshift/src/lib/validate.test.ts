@@ -125,6 +125,34 @@ describe("validateRegistryEntry: id sanitization", () => {
 });
 
 // ---------------------------------------------------------------------------
+// validateRegistryEntry — last_reviewed_sha (change-detection baseline)
+// ---------------------------------------------------------------------------
+
+describe("validateRegistryEntry: last_reviewed_sha", () => {
+  it("is optional — an entry with none is still valid", () => {
+    const r = validateRegistryEntry(VALID_ENTRY);
+    expect(r.ok).toBe(true);
+  });
+
+  it("accepts a non-empty string sha", () => {
+    const r = validateRegistryEntry({ ...VALID_ENTRY, last_reviewed_sha: "a1b2c3d" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a non-string value", () => {
+    const r = validateRegistryEntry({ ...VALID_ENTRY, last_reviewed_sha: 12345 });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("last_reviewed_sha"))).toBe(true);
+  });
+
+  it("rejects an empty string", () => {
+    const r = validateRegistryEntry({ ...VALID_ENTRY, last_reviewed_sha: "" });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("last_reviewed_sha"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validateSurface — id sanitization + dispatch
 // ---------------------------------------------------------------------------
 
