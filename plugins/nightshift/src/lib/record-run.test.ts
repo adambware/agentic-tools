@@ -160,6 +160,80 @@ vectors:
     expect(readFileSync(regPath, "utf8")).toContain("status: green");
   });
 
+  it("stamps last_reviewed_sha from packSha (the reviewed repo's HEAD) alongside last_reviewed", () => {
+    const regPath = join(dir, "vectors.yml");
+    writeFileSync(
+      regPath,
+      `vectors:
+  - id: ND-SEC-05
+    title: IDOR
+    kind: vector
+    area: ["app/x"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-11
+    status: stale
+`,
+    );
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [],
+      counts: { confirmed: 0, recurring: 0, suppressed: 0 },
+    };
+    runRecord(
+      baseOpts(decisions, {
+        registryPath: regPath,
+        reviewedIds: ["ND-SEC-05"],
+        packSha: "9f8e7d6",
+      }),
+    );
+    const yml = readFileSync(regPath, "utf8");
+    expect(yml).toContain("last_reviewed_sha: 9f8e7d6");
+  });
+
+  it("leaves last_reviewed_sha untouched when the run had no git (packSha=\"no-git\")", () => {
+    const regPath = join(dir, "vectors.yml");
+    writeFileSync(
+      regPath,
+      `vectors:
+  - id: ND-SEC-05
+    title: IDOR
+    kind: vector
+    area: ["app/x"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-11
+    last_reviewed_sha: oldsha123
+    status: stale
+`,
+    );
+    const decisions: Decisions = {
+      run_id: "ns-2026-06-21-sec-01",
+      lane: "security",
+      date: "2026-06-21",
+      decisions: [],
+      counts: { confirmed: 0, recurring: 0, suppressed: 0 },
+    };
+    runRecord(
+      baseOpts(decisions, {
+        registryPath: regPath,
+        reviewedIds: ["ND-SEC-05"],
+        packSha: "no-git",
+      }),
+    );
+    const yml = readFileSync(regPath, "utf8");
+    // last_reviewed still advances...
+    expect(yml).toContain("last_reviewed: 2026-06-21");
+    // ...but the stale/unknown sha is left alone rather than overwritten with
+    // the "no-git" sentinel, which is not a real commit sha.
+    expect(yml).toContain("last_reviewed_sha: oldsha123");
+    expect(yml).not.toContain("no-git");
+  });
+
   // ── findings_created identity tests ────────────────────────────────────────
   // findings_created = confirmed + recurring + rejected_tier1 + rejected_tier2
   // (= proposed_count - suppressed)

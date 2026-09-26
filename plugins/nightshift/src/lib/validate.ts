@@ -10,6 +10,7 @@
 // well-chosen relative path, the pack) while every schema field still typechecked
 // as a non-empty string. SAFE_ID_RE is the shared constraint; consumers pair it
 // with a resolve()-based containment check (never the regex alone).
+import { SHA_RE } from "./sha.js";
 import type {
   RegistryEntry,
   CandidateFinding,
@@ -152,6 +153,15 @@ export function validateRegistryEntry(x: unknown): ValidationResult {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES, errors, "registry-entry");
   if (x.last_reviewed !== undefined) reqDate(x, "last_reviewed", errors, "registry-entry");
+  // last_reviewed_sha is engine-managed (bin/record stamps it) and feeds
+  // `git diff --name-only <sha>..HEAD` as an argv element. Never shell-
+  // interpolated, but a leading `-` would still be parsed by git as an option
+  // and a ref name would resolve to the wrong baseline, so require hex. The
+  // git runner enforces the same SHA_RE itself (falls back to the date).
+  if (x.last_reviewed_sha !== undefined) {
+    if (typeof x.last_reviewed_sha !== "string" || !SHA_RE.test(x.last_reviewed_sha))
+      errors.push("registry-entry: last_reviewed_sha must be a hex git commit sha (7-64 chars)");
+  }
   return finish(errors);
 }
 

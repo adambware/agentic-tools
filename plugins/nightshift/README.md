@@ -76,12 +76,12 @@ Plugin commands are **colon-namespaced** by their skill folder: `/nightshift:sec
 
 The core is strictly **two-lane** — `security` and `design`.
 
-1. Compute `staleness = (today - last_reviewed)/interval_days`; force-flag entries whose `area` changed in git since `last_reviewed`.
+1. Compute `staleness = (today - last_reviewed)/interval_days`; force-flag entries whose `area` changed in git since the reviewed commit (`last_reviewed_sha`, falling back to the `last_reviewed` date for older entries).
 2. Sort by `max(staleness, change_flag) * weight`; take the top **K** (the manifest's `window_budget_k[<lane>]`).
 3. Fan out the lane reviewer subagent per selected entry (parallelize 3–5 at a time **inside K**).
 4. Run the **two-stage refuter gate** — **both lanes**, same shape (see below).
 5. **Dedupe** against open findings by `dedupe_key`; honor active **suppressions**.
-6. Append confirmed findings (with `first_seen`/`last_seen`/`run_id`); update `last_reviewed`/`status`; write the per-run metrics record.
+6. Append confirmed findings (with `first_seen`/`last_seen`/`run_id`); update `last_reviewed`/`last_reviewed_sha`/`status`; write the per-run metrics record.
 7. Apply **severity gates** (critical/high → surface for human Linear filing; medium → only if reproducible/recurring/customer-facing; low → digest; taste → never without an anchor).
 
 ### The two-stage refuter gate (both lanes)

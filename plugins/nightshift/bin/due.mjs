@@ -7758,33 +7758,59 @@ function tsNewer(a, b) {
 
 // src/lib/git.ts
 import { execFileSync } from "node:child_process";
+
+// src/lib/sha.ts
+var SHA_RE = /^[0-9a-f]{7,64}$/i;
+
+// src/lib/git.ts
 function makeGitRunner(repo) {
   const cache = /* @__PURE__ */ new Map();
+  function diffFromCommit(commit) {
+    try {
+      const out = execFileSync(
+        "git",
+        ["-C", repo, "diff", "--name-only", `${commit}..HEAD`],
+        // stdio: ignore stderr so "fatal: bad revision" etc. never leaks to the
+        // workflow's output; a failure here is an expected fallback trigger.
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      );
+      return out.split("\n").map((s) => s.trim()).filter(Boolean);
+    } catch {
+      return void 0;
+    }
+  }
+  function changedFilesSinceDate(date) {
+    const cacheKey = `date:${date}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    let files = [];
+    try {
+      const commit = execFileSync(
+        "git",
+        ["-C", repo, "rev-list", "-1", `--before=${date}T23:59:59`, "HEAD"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+      if (commit) files = diffFromCommit(commit) ?? [];
+    } catch {
+      files = [];
+    }
+    cache.set(cacheKey, files);
+    return files;
+  }
   return {
-    changedFilesSince(sinceDate) {
-      if (!sinceDate) return [];
-      const cached = cache.get(sinceDate);
-      if (cached) return cached;
-      let files = [];
-      try {
-        const commit = execFileSync(
-          "git",
-          ["-C", repo, "rev-list", "-1", `--before=${sinceDate}T23:59:59`, "HEAD"],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-        ).trim();
-        if (commit) {
-          const out = execFileSync(
-            "git",
-            ["-C", repo, "diff", "--name-only", `${commit}..HEAD`],
-            { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-          );
-          files = out.split("\n").map((s) => s.trim()).filter(Boolean);
+    changedFilesSince({ sha, date }) {
+      if (sha && SHA_RE.test(sha)) {
+        const cacheKey = `sha:${sha}`;
+        const cached = cache.get(cacheKey);
+        if (cached) return cached;
+        const files = diffFromCommit(sha);
+        if (files !== void 0) {
+          cache.set(cacheKey, files);
+          return files;
         }
-      } catch {
-        files = [];
       }
-      cache.set(sinceDate, files);
-      return files;
+      if (!date) return [];
+      return changedFilesSinceDate(date);
     }
   };
 }
@@ -7867,6 +7893,10 @@ function validateRegistryEntry(x) {
   reqNum(x, "interval_days", errors, "registry-entry");
   reqEnum(x, "owner", LANES2, errors, "registry-entry");
   if (x.last_reviewed !== void 0) reqDate(x, "last_reviewed", errors, "registry-entry");
+  if (x.last_reviewed_sha !== void 0) {
+    if (typeof x.last_reviewed_sha !== "string" || !SHA_RE.test(x.last_reviewed_sha))
+      errors.push("registry-entry: last_reviewed_sha must be a hex git commit sha (7-64 chars)");
+  }
   return finish(errors);
 }
 function validateCandidateFinding(x) {
@@ -8112,7 +8142,7 @@ function laneDue(repo, lane, opts) {
     surfaces = selectSurfaces(entries, {
       today,
       k,
-      changedFilesFor: (e) => git.changedFilesSince(e.last_reviewed)
+      changedFilesFor: (e) => git.changedFilesSince({ sha: e.last_reviewed_sha, date: e.last_reviewed })
     });
   } catch (err) {
     return unrunnable(repo, lane, `selection failed for ${registryPath}: ${err.message}`);

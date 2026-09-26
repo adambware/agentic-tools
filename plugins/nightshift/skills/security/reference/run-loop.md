@@ -27,8 +27,13 @@ Do not rename them.
 `staleness = (today - last_reviewed) / interval_days` (unset `last_reviewed` ⇒
 maximally stale, sorts to the top; `interval_days` derived from `weight`
 critical→7/high→14/medium→30/low→90 unless overridden), and `change_flag` from
-`git diff --name-only <commit-at-or-near last_reviewed>..HEAD` intersected with the
-entry's `area` globs. Source: `src/lib/staleness.ts`; tests: `src/lib/staleness.test.ts`.
+`git diff --name-only <last_reviewed_sha>..HEAD` intersected with the entry's
+`area` globs — diffing from the exact reviewed commit, not a date, so a
+same-day commit landing after the review is never invisible to it. Falls back
+to a date-derived baseline (`<commit-at-or-near last_reviewed>..HEAD`) only
+when `last_reviewed_sha` is absent (older entries) or fails to resolve
+(shallow clone, rewritten history). Source: `src/lib/staleness.ts` +
+`src/lib/git.ts`; tests: `src/lib/staleness.test.ts`, `src/lib/git.test.ts`.
 
 ## Step 2 — Selection and the K budget → `bin/select`
 
@@ -241,7 +246,7 @@ Then the orchestrator hands `bin/record` the deduped `decisions.json` + that
 `run.json` (run metadata + refuter-derived counts + reviewed ids); `bin/record` appends
 the per-run record (`run-metrics` schema), appends finding lines (new + recurring
 `last_seen` bumps, `finding` schema), and updates each **actually-reviewed** entry's
-`last_reviewed`/`status` (comments preserved) — selected-but-unreviewed entries keep
+`last_reviewed`/`last_reviewed_sha`/`status` (comments preserved) — selected-but-unreviewed entries keep
 their state, stay stale, and re-select next run. `bin/rollup` then recomputes and appends the day's rollup
 (`daily-metrics` schema: `coverage_freshness_pct`, `median_staleness_ratio`,
 `fpr_7d`/`fpr_30d`). The exact field semantics live **once** in
@@ -271,7 +276,7 @@ just append and the reader dedupes on read.
 - **(b) confirmed findings** → `bin/record` appends to `metrics/findings/<YYYY-MM>.jsonl`
   (`schemas/finding.yml`), setting `first_seen`/`last_seen`/`run_id`, bumping `last_seen`
   (carrying `first_seen`) on recurrence, and updating each reviewed entry's
-  `last_reviewed`/`status` (green | stale | overdue | open-findings).
+  `last_reviewed`/`last_reviewed_sha`/`status` (green | stale | overdue | open-findings).
 - **(c) daily rollup** → `bin/rollup` appends a fresh line to `metrics/daily.jsonl`; the
   reader takes the **greatest-`ts` line per `(date, lane)`** (union-merge-safe). Record
   shape + the freshness / median-staleness / FPR formulas: `schemas/daily-metrics.yml`

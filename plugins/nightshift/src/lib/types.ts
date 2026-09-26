@@ -27,6 +27,7 @@ export interface RegistryEntry {
   persona?: string;
   core?: boolean;
   last_reviewed?: string; // YYYY-MM-DD, (auto)
+  last_reviewed_sha?: string; // exact reviewed-repo HEAD sha at record time, (auto)
   status?: "green" | "stale" | "overdue" | "open-findings";
   linear?: string[];
 }
