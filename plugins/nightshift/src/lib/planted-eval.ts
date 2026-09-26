@@ -187,6 +187,21 @@ function toFinding(raw: unknown): ScoredFinding | undefined {
   return f;
 }
 
+/**
+ * Run-dir artifacts that hold candidates BEFORE the refuters are done with them
+ * (see nightshift.workflow.js): the reviewer's proposals, Tier-1 survivors that
+ * Tier-2 may still reject, and Tier-2's per-surface input/output. Only
+ * candidates.tier2.json is the final, logged set. A directory walk skips these so
+ * pointing at a whole run dir never credits a vuln the refuter killed; naming one
+ * of them explicitly as --findings still reads it.
+ */
+const PRE_FINAL_ARTIFACTS = new Set([
+  "candidates.proposed.json",
+  "candidates.json",
+  "tier2.pending.json",
+  "tier2.survivors.json",
+]);
+
 function listFiles(path: string): string[] {
   if (!statSync(path).isDirectory()) return [path];
   const out: string[] = [];
@@ -194,6 +209,7 @@ function listFiles(path: string): string[] {
     const child = join(path, name);
     const st = statSync(child);
     if (st.isDirectory()) out.push(...listFiles(child));
+    else if (PRE_FINAL_ARTIFACTS.has(name)) continue;
     else if (name.endsWith(".json") || name.endsWith(".jsonl")) out.push(child);
   }
   return out;
@@ -202,8 +218,9 @@ function listFiles(path: string): string[] {
 /**
  * Collect finding-shaped records (anything carrying `dedupe_key.surface`) from a
  * findings jsonl, a candidates JSON array, or a directory of either (recursive).
- * Non-finding JSON (reviewed.json id lists, surfaces.json, …) is skipped, so a whole
- * run dir or `.nightshift/metrics/findings/` can be pointed at directly.
+ * Non-finding JSON (reviewed.json id lists, surfaces.json, …) and pre-refutation
+ * run artifacts (PRE_FINAL_ARTIFACTS) are skipped, so a whole run dir or
+ * `.nightshift/metrics/findings/` can be pointed at directly.
  */
 export function collectFindings(path: string): ScoredFinding[] {
   if (!existsSync(path)) throw new Error(`findings path not found: ${path}`);

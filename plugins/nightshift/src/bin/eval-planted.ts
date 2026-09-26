@@ -7,7 +7,7 @@
 //     --findings <target>/.nightshift/metrics/findings [--run-id <id>] [--slack 3] [--json]
 //
 // --findings takes a findings .jsonl, a candidates .json array, or a directory of
-// either (recursive; non-finding JSON is skipped).
+// either (recursive; non-finding JSON and pre-refutation run artifacts are skipped).
 import { parseArgs, requireArg } from "../lib/args.js";
 import { formatReport, runPlantedEval } from "../lib/planted-eval.js";
 

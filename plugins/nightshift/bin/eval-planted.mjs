@@ -7498,6 +7498,12 @@ function toFinding(raw) {
   if (typeof r.run_id === "string") f.run_id = r.run_id;
   return f;
 }
+var PRE_FINAL_ARTIFACTS = /* @__PURE__ */ new Set([
+  "candidates.proposed.json",
+  "candidates.json",
+  "tier2.pending.json",
+  "tier2.survivors.json"
+]);
 function listFiles(path) {
   if (!statSync(path).isDirectory()) return [path];
   const out = [];
@@ -7505,6 +7511,7 @@ function listFiles(path) {
     const child = join(path, name);
     const st = statSync(child);
     if (st.isDirectory()) out.push(...listFiles(child));
+    else if (PRE_FINAL_ARTIFACTS.has(name)) continue;
     else if (name.endsWith(".json") || name.endsWith(".jsonl")) out.push(child);
   }
   return out;

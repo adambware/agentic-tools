@@ -281,11 +281,31 @@ describe("collectFindings / runPlantedEval", () => {
     );
     writeFileSync(join(dir, "run", "reviewed.json"), JSON.stringify(["ND-SEC-05"]));
     writeFileSync(join(dir, "run", "surfaces.json"), JSON.stringify([{ id: "ND-SEC-05", band: "critical" }]));
-    writeFileSync(join(dir, "run", "candidates.json"), JSON.stringify([finding("ASVS-INPV-04", "app/queries/ticket_search_query.rb:14")]));
+    writeFileSync(join(dir, "run", "candidates.tier2.json"), JSON.stringify([finding("ASVS-INPV-04", "app/queries/ticket_search_query.rb:14")]));
     writeFileSync(join(dir, "notes.txt"), "not json");
     const r = runPlantedEval({ keyPath: KEY_PATH, findingsPath: dir });
     expect(r.caught).toBe(2);
     expect(r.findings_scanned).toBe(2);
+  });
+
+  it("a run dir scores only what survived both refuter tiers, never pre-refutation candidates", () => {
+    const run = join(dir, "run");
+    mkdirSync(join(run, "surfaces", "ND-SEC-03"), { recursive: true });
+    const ssrf = finding("ND-SEC-03", "app/services/webhooks/url_fetcher.rb:12");
+    const webhook = finding("ND-SEC-06", "app/controllers/concerns/verify_webhook_signature.rb:14");
+    // The reviewer proposed both; Tier-1 kept both; Tier-2 killed the SSRF.
+    writeFileSync(join(run, "candidates.proposed.json"), JSON.stringify([ssrf, webhook]));
+    writeFileSync(join(run, "candidates.json"), JSON.stringify([ssrf, webhook]));
+    writeFileSync(join(run, "surfaces", "ND-SEC-03", "candidates.proposed.json"), JSON.stringify([ssrf]));
+    writeFileSync(join(run, "surfaces", "ND-SEC-03", "candidates.json"), JSON.stringify([ssrf]));
+    writeFileSync(join(run, "surfaces", "ND-SEC-03", "tier2.pending.json"), JSON.stringify([ssrf]));
+    writeFileSync(join(run, "surfaces", "ND-SEC-03", "tier2.survivors.json"), JSON.stringify([]));
+    writeFileSync(join(run, "candidates.tier2.json"), JSON.stringify([webhook]));
+    const r = runPlantedEval({ keyPath: KEY_PATH, findingsPath: run });
+    expect(r.planted.filter((p) => p.caught).map((p) => p.id)).toEqual(["PV-04"]);
+    expect(r.findings_scanned).toBe(1);
+    // Naming a pre-final file explicitly still reads it.
+    expect(runPlantedEval({ keyPath: KEY_PATH, findingsPath: join(run, "candidates.proposed.json") }).caught).toBe(2);
   });
 
   it("an empty findings dir (a clean run) scores 0/4, it does not error", () => {
