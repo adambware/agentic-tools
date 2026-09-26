@@ -19,5 +19,5 @@ false-negative counterweight.
 
 ## Task
 
-- [ ] **T14** — Files: `examples/novudesk/`, new eval runner
+- [x] **T14** — Files: `examples/novudesk/eval/` (answer key + target), `bin/eval-planted`, `src/lib/planted-eval.ts`
   - Verify: reports caught/total + FP-on-clean; never blocks CI

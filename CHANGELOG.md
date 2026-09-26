@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- **nightshift: non-gating planted-vuln eval (T14).** FPR only sees false positives, so a
+  reviewer change that starts *missing* real issues reads as an improvement. The new
+  `examples/novudesk/eval/` pairs a small NovuDesk target (4 planted, unambiguous
+  vulnerabilities on real registry vectors + 3 clean control surfaces, no hints in the
+  source) with an answer key kept outside the reviewed tree. `bin/eval-planted` scores a
+  finished run's logged findings: caught/total and false-positives-on-clean. Report-only:
+  it exits 0 whatever the score and nothing in CI runs a paid review.
+
 ## [3.0.0] - 2026-08-23
 
 Nightshift v3. The loop now runs **local-first behind one easy button** — `ns run <repo>

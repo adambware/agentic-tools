@@ -1,0 +1,69 @@
+# examples/novudesk/eval/answer-key.yml — the planted-vuln eval's answer key (T14).
+# ==================================================================================
+# Scores a security-lane run against eval/target/ (see eval/README.md). This file
+# lives OUTSIDE target/ on purpose: the target is what gets copied into a scratch repo
+# and reviewed, and a reviewer that could read the key would be grading itself.
+#
+# planted — one unambiguous vulnerability per entry, mapped to a real registry vector.
+#   A planted entry is CAUGHT when at least one logged finding's `location` names one of
+#   its `locations` files with a line inside `lines` (widened by bin/eval-planted's slack),
+#   or names the file with no line at all while `dedupe_key.surface` is the entry's vector.
+# clean — control surfaces written to be correct. EVERY finding whose surface is a clean
+#   vector, or whose location names a clean file, is a false positive on clean code.
+#
+# Line numbers are 1-based and must be kept in step with the target files; the vitest
+# suite (src/lib/planted-eval.test.ts) fails if a range stops pointing at real lines.
+
+key_format: 1
+target: target
+
+planted:
+  - id:     PV-01
+    vector: ASVS-INPV-04
+    class:  sql-injection
+    summary: "Search term interpolated straight into a WHERE fragment"
+    locations:
+      - file:  app/queries/ticket_search_query.rb
+        lines: [13, 15]
+
+  - id:     PV-02
+    vector: ND-SEC-03
+    class:  ssrf
+    summary: "Monitor URL fetched server-side with no scheme, host or resolved-IP restriction"
+    locations:
+      - file:  app/services/webhooks/url_fetcher.rb
+        lines: [7, 17]
+      - file:  app/controllers/webhook_monitors_controller.rb
+        lines: [3, 7]
+
+  - id:     PV-03
+    vector: ND-SEC-05
+    class:  idor
+    summary: "TicketsController#show loads any workspace's ticket by id and skips authorization"
+    locations:
+      - file:  app/controllers/tickets_controller.rb
+        lines: [6, 9]
+
+  - id:     PV-04
+    vector: ND-SEC-06
+    class:  webhook-signature-bypass
+    summary: "A request with no signature header skips verification entirely"
+    locations:
+      - file:  app/controllers/concerns/verify_webhook_signature.rb
+        lines: [12, 17]
+
+clean:
+  - vector: ND-SEC-01
+    files:
+      - app/models/integration_token.rb
+      - app/services/vault/token_store.rb
+
+  - vector: ND-SEC-02
+    files:
+      - app/services/dispatch/command_signer.rb
+      - app/jobs/dispatch_triage_command_job.rb
+
+  - vector: ND-SEC-07
+    files:
+      - app/services/triage_gate/review_queue.rb
+      - app/views/triage/index.html.erb
