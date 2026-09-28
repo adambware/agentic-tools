@@ -12,6 +12,7 @@
 //   4. Malformed input is counted, never fatal.
 import { createReadStream, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { parseIso } from "./time.js";
 
 export interface ParseCounters {
   bad_lines: number;
@@ -124,8 +125,8 @@ export async function collectSessionFiles(
  */
 async function firstRecord(file: string): Promise<{ ts: number; copied: boolean } | "unreadable"> {
   try {
-    for await (const line of readLines(file)) {
-      const rec = parseLine(line);
+    for await (const { text } of readLines(file)) {
+      const rec = parseLine(text);
       if (!rec) continue;
       const ts = parseTimestamp(rec.timestamp);
       if (ts === undefined) continue;
@@ -144,8 +145,9 @@ async function firstRecord(file: string): Promise<{ ts: number; copied: boolean 
  * A trailing "\r" is left in place: JSON.parse treats it as whitespace.
  * The unfinished line is held as a list of chunks and joined once: re-concatenating and
  * re-splitting it per chunk is quadratic on multi-MB lines (inline images, big tool output).
+ * A last line with no "\n" is `partial`: a live session may be mid-write.
  */
-async function* readLines(file: string): AsyncGenerator<string> {
+async function* readLines(file: string): AsyncGenerator<{ text: string; partial: boolean }> {
   const stream = createReadStream(file, { encoding: "utf8" });
   let pending: string[] = [];
   try {
@@ -154,13 +156,13 @@ async function* readLines(file: string): AsyncGenerator<string> {
       let start = 0;
       for (let nl = text.indexOf("\n"); nl !== -1; nl = text.indexOf("\n", start)) {
         pending.push(text.slice(start, nl));
-        yield pending.join("");
+        yield { text: pending.join(""), partial: false };
         pending = [];
         start = nl + 1;
       }
       if (start < text.length) pending.push(text.slice(start));
     }
-    if (pending.length > 0) yield pending.join("");
+    if (pending.length > 0) yield { text: pending.join(""), partial: true };
   } finally {
     stream.destroy();
   }
@@ -180,11 +182,12 @@ async function parseFile(
     naive: { usage_records: 0, compact_records: 0 },
   };
   try {
-    for await (const line of readLines(file)) {
-      if (line.trim() === "") continue;
-      const rec = parseLine(line);
+    for await (const { text, partial } of readLines(file)) {
+      if (text.trim() === "") continue;
+      const rec = parseLine(text);
       if (!rec) {
-        parse.bad_lines++;
+        // A torn last line is a record still being written, not drift: next week's run reads it.
+        if (!partial) parse.bad_lines++;
         continue;
       }
       const usage = usageOf(rec);
@@ -193,6 +196,8 @@ async function parseFile(
       if (compact) stats.naive.compact_records++;
 
       const uuid = typeof rec.uuid === "string" ? rec.uuid : undefined;
+      // Every real record has a uuid; without one a replayed record cannot be deduped.
+      if (uuid === undefined && (usage || compact)) parse.bad_records++;
       if (uuid !== undefined) {
         if (seenUuids.has(uuid)) {
           parse.dup_records++;
@@ -218,7 +223,8 @@ async function parseFile(
         }
         const { ctx, bad } = contextSize(usage);
         if (bad) parse.bad_records++;
-        stats.messages.push([ts, ctx]);
+        // No context field at all is a renamed field, not a zero-token call: keep it out of peaks.
+        if (ctx !== undefined) stats.messages.push([ts, ctx]);
       }
     }
   } catch {
@@ -240,9 +246,7 @@ function parseLine(line: string): Rec | undefined {
 }
 
 function parseTimestamp(v: unknown): number | undefined {
-  if (typeof v !== "string") return undefined;
-  const ms = Date.parse(v);
-  return Number.isFinite(ms) ? ms : undefined;
+  return typeof v === "string" ? parseIso(v) : undefined;
 }
 
 /** Usage of a real API call. Synthetic records (API errors, interruptions) carry all-zero usage. */
@@ -266,11 +270,11 @@ function messageKey(rec: Rec): string | undefined {
 const CONTEXT_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
 
 /**
- * Context size of one API call. Missing fields read as 0; a non-numeric one is 0 and bad.
+ * Context size of one API call. Missing fields read as 0; a non-numeric or negative one is 0 and bad.
  * A usage object with none of the three fields is bad too: that is a renamed field, not a
  * zero-token call.
  */
-function contextSize(usage: Rec): { ctx: number; bad: boolean } {
+function contextSize(usage: Rec): { ctx: number | undefined; bad: boolean } {
   let ctx = 0;
   let bad = false;
   let present = 0;
@@ -278,8 +282,8 @@ function contextSize(usage: Rec): { ctx: number; bad: boolean } {
     const v = usage[f];
     if (v === undefined || v === null) continue;
     present++;
-    if (typeof v === "number" && Number.isFinite(v)) ctx += v;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) ctx += v;
     else bad = true;
   }
-  return { ctx, bad: bad || present === 0 };
+  return present === 0 ? { ctx: undefined, bad: true } : { ctx, bad };
 }

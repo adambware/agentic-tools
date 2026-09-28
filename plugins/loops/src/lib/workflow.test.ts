@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,11 +7,12 @@ import { collectWorkflows, parseWorkflow } from "./workflow.js";
 
 const agent = (model: string, state: string, tokens?: unknown) => ({ type: "workflow_agent", model, state, tokens });
 /** The run-level fields every real record has; a test overrides only what it exercises. */
-const FULL = { status: "completed", durationMs: 1, totalTokens: 0, phases: [], workflowProgress: [] };
+const FULL = { runId: "run-1", status: "completed", durationMs: 1, totalTokens: 0, phases: [], workflowProgress: [] };
 
 describe("parseWorkflow", () => {
   it("reads a completed run", () => {
     const p = parseWorkflow({
+      runId: "r",
       startTime: 1000,
       durationMs: 60_000,
       status: "completed",
@@ -21,6 +22,7 @@ describe("parseWorkflow", () => {
     });
     expect(p).toEqual({
       ok: true,
+      runId: "r",
       badRecords: 0,
       run: {
         startMs: 1000,
@@ -38,6 +40,7 @@ describe("parseWorkflow", () => {
 
   it("counts agents still running in a killed run as killed, and errored agents with no tokens as 0", () => {
     const p = parseWorkflow({
+      runId: "k",
       startTime: 1000,
       status: "killed",
       totalTokens: 50,
@@ -104,7 +107,7 @@ describe("parseWorkflow", () => {
     if (!p.ok) throw new Error("expected ok");
     expect(p.run.tokens).toBe(0);
     expect(p.run.status).toBe("unknown");
-    expect(p.badRecords).toBe(5); // totalTokens, phases, workflowProgress, status, durationMs
+    expect(p.badRecords).toBe(6); // totalTokens, phases, workflowProgress, status, durationMs, runId
     const agentOnly = parseWorkflow({ ...FULL, startTime: 1, workflowProgress: [agent("m", "error")] });
     if (!agentOnly.ok) throw new Error("expected ok");
     // An errored agent legitimately has no tokens.
@@ -112,6 +115,9 @@ describe("parseWorkflow", () => {
     const renamedState = parseWorkflow({ ...FULL, startTime: 1, workflowProgress: [agent("m", "failed", 3)] });
     if (!renamedState.ok) throw new Error("expected ok");
     expect(renamedState.badRecords).toBe(1);
+    const negative = parseWorkflow({ ...FULL, startTime: 1, totalTokens: -5, workflowProgress: [agent("m", "done", -1)] });
+    if (!negative.ok) throw new Error("expected ok");
+    expect([negative.run.tokens, negative.run.byModel.m!.tokens, negative.badRecords]).toEqual([0, 0, 2]);
   });
 
   it("keys a model named __proto__ as a plain key, not the prototype", () => {
@@ -154,8 +160,8 @@ describe("collectWorkflows", () => {
   it("sums per-run bad records into parse.bad_records", () => {
     const wf = join(dir, "proj", "sess", "workflows");
     mkdirSync(wf, { recursive: true });
-    writeFileSync(join(wf, "wf_1.json"), JSON.stringify({ ...FULL, startTime: 5, totalTokens: "x" }));
-    writeFileSync(join(wf, "wf_2.json"), JSON.stringify({ ...FULL, startTime: 6, workflowProgress: [agent("m", "done", "y")] }));
+    writeFileSync(join(wf, "wf_1.json"), JSON.stringify({ ...FULL, runId: "a", startTime: 5, totalTokens: "x" }));
+    writeFileSync(join(wf, "wf_2.json"), JSON.stringify({ ...FULL, runId: "b", startTime: 6, workflowProgress: [agent("m", "done", "y")] }));
     const parse = emptyCounters();
     expect(collectWorkflows(dir, 0, parse)).toHaveLength(2);
     expect(parse.bad_records).toBe(2);
@@ -176,6 +182,30 @@ describe("collectWorkflows", () => {
     const runs = collectWorkflows(dir, Date.UTC(2021, 0, 1), parse);
     expect(runs.map((r) => r.startMs)).toEqual([2]);
     expect(parse).toEqual(emptyCounters());
+  });
+
+  it("counts a run copied into another session's workflows/ once, by runId", () => {
+    for (const sess of ["orig", "fork"]) {
+      mkdirSync(join(dir, "proj", sess, "workflows"), { recursive: true });
+      writeFileSync(join(dir, "proj", sess, "workflows", "wf_x.json"), JSON.stringify({ ...FULL, startTime: 5 }));
+    }
+    const parse = emptyCounters();
+    expect(collectWorkflows(dir, 0, parse)).toHaveLength(1);
+    expect(parse.dup_records).toBe(1);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("counts an unreadable workflows dir as a bad file, not an empty one", () => {
+    const wf = join(dir, "proj", "sess", "workflows");
+    mkdirSync(wf, { recursive: true });
+    writeFileSync(join(wf, "wf_1.json"), JSON.stringify({ ...FULL, startTime: 5 }));
+    chmodSync(wf, 0o000);
+    try {
+      const parse = emptyCounters();
+      expect(collectWorkflows(dir, 0, parse)).toEqual([]);
+      expect(parse.bad_files).toBe(1);
+    } finally {
+      chmodSync(wf, 0o755);
+    }
   });
 
   it("returns no runs for a missing projects dir", () => {

@@ -228,10 +228,40 @@ describe("collectSessionFiles", () => {
     expect(parse.bad_records).toBe(0);
   });
 
+  it("skips a torn last line without counting it: a live session may be mid-write", async () => {
+    const f = join(dir, "live.jsonl");
+    writeFileSync(f, JSON.stringify(assistant("a1", T(1), "m1", USAGE)) + "\n" + '{"type":"assistant","uuid":"a2","timest');
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toHaveLength(1);
+    expect(parse.bad_lines).toBe(0);
+  });
+
+  it("rejects timestamps Date.parse would bend: an impossible date or no zone is a bad record", async () => {
+    const f = write("s.jsonl", [
+      assistant("a1", "2026-02-30T10:00:00.000Z", "m1", USAGE),
+      compact("c1", "2026-08-30T10:00:00"),
+      { type: "user", uuid: "u1", timestamp: "2026-02-30T10:00:00Z" }, // unused record: not counted
+      assistant("a2", T(1), "m2", USAGE),
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.recordTimes).toEqual([Date.parse(T(1))]);
+    expect(sessions[0]!.compactions).toEqual([]);
+    expect(parse.bad_records).toBe(2);
+  });
+
+  it("counts a usage or compaction record with no uuid as bad: it cannot be deduped", async () => {
+    const { uuid: _u, ...noUuid } = compact("c1", T(2));
+    const f = write("s.jsonl", [noUuid, noUuid, assistant("a1", T(1), "m1", USAGE)]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.compactions).toHaveLength(2);
+    expect(parse.bad_records).toBe(2);
+  });
+
   it("counts a usage object with none of the context fields as bad: a renamed field, not a zero", async () => {
     const f = write("s.jsonl", [assistant("a1", T(1), "m1", { inputTokens: 5, cacheReadInputTokens: 100 })]);
     const { sessions, parse } = await collectSessionFiles([f]);
-    expect(sessions[0]!.messages).toEqual([[Date.parse(T(1)), 0]]);
+    // Counted as drift, and kept out of the peaks: 0 would drag the median down.
+    expect(sessions[0]!.messages).toEqual([]);
     expect(parse.bad_records).toBe(1);
   });
 });

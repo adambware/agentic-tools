@@ -3,7 +3,7 @@ import { createRequire as __loops_createRequire } from 'node:module';
 const require = __loops_createRequire(import.meta.url);
 
 // src/lib/cli.ts
-import { appendFileSync, mkdirSync, readdirSync as readdirSync3, statSync as statSync3 } from "node:fs";
+import { closeSync, fstatSync, ftruncateSync, mkdirSync, openSync, readdirSync as readdirSync3, readSync, statSync as statSync3, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join as join3 } from "node:path";
 
@@ -103,6 +103,20 @@ function sortKeys(o) {
 // src/lib/session.ts
 import { createReadStream, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+
+// src/lib/time.ts
+var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+function parseIso(s) {
+  const m = ISO_WITH_ZONE.exec(s);
+  if (!m) return void 0;
+  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi));
+  const real = t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d && t.getUTCHours() === h && t.getUTCMinutes() === mi;
+  const ms = Date.parse(s);
+  return real && Number.isFinite(ms) ? ms : void 0;
+}
+
+// src/lib/session.ts
 function emptyCounters() {
   return { bad_lines: 0, bad_files: 0, bad_records: 0, dup_records: 0 };
 }
@@ -166,8 +180,8 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
 }
 async function firstRecord(file) {
   try {
-    for await (const line of readLines(file)) {
-      const rec = parseLine(line);
+    for await (const { text } of readLines(file)) {
+      const rec = parseLine(text);
       if (!rec) continue;
       const ts = parseTimestamp(rec.timestamp);
       if (ts === void 0) continue;
@@ -188,13 +202,13 @@ async function* readLines(file) {
       let start = 0;
       for (let nl = text.indexOf("\n"); nl !== -1; nl = text.indexOf("\n", start)) {
         pending.push(text.slice(start, nl));
-        yield pending.join("");
+        yield { text: pending.join(""), partial: false };
         pending = [];
         start = nl + 1;
       }
       if (start < text.length) pending.push(text.slice(start));
     }
-    if (pending.length > 0) yield pending.join("");
+    if (pending.length > 0) yield { text: pending.join(""), partial: true };
   } finally {
     stream.destroy();
   }
@@ -208,11 +222,11 @@ async function parseFile(file, seenUuids, seenMessages, parse) {
     naive: { usage_records: 0, compact_records: 0 }
   };
   try {
-    for await (const line of readLines(file)) {
-      if (line.trim() === "") continue;
-      const rec = parseLine(line);
+    for await (const { text, partial } of readLines(file)) {
+      if (text.trim() === "") continue;
+      const rec = parseLine(text);
       if (!rec) {
-        parse.bad_lines++;
+        if (!partial) parse.bad_lines++;
         continue;
       }
       const usage = usageOf(rec);
@@ -220,6 +234,7 @@ async function parseFile(file, seenUuids, seenMessages, parse) {
       if (usage) stats.naive.usage_records++;
       if (compact) stats.naive.compact_records++;
       const uuid = typeof rec.uuid === "string" ? rec.uuid : void 0;
+      if (uuid === void 0 && (usage || compact)) parse.bad_records++;
       if (uuid !== void 0) {
         if (seenUuids.has(uuid)) {
           parse.dup_records++;
@@ -242,7 +257,7 @@ async function parseFile(file, seenUuids, seenMessages, parse) {
         }
         const { ctx, bad } = contextSize(usage);
         if (bad) parse.bad_records++;
-        stats.messages.push([ts, ctx]);
+        if (ctx !== void 0) stats.messages.push([ts, ctx]);
       }
     }
   } catch {
@@ -260,9 +275,7 @@ function parseLine(line) {
   }
 }
 function parseTimestamp(v) {
-  if (typeof v !== "string") return void 0;
-  const ms = Date.parse(v);
-  return Number.isFinite(ms) ? ms : void 0;
+  return typeof v === "string" ? parseIso(v) : void 0;
 }
 function usageOf(rec) {
   if (rec.type !== "assistant" || rec.isApiErrorMessage === true) return void 0;
@@ -288,10 +301,10 @@ function contextSize(usage) {
     const v = usage[f];
     if (v === void 0 || v === null) continue;
     present++;
-    if (typeof v === "number" && Number.isFinite(v)) ctx += v;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) ctx += v;
     else bad = true;
   }
-  return { ctx, bad: bad || present === 0 };
+  return present === 0 ? { ctx: void 0, bad: true } : { ctx, bad };
 }
 
 // src/lib/workflow.ts
@@ -305,7 +318,7 @@ function parseWorkflow(json) {
   let badRecords = 0;
   const num = (v) => {
     if (v === void 0 || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     badRecords++;
     return 0;
   };
@@ -313,6 +326,7 @@ function parseWorkflow(json) {
   if (!Array.isArray(rec.phases)) badRecords++;
   if (!Array.isArray(rec.workflowProgress)) badRecords++;
   if (typeof rec.status !== "string") badRecords++;
+  if (typeof rec.runId !== "string") badRecords++;
   if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run = {
@@ -341,17 +355,19 @@ function parseWorkflow(json) {
     slot.agents++;
     slot.tokens += num(agent.tokens);
   }
-  return { ok: true, run, badRecords };
+  return { ok: true, run, runId: typeof rec.runId === "string" ? rec.runId : void 0, badRecords };
 }
 function collectWorkflows(projectsDir, sinceMs, parse) {
   const runs = [];
-  for (const project of subdirs(projectsDir)) {
-    for (const session of subdirs(join2(projectsDir, project))) {
+  const seenRuns = /* @__PURE__ */ new Set();
+  for (const project of subdirs(projectsDir, parse)) {
+    for (const session of subdirs(join2(projectsDir, project), parse)) {
       const dir = join2(projectsDir, project, session, "workflows");
       let names;
       try {
         names = readdirSync2(dir);
-      } catch {
+      } catch (e) {
+        if (!isMissing(e)) parse.bad_files++;
         continue;
       }
       for (const name of names) {
@@ -370,30 +386,33 @@ function collectWorkflows(projectsDir, sinceMs, parse) {
           continue;
         }
         parse.bad_records += parsed.badRecords;
+        const key = parsed.runId ?? path;
+        if (seenRuns.has(key)) {
+          parse.dup_records++;
+          continue;
+        }
+        seenRuns.add(key);
         runs.push(parsed.run);
       }
     }
   }
   return runs;
 }
-function subdirs(dir) {
+function subdirs(dir, parse) {
   try {
     return readdirSync2(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-  } catch {
+  } catch (e) {
+    if (!isMissing(e)) parse.bad_files++;
     return [];
   }
+}
+function isMissing(e) {
+  const code = e.code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 // src/lib/cli.ts
 var USAGE = "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
-var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
-function isIsoWithZone(s) {
-  const m = ISO_WITH_ZONE.exec(s);
-  if (!m) return false;
-  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
-  const t = new Date(Date.UTC(y, mo - 1, d, h, mi));
-  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d && t.getUTCHours() === h && t.getUTCMinutes() === mi;
-}
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "out", "now", "session"]);
 var BARE_FLAGS = /* @__PURE__ */ new Set(["dry-run", "help"]);
 function parseCli(argv) {
@@ -435,7 +454,7 @@ async function main(argv, io = processIo) {
   const { args } = parsed;
   let now = Date.now();
   if (args.now !== void 0) {
-    now = isIsoWithZone(args.now) ? Date.parse(args.now) : NaN;
+    now = parseIso(args.now) ?? NaN;
     if (!Number.isFinite(now)) {
       io.stderr(`error: --now is not an ISO timestamp: ${args.now}
 `);
@@ -459,8 +478,7 @@ async function main(argv, io = processIo) {
   const line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
   if (args["dry-run"] === void 0) {
     try {
-      mkdirSync(dirname(out), { recursive: true });
-      appendFileSync(out, line);
+      appendRow(out, line);
     } catch (e) {
       io.stderr(`error: cannot append to --out ${out}: ${e.message}
 `);
@@ -469,6 +487,25 @@ async function main(argv, io = processIo) {
   }
   io.stdout(line);
   return 0;
+}
+function appendRow(out, line) {
+  mkdirSync(dirname(out), { recursive: true });
+  const fd = openSync(out, "a+");
+  try {
+    const size = fstatSync(fd).size;
+    const last = Buffer.alloc(1);
+    const torn = size > 0 && readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 10;
+    const data = Buffer.from((torn ? "\n" : "") + line);
+    let written = 0;
+    try {
+      written = writeSync(fd, data);
+    } finally {
+      if (written !== data.length) ftruncateSync(fd, size);
+    }
+    if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
+  } finally {
+    closeSync(fd);
+  }
 }
 async function sessionReport(file, io) {
   try {

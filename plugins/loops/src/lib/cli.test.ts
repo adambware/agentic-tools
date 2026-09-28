@@ -44,6 +44,17 @@ describe("loop-metrics", () => {
     expect(JSON.parse(lines[0]!).schema).toBe(1);
   });
 
+  it("starts a new line after a torn last row instead of gluing onto it", async () => {
+    const out = join(tmp, "loops.jsonl");
+    writeFileSync(out, '{"schema":1}\n{"partial":');
+    expect((await run(["--projects-dir", FIXTURES, "--out", out, "--now", NOW])).code).toBe(0);
+    const lines = readFileSync(out, "utf8").split("\n");
+    expect(lines).toHaveLength(4); // good row, torn row, new row, and the final newline
+    expect(lines[1]).toBe('{"partial":');
+    expect(JSON.parse(lines[2]!).window_end).toBe(NOW);
+    expect(lines[3]).toBe("");
+  });
+
   it("fails without a row when --out is unwritable", async () => {
     const blocker = join(tmp, "a-file");
     writeFileSync(blocker, "");

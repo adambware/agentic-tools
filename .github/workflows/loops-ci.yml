@@ -13,6 +13,9 @@ on:
       - ".claude-plugin/marketplace.json"
       - ".github/workflows/loops-ci.yml"
 
+permissions:
+  contents: read
+
 jobs:
   # typecheck + vitest + build, and assert the committed bin/*.mjs bundle is in
   # sync with src/ (the tool ships compiled and zero-install, so a stale bundle
@@ -28,7 +31,7 @@ jobs:
         with:
           node-version: "20"
       - name: install
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: typecheck
         run: npm run typecheck
       - name: test
@@ -38,7 +41,7 @@ jobs:
       - name: committed artifacts are in sync with src
         run: |
           set -euo pipefail
-          if ! git diff --exit-code -- bin; then
+          if ! git diff --exit-code -- bin || [ -n "$(git status --porcelain -- bin)" ]; then
             echo "::error::bin/ artifacts are stale — run 'npm run build' and commit the result"
             exit 1
           fi

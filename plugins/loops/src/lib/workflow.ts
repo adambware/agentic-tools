@@ -18,7 +18,7 @@ export interface RunStats {
 }
 
 export type ParsedWorkflow =
-  | { ok: true; run: RunStats; badRecords: number }
+  | { ok: true; run: RunStats; runId: string | undefined; badRecords: number }
   | { ok: false };
 
 type Rec = Record<string, unknown>;
@@ -35,7 +35,7 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   let badRecords = 0;
   const num = (v: unknown): number => {
     if (v === undefined || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
     badRecords++;
     return 0;
   };
@@ -46,6 +46,7 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   if (!Array.isArray(rec.phases)) badRecords++;
   if (!Array.isArray(rec.workflowProgress)) badRecords++;
   if (typeof rec.status !== "string") badRecords++;
+  if (typeof rec.runId !== "string") badRecords++;
   if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
 
   const status = typeof rec.status === "string" ? rec.status : "unknown";
@@ -77,20 +78,23 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
     slot.agents++;
     slot.tokens += num(agent.tokens);
   }
-  return { ok: true, run, badRecords };
+  return { ok: true, run, runId: typeof rec.runId === "string" ? rec.runId : undefined, badRecords };
 }
 
 /** Every wf_*.json under <projectsDir>/<project>/<session>/workflows/, mtime >= sinceMs. */
 export function collectWorkflows(projectsDir: string, sinceMs: number, parse: ParseCounters): RunStats[] {
   const runs: RunStats[] = [];
-  for (const project of subdirs(projectsDir)) {
-    for (const session of subdirs(join(projectsDir, project))) {
+  const seenRuns = new Set<string>();
+  for (const project of subdirs(projectsDir, parse)) {
+    for (const session of subdirs(join(projectsDir, project), parse)) {
       const dir = join(projectsDir, project, session, "workflows");
       let names: string[];
       try {
         names = readdirSync(dir);
-      } catch {
-        continue; // most sessions have no workflows dir
+      } catch (e) {
+        // Most sessions have no workflows dir; an unreadable one must not look like a quiet week.
+        if (!isMissing(e)) parse.bad_files++;
+        continue;
       }
       for (const name of names) {
         if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
@@ -108,6 +112,13 @@ export function collectWorkflows(projectsDir: string, sinceMs: number, parse: Pa
           continue;
         }
         parse.bad_records += parsed.badRecords;
+        // A run copied into another session's workflows/ (as a fork copies transcripts) counts once.
+        const key = parsed.runId ?? path;
+        if (seenRuns.has(key)) {
+          parse.dup_records++;
+          continue;
+        }
+        seenRuns.add(key);
         runs.push(parsed.run);
       }
     }
@@ -115,12 +126,18 @@ export function collectWorkflows(projectsDir: string, sinceMs: number, parse: Pa
   return runs;
 }
 
-function subdirs(dir: string): string[] {
+function subdirs(dir: string, parse: ParseCounters): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
-  } catch {
+  } catch (e) {
+    if (!isMissing(e)) parse.bad_files++;
     return [];
   }
+}
+
+function isMissing(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
