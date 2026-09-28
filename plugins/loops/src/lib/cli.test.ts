@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { main } from "./cli.js";
+import { main, USAGE } from "./cli.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "projects");
 const NOW = "2026-09-01T00:00:00.000Z";
@@ -71,7 +71,19 @@ describe("loop-metrics", () => {
 
   it("rejects a bad --now and unknown flags", async () => {
     expect((await run(["--now", "yesterday", "--dry-run"])).code).toBe(2);
+    // Date.parse would accept both: "Sep 28" as 2001, a zone-less time as local.
+    expect((await run(["--now", "Sep 28", "--dry-run"])).code).toBe(2);
+    expect((await run(["--now", "2026-09-28T09:00", "--dry-run"])).code).toBe(2);
     expect((await run(["--dryrun"])).code).toBe(2);
+  });
+
+  it("rejects a value flag with no value instead of reading it as the path 'true'", async () => {
+    for (const argv of [["--out"], ["--out", "--dry-run"], ["--projects-dir"], ["--session"], ["--now"]]) {
+      const r = await run(argv);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(`error: ${argv[0]} needs a value`);
+      expect(r.stdout).toBe("");
+    }
   });
 
   it("--session shows the naive counts inflated over the deduped ones", async () => {
@@ -82,5 +94,71 @@ describe("loop-metrics", () => {
     expect(report.naive).toEqual({ usage_records: 6, compactions: 2 });
     expect(report.naive.usage_records).toBeGreaterThan(report.deduped.messages);
     expect(report.parse).toEqual({ bad_lines: 1, bad_files: 0, bad_records: 0, dup_records: 3 });
+  });
+
+  it("--help prints usage and exits 0, even beside unknown flags; a stray positional is rejected by name", async () => {
+    const help = await run(["--help", "--bogus"]);
+    expect(help).toEqual({ code: 0, stdout: USAGE, stderr: "" });
+    const stray = await run(["--dry-run", "extra", "positional"]);
+    expect(stray.code).toBe(2);
+    expect(stray.stderr).toContain("unknown argument extra positional");
+    expect(stray.stderr).toContain(USAGE);
+    expect(stray.stdout).toBe("");
+    const lead = await run(["stray", "--dry-run"]);
+    expect(lead.code).toBe(2);
+    expect(lead.stderr).toContain("unknown argument stray");
+  });
+
+  it("refuses a --projects-dir that is a file or missing, naming it on stderr", async () => {
+    const file = join(tmp, "a-file");
+    writeFileSync(file, "");
+    const asFile = await run(["--projects-dir", file, "--now", NOW, "--dry-run"]);
+    expect(asFile.code).toBe(1);
+    expect(asFile.stderr).toBe(`error: cannot read --projects-dir ${file}: not a directory\n`);
+    const missing = await run(["--projects-dir", join(tmp, "nope"), "--now", NOW, "--dry-run"]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/^error: cannot read --projects-dir .*nope: ENOENT/);
+  });
+
+  it("--session fails on a missing file, a directory, or an unreadable file; reports a null peak with no usage", async () => {
+    const missing = await run(["--session", join(tmp, "gone.jsonl")]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/cannot read --session .*gone\.jsonl: ENOENT/);
+    const asDir = await run(["--session", tmp]);
+    expect(asDir.code).toBe(1);
+    expect(asDir.stderr).toContain("not a file");
+
+    const f = join(tmp, "s.jsonl");
+    writeFileSync(f, JSON.stringify({ type: "user", uuid: "u1", timestamp: NOW }) + "\n");
+    const noUsage = await run(["--session", f]);
+    expect(noUsage.code).toBe(0);
+    expect(JSON.parse(noUsage.stdout).deduped).toEqual({ records: 1, messages: 0, compactions: 0, context_peak: null });
+
+    if (process.getuid?.() !== 0) {
+      chmodSync(f, 0o000);
+      try {
+        const locked = await run(["--session", f]);
+        expect(locked.code).toBe(1);
+        expect(locked.stderr).toBe(`error: cannot read --session ${f}\n`);
+        expect(locked.stdout).toBe("");
+      } finally {
+        chmodSync(f, 0o644);
+      }
+    }
+  });
+
+  it("defaults --projects-dir and --out under $HOME/.claude and prints exactly the appended line", async () => {
+    const prevHome = process.env.HOME;
+    process.env.HOME = tmp;
+    try {
+      mkdirSync(join(tmp, ".claude", "projects"), { recursive: true });
+      const r = await run(["--now", NOW]);
+      expect(r.code).toBe(0);
+      const out = join(tmp, ".claude", "metrics", "loops.jsonl");
+      expect(readFileSync(out, "utf8")).toBe(r.stdout);
+      expect(JSON.parse(r.stdout).w30.sessions.n).toBe(0);
+    } finally {
+      process.env.HOME = prevHome;
+    }
   });
 });

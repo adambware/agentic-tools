@@ -5,11 +5,13 @@ on:
     paths:
       - "plugins/loops/**"
       - ".claude-plugin/marketplace.json"
+      - ".github/workflows/loops-ci.yml"
   push:
     branches: [main]
     paths:
       - "plugins/loops/**"
       - ".claude-plugin/marketplace.json"
+      - ".github/workflows/loops-ci.yml"
 
 jobs:
   # typecheck + vitest + build, and assert the committed bin/*.mjs bundle is in

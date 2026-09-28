@@ -12,7 +12,7 @@ session transcripts and Workflow run records and appends **one baseline row** to
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.1.0","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
 ```
@@ -41,7 +41,12 @@ Transcripts repeat themselves, and a naive count inflates both headline metrics:
   same `usage`. Usage is deduped by `message.id` (fallback `requestId`, then `uuid`).
 
 The `parse` counters are the tripwire for format drift: the transcript format is undocumented,
-and a jump in `bad_*` means the parser needs a look.
+and a jump in `bad_*` means the parser needs a look. A missing field reads as 0 but still counts
+in `bad_records`, so a renamed field shows up there instead of as a quiet week of zeros.
+`version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
+
+When a fork copies a session from its first record, the two files' first timestamps tie, and the
+file created first (the original) owns the shared records.
 
 ## Install
 
@@ -87,6 +92,10 @@ asdf which node
 ```bash
 node -p process.execPath
 ```
+
+Both give a path pinned to one node version. If that version is uninstalled, launchd fails to
+start the job every week and the only trace is in the log, so re-point the plist after a node
+upgrade, or use a node that stays put (for example Homebrew's).
 
 Save as `~/Library/LaunchAgents/com.example.loop-metrics.plist`, replacing `/ABSOLUTE/PATH/TO/node`
 and `/Users/YOU`:

@@ -10,6 +10,7 @@ exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`]
     "dup_records": 3,
   },
   "schema": 1,
+  "version": "0.1.0",
   "w30": {
     "sessions": {
       "compacted": 2,

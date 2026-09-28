@@ -111,7 +111,7 @@ plugins/loops/
                                   -> per session: [ts, ctx] per unique message, compaction ts list
   src/lib/workflow.ts             parseWorkflow(json) -> RunStats
   src/lib/row.ts                  buildRow(sessions, runs, now) -> Row (pure; windows, medians)
-  src/bin/loop-metrics.ts         thin CLI; parseArgs/appendJsonl copied from nightshift (~25 lines)
+  src/bin/loop-metrics.ts         thin CLI; strict flag parser (a value flag needs a value)
   bin/loop-metrics.mjs            committed bundle
   src/lib/*.test.ts fixtures/     vitest; synthetic JSONL/JSON only
 ```

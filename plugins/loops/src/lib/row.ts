@@ -2,6 +2,10 @@
 import type { ParseCounters, SessionStats } from "./session.js";
 import type { RunStats } from "./workflow.js";
 
+/** The parser that produced a row. Keep equal to package.json (a test checks); bump it when a
+ * parser rule changes, so rows before and after the change can be told apart. */
+export const VERSION = "0.1.0";
+
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;
 /** The widest window: files last modified before now - this are skipped. */
@@ -40,6 +44,7 @@ export interface Window {
 
 export interface Row {
   schema: 1;
+  version: string;
   generated_at: string;
   window_end: string;
   w7: Window;
@@ -56,6 +61,7 @@ export function buildRow(sessions: SessionStats[], runs: RunStats[], parse: Pars
   };
   return {
     schema: 1,
+    version: VERSION,
     generated_at: iso,
     window_end: iso,
     w7: window(7),

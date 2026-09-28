@@ -37,6 +37,13 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
     return 0;
   };
 
+  // A missing run-level field still reads as 0 or empty, but it is counted: every real record
+  // has these, so their absence is the format drift the parse counters exist to catch.
+  if (rec.totalTokens === undefined || rec.totalTokens === null) badRecords++;
+  if (!Array.isArray(rec.phases)) badRecords++;
+  if (!Array.isArray(rec.workflowProgress)) badRecords++;
+  if (typeof rec.status !== "string") badRecords++;
+
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run: RunStats = {
     startMs: rec.startTime,

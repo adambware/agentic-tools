@@ -2,7 +2,6 @@
 import { appendFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseArgs } from "./args.js";
 import { buildRow, WIDEST_WINDOW_MS } from "./row.js";
 import { collectSessionFiles, collectSessions, emptyCounters } from "./session.js";
 import { collectWorkflows } from "./workflow.js";
@@ -10,7 +9,35 @@ import { collectWorkflows } from "./workflow.js";
 export const USAGE =
   "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
 
-const KNOWN = new Set(["projects-dir", "out", "now", "dry-run", "session", "help"]);
+const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+const VALUE_FLAGS =new Set(["projects-dir", "out", "now", "session"]);
+const BARE_FLAGS = new Set(["dry-run", "help"]);
+
+/**
+ * Strict flag parser. A value flag needs a value (a bare `--out` must not append to a file
+ * named "true"), and a bare flag never takes one (`--dry-run extra` rejects `extra`).
+ */
+function parseCli(argv: string[]): { args: Record<string, string> } | { error: string } {
+  const args: Record<string, string> = {};
+  const unknown: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    const key = a.startsWith("--") ? a.slice(2) : undefined;
+    if (key !== undefined && BARE_FLAGS.has(key)) {
+      args[key] = "true";
+    } else if (key !== undefined && VALUE_FLAGS.has(key)) {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("--")) return { error: `error: ${a} needs a value\n${USAGE}` };
+      args[key] = next;
+      i++;
+    } else {
+      unknown.push(a);
+    }
+  }
+  if (unknown.length > 0) return { error: `error: unknown argument ${unknown.join(" ")}\n${USAGE}` };
+  return { args };
+}
 
 export interface Io {
   stdout: (s: string) => void;
@@ -24,21 +51,21 @@ const processIo: Io = {
 
 /** Returns the exit code. */
 export async function main(argv: string[], io: Io = processIo): Promise<number> {
-  const args = parseArgs(argv);
-  if (args.help !== undefined) {
+  if (argv.includes("--help")) {
     io.stdout(USAGE);
     return 0;
   }
-  const unknown = Object.keys(args).filter((k) => !KNOWN.has(k));
-  const stray = argv.filter((a, i) => !a.startsWith("--") && (i === 0 || !argv[i - 1]!.startsWith("--")));
-  if (unknown.length > 0 || stray.length > 0) {
-    io.stderr(`error: unknown argument ${[...unknown.map((k) => `--${k}`), ...stray].join(" ")}\n${USAGE}`);
+  const parsed = parseCli(argv);
+  if ("error" in parsed) {
+    io.stderr(parsed.error);
     return 2;
   }
+  const { args } = parsed;
 
   let now = Date.now();
   if (args.now !== undefined) {
-    now = Date.parse(args.now);
+    // Date.parse is lenient ("Sep 28" is 2001; a zone-less time is local), so require ISO with a zone.
+    now = ISO_WITH_ZONE.test(args.now) ? Date.parse(args.now) : NaN;
     if (!Number.isFinite(now)) {
       io.stderr(`error: --now is not an ISO timestamp: ${args.now}\n`);
       return 2;

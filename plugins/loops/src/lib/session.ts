@@ -81,17 +81,30 @@ export async function collectSessionFiles(
   files: string[],
   parse: ParseCounters = emptyCounters(),
 ): Promise<SessionCollection> {
-  const ordered: Array<{ file: string; first: number }> = [];
+  const ordered: Array<{ file: string; first: number; born: number }> = [];
   for (const file of files) {
     const first = await firstTimestamp(file);
     if (first === "unreadable") {
       parse.bad_files++;
       continue;
     }
-    ordered.push({ file, first });
+    let born = 0;
+    try {
+      born = statSync(file).birthtimeMs;
+    } catch {
+      // Vanished since it was read: parseFile counts it.
+    }
+    ordered.push({ file, first, born });
   }
-  // The original owns records shared with a fork: earliest first record wins.
-  ordered.sort((a, b) => a.first - b.first || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  // The original owns records shared with a fork: earliest first record wins. A fork copies the
+  // original from its first record, so the two tie; the file created first is the original.
+  // Creation time is 0 where the filesystem lacks it, and the path decides.
+  ordered.sort(
+    (a, b) =>
+      a.first - b.first ||
+      (a.born > 0 && b.born > 0 ? a.born - b.born : 0) ||
+      (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
+  );
 
   const seenUuids = new Set<string>();
   const seenMessages = new Set<string>();
@@ -243,15 +256,21 @@ function messageKey(rec: Rec): string | undefined {
 
 const CONTEXT_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
 
-/** Context size of one API call. Missing fields read as 0; a non-numeric one is 0 and bad. */
+/**
+ * Context size of one API call. Missing fields read as 0; a non-numeric one is 0 and bad.
+ * A usage object with none of the three fields is bad too: that is a renamed field, not a
+ * zero-token call.
+ */
 function contextSize(usage: Rec): { ctx: number; bad: boolean } {
   let ctx = 0;
   let bad = false;
+  let present = 0;
   for (const f of CONTEXT_FIELDS) {
     const v = usage[f];
     if (v === undefined || v === null) continue;
+    present++;
     if (typeof v === "number" && Number.isFinite(v)) ctx += v;
     else bad = true;
   }
-  return { ctx, bad };
+  return { ctx, bad: bad || present === 0 };
 }

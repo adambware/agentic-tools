@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildRow, DAY_MS, median } from "./row.js";
+import { buildRow, DAY_MS, median, VERSION } from "./row.js";
 import { emptyCounters, type SessionStats } from "./session.js";
 import type { RunStats } from "./workflow.js";
 
@@ -33,9 +34,18 @@ function run(p: Partial<RunStats>): RunStats {
   };
 }
 
+describe("VERSION", () => {
+  it("matches package.json, and every row carries it", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    expect(VERSION).toBe(pkg.version);
+    expect(buildRow([], [], emptyCounters(), 0).version).toBe(VERSION);
+  });
+});
+
 describe("median", () => {
   it("is null for an empty set and averages the middle pair", () => {
     expect(median([])).toBeNull();
+    expect(median([5])).toBe(5);
     expect(median([3, 1, 2])).toBe(2);
     expect(median([4, 1, 3, 2])).toBe(2.5);
   });
@@ -126,5 +136,25 @@ describe("buildRow", () => {
       agents_killed: 1,
       by_model: { h: { agents: 1, tokens: 100 }, s: { agents: 4, tokens: 250 } },
     });
+  });
+
+  it("sorts by_model keys regardless of the order runs report them", () => {
+    const runs = [run({ byModel: { zeta: { agents: 1, tokens: 1 }, alpha: { agents: 1, tokens: 2 } } }), run({ byModel: { mid: { agents: 1, tokens: 3 } } })];
+    const row = buildRow([], runs, emptyCounters(), NOW);
+    expect(Object.keys(row.w7.workflows.by_model)).toEqual(["alpha", "mid", "zeta"]);
+  });
+
+  it("excludes session records after now and counts usage only from in-window messages", () => {
+    const future = session({ recordTimes: [NOW + 1], messages: [[NOW + 1, 50]], compactions: [NOW + 1] });
+    const oldUsage = session({ recordTimes: [ago(1), ago(40)], messages: [[ago(40), 700]] });
+    const row = buildRow([future, oldUsage], [], emptyCounters(), NOW);
+    expect(row.w30.sessions).toMatchObject({ n: 1, with_usage: 0, context_peak_max: null, compactions_total: 0 });
+  });
+
+  it("copies parse counters instead of aliasing them", () => {
+    const parse = emptyCounters();
+    const row = buildRow([], [], parse, NOW);
+    parse.bad_lines = 9;
+    expect(row.parse.bad_lines).toBe(0);
   });
 });

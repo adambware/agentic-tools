@@ -7,26 +7,8 @@ import { appendFileSync, mkdirSync, readdirSync as readdirSync3, statSync as sta
 import { homedir } from "node:os";
 import { dirname, join as join3 } from "node:path";
 
-// src/lib/args.ts
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next === void 0 || next.startsWith("--")) {
-        out[key] = "true";
-      } else {
-        out[key] = next;
-        i++;
-      }
-    }
-  }
-  return out;
-}
-
 // src/lib/row.ts
+var VERSION = "0.1.0";
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
 var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
@@ -39,6 +21,7 @@ function buildRow(sessions, runs, parse, now) {
   };
   return {
     schema: 1,
+    version: VERSION,
     generated_at: iso,
     window_end: iso,
     w7: window(7),
@@ -160,9 +143,16 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
       parse.bad_files++;
       continue;
     }
-    ordered.push({ file, first });
+    let born = 0;
+    try {
+      born = statSync(file).birthtimeMs;
+    } catch {
+    }
+    ordered.push({ file, first, born });
   }
-  ordered.sort((a, b) => a.first - b.first || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  ordered.sort(
+    (a, b) => a.first - b.first || (a.born > 0 && b.born > 0 ? a.born - b.born : 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
+  );
   const seenUuids = /* @__PURE__ */ new Set();
   const seenMessages = /* @__PURE__ */ new Set();
   const sessions = [];
@@ -288,13 +278,15 @@ var CONTEXT_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read
 function contextSize(usage) {
   let ctx = 0;
   let bad = false;
+  let present = 0;
   for (const f of CONTEXT_FIELDS) {
     const v = usage[f];
     if (v === void 0 || v === null) continue;
+    present++;
     if (typeof v === "number" && Number.isFinite(v)) ctx += v;
     else bad = true;
   }
-  return { ctx, bad };
+  return { ctx, bad: bad || present === 0 };
 }
 
 // src/lib/workflow.ts
@@ -311,6 +303,10 @@ function parseWorkflow(json) {
     badRecords++;
     return 0;
   };
+  if (rec.totalTokens === void 0 || rec.totalTokens === null) badRecords++;
+  if (!Array.isArray(rec.phases)) badRecords++;
+  if (!Array.isArray(rec.workflowProgress)) badRecords++;
+  if (typeof rec.status !== "string") badRecords++;
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run = {
     startMs: rec.startTime,
@@ -381,27 +377,49 @@ function subdirs(dir) {
 
 // src/lib/cli.ts
 var USAGE = "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
-var KNOWN = /* @__PURE__ */ new Set(["projects-dir", "out", "now", "dry-run", "session", "help"]);
+var ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "out", "now", "session"]);
+var BARE_FLAGS = /* @__PURE__ */ new Set(["dry-run", "help"]);
+function parseCli(argv) {
+  const args = {};
+  const unknown = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const key = a.startsWith("--") ? a.slice(2) : void 0;
+    if (key !== void 0 && BARE_FLAGS.has(key)) {
+      args[key] = "true";
+    } else if (key !== void 0 && VALUE_FLAGS.has(key)) {
+      const next = argv[i + 1];
+      if (next === void 0 || next.startsWith("--")) return { error: `error: ${a} needs a value
+${USAGE}` };
+      args[key] = next;
+      i++;
+    } else {
+      unknown.push(a);
+    }
+  }
+  if (unknown.length > 0) return { error: `error: unknown argument ${unknown.join(" ")}
+${USAGE}` };
+  return { args };
+}
 var processIo = {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s)
 };
 async function main(argv, io = processIo) {
-  const args = parseArgs(argv);
-  if (args.help !== void 0) {
+  if (argv.includes("--help")) {
     io.stdout(USAGE);
     return 0;
   }
-  const unknown = Object.keys(args).filter((k) => !KNOWN.has(k));
-  const stray = argv.filter((a, i) => !a.startsWith("--") && (i === 0 || !argv[i - 1].startsWith("--")));
-  if (unknown.length > 0 || stray.length > 0) {
-    io.stderr(`error: unknown argument ${[...unknown.map((k) => `--${k}`), ...stray].join(" ")}
-${USAGE}`);
+  const parsed = parseCli(argv);
+  if ("error" in parsed) {
+    io.stderr(parsed.error);
     return 2;
   }
+  const { args } = parsed;
   let now = Date.now();
   if (args.now !== void 0) {
-    now = Date.parse(args.now);
+    now = ISO_WITH_ZONE.test(args.now) ? Date.parse(args.now) : NaN;
     if (!Number.isFinite(now)) {
       io.stderr(`error: --now is not an ISO timestamp: ${args.now}
 `);
