@@ -54,7 +54,10 @@ no-decision).
 1. **Dedupe records by `uuid` across the whole run**, first occurrence wins, files in order of their
    first record's timestamp so the original owns shared records. Resumes replay records within a file
    (7 files, ~9k dups, incl. `compact_boundary`: the known compaction double count); forks copy them
-   across files (1,396 records in 3 files; `sessionId` does not identify the owner).
+   across files (1,396 records in 3 files; `sessionId` does not identify the owner). A fork copies
+   the original from its first record, so first timestamps tie (found in implementation); the tie
+   goes to the file whose first record does not name another session, then to the file created
+   first, then to the path.
 2. **Dedupe usage by `message.id`** run-wide (fallback `requestId`, then `uuid`). One message is one
    record per content block, each with a new uuid and the **same** `usage` (9,359 of 13,540 sampled),
    so uuid dedupe alone still double- or triple-counts.
@@ -62,6 +65,11 @@ no-decision).
 4. **Tolerate malformed input, never fatal.** Bad JSON line -> `bad_lines`; unreadable file, or a
    workflow record with bad JSON or a non-numeric `startTime` -> `bad_files`; a used record with a
    missing/invalid `timestamp` is skipped and a non-numeric token count is read as 0, both -> `bad_records`.
+   A missing field every real record has (run `totalTokens`, `phases`, `workflowProgress`, `status`,
+   `durationMs`; a usage object with none of the context fields) and an unknown agent state also
+   read as 0 or empty and count in `bad_records`, so a renamed field shows up as drift, not zeros.
+   Synthetic assistant records (`<synthetic>` model, API errors) carry all-zero usage and are not
+   API calls (found in implementation).
 5. **Windows are per record.** In a window, a session counts in `n` if any of its records falls in
    it; its context peak = max over its in-window unique messages of
    `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; a compaction counts in
@@ -89,13 +97,16 @@ no-decision).
 ## Row shape (`schema: 1`)
 
 ```json
-{"schema":1,"generated_at":"<ISO>","window_end":"<ISO>",
+{"schema":1,"version":"0.1.0","generated_at":"<ISO>","window_end":"<ISO>",
  "w7": {<window>}, "w30": {<window>},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
 ```
 
+`version` names the parser and is bumped when a parser rule changes (found in review).
+
 `<window>` (medians of an empty set are `null`, never 0):
-- `workflows`: `runs`, `completed`, `killed`, `failed`, `phases_median`, `phases_max`, `tokens_sum`,
+- `workflows`: `runs`, `completed`, `killed`, `failed`, `other` (running or unknown status),
+  `phases_median`, `phases_max`, `tokens_sum`,
   `tokens_median`, `duration_ms_median`, `agents`, `agents_errored`, `agents_killed`,
   `by_model: {<model>: {agents, tokens}}` (model strings as recorded).
 - `sessions`: `n`, `with_usage`, `context_peak_median`, `context_peak_max`, `compactions_total`,

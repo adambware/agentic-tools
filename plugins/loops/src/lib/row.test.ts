@@ -145,6 +145,13 @@ describe("buildRow", () => {
     expect([w.runs, w.completed, w.killed, w.failed, w.other]).toEqual([4, 1, 0, 0, 3]);
   });
 
+  it("merges a model named __proto__ as a plain key, not the prototype", () => {
+    const byModel = Object.fromEntries([["__proto__", { agents: 1, tokens: 2 }]]);
+    const w = buildRow([], [run({ byModel }), run({ byModel })], emptyCounters(), NOW).w7.workflows;
+    expect(Object.entries(w.by_model)).toEqual([["__proto__", { agents: 2, tokens: 4 }]]);
+    expect(({} as Record<string, unknown>).agents).toBeUndefined();
+  });
+
   it("sorts by_model keys regardless of the order runs report them", () => {
     const runs = [run({ byModel: { zeta: { agents: 1, tokens: 1 }, alpha: { agents: 1, tokens: 2 } } }), run({ byModel: { mid: { agents: 1, tokens: 3 } } })];
     const row = buildRow([], runs, emptyCounters(), NOW);
