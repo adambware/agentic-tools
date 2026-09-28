@@ -197,3 +197,5 @@ real transcripts. Commit the rebuilt `bin/` with its source: CI fails on a stale
 
 Slice 2 adds per-repo metrics from a private config kept outside this repo: lens noise from review
 logs, merged PRs, revert/fix proxy, cost and sessions per merged PR, and session token totals.
+
+See [`docs/wave0-plan.md`](docs/wave0-plan.md) for the reviewed Wave 0 design and its open items.
