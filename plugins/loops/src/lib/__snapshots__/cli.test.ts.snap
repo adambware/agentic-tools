@@ -1,0 +1,85 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`] = `
+{
+  "generated_at": "2026-09-01T00:00:00.000Z",
+  "parse": {
+    "bad_files": 1,
+    "bad_lines": 1,
+    "bad_records": 0,
+    "dup_records": 3,
+  },
+  "schema": 1,
+  "w30": {
+    "sessions": {
+      "compacted": 2,
+      "compacted_10plus": 0,
+      "compactions_total": 2,
+      "context_peak_max": 5005,
+      "context_peak_median": 4028.5,
+      "n": 3,
+      "with_usage": 2,
+    },
+    "workflows": {
+      "agents": 5,
+      "agents_errored": 1,
+      "agents_killed": 1,
+      "by_model": {
+        "claude-haiku-4-5-20251001": {
+          "agents": 2,
+          "tokens": 100,
+        },
+        "claude-sonnet-5": {
+          "agents": 3,
+          "tokens": 250,
+        },
+      },
+      "completed": 1,
+      "duration_ms_median": 30500,
+      "failed": 0,
+      "killed": 1,
+      "phases_max": 2,
+      "phases_median": 1.5,
+      "runs": 2,
+      "tokens_median": 175,
+      "tokens_sum": 350,
+    },
+  },
+  "w7": {
+    "sessions": {
+      "compacted": 1,
+      "compacted_10plus": 0,
+      "compactions_total": 1,
+      "context_peak_max": 3052,
+      "context_peak_median": 1626.5,
+      "n": 3,
+      "with_usage": 2,
+    },
+    "workflows": {
+      "agents": 2,
+      "agents_errored": 0,
+      "agents_killed": 0,
+      "by_model": {
+        "claude-haiku-4-5-20251001": {
+          "agents": 1,
+          "tokens": 100,
+        },
+        "claude-sonnet-5": {
+          "agents": 1,
+          "tokens": 200,
+        },
+      },
+      "completed": 1,
+      "duration_ms_median": 60000,
+      "failed": 0,
+      "killed": 0,
+      "phases_max": 2,
+      "phases_median": 2,
+      "runs": 1,
+      "tokens_median": 300,
+      "tokens_sum": 300,
+    },
+  },
+  "window_end": "2026-09-01T00:00:00.000Z",
+}
+`;

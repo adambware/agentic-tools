@@ -1,0 +1,42 @@
+name: loops-ci
+
+on:
+  pull_request:
+    paths:
+      - "plugins/loops/**"
+      - ".claude-plugin/marketplace.json"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/loops/**"
+      - ".claude-plugin/marketplace.json"
+
+jobs:
+  # typecheck + vitest + build, and assert the committed bin/*.mjs bundle is in
+  # sync with src/ (the tool ships compiled and zero-install, so a stale bundle
+  # is a CI failure).
+  loops-engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/loops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install
+        run: npm install --no-audit --no-fund
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build
+      - name: committed artifacts are in sync with src
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- bin; then
+            echo "::error::bin/ artifacts are stale — run 'npm run build' and commit the result"
+            exit 1
+          fi

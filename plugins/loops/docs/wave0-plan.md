@@ -67,6 +67,8 @@ no-decision).
    `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; a compaction counts in
    the window its `compact_boundary` timestamp falls in. A month-long session is not charged to one week.
 6. Stream files line by line; skip files whose mtime is older than the widest window (cheap prefilter).
+   Split on `\n` only: `node:readline` also breaks on U+2028/U+2029, which JSON allows unescaped
+   in strings (found in implementation: 2 real records became 4 `bad_lines`).
 
 ## Decisions
 
@@ -156,10 +158,11 @@ typecheck, test, build, stale-bundle diff; paths `plugins/loops/**` and the mark
 
 ## Checklist
 
-- [ ] Scaffold, toolchain, marketplace entry, README row, loops-ci
-- [ ] session.ts, workflow.ts, row.ts test-first; CLI; `npm run check` green; bundle committed
-- [ ] README: install, build with cwd = plugin dir (not repo root), `~/bin` symlink, launchd, validation
-- [ ] Local run, manual validation, kickstart run (none committed); pre-commit private-name grep clean
+- [x] Scaffold, toolchain, marketplace entry, README row, loops-ci
+- [x] session.ts, workflow.ts, row.ts test-first; CLI; `npm run check` green; bundle committed
+- [x] README: install, build with cwd = plugin dir (not repo root), `~/bin` symlink, launchd, validation
+- [x] Local run, manual validation, pre-commit private-name grep clean
+- [ ] launchd install + kickstart run (none committed)
 
 ## Risks and deferrals
 
