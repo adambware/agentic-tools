@@ -46,13 +46,15 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   if (!Array.isArray(rec.phases)) badRecords++;
   if (!Array.isArray(rec.workflowProgress)) badRecords++;
   if (typeof rec.status !== "string") badRecords++;
-  if (typeof rec.runId !== "string") badRecords++;
-  if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
+  const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : undefined;
+  if (runId === undefined) badRecords++;
+  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
+  if (!durationOk) badRecords++;
 
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run: RunStats = {
     startMs: rec.startTime,
-    durationMs: typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) ? rec.durationMs : null,
+    durationMs: durationOk ? (rec.durationMs as number) : null,
     status,
     phases: Array.isArray(rec.phases) ? rec.phases.length : 0,
     tokens: num(rec.totalTokens),
@@ -78,15 +80,17 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
     slot.agents++;
     slot.tokens += num(agent.tokens);
   }
-  return { ok: true, run, runId: typeof rec.runId === "string" ? rec.runId : undefined, badRecords };
+  return { ok: true, run, runId, badRecords };
 }
 
 /** Every wf_*.json under <projectsDir>/<project>/<session>/workflows/, mtime >= sinceMs. */
 export function collectWorkflows(projectsDir: string, sinceMs: number, parse: ParseCounters): RunStats[] {
-  const runs: RunStats[] = [];
-  const seenRuns = new Set<string>();
+  // runId -> the copy kept so far. A run copied into another session's workflows/ (as a fork
+  // copies transcripts) counts once; see `better` for which copy wins.
+  const kept = new Map<string, { run: RunStats; path: string; badRecords: number }>();
   for (const project of subdirs(projectsDir, parse)) {
-    for (const session of subdirs(join(projectsDir, project), parse)) {
+    // An unreadable project dir is already counted by the session scan.
+    for (const session of subdirs(join(projectsDir, project))) {
       const dir = join(projectsDir, project, session, "workflows");
       let names: string[];
       try {
@@ -111,28 +115,43 @@ export function collectWorkflows(projectsDir: string, sinceMs: number, parse: Pa
           parse.bad_files++;
           continue;
         }
-        parse.bad_records += parsed.badRecords;
-        // A run copied into another session's workflows/ (as a fork copies transcripts) counts once.
         const key = parsed.runId ?? path;
-        if (seenRuns.has(key)) {
-          parse.dup_records++;
-          continue;
+        const prev = kept.get(key);
+        if (prev !== undefined) parse.dup_records++;
+        if (prev === undefined || better({ run: parsed.run, path }, prev)) {
+          kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
         }
-        seenRuns.add(key);
-        runs.push(parsed.run);
       }
     }
   }
-  return runs;
+  // Drift is counted once per run, from the copy that is kept.
+  for (const k of kept.values()) parse.bad_records += k.badRecords;
+  return [...kept.values()].map((k) => k.run);
 }
 
-function subdirs(dir: string, parse: ParseCounters): string[] {
+/** The statuses of a finished run; anything else is a run in progress or a renamed status. */
+export const TERMINAL_STATUSES = new Set(["completed", "killed", "failed"]);
+
+/**
+ * Of two copies of one run, keep the finished one (a copy taken mid-run is a stale snapshot),
+ * then the one that ran longer, then the first by path, so the choice never depends on
+ * directory order.
+ */
+function better(a: { run: RunStats; path: string }, b: { run: RunStats; path: string }): boolean {
+  const done = Number(TERMINAL_STATUSES.has(a.run.status)) - Number(TERMINAL_STATUSES.has(b.run.status));
+  if (done !== 0) return done > 0;
+  const dur = (a.run.durationMs ?? -1) - (b.run.durationMs ?? -1);
+  if (dur !== 0) return dur > 0;
+  return a.path < b.path;
+}
+
+function subdirs(dir: string, parse?: ParseCounters): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch (e) {
-    if (!isMissing(e)) parse.bad_files++;
+    if (parse !== undefined && !isMissing(e)) parse.bad_files++;
     return [];
   }
 }

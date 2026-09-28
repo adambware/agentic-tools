@@ -1,12 +1,10 @@
 // Pure row builder: windows, counts, medians. No I/O.
 import type { ParseCounters, SessionStats } from "./session.js";
-import type { RunStats } from "./workflow.js";
+import { type RunStats, TERMINAL_STATUSES } from "./workflow.js";
 
 /** The parser that produced a row. Keep equal to package.json (a test checks); bump it when a
  * parser rule changes, so rows before and after the change can be told apart. */
 export const VERSION = "0.1.0";
-
-const KNOWN_STATUSES = new Set(["completed", "killed", "failed"]);
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;
@@ -90,7 +88,7 @@ function workflowWindow(all: RunStats[], inWindow: (t: number) => boolean): Work
     completed: runs.filter((r) => r.status === "completed").length,
     killed: runs.filter((r) => r.status === "killed").length,
     failed: runs.filter((r) => r.status === "failed").length,
-    other: runs.filter((r) => !KNOWN_STATUSES.has(r.status)).length,
+    other: runs.filter((r) => !TERMINAL_STATUSES.has(r.status)).length,
     phases_median: median(phases),
     phases_max: max(phases),
     tokens_sum: sum(runs.map((r) => r.tokens)),

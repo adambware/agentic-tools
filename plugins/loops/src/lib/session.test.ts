@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -234,6 +234,17 @@ describe("collectSessionFiles", () => {
     const { sessions, parse } = await collectSessionFiles([f]);
     expect(sessions[0]!.messages).toHaveLength(1);
     expect(parse.bad_lines).toBe(0);
+    // Untouched for over an hour, the same torn line is corruption, not a write in progress.
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(f, old, old);
+    expect((await collectSessionFiles([f])).parse.bad_lines).toBe(1);
+  });
+
+  it("counts a negative context field as bad and leaves it out of the context size", async () => {
+    const f = write("s.jsonl", [assistant("a1", T(1), "m1", { input_tokens: -5, cache_read_input_tokens: 100 })]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toEqual([[Date.parse(T(1)), 100]]);
+    expect(parse.bad_records).toBe(1);
   });
 
   it("rejects timestamps Date.parse would bend: an impossible date or no zone is a bad record", async () => {

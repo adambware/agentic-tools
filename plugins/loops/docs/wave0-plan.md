@@ -72,8 +72,9 @@ no-decision).
    API calls (found in implementation). Found in review: a negative count, a timestamp that is not
    ISO-8601 with a zone and a real calendar date (`Date.parse` rolls 02-30 over and reads a
    zone-less time as local), a metric record with no `uuid`, and a run with no `runId` also count
-   in `bad_records`; an unreadable directory counts in `bad_files`; a torn last transcript line is
-   a live session mid-write and is skipped uncounted; a run copied into two sessions counts once.
+   in `bad_records`; an unreadable directory counts in `bad_files`; a torn last line in a transcript
+   written to in the last hour is a live session mid-write and is skipped uncounted; a run copied
+   into two sessions counts once, keeping the finished copy.
 5. **Windows are per record.** In a window, a session counts in `n` if any of its records falls in
    it; its context peak = max over its in-window unique messages of
    `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`; a compaction counts in

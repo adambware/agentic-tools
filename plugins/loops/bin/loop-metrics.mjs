@@ -3,13 +3,135 @@ import { createRequire as __loops_createRequire } from 'node:module';
 const require = __loops_createRequire(import.meta.url);
 
 // src/lib/cli.ts
-import { closeSync, fstatSync, ftruncateSync, mkdirSync, openSync, readdirSync as readdirSync3, readSync, statSync as statSync3, writeSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  readdirSync as readdirSync3,
+  readSync,
+  statSync as statSync3,
+  writeSync
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join as join3 } from "node:path";
 
+// src/lib/workflow.ts
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
+function parseWorkflow(json) {
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
+  const rec = json;
+  if (typeof rec.startTime !== "number" || !Number.isFinite(rec.startTime)) return { ok: false };
+  let badRecords = 0;
+  const num = (v) => {
+    if (v === void 0 || v === null) return 0;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    badRecords++;
+    return 0;
+  };
+  if (rec.totalTokens === void 0 || rec.totalTokens === null) badRecords++;
+  if (!Array.isArray(rec.phases)) badRecords++;
+  if (!Array.isArray(rec.workflowProgress)) badRecords++;
+  if (typeof rec.status !== "string") badRecords++;
+  const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : void 0;
+  if (runId === void 0) badRecords++;
+  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
+  if (!durationOk) badRecords++;
+  const status = typeof rec.status === "string" ? rec.status : "unknown";
+  const run = {
+    startMs: rec.startTime,
+    durationMs: durationOk ? rec.durationMs : null,
+    status,
+    phases: Array.isArray(rec.phases) ? rec.phases.length : 0,
+    tokens: num(rec.totalTokens),
+    agents: 0,
+    agentsErrored: 0,
+    agentsKilled: 0,
+    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
+    byModel: /* @__PURE__ */ Object.create(null)
+  };
+  const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
+  for (const entry of progress) {
+    if (entry === null || typeof entry !== "object") continue;
+    const agent = entry;
+    if (agent.type !== "workflow_agent") continue;
+    run.agents++;
+    if (!AGENT_STATES.has(agent.state)) badRecords++;
+    if (agent.state === "error") run.agentsErrored++;
+    if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;
+    const model = typeof agent.model === "string" && agent.model !== "" ? agent.model : "unknown";
+    const slot = run.byModel[model] ??= { agents: 0, tokens: 0 };
+    slot.agents++;
+    slot.tokens += num(agent.tokens);
+  }
+  return { ok: true, run, runId, badRecords };
+}
+function collectWorkflows(projectsDir, sinceMs, parse) {
+  const kept = /* @__PURE__ */ new Map();
+  for (const project of subdirs(projectsDir, parse)) {
+    for (const session of subdirs(join(projectsDir, project))) {
+      const dir = join(projectsDir, project, session, "workflows");
+      let names;
+      try {
+        names = readdirSync(dir);
+      } catch (e) {
+        if (!isMissing(e)) parse.bad_files++;
+        continue;
+      }
+      for (const name of names) {
+        if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
+        const path = join(dir, name);
+        let parsed;
+        try {
+          if (statSync(path).mtimeMs < sinceMs) continue;
+          parsed = parseWorkflow(JSON.parse(readFileSync(path, "utf8")));
+        } catch {
+          parse.bad_files++;
+          continue;
+        }
+        if (!parsed.ok) {
+          parse.bad_files++;
+          continue;
+        }
+        const key = parsed.runId ?? path;
+        const prev = kept.get(key);
+        if (prev !== void 0) parse.dup_records++;
+        if (prev === void 0 || better({ run: parsed.run, path }, prev)) {
+          kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
+        }
+      }
+    }
+  }
+  for (const k of kept.values()) parse.bad_records += k.badRecords;
+  return [...kept.values()].map((k) => k.run);
+}
+var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["completed", "killed", "failed"]);
+function better(a, b) {
+  const done = Number(TERMINAL_STATUSES.has(a.run.status)) - Number(TERMINAL_STATUSES.has(b.run.status));
+  if (done !== 0) return done > 0;
+  const dur = (a.run.durationMs ?? -1) - (b.run.durationMs ?? -1);
+  if (dur !== 0) return dur > 0;
+  return a.path < b.path;
+}
+function subdirs(dir, parse) {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch (e) {
+    if (parse !== void 0 && !isMissing(e)) parse.bad_files++;
+    return [];
+  }
+}
+function isMissing(e) {
+  const code = e.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 // src/lib/row.ts
 var VERSION = "0.1.0";
-var KNOWN_STATUSES = /* @__PURE__ */ new Set(["completed", "killed", "failed"]);
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
 var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
@@ -46,7 +168,7 @@ function workflowWindow(all, inWindow) {
     completed: runs.filter((r) => r.status === "completed").length,
     killed: runs.filter((r) => r.status === "killed").length,
     failed: runs.filter((r) => r.status === "failed").length,
-    other: runs.filter((r) => !KNOWN_STATUSES.has(r.status)).length,
+    other: runs.filter((r) => !TERMINAL_STATUSES.has(r.status)).length,
     phases_median: median(phases),
     phases_max: max(phases),
     tokens_sum: sum(runs.map((r) => r.tokens)),
@@ -101,8 +223,8 @@ function sortKeys(o) {
 }
 
 // src/lib/session.ts
-import { createReadStream, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { createReadStream, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
+import { basename, join as join2 } from "node:path";
 
 // src/lib/time.ts
 var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -122,21 +244,21 @@ function emptyCounters() {
 }
 function listSessionFiles(projectsDir, sinceMs, parse) {
   const files = [];
-  for (const project of readdirSync(projectsDir, { withFileTypes: true })) {
+  for (const project of readdirSync2(projectsDir, { withFileTypes: true })) {
     if (!project.isDirectory()) continue;
-    const projectDir = join(projectsDir, project.name);
+    const projectDir = join2(projectsDir, project.name);
     let entries;
     try {
-      entries = readdirSync(projectDir, { withFileTypes: true });
+      entries = readdirSync2(projectDir, { withFileTypes: true });
     } catch {
       parse.bad_files++;
       continue;
     }
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
-      const path = join(projectDir, e.name);
+      const path = join2(projectDir, e.name);
       try {
-        if (statSync(path).mtimeMs < sinceMs) continue;
+        if (statSync2(path).mtimeMs < sinceMs) continue;
       } catch {
         parse.bad_files++;
         continue;
@@ -160,11 +282,14 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
       continue;
     }
     let born = 0;
+    let live = false;
     try {
-      born = statSync(file).birthtimeMs;
+      const st = statSync2(file);
+      born = st.birthtimeMs;
+      live = Date.now() - st.mtimeMs < LIVE_MS;
     } catch {
     }
-    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born });
+    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born, live });
   }
   ordered.sort(
     (a, b) => a.first - b.first || a.copied - b.copied || (a.born > 0 && b.born > 0 ? a.born - b.born : 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
@@ -172,8 +297,8 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
   const seenUuids = /* @__PURE__ */ new Set();
   const seenMessages = /* @__PURE__ */ new Set();
   const sessions = [];
-  for (const { file } of ordered) {
-    const stats = await parseFile(file, seenUuids, seenMessages, parse);
+  for (const { file, live } of ordered) {
+    const stats = await parseFile(file, live, seenUuids, seenMessages, parse);
     if (stats) sessions.push(stats);
   }
   return { sessions, parse };
@@ -213,7 +338,8 @@ async function* readLines(file) {
     stream.destroy();
   }
 }
-async function parseFile(file, seenUuids, seenMessages, parse) {
+var LIVE_MS = 60 * 60 * 1e3;
+async function parseFile(file, live, seenUuids, seenMessages, parse) {
   const stats = {
     file,
     recordTimes: [],
@@ -226,7 +352,7 @@ async function parseFile(file, seenUuids, seenMessages, parse) {
       if (text.trim() === "") continue;
       const rec = parseLine(text);
       if (!rec) {
-        if (!partial) parse.bad_lines++;
+        if (!(partial && live)) parse.bad_lines++;
         continue;
       }
       const usage = usageOf(rec);
@@ -305,110 +431,6 @@ function contextSize(usage) {
     else bad = true;
   }
   return present === 0 ? { ctx: void 0, bad: true } : { ctx, bad };
-}
-
-// src/lib/workflow.ts
-import { readFileSync, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
-import { join as join2 } from "node:path";
-var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
-function parseWorkflow(json) {
-  if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
-  const rec = json;
-  if (typeof rec.startTime !== "number" || !Number.isFinite(rec.startTime)) return { ok: false };
-  let badRecords = 0;
-  const num = (v) => {
-    if (v === void 0 || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
-    badRecords++;
-    return 0;
-  };
-  if (rec.totalTokens === void 0 || rec.totalTokens === null) badRecords++;
-  if (!Array.isArray(rec.phases)) badRecords++;
-  if (!Array.isArray(rec.workflowProgress)) badRecords++;
-  if (typeof rec.status !== "string") badRecords++;
-  if (typeof rec.runId !== "string") badRecords++;
-  if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
-  const status = typeof rec.status === "string" ? rec.status : "unknown";
-  const run = {
-    startMs: rec.startTime,
-    durationMs: typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) ? rec.durationMs : null,
-    status,
-    phases: Array.isArray(rec.phases) ? rec.phases.length : 0,
-    tokens: num(rec.totalTokens),
-    agents: 0,
-    agentsErrored: 0,
-    agentsKilled: 0,
-    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
-    byModel: /* @__PURE__ */ Object.create(null)
-  };
-  const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
-  for (const entry of progress) {
-    if (entry === null || typeof entry !== "object") continue;
-    const agent = entry;
-    if (agent.type !== "workflow_agent") continue;
-    run.agents++;
-    if (!AGENT_STATES.has(agent.state)) badRecords++;
-    if (agent.state === "error") run.agentsErrored++;
-    if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;
-    const model = typeof agent.model === "string" && agent.model !== "" ? agent.model : "unknown";
-    const slot = run.byModel[model] ??= { agents: 0, tokens: 0 };
-    slot.agents++;
-    slot.tokens += num(agent.tokens);
-  }
-  return { ok: true, run, runId: typeof rec.runId === "string" ? rec.runId : void 0, badRecords };
-}
-function collectWorkflows(projectsDir, sinceMs, parse) {
-  const runs = [];
-  const seenRuns = /* @__PURE__ */ new Set();
-  for (const project of subdirs(projectsDir, parse)) {
-    for (const session of subdirs(join2(projectsDir, project), parse)) {
-      const dir = join2(projectsDir, project, session, "workflows");
-      let names;
-      try {
-        names = readdirSync2(dir);
-      } catch (e) {
-        if (!isMissing(e)) parse.bad_files++;
-        continue;
-      }
-      for (const name of names) {
-        if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
-        const path = join2(dir, name);
-        let parsed;
-        try {
-          if (statSync2(path).mtimeMs < sinceMs) continue;
-          parsed = parseWorkflow(JSON.parse(readFileSync(path, "utf8")));
-        } catch {
-          parse.bad_files++;
-          continue;
-        }
-        if (!parsed.ok) {
-          parse.bad_files++;
-          continue;
-        }
-        parse.bad_records += parsed.badRecords;
-        const key = parsed.runId ?? path;
-        if (seenRuns.has(key)) {
-          parse.dup_records++;
-          continue;
-        }
-        seenRuns.add(key);
-        runs.push(parsed.run);
-      }
-    }
-  }
-  return runs;
-}
-function subdirs(dir, parse) {
-  try {
-    return readdirSync2(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-  } catch (e) {
-    if (!isMissing(e)) parse.bad_files++;
-    return [];
-  }
-}
-function isMissing(e) {
-  const code = e.code;
-  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 // src/lib/cli.ts
@@ -500,9 +522,10 @@ function appendRow(out, line) {
     try {
       written = writeSync(fd, data);
     } finally {
-      if (written !== data.length) ftruncateSync(fd, size);
+      if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }

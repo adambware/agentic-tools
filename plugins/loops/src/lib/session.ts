@@ -82,7 +82,7 @@ export async function collectSessionFiles(
   files: string[],
   parse: ParseCounters = emptyCounters(),
 ): Promise<SessionCollection> {
-  const ordered: Array<{ file: string; first: number; copied: number; born: number }> = [];
+  const ordered: Array<{ file: string; first: number; copied: number; born: number; live: boolean }> = [];
   for (const file of files) {
     const head = await firstRecord(file);
     if (head === "unreadable") {
@@ -90,12 +90,15 @@ export async function collectSessionFiles(
       continue;
     }
     let born = 0;
+    let live = false;
     try {
-      born = statSync(file).birthtimeMs;
+      const st = statSync(file);
+      born = st.birthtimeMs;
+      live = Date.now() - st.mtimeMs < LIVE_MS;
     } catch {
       // Vanished since it was read: parseFile counts it.
     }
-    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born });
+    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born, live });
   }
   // The original owns records shared with a fork: earliest first record wins. A fork copies the
   // original from its first record, so the two tie. Then, in order: a file whose first record
@@ -112,8 +115,8 @@ export async function collectSessionFiles(
   const seenUuids = new Set<string>();
   const seenMessages = new Set<string>();
   const sessions: SessionStats[] = [];
-  for (const { file } of ordered) {
-    const stats = await parseFile(file, seenUuids, seenMessages, parse);
+  for (const { file, live } of ordered) {
+    const stats = await parseFile(file, live, seenUuids, seenMessages, parse);
     if (stats) sessions.push(stats);
   }
   return { sessions, parse };
@@ -168,8 +171,12 @@ async function* readLines(file: string): AsyncGenerator<{ text: string; partial:
   }
 }
 
+/** A file written to this recently may be mid-write: its torn last line is not drift (yet). */
+const LIVE_MS = 60 * 60 * 1000;
+
 async function parseFile(
   file: string,
+  live: boolean,
   seenUuids: Set<string>,
   seenMessages: Set<string>,
   parse: ParseCounters,
@@ -186,8 +193,9 @@ async function parseFile(
       if (text.trim() === "") continue;
       const rec = parseLine(text);
       if (!rec) {
-        // A torn last line is a record still being written, not drift: next week's run reads it.
-        if (!partial) parse.bad_lines++;
+        // A torn last line of a live session is a record still being written: next week's run
+        // reads it. In a file nobody has written to for an hour it is corrupt, and counted.
+        if (!(partial && live)) parse.bad_lines++;
         continue;
       }
       const usage = usageOf(rec);

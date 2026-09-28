@@ -1,5 +1,16 @@
 // loop-metrics CLI logic. src/bin/loop-metrics.ts is a thin wrapper around main().
-import { closeSync, fstatSync, ftruncateSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildRow, WIDEST_WINDOW_MS } from "./row.js";
@@ -103,8 +114,10 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
 
 /**
  * Append one row to the history. A file whose last byte is not "\n" (a torn write, a hand edit)
- * gets one first, so the row never glues onto it; a failed or short write is truncated back, so
- * it cannot tear next week's row either.
+ * gets one first, so the row never glues onto it. A failed or short write is truncated back, so it
+ * cannot tear next week's row either, but only while the file still ends where this write left
+ * it: another run's row appended since then is never cut. The row is synced before success is
+ * reported, since this file is the only history.
  */
 function appendRow(out: string, line: string): void {
   mkdirSync(dirname(out), { recursive: true });
@@ -118,9 +131,10 @@ function appendRow(out: string, line: string): void {
     try {
       written = writeSync(fd, data);
     } finally {
-      if (written !== data.length) ftruncateSync(fd, size);
+      if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }

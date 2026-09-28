@@ -46,8 +46,9 @@ and a jump in `bad_*` means the parser needs a look. A missing field reads as 0 
 in `bad_records`, so a renamed field shows up there instead of as a quiet week of zeros. The same
 goes for a negative count, a timestamp that is not ISO-8601 with a zone and a real date, and a
 metric record with no `uuid`; an unreadable directory counts in `bad_files`. A torn last line in a
-transcript is a session still being written and is skipped without counting. A Workflow run copied
-into another session's `workflows/` counts once (by `runId`), with the copy in `dup_records`.
+transcript written to in the last hour is a session still being written and is skipped without
+counting; in an older file it counts in `bad_lines`. A Workflow run copied into another session's
+`workflows/` counts once (by `runId`, keeping the finished copy), with the copy in `dup_records`.
 `version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
 
 When a fork copies a session from its first record, the two files' first timestamps tie. The
@@ -80,7 +81,7 @@ loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--sessio
 - `--dry-run` prints the row without appending. `--now` fixes the window end (for tests).
 - `--session FILE` prints one transcript's deduped counts next to its naive ones.
 - If `loops.jsonl` does not end in a newline (a torn write or a hand edit), the new row starts on a
-  line of its own; a failed write is truncated back.
+  line of its own; a failed write is truncated back, and the row is synced to disk before exit 0.
 - Exits non-zero without writing a row when `--projects-dir` is missing or unreadable or `--out`
   is unwritable: a wrong path must not record a quiet week. An existing empty directory gives a
   valid zero row.

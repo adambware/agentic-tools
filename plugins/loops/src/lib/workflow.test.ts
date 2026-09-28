@@ -194,6 +194,29 @@ describe("collectWorkflows", () => {
     expect(parse.dup_records).toBe(1);
   });
 
+  it("keeps the finished copy of a duplicated run, whatever the directory order, and counts its drift once", () => {
+    const copies: Array<[string, object]> = [
+      ["a-stale", { ...FULL, startTime: 5, status: "running", durationMs: "x", totalTokens: 10 }],
+      ["b-done", { ...FULL, startTime: 5, durationMs: 90, totalTokens: 400, phases: "x" }],
+      ["c-short", { ...FULL, startTime: 5, durationMs: 30, totalTokens: 100 }],
+    ];
+    for (const [sess, rec] of copies) {
+      mkdirSync(join(dir, "proj", sess, "workflows"), { recursive: true });
+      writeFileSync(join(dir, "proj", sess, "workflows", "wf_x.json"), JSON.stringify(rec));
+    }
+    const parse = emptyCounters();
+    const runs = collectWorkflows(dir, 0, parse);
+    expect(runs.map((r) => [r.status, r.tokens])).toEqual([["completed", 400]]);
+    expect(parse.dup_records).toBe(2);
+    expect(parse.bad_records).toBe(1); // only the kept copy's non-array phases
+  });
+
+  it("treats an empty runId as missing, and a negative durationMs as bad and null", () => {
+    const p = parseWorkflow({ ...FULL, runId: "", startTime: 1, durationMs: -3 });
+    if (!p.ok) throw new Error("expected ok");
+    expect([p.runId, p.run.durationMs, p.badRecords]).toEqual([undefined, null, 2]);
+  });
+
   it.skipIf(process.getuid?.() === 0)("counts an unreadable workflows dir as a bad file, not an empty one", () => {
     const wf = join(dir, "proj", "sess", "workflows");
     mkdirSync(wf, { recursive: true });

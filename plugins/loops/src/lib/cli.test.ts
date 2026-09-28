@@ -55,6 +55,18 @@ describe("loop-metrics", () => {
     expect(lines[3]).toBe("");
   });
 
+  it.skipIf(process.getuid?.() === 0)("counts an unreadable project dir once in bad_files", async () => {
+    const proj = join(tmp, "projects", "p");
+    mkdirSync(proj, { recursive: true });
+    chmodSync(proj, 0o000);
+    try {
+      const r = await run(["--projects-dir", join(tmp, "projects"), "--now", NOW, "--dry-run"]);
+      expect(JSON.parse(r.stdout).parse.bad_files).toBe(1);
+    } finally {
+      chmodSync(proj, 0o755);
+    }
+  });
+
   it("fails without a row when --out is unwritable", async () => {
     const blocker = join(tmp, "a-file");
     writeFileSync(blocker, "");
