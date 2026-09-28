@@ -203,6 +203,31 @@ describe("collectSessionFiles", () => {
     if (hasBirthtime) expect(sessions[0]!.compactions).toHaveLength(2);
   });
 
+  it("breaks a first-timestamp tie by sessionId before creation time: the copy names the original", async () => {
+    // The copy is created first here, so creation time alone would pick it.
+    const first = { ...assistant("a1", T(1), "m1", USAGE), sessionId: "orig" };
+    const copy = write("copy.jsonl", [first]);
+    await new Promise((r) => setTimeout(r, 20));
+    const original = write("orig.jsonl", [first, compact("c1", T(2))]);
+    const { sessions } = await collectSessionFiles([copy, original]);
+    expect(sessions.map((s) => s.file)).toEqual([original, copy]);
+    expect(sessions[0]!.messages).toHaveLength(1);
+  });
+
+  it("skips synthetic assistant records: all-zero usage from an API error is not a call", async () => {
+    const zero = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+    const f = write("s.jsonl", [
+      { type: "assistant", uuid: "a1", timestamp: T(1), message: { id: "s1", model: "<synthetic>", usage: zero } },
+      { type: "assistant", uuid: "a2", timestamp: T(2), isApiErrorMessage: true, message: { id: "s2", usage: zero } },
+      assistant("a3", T(3), "m3", USAGE),
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toEqual([[Date.parse(T(3)), 543]]);
+    expect(sessions[0]!.recordTimes).toHaveLength(3);
+    expect(sessions[0]!.naive.usage_records).toBe(1);
+    expect(parse.bad_records).toBe(0);
+  });
+
   it("counts a usage object with none of the context fields as bad: a renamed field, not a zero", async () => {
     const f = write("s.jsonl", [assistant("a1", T(1), "m1", { inputTokens: 5, cacheReadInputTokens: 100 })]);
     const { sessions, parse } = await collectSessionFiles([f]);

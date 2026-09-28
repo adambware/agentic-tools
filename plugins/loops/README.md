@@ -18,7 +18,8 @@ Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus pars
 ```
 
 - `workflows` (from `~/.claude/projects/<project>/<session>/workflows/wf_*.json`): `runs`,
-  `completed`, `killed`, `failed`, `phases_median`, `phases_max`, `tokens_sum`, `tokens_median`,
+  `completed`, `killed`, `failed`, `other` (a run still in progress, or a status this version
+  does not know), `phases_median`, `phases_max`, `tokens_sum`, `tokens_median`,
   `duration_ms_median`, `agents`, `agents_errored`, `agents_killed`, and `by_model`
   (`{<model>: {agents, tokens}}`, model strings as recorded).
 - `sessions` (from top-level `~/.claude/projects/<project>/*.jsonl`; subagent transcripts are
@@ -45,8 +46,10 @@ and a jump in `bad_*` means the parser needs a look. A missing field reads as 0 
 in `bad_records`, so a renamed field shows up there instead of as a quiet week of zeros.
 `version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
 
-When a fork copies a session from its first record, the two files' first timestamps tie, and the
-file created first (the original) owns the shared records.
+When a fork copies a session from its first record, the two files' first timestamps tie. The
+original owns the shared records: the file whose first record names another session is the copy,
+and failing that, the file created first is the original. Synthetic assistant records (API errors,
+with all-zero usage) are not counted as API calls.
 
 ## Install
 
@@ -163,7 +166,7 @@ local paths; never commit it.
    ```bash
    F=/path/to/session.jsonl
    jq -r 'select(.subtype=="compact_boundary")|.uuid' "$F" | sort -u | wc -l
-   jq -r 'select(.type=="assistant" and (.message.usage|type)=="object")|.message.id // .requestId // .uuid' "$F" | sort -u | wc -l
+   jq -r 'select(.type=="assistant" and (.message.usage|type)=="object" and .message.model!="<synthetic>" and .isApiErrorMessage!=true)|.message.id // .requestId // .uuid' "$F" | sort -u | wc -l
    jq -s '[.[]|select(.type=="assistant" and (.message.usage|type)=="object")|.message.usage|((.input_tokens//0)+(.cache_creation_input_tokens//0)+(.cache_read_input_tokens//0))]|max' "$F"
    ```
 

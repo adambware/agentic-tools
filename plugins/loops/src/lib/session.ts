@@ -11,7 +11,7 @@
 //   3. Only numeric fields and ids are read; message text never is.
 //   4. Malformed input is counted, never fatal.
 import { createReadStream, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export interface ParseCounters {
   bad_lines: number;
@@ -81,10 +81,10 @@ export async function collectSessionFiles(
   files: string[],
   parse: ParseCounters = emptyCounters(),
 ): Promise<SessionCollection> {
-  const ordered: Array<{ file: string; first: number; born: number }> = [];
+  const ordered: Array<{ file: string; first: number; copied: number; born: number }> = [];
   for (const file of files) {
-    const first = await firstTimestamp(file);
-    if (first === "unreadable") {
+    const head = await firstRecord(file);
+    if (head === "unreadable") {
       parse.bad_files++;
       continue;
     }
@@ -94,14 +94,16 @@ export async function collectSessionFiles(
     } catch {
       // Vanished since it was read: parseFile counts it.
     }
-    ordered.push({ file, first, born });
+    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born });
   }
   // The original owns records shared with a fork: earliest first record wins. A fork copies the
-  // original from its first record, so the two tie; the file created first is the original.
-  // Creation time is 0 where the filesystem lacks it, and the path decides.
+  // original from its first record, so the two tie. Then, in order: a file whose first record
+  // names another session was copied; the file created first is the original (creation time is
+  // 0 where the filesystem lacks it, and a copy or restore resets it); the path decides.
   ordered.sort(
     (a, b) =>
       a.first - b.first ||
+      a.copied - b.copied ||
       (a.born > 0 && b.born > 0 ? a.born - b.born : 0) ||
       (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
   );
@@ -116,16 +118,21 @@ export async function collectSessionFiles(
   return { sessions, parse };
 }
 
-/** First valid record timestamp in a file; +Infinity when none; "unreadable" on I/O error. */
-async function firstTimestamp(file: string): Promise<number | "unreadable"> {
+/**
+ * The first record with a valid timestamp: its time (+Infinity when none) and whether it names
+ * a session other than this file's, as a fork's copied records do. "unreadable" on I/O error.
+ */
+async function firstRecord(file: string): Promise<{ ts: number; copied: boolean } | "unreadable"> {
   try {
     for await (const line of readLines(file)) {
       const rec = parseLine(line);
       if (!rec) continue;
       const ts = parseTimestamp(rec.timestamp);
-      if (ts !== undefined) return ts;
+      if (ts === undefined) continue;
+      const copied = typeof rec.sessionId === "string" && rec.sessionId !== basename(file, ".jsonl");
+      return { ts, copied };
     }
-    return Number.POSITIVE_INFINITY;
+    return { ts: Number.POSITIVE_INFINITY, copied: false };
   } catch {
     return "unreadable";
   }
@@ -238,10 +245,12 @@ function parseTimestamp(v: unknown): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+/** Usage of a real API call. Synthetic records (API errors, interruptions) carry all-zero usage. */
 function usageOf(rec: Rec): Rec | undefined {
-  if (rec.type !== "assistant") return undefined;
+  if (rec.type !== "assistant" || rec.isApiErrorMessage === true) return undefined;
   const message = rec.message;
   if (message === null || typeof message !== "object") return undefined;
+  if ((message as Rec).model === "<synthetic>") return undefined;
   const usage = (message as Rec).usage;
   return usage !== null && typeof usage === "object" ? (usage as Rec) : undefined;
 }

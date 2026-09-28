@@ -9,7 +9,16 @@ import { collectWorkflows } from "./workflow.js";
 export const USAGE =
   "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
 
-const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** ISO-8601 with a zone and a real calendar time: Date.parse rolls 02-30 and 24:00 over. */
+function isIsoWithZone(s: string): boolean {
+  const m = ISO_WITH_ZONE.exec(s);
+  if (!m) return false;
+  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number) as [number, number, number, number, number];
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d && t.getUTCHours() === h && t.getUTCMinutes() === mi;
+}
 
 const VALUE_FLAGS =new Set(["projects-dir", "out", "now", "session"]);
 const BARE_FLAGS = new Set(["dry-run", "help"]);
@@ -65,7 +74,7 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
   let now = Date.now();
   if (args.now !== undefined) {
     // Date.parse is lenient ("Sep 28" is 2001; a zone-less time is local), so require ISO with a zone.
-    now = ISO_WITH_ZONE.test(args.now) ? Date.parse(args.now) : NaN;
+    now = isIsoWithZone(args.now) ? Date.parse(args.now) : NaN;
     if (!Number.isFinite(now)) {
       io.stderr(`error: --now is not an ISO timestamp: ${args.now}\n`);
       return 2;

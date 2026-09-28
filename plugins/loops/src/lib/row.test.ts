@@ -126,6 +126,7 @@ describe("buildRow", () => {
       completed: 1,
       killed: 1,
       failed: 1,
+      other: 0,
       phases_median: 2,
       phases_max: 5,
       tokens_sum: 350,
@@ -136,6 +137,12 @@ describe("buildRow", () => {
       agents_killed: 1,
       by_model: { h: { agents: 1, tokens: 100 }, s: { agents: 4, tokens: 250 } },
     });
+  });
+
+  it("counts a running or renamed status as other, so runs = completed + killed + failed + other", () => {
+    const runs = [run({}), run({ status: "running" }), run({ status: "cancelled" }), run({ status: "unknown" })];
+    const w = buildRow([], runs, emptyCounters(), NOW).w7.workflows;
+    expect([w.runs, w.completed, w.killed, w.failed, w.other]).toEqual([4, 1, 0, 0, 3]);
   });
 
   it("sorts by_model keys regardless of the order runs report them", () => {

@@ -73,6 +73,10 @@ describe("loop-metrics", () => {
     expect((await run(["--now", "yesterday", "--dry-run"])).code).toBe(2);
     // Date.parse would accept both: "Sep 28" as 2001, a zone-less time as local.
     expect((await run(["--now", "Sep 28", "--dry-run"])).code).toBe(2);
+    // ...and it rolls impossible dates over (02-30 is March 2, 24:00 the next day).
+    expect((await run(["--now", "2026-02-30T10:00Z", "--dry-run"])).code).toBe(2);
+    expect((await run(["--now", "2026-09-28T24:00Z", "--dry-run"])).code).toBe(2);
+    expect((await run(["--now", "2026-09-28T09:00:00.000+02:00", "--projects-dir", tmp, "--dry-run"])).code).toBe(0);
     expect((await run(["--now", "2026-09-28T09:00", "--dry-run"])).code).toBe(2);
     expect((await run(["--dryrun"])).code).toBe(2);
   });

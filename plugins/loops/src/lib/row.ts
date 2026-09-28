@@ -6,6 +6,8 @@ import type { RunStats } from "./workflow.js";
  * parser rule changes, so rows before and after the change can be told apart. */
 export const VERSION = "0.1.0";
 
+const KNOWN_STATUSES = new Set(["completed", "killed", "failed"]);
+
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;
 /** The widest window: files last modified before now - this are skipped. */
@@ -16,6 +18,8 @@ export interface WorkflowWindow {
   completed: number;
   killed: number;
   failed: number;
+  /** Any other status: a run still in progress, or a renamed status. */
+  other: number;
   phases_median: number | null;
   phases_max: number | null;
   tokens_sum: number;
@@ -72,7 +76,7 @@ export function buildRow(sessions: SessionStats[], runs: RunStats[], parse: Pars
 
 function workflowWindow(all: RunStats[], inWindow: (t: number) => boolean): WorkflowWindow {
   const runs = all.filter((r) => inWindow(r.startMs));
-  const byModel: Record<string, { agents: number; tokens: number }> = {};
+  const byModel: Record<string, { agents: number; tokens: number }> = Object.create(null);
   for (const r of runs) {
     for (const [model, m] of Object.entries(r.byModel)) {
       const slot = (byModel[model] ??= { agents: 0, tokens: 0 });
@@ -86,6 +90,7 @@ function workflowWindow(all: RunStats[], inWindow: (t: number) => boolean): Work
     completed: runs.filter((r) => r.status === "completed").length,
     killed: runs.filter((r) => r.status === "killed").length,
     failed: runs.filter((r) => r.status === "failed").length,
+    other: runs.filter((r) => !KNOWN_STATUSES.has(r.status)).length,
     phases_median: median(phases),
     phases_max: max(phases),
     tokens_sum: sum(runs.map((r) => r.tokens)),

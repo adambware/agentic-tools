@@ -23,6 +23,9 @@ export type ParsedWorkflow =
 
 type Rec = Record<string, unknown>;
 
+/** Every agent state seen in real records; another one is a renamed state (format drift). */
+const AGENT_STATES = new Set(["start", "progress", "done", "error"]);
+
 /** Parse one run record. A non-object or a non-numeric startTime is a bad file. */
 export function parseWorkflow(json: unknown): ParsedWorkflow {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
@@ -43,6 +46,7 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   if (!Array.isArray(rec.phases)) badRecords++;
   if (!Array.isArray(rec.workflowProgress)) badRecords++;
   if (typeof rec.status !== "string") badRecords++;
+  if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
 
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run: RunStats = {
@@ -54,7 +58,8 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
     agents: 0,
     agentsErrored: 0,
     agentsKilled: 0,
-    byModel: {},
+    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
+    byModel: Object.create(null) as RunStats["byModel"],
   };
 
   const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
@@ -63,6 +68,7 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
     const agent = entry as Rec;
     if (agent.type !== "workflow_agent") continue;
     run.agents++;
+    if (!AGENT_STATES.has(agent.state as string)) badRecords++;
     if (agent.state === "error") run.agentsErrored++;
     // An agent still running when its run was killed was killed with it.
     if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;

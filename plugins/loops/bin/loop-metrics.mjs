@@ -9,6 +9,7 @@ import { dirname, join as join3 } from "node:path";
 
 // src/lib/row.ts
 var VERSION = "0.1.0";
+var KNOWN_STATUSES = /* @__PURE__ */ new Set(["completed", "killed", "failed"]);
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
 var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
@@ -31,7 +32,7 @@ function buildRow(sessions, runs, parse, now) {
 }
 function workflowWindow(all, inWindow) {
   const runs = all.filter((r) => inWindow(r.startMs));
-  const byModel = {};
+  const byModel = /* @__PURE__ */ Object.create(null);
   for (const r of runs) {
     for (const [model, m] of Object.entries(r.byModel)) {
       const slot = byModel[model] ??= { agents: 0, tokens: 0 };
@@ -45,6 +46,7 @@ function workflowWindow(all, inWindow) {
     completed: runs.filter((r) => r.status === "completed").length,
     killed: runs.filter((r) => r.status === "killed").length,
     failed: runs.filter((r) => r.status === "failed").length,
+    other: runs.filter((r) => !KNOWN_STATUSES.has(r.status)).length,
     phases_median: median(phases),
     phases_max: max(phases),
     tokens_sum: sum(runs.map((r) => r.tokens)),
@@ -100,7 +102,7 @@ function sortKeys(o) {
 
 // src/lib/session.ts
 import { createReadStream, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 function emptyCounters() {
   return { bad_lines: 0, bad_files: 0, bad_records: 0, dup_records: 0 };
 }
@@ -138,8 +140,8 @@ async function collectSessions(projectsDir, sinceMs) {
 async function collectSessionFiles(files, parse = emptyCounters()) {
   const ordered = [];
   for (const file of files) {
-    const first = await firstTimestamp(file);
-    if (first === "unreadable") {
+    const head = await firstRecord(file);
+    if (head === "unreadable") {
       parse.bad_files++;
       continue;
     }
@@ -148,10 +150,10 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
       born = statSync(file).birthtimeMs;
     } catch {
     }
-    ordered.push({ file, first, born });
+    ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born });
   }
   ordered.sort(
-    (a, b) => a.first - b.first || (a.born > 0 && b.born > 0 ? a.born - b.born : 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
+    (a, b) => a.first - b.first || a.copied - b.copied || (a.born > 0 && b.born > 0 ? a.born - b.born : 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
   );
   const seenUuids = /* @__PURE__ */ new Set();
   const seenMessages = /* @__PURE__ */ new Set();
@@ -162,15 +164,17 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
   }
   return { sessions, parse };
 }
-async function firstTimestamp(file) {
+async function firstRecord(file) {
   try {
     for await (const line of readLines(file)) {
       const rec = parseLine(line);
       if (!rec) continue;
       const ts = parseTimestamp(rec.timestamp);
-      if (ts !== void 0) return ts;
+      if (ts === void 0) continue;
+      const copied = typeof rec.sessionId === "string" && rec.sessionId !== basename(file, ".jsonl");
+      return { ts, copied };
     }
-    return Number.POSITIVE_INFINITY;
+    return { ts: Number.POSITIVE_INFINITY, copied: false };
   } catch {
     return "unreadable";
   }
@@ -261,9 +265,10 @@ function parseTimestamp(v) {
   return Number.isFinite(ms) ? ms : void 0;
 }
 function usageOf(rec) {
-  if (rec.type !== "assistant") return void 0;
+  if (rec.type !== "assistant" || rec.isApiErrorMessage === true) return void 0;
   const message = rec.message;
   if (message === null || typeof message !== "object") return void 0;
+  if (message.model === "<synthetic>") return void 0;
   const usage = message.usage;
   return usage !== null && typeof usage === "object" ? usage : void 0;
 }
@@ -292,6 +297,7 @@ function contextSize(usage) {
 // src/lib/workflow.ts
 import { readFileSync, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
 import { join as join2 } from "node:path";
+var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
 function parseWorkflow(json) {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
   const rec = json;
@@ -307,6 +313,7 @@ function parseWorkflow(json) {
   if (!Array.isArray(rec.phases)) badRecords++;
   if (!Array.isArray(rec.workflowProgress)) badRecords++;
   if (typeof rec.status !== "string") badRecords++;
+  if (typeof rec.durationMs !== "number" || !Number.isFinite(rec.durationMs)) badRecords++;
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run = {
     startMs: rec.startTime,
@@ -317,7 +324,8 @@ function parseWorkflow(json) {
     agents: 0,
     agentsErrored: 0,
     agentsKilled: 0,
-    byModel: {}
+    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
+    byModel: /* @__PURE__ */ Object.create(null)
   };
   const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
   for (const entry of progress) {
@@ -325,6 +333,7 @@ function parseWorkflow(json) {
     const agent = entry;
     if (agent.type !== "workflow_agent") continue;
     run.agents++;
+    if (!AGENT_STATES.has(agent.state)) badRecords++;
     if (agent.state === "error") run.agentsErrored++;
     if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;
     const model = typeof agent.model === "string" && agent.model !== "" ? agent.model : "unknown";
@@ -377,7 +386,14 @@ function subdirs(dir) {
 
 // src/lib/cli.ts
 var USAGE = "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
-var ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+function isIsoWithZone(s) {
+  const m = ISO_WITH_ZONE.exec(s);
+  if (!m) return false;
+  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d && t.getUTCHours() === h && t.getUTCMinutes() === mi;
+}
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "out", "now", "session"]);
 var BARE_FLAGS = /* @__PURE__ */ new Set(["dry-run", "help"]);
 function parseCli(argv) {
@@ -419,7 +435,7 @@ async function main(argv, io = processIo) {
   const { args } = parsed;
   let now = Date.now();
   if (args.now !== void 0) {
-    now = ISO_WITH_ZONE.test(args.now) ? Date.parse(args.now) : NaN;
+    now = isIsoWithZone(args.now) ? Date.parse(args.now) : NaN;
     if (!Number.isFinite(now)) {
       io.stderr(`error: --now is not an ISO timestamp: ${args.now}
 `);

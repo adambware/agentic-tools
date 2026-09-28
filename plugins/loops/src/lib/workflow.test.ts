@@ -7,7 +7,7 @@ import { collectWorkflows, parseWorkflow } from "./workflow.js";
 
 const agent = (model: string, state: string, tokens?: unknown) => ({ type: "workflow_agent", model, state, tokens });
 /** The run-level fields every real record has; a test overrides only what it exercises. */
-const FULL = { status: "completed", totalTokens: 0, phases: [], workflowProgress: [] };
+const FULL = { status: "completed", durationMs: 1, totalTokens: 0, phases: [], workflowProgress: [] };
 
 describe("parseWorkflow", () => {
   it("reads a completed run", () => {
@@ -50,7 +50,7 @@ describe("parseWorkflow", () => {
       ],
     });
     if (!p.ok) throw new Error("expected ok");
-    expect(p.badRecords).toBe(0);
+    expect(p.badRecords).toBe(1); // no durationMs: null, and counted
     expect(p.run.agentsKilled).toBe(2);
     expect(p.run.agentsErrored).toBe(1);
     expect(p.run.byModel).toEqual({ sonnet: { agents: 3, tokens: 50 }, haiku: { agents: 1, tokens: 0 } });
@@ -96,7 +96,7 @@ describe("parseWorkflow", () => {
     expect(p.run.durationMs).toBeNull();
     expect(p.run.agents).toBe(2);
     expect(p.run.byModel).toEqual({ unknown: { agents: 2, tokens: 6 } });
-    expect(p.badRecords).toBe(1); // the non-string status
+    expect(p.badRecords).toBe(2); // the non-string status and durationMs
   });
 
   it("counts each missing run-level field as a bad record, so a renamed field trips the counter", () => {
@@ -104,11 +104,21 @@ describe("parseWorkflow", () => {
     if (!p.ok) throw new Error("expected ok");
     expect(p.run.tokens).toBe(0);
     expect(p.run.status).toBe("unknown");
-    expect(p.badRecords).toBe(4);
+    expect(p.badRecords).toBe(5); // totalTokens, phases, workflowProgress, status, durationMs
     const agentOnly = parseWorkflow({ ...FULL, startTime: 1, workflowProgress: [agent("m", "error")] });
     if (!agentOnly.ok) throw new Error("expected ok");
     // An errored agent legitimately has no tokens.
     expect(agentOnly.badRecords).toBe(0);
+    const renamedState = parseWorkflow({ ...FULL, startTime: 1, workflowProgress: [agent("m", "failed", 3)] });
+    if (!renamedState.ok) throw new Error("expected ok");
+    expect(renamedState.badRecords).toBe(1);
+  });
+
+  it("keys a model named __proto__ as a plain key, not the prototype", () => {
+    const p = parseWorkflow({ ...FULL, startTime: 1, workflowProgress: [agent("__proto__", "done", 7)] });
+    if (!p.ok) throw new Error("expected ok");
+    expect(Object.entries(p.run.byModel)).toEqual([["__proto__", { agents: 1, tokens: 7 }]]);
+    expect(({} as Record<string, unknown>).agents).toBeUndefined();
   });
 
   it("treats a non-array workflowProgress or phases as empty", () => {
