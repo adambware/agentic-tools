@@ -2,6 +2,18 @@
 
 ## Pending
 
+- [ ] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
+  - **What:** Once the PR merges to main, link `~/bin/loop-metrics` to `plugins/loops/bin/loop-metrics.mjs` in a stable main checkout (not a worktree, not the plugin cache). Install the plist from `plugins/loops/README.md` "Schedule" with an absolute node path, then run `launchctl kickstart -p` and confirm a fresh row in `~/.claude/metrics/loops.jsonl`. While there, spot-check one Workflow run's `totalTokens` and `status` against `/workflows`.
+  - **Why:** Transcripts get pruned, so `loops.jsonl` is the only history, and every week without the job is a week that cannot be recomputed. Two plan items are still open: the proof run and the `/workflows` spot-check.
+  - **Context:** The last unchecked items in `plugins/loops/docs/wave0-plan.md`. On 2026-09-28 the user decided the install waits for the merge to main.
+  - **Depends on / blocked by:** The loops PR merging to main.
+
+- [ ] **loops: parser hardening from the final adversarial round** [P2 correctness]
+  - **What:** Treat an empty `uuid` or empty `message.id` as absent: fall back and count it as bad, instead of collapsing records onto a shared key. Require safe-integer token counts so sums cannot overflow to `null`. Fsync the parent directory when the file is first created. Treat a future mtime as not live. Count unknown `workflowProgress` entry types as drift. Make fsync failure say "row written, not confirmed durable". Add tests for `better()`'s path tie-break and for the short-write truncate path (via a mocked `node:fs`).
+  - **Why:** Each item is a way malformed input could get past the drift counters, or a rare error could be reported misleadingly. None of them occurs in current data: checked 2026-09-28 across 372 transcripts and 170 runs, with 0 empty ids, 0 non-safe-integer counts, 0 future mtimes, and only `workflow_phase`/`workflow_agent` progress entries.
+  - **Context:** Raised by the third review round in the loops 0.1.0 /ship. The user chose to ship and file them here, since that round had reached the review loop's cap. The first two rounds fixed real defects.
+  - **Depends on / blocked by:** None.
+
 - [ ] **`lock.stress.test.ts` fails CI at random — the substitution bound assumes injections are serialized with recovery** [P2 test-robustness]
   - **What:** `never lets two processes into the critical section` asserts `total.substitutions <= injected` (`src/lib/lock.stress.test.ts:207`) after injecting 25 abandoned locks into a live 8-child contention run. It intermittently observes 26. Reproduced locally 1-in-3 on 96a9b1c and 2-in-4 on cf5c7bc, and it reddened `nightshift-engine` on PR #13 with the identical `expected 26 to be less than or equal to 25`.
   - **Why:** It is a false alarm on a load-bearing safety test, which is the worst kind: the assertion that actually proves mutual exclusion — `total.violations === 0` — passes every time, including on the failing runs. A test that cries wolf on the recovery mutex trains everyone to re-run CI, which is exactly how a real de-serialized-recovery regression would get waved through.
