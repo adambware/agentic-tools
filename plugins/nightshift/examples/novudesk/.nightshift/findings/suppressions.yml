@@ -1,0 +1,21 @@
+# .nightshift/findings/suppressions.yml — NovuDesk suppressions
+# =============================================================
+#
+# Time-boxed dedupe_key suppressions. Each conforms to the suppression sub-schema in
+# ${CLAUDE_PLUGIN_ROOT}/schemas/finding.yml. A suppression auto-lifts after `expires`;
+# there is no permanent silence. Used to accept/defer a KNOWN finding while the fix is
+# tracked elsewhere — never to hide an unaddressed issue.
+# ---------------------------------------------------------------------------
+
+suppressions:
+
+  - dedupe_key:
+      surface:    "ND-SEC-03"
+      symptom:    "monitor fetcher follows redirects to link-local metadata ranges"
+      root_cause: "UrlFetcher allow-list is applied pre-redirect only"
+    reason: >
+      Confirmed and accepted for the current sprint: egress is already constrained to a
+      dedicated proxy that blocks 169.254.0.0/16 and RFC1918 at the network layer, so
+      impact is contained. Code-level redirect re-validation is tracked in NOVU-498.
+    expires:     2026-07-15
+    approved_by: "security-lead@novudesk.example"

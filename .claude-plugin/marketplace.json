@@ -1,52 +1,88 @@
 {
   "name": "agentic-tools",
-  "owner": { "name": "adambware" },
+  "owner": {
+    "name": "adambware"
+  },
   "metadata": {
-    "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code",
-    "pluginRoot": "./plugins"
+    "description": "A collection of agentic AI tools: hooks, skills, and agents for Claude Code"
   },
   "plugins": [
     {
       "name": "plan-critique",
       "source": "./plugins/plan-critique",
-      "description": "Parallel critique system — spawns Opus + Codex reviewers for plan files",
-      "version": "1.0.5",
-      "keywords": ["hooks", "code-review", "planning"]
+      "description": "Parallel critique system \u2014 spawns Opus + Codex reviewers for plan files",
+      "keywords": [
+        "hooks",
+        "code-review",
+        "planning"
+      ]
     },
     {
       "name": "ab-code-review",
       "source": "./plugins/ab-code-review",
-      "description": "Parallel code review — spawns Opus + Codex to review your branch diff against main",
-      "version": "1.0.4",
-      "keywords": ["skills", "code-review", "diff"]
+      "description": "Parallel code review \u2014 spawns Opus + Codex to review your branch diff against main",
+      "keywords": [
+        "skills",
+        "code-review",
+        "diff"
+      ]
     },
     {
       "name": "onboardme",
       "source": "./plugins/onboardme",
-      "description": "Onboarding one-pager — traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
-      "version": "1.0.0",
-      "keywords": ["skills", "onboarding", "codebase"]
+      "description": "Onboarding one-pager \u2014 traces one real request end to end to make an unfamiliar codebase picturable in about three minutes",
+      "keywords": [
+        "skills",
+        "onboarding",
+        "codebase"
+      ]
     },
     {
       "name": "pr-test-reviewer",
       "source": "./plugins/pr-test-reviewer",
-      "description": "Test-focused PR review — grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
-      "version": "1.0.0",
-      "keywords": ["skills", "testing", "code-review", "pr"]
+      "description": "Test-focused PR review \u2014 grades tests present, flags testability changes worth making, and suggests the highest-value missing tests for the touched code",
+      "keywords": [
+        "skills",
+        "testing",
+        "code-review",
+        "pr"
+      ]
     },
     {
       "name": "test-plan-explorer",
       "source": "./plugins/test-plan-explorer",
-      "description": "Risk-prioritized test plan for under-tested code — decides what is worth testing and why, produces a reviewable plan before any tests are written",
-      "version": "1.0.0",
-      "keywords": ["skills", "testing", "tdd", "planning"]
+      "description": "Risk-prioritized test plan for under-tested code \u2014 decides what is worth testing and why, produces a reviewable plan before any tests are written",
+      "keywords": [
+        "skills",
+        "testing",
+        "tdd",
+        "planning"
+      ]
+    },
+    {
+      "name": "nightshift",
+      "source": "./plugins/nightshift",
+      "description": "Budget-aware, two-lane assurance loop \u2014 /nightshift:security (security review + mandatory refuter) and /nightshift:design (UX) \u2014 that keeps security surfaces and user flows continuously fresh, refuted, and visible. Local-first: one easy button (`ns run`), cost recorded per run, one self-contained HTML dashboard. Built once as an engine; each codebase onboarded as a .nightshift/ pack",
+      "keywords": [
+        "skills",
+        "agents",
+        "security",
+        "assurance",
+        "ux",
+        "coverage"
+      ]
     },
     {
       "name": "dev-doctor",
       "source": "./plugins/dev-doctor",
-      "description": "Read-only local environment preflight — checks runtimes, Docker/Compose, env files, ports, volumes, worktrees, and likely next commands before local development",
-      "version": "1.0.0",
-      "keywords": ["skills", "environment", "preflight", "docker", "worktrees"]
+      "description": "Read-only local environment preflight \u2014 checks runtimes, Docker/Compose, env files, ports, volumes, worktrees, and likely next commands before local development",
+      "keywords": [
+        "skills",
+        "environment",
+        "preflight",
+        "docker",
+        "worktrees"
+      ]
     }
   ]
 }

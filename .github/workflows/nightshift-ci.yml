@@ -1,0 +1,207 @@
+name: nightshift-ci
+
+# Positive CI gate for the nightshift plugin. This REPLACES the deleted
+# assurance-engine-no-leak.yml denylist grep. Instead of policing a blocklist of
+# real-looking strings, we assert positive properties: the plugin validates, its
+# manifests/metrics parse, and every example is fully fictional by construction.
+on:
+  pull_request:
+    paths:
+      - "plugins/nightshift/**"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/nightshift/**"
+
+jobs:
+  # Deterministic core (E5/E6/E7): typecheck + vitest + build, and assert the
+  # committed bin/*.mjs / hooks/*.mjs artifacts are in sync with src/ (the engine
+  # ships compiled, node-runnable, zero-install — a stale artifact is a CI failure).
+  nightshift-engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/nightshift
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install
+        run: npm install --no-audit --no-fund
+      - name: typecheck
+        run: npm run typecheck
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build
+      - name: committed artifacts are in sync with src
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- bin hooks; then
+            echo "::error::bin/ or hooks/ artifacts are stale — run 'npm run build' and commit the result"
+            exit 1
+          fi
+
+  nightshift-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      # PyYAML is not in the stdlib; the structural-lint and render-smoke steps
+      # parse *.yml via python's yaml module, so install it up front.
+      - name: install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # (1) Plugin validation via the claude CLI — strict promotes warnings to
+      #     errors. DEGRADED FALLBACK: if the CLI can't be installed or run, log a
+      #     warning and continue to steps 2-3 (still strictly better than the old
+      #     denylist). Never hard-fail the whole job on CLI absence.
+      - name: install claude CLI
+        run: |
+          set -euo pipefail
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::error::npm not available — cannot install claude CLI"
+            exit 1
+          fi
+          npm install -g @anthropic-ai/claude-code
+
+      - name: claude plugin validate
+        run: |
+          set -euo pipefail
+          if ! command -v claude >/dev/null 2>&1; then
+            echo "::warning::claude CLI not found after install — skipping validate"
+            exit 0
+          fi
+          echo "Running strict plugin validate..."
+          claude plugin validate ./plugins/nightshift --strict
+
+      # (2) Structural lint (NOT a JSON-Schema validator — none exists yet, see
+      #     open-decision #4). Assert required files exist and that every *.yml and
+      #     *.jsonl under the plugin parses.
+      - name: structural lint
+        run: |
+          set -euo pipefail
+          ROOT=plugins/nightshift
+          echo "Asserting required files exist..."
+          required=(
+            "$ROOT/.claude-plugin/plugin.json"
+            "$ROOT/README.md"
+            "$ROOT/scripts/check-example-hygiene.sh"
+            "$ROOT/fixtures/onboard-answers.example.yml"
+            "$ROOT/templates/.nightshift/manifest.yml"
+            "$ROOT/agents/security-reviewer.md"
+            "$ROOT/agents/security-refuter.md"
+            "$ROOT/agents/security-refuter-2.md"
+            "$ROOT/agents/ux-reviewer.md"
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::required file missing: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          echo "Asserting required directories exist..."
+          required_dirs=(
+            "$ROOT/templates/.nightshift/metrics"
+            "$ROOT/templates/.nightshift/metrics/runs"
+            "$ROOT/templates/.nightshift/metrics/findings"
+          )
+          for d in "${required_dirs[@]}"; do
+            if [ ! -d "$d" ]; then
+              echo "::error::required directory missing: $d"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          echo "Parsing every *.yml under $ROOT ..."
+          while IFS= read -r -d '' yml; do
+            python3 -c "import sys,yaml; yaml.safe_load(open(sys.argv[1]))" "$yml" \
+              || { echo "::error::YAML parse failed: $yml"; exit 1; }
+          done < <(find "$ROOT" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
+
+          echo "Parsing every *.jsonl line under $ROOT ..."
+          while IFS= read -r -d '' jsonl; do
+            python3 -c 'import sys, json; [json.loads(l) for n, l in enumerate(open(sys.argv[1]), 1) if l.strip()]' "$jsonl" \
+              || { echo "::error::JSONL parse failed: $jsonl"; exit 1; }
+          done < <(find "$ROOT" -type f -name '*.jsonl' -print0)
+
+          echo "Structural lint passed."
+
+      # (3) Sentinel smoke test — verify key sentinels appear in the template to gate §E.
+      - name: sentinel smoke (§E sentinel list present in template)
+        run: |
+          set -euo pipefail
+          ROOT=plugins/nightshift
+          TEMPLATE="$ROOT/templates/.nightshift"
+          MECHANICS="$ROOT/skills/onboard/reference/onboard-mechanics.md"
+          echo "Checking that key sentinels appear in the template (gate §E is exercisable)..."
+          SENTINELS=("my-project" "my-stack" "staging.my-project.example" "PROJ" "make test" "make build")
+          failed=0
+          for s in "${SENTINELS[@]}"; do
+            if ! grep -qr "$s" "$TEMPLATE"; then
+              echo "::error::Sentinel '$s' not found in template — §E gate may be stale"
+              failed=1
+            fi
+            if ! grep -qF "$s" "$MECHANICS"; then
+              echo "::warning::Sentinel '$s' not found in onboard-mechanics.md §E — consider adding it"
+            fi
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Sentinel smoke passed."
+
+      # (3b) Shellcheck every committed shell script in the plugin (A7/T4).
+      #      `bin/ns` is engine code — committed, versioned with the engine, and
+      #      held to the same bar as the TypeScript: its DECISION logic lives in
+      #      vitest-covered bin/ commands, and what remains here (sequencing,
+      #      environment, exit paths) is linted rather than trusted. ubuntu-latest
+      #      ships shellcheck; install it if a future runner image does not.
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+          shellcheck plugins/nightshift/bin/ns plugins/nightshift/scripts/check-example-hygiene.sh
+
+      # (3c) `bin/ns` must stay executable in the index — a launcher committed
+      #      644 is a launcher nobody can run without chmod'ing it first.
+      - name: bin/ns is committed executable
+        run: |
+          set -euo pipefail
+          mode="$(git ls-files -s plugins/nightshift/bin/ns | cut -d' ' -f1)"
+          if [ "$mode" != "100755" ]; then
+            echo "::error::plugins/nightshift/bin/ns is mode $mode — commit it 100755 (chmod +x)"
+            exit 1
+          fi
+
+      # (4) Example-hygiene lint — the positive replacement for the leak grep.
+      - name: example-hygiene
+        run: bash plugins/nightshift/scripts/check-example-hygiene.sh
+
+      # (5) Residue check — ensure no "Assurance Engine" references remain.
+      - name: assurance-engine residue grep
+        run: |
+          set -euo pipefail
+          ROOT=plugins/nightshift
+          echo "Checking for residual 'Assurance Engine' / 'assurance-engine' strings under plugin..."
+          # Exclude docs/future-pm-lane.md (historical reference) and this script itself
+          if hits="$(grep -rIn --include='*.md' --include='*.yml' --include='*.yaml' --include='*.json' \
+                        -e 'Assurance Engine' -e 'assurance-engine' \
+                        "$ROOT" \
+                        --exclude-dir='.git' \
+                        | grep -v 'docs/future-pm-lane' 2>/dev/null)"; then
+            echo "::error::Residual 'Assurance Engine' references found:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "No assurance-engine residue found."

@@ -1,0 +1,16 @@
+{
+  "description": "Nightshift read-only guard. PreToolUse hook: INERT unless a lane run is active (env NIGHTSHIFT_LANE_RUN set) so it never blocks normal interactive work; when armed it ALLOWs reads everywhere, ALLOWs writes only inside a repo's .nightshift/ pack, and DENYs all other writes + git mutations. Decision logic in src/lib/guard.ts (unit-tested); bundled to hooks/guard.mjs.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

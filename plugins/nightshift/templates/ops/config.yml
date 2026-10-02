@@ -1,0 +1,32 @@
+# $OPS/config.yml — TEMPLATE. Copy this into your ops home and edit it.
+# NEVER COMMIT THE COPY. It names local paths on one machine.
+#
+# Annotated reference: ${CLAUDE_PLUGIN_ROOT}/schemas/ops-config.yml
+# Tested reader (the authority on every default and refusal): src/lib/ops-config.ts
+
+repos:
+  - path: ~/code/my-project     # repo root. Leading ~ expands; a relative path
+                                #   resolves against THIS file's directory.
+    lanes: [security]           # add `design` only once the pack has a loopback
+                                #   base_url, an `environment:` assertion, and
+                                #   seeded personas — `ns` refuses otherwise.
+    enabled: true
+    # name: my-project          # optional; defaults to the path basename
+
+dashboard:
+  out: dashboard.html           # written inside the ops home
+  open_after_run: true          # `ns run --no-open` overrides per run
+
+sentinel:                       # read by due-detection now; A9 adds the scheduler
+  enabled: false
+  hour: 7
+  cooldown_days: 2              # a run this recent BLOCKS a new one — it outranks
+                                #   even a fresh diff, or a dirty working tree
+                                #   would re-trigger on every invocation
+  weekly_floor_days: 7          # nothing overdue, nothing changed: still run this
+                                #   often, or the lane reports "all clear" for
+                                #   surfaces it has not looked at in months
+
+max_concurrent_reviewers: 3     # reviewer+refuter pairs in flight at once. The
+                                #   launcher chunks the selected surfaces by this
+                                #   number, so it IS the concurrency policy.

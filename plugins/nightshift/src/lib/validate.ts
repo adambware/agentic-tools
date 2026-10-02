@@ -1,0 +1,356 @@
+// Runtime validators — the deterministic gate (E2/E3). Each validator mirrors a
+// schema in schemas/*.yml; that YAML stays the human reference, these are the
+// machine check that gates every artifact before it enters the stateful path.
+// bin/validate is a thin CLI over `validateArtifact`.
+//
+// Identity safety (v3 plan §9.12): registry ids are human-seeded YAML and become
+// path segments downstream — the fan-out writes .run/<run_id>/surfaces/<sid>/...
+// and tier2-gate derives its per-surface paths from dedupe_key.surface. An id of
+// "../../x" would therefore escape the run dir (and, with a symlink or a
+// well-chosen relative path, the pack) while every schema field still typechecked
+// as a non-empty string. SAFE_ID_RE is the shared constraint; consumers pair it
+// with a resolve()-based containment check (never the regex alone).
+import type {
+  RegistryEntry,
+  CandidateFinding,
+  Finding,
+  Suppression,
+  RunMetrics,
+  DailyMetrics,
+  Surface,
+} from "./types.js";
+
+export interface ValidationResult {
+  ok: boolean;
+  errors: string[];
+}
+
+const WEIGHTS = ["critical", "high", "medium", "low"];
+const SEVERITIES = WEIGHTS;
+const CONFIDENCES = ["low", "medium", "high"];
+const LANES = ["security", "design"];
+const ANCHORS = ["friction_delta", "broken_path", "a11y", "evidence", "consistency"];
+const EFFORTS = ["low", "medium", "high"];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Filename-safe id charset: no separators, no NUL, no shell/glob metacharacters. */
+export const SAFE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * An id is safe iff it matches SAFE_ID_RE and does not name the current or the
+ * parent directory. "." and ".." pass the charset (both are dot-only) but each
+ * collapses a path segment away, so they must be rejected explicitly.
+ */
+export function isSafeId(id: string): boolean {
+  return SAFE_ID_RE.test(id) && id !== "." && id !== "..";
+}
+
+/**
+ * An agent type is safe iff it is a safe id, optionally prefixed by ONE plugin
+ * qualifier: `nightshift:security-reviewer`.
+ *
+ * Why the qualifier exists at all: the agents live in the nightshift PLUGIN, and
+ * `bin/ns` hands every session `--plugin-dir $ENGINE` so the run's agents come
+ * from the same tree as its bins. Plugin-supplied agents register under their
+ * qualified name; the bare name resolves only when something ELSE also happens
+ * to provide it. The first real run proved the difference the expensive way —
+ * every reviewer dispatch came back "agent type not found" and the run still
+ * reported complete.
+ *
+ * Why not just widen isSafeId: agent types cross into the workflow as
+ * control-plane data and land in `agent()` options, while ids from the same
+ * charset also become PATH SEGMENTS (surface dirs). Exactly one colon, and only
+ * between two otherwise-safe ids, keeps the qualifier expressible without
+ * loosening the charset for anything that is used as a path segment.
+ */
+export function isSafeAgentType(id: string): boolean {
+  const parts = id.split(":");
+  if (parts.length > 2) return false;
+  return parts.every((p) => isSafeId(p));
+}
+
+type Obj = Record<string, unknown>;
+
+function v(): { errors: string[]; out: ValidationResult } {
+  const errors: string[] = [];
+  return { errors, out: { ok: true, errors } };
+}
+
+function isObj(x: unknown): x is Obj {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+function reqStr(o: Obj, k: string, errors: string[], where: string): void {
+  if (typeof o[k] !== "string" || (o[k] as string).length === 0)
+    errors.push(`${where}: ${k} must be a non-empty string`);
+}
+function reqEnum(o: Obj, k: string, allowed: string[], errors: string[], where: string): void {
+  if (typeof o[k] !== "string" || !allowed.includes(o[k] as string))
+    errors.push(`${where}: ${k} must be one of ${allowed.join("|")}`);
+}
+function reqBool(o: Obj, k: string, errors: string[], where: string): void {
+  if (typeof o[k] !== "boolean") errors.push(`${where}: ${k} must be a boolean`);
+}
+function reqNum(o: Obj, k: string, errors: string[], where: string): void {
+  if (typeof o[k] !== "number" || !Number.isFinite(o[k]))
+    errors.push(`${where}: ${k} must be a finite number`);
+}
+/** A YYYY-MM-DD string that is also a REAL calendar date. The shape regex alone
+ *  admits 2026-99-99, which then silently falls outside every trailing-window
+ *  comparison instead of failing loudly at the gate. */
+function isRealDate(s: string): boolean {
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number) as [number, number, number];
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+function reqDate(o: Obj, k: string, errors: string[], where: string): void {
+  if (typeof o[k] !== "string" || !isRealDate(o[k] as string))
+    errors.push(`${where}: ${k} must be a YYYY-MM-DD date`);
+}
+/**
+ * Path-segment safety for an id field. Only fires when the value already IS a
+ * non-empty string: reqStr owns the "wrong type / empty" error, so a malformed
+ * value reports once, naming the constraint it actually broke.
+ */
+function reqSafeId(o: Obj, k: string, errors: string[], where: string): void {
+  const val = o[k];
+  if (typeof val !== "string" || val.length === 0) return;
+  if (!isSafeId(val))
+    errors.push(
+      `${where}: ${k} "${val}" must match ${SAFE_ID_RE.source} and not be "." or ".." ` +
+        `(it is used as a path segment)`,
+    );
+}
+function reqDedupeKey(o: Obj, errors: string[], where: string): void {
+  const dk = o.dedupe_key;
+  if (!isObj(dk)) {
+    errors.push(`${where}: dedupe_key must be an object {surface,symptom,root_cause}`);
+    return;
+  }
+  reqStr(dk, "surface", errors, `${where}.dedupe_key`);
+  reqStr(dk, "symptom", errors, `${where}.dedupe_key`);
+  reqStr(dk, "root_cause", errors, `${where}.dedupe_key`);
+}
+
+function finish(errors: string[]): ValidationResult {
+  return { ok: errors.length === 0, errors };
+}
+
+export function validateRegistryEntry(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["registry-entry: not an object"]);
+  reqStr(x, "id", errors, "registry-entry");
+  // The id reaches the filesystem as .run/<run_id>/surfaces/<id>/... — gate it
+  // here, at the point the human-seeded YAML enters the engine.
+  reqSafeId(x, "id", errors, "registry-entry");
+  reqStr(x, "title", errors, "registry-entry");
+  reqEnum(x, "kind", ["vector", "flow"], errors, "registry-entry");
+  if (!Array.isArray(x.area) || x.area.length === 0 || !x.area.every((a) => typeof a === "string"))
+    errors.push("registry-entry: area must be a non-empty string[]");
+  reqEnum(x, "weight", WEIGHTS, errors, "registry-entry");
+  reqNum(x, "interval_days", errors, "registry-entry");
+  reqEnum(x, "owner", LANES, errors, "registry-entry");
+  if (x.last_reviewed !== undefined) reqDate(x, "last_reviewed", errors, "registry-entry");
+  return finish(errors);
+}
+
+export function validateCandidateFinding(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["finding: not an object"]);
+  reqDedupeKey(x, errors, "finding");
+  // dedupe_key.surface is a registry id: bin/record stamps last_reviewed on the
+  // entry it names, and tier2-gate uses it as a path segment
+  // (.run/<run_id>/surfaces/<surface>/tier2.pending.json). Model-written, so it
+  // gets the same charset gate the registry side gets.
+  if (isObj(x.dedupe_key)) reqSafeId(x.dedupe_key, "surface", errors, "finding.dedupe_key");
+  reqEnum(x, "severity", SEVERITIES, errors, "finding");
+  reqEnum(x, "confidence", CONFIDENCES, errors, "finding");
+  reqBool(x, "needs_human_verification", errors, "finding");
+  // critical/high MUST need human verification (assurance, not a pentest).
+  if ((x.severity === "critical" || x.severity === "high") && x.needs_human_verification !== true)
+    errors.push("finding: critical/high requires needs_human_verification=true");
+  // UX findings require an anchor; security findings require the write-up fields.
+  if (x.anchor !== undefined) reqEnum(x, "anchor", ANCHORS, errors, "finding");
+  return finish(errors);
+}
+
+export function validateFinding(x: unknown): ValidationResult {
+  const base = validateCandidateFinding(x);
+  const errors = [...base.errors];
+  if (isObj(x)) {
+    reqDate(x, "first_seen", errors, "finding");
+    reqDate(x, "last_seen", errors, "finding");
+    reqStr(x, "run_id", errors, "finding");
+    if (x.resolved_at !== undefined) reqDate(x, "resolved_at", errors, "finding");
+  }
+  return finish(errors);
+}
+
+export function validateSuppression(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["suppression: not an object"]);
+  reqDedupeKey(x, errors, "suppression");
+  reqStr(x, "reason", errors, "suppression");
+  reqDate(x, "expires", errors, "suppression");
+  reqStr(x, "approved_by", errors, "suppression");
+  return finish(errors);
+}
+
+export function validateRunMetrics(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["run-metrics: not an object"]);
+  reqStr(x, "run_id", errors, "run-metrics");
+  reqStr(x, "ts", errors, "run-metrics");
+  reqDate(x, "date", errors, "run-metrics");
+  reqEnum(x, "lane", LANES, errors, "run-metrics");
+  reqStr(x, "pack_sha", errors, "run-metrics");
+  for (const k of [
+    "selected",
+    "reviewed",
+    "findings_created",
+    "confirmed",
+    "rejected_tier1",
+    "rejected_tier2",
+    "suppressed",
+  ])
+    reqNum(x, k, errors, "run-metrics");
+  if (!isObj(x.usage_by_model)) errors.push("run-metrics: usage_by_model must be an object");
+  return finish(errors);
+}
+
+export function validateDailyMetrics(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["daily-metrics: not an object"]);
+  reqDate(x, "date", errors, "daily-metrics");
+  reqEnum(x, "lane", LANES, errors, "daily-metrics");
+  reqStr(x, "ts", errors, "daily-metrics");
+  for (const k of [
+    "runs",
+    "surfaces_total",
+    "surfaces_green",
+    "surfaces_stale",
+    "surfaces_overdue",
+    "open_findings",
+    "coverage_freshness_pct",
+    "median_staleness_ratio",
+  ])
+    reqNum(x, k, errors, "daily-metrics");
+  for (const k of ["fpr_7d", "fpr_30d"])
+    if (x[k] !== null && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number or null`);
+  // cost_* fields are additive (v3 A2): optional, but typed when present.
+  for (const k of ["cost_usd_7d", "cost_usd_30d"])
+    if (x[k] !== undefined && (typeof x[k] !== "number" || !Number.isFinite(x[k])))
+      errors.push(`daily-metrics: ${k} must be a finite number`);
+  // Finite, like every other numeric field: NaN/Infinity here would ride into
+  // daily.jsonl and poison every cost average computed downstream of it.
+  if (
+    x.cost_usd_avg_per_run_30d !== undefined &&
+    x.cost_usd_avg_per_run_30d !== null &&
+    (typeof x.cost_usd_avg_per_run_30d !== "number" ||
+      !Number.isFinite(x.cost_usd_avg_per_run_30d))
+  )
+    errors.push("daily-metrics: cost_usd_avg_per_run_30d must be a finite number or null");
+  return finish(errors);
+}
+
+export function validateCostRecord(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["cost-record: not an object"]);
+  reqStr(x, "run_id", errors, "cost-record");
+  reqEnum(x, "lane", LANES, errors, "cost-record");
+  reqDate(x, "date", errors, "cost-record");
+  reqStr(x, "ts", errors, "cost-record");
+  reqNum(x, "usd", errors, "cost-record");
+  // Spend and token counters are physically nonnegative, and tokens are whole.
+  // Without this, `--usd -100` files as valid and drags every cost window down.
+  if (typeof x.usd === "number" && Number.isFinite(x.usd) && x.usd < 0)
+    errors.push("cost-record: usd must be >= 0");
+  for (const k of [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+  ]) {
+    reqNum(x, k, errors, "cost-record");
+    if (typeof x[k] === "number" && Number.isFinite(x[k] as number)) {
+      const n = x[k] as number;
+      if (n < 0 || !Number.isInteger(n))
+        errors.push(`cost-record: ${k} must be a nonnegative integer`);
+    }
+  }
+  reqEnum(x, "source", ["cli-json", "manual"], errors, "cost-record");
+  reqEnum(x, "status", ["ok", "error"], errors, "cost-record");
+  if (x.status === "error") reqStr(x, "terminal_reason", errors, "cost-record");
+  if (x.status === "ok" && x.terminal_reason !== undefined)
+    errors.push("cost-record: terminal_reason only allowed when status=error");
+  return finish(errors);
+}
+
+export function validateSurface(x: unknown): ValidationResult {
+  const { errors } = v();
+  if (!isObj(x)) return finish(["surface: not an object"]);
+  reqStr(x, "id", errors, "surface");
+  // surfaces.json drives the fan-out: each id becomes .run/<run_id>/surfaces/<id>.
+  reqSafeId(x, "id", errors, "surface");
+  reqEnum(x, "weight", WEIGHTS, errors, "surface");
+  reqNum(x, "staleness", errors, "surface");
+  reqNum(x, "score", errors, "surface");
+  if (x.change_flag !== 0 && x.change_flag !== 1)
+    errors.push("surface: change_flag must be 0 or 1");
+  // dispatch is OPTIONAL — surfaces.json artifacts predating A4/T1 carry no
+  // dispatch and stay valid. When present it is handed verbatim to agent(), so
+  // every field is checked here rather than in the workflow sandbox (E4).
+  if (x.dispatch !== undefined) {
+    if (!isObj(x.dispatch)) {
+      errors.push("surface: dispatch must be an object {model,effort,maxTurns}");
+    } else {
+      reqStr(x.dispatch, "model", errors, "surface.dispatch");
+      reqEnum(x.dispatch, "effort", EFFORTS, errors, "surface.dispatch");
+      reqNum(x.dispatch, "maxTurns", errors, "surface.dispatch");
+    }
+  }
+  return finish(errors);
+}
+
+export type SchemaName =
+  | "registry-entry"
+  | "candidate-finding"
+  | "finding"
+  | "suppression"
+  | "run-metrics"
+  | "daily-metrics"
+  | "surface"
+  | "cost-record";
+
+const VALIDATORS: Record<SchemaName, (x: unknown) => ValidationResult> = {
+  "registry-entry": validateRegistryEntry,
+  "candidate-finding": validateCandidateFinding,
+  finding: validateFinding,
+  suppression: validateSuppression,
+  "run-metrics": validateRunMetrics,
+  "daily-metrics": validateDailyMetrics,
+  surface: validateSurface,
+  "cost-record": validateCostRecord,
+};
+
+/**
+ * Validate a parsed artifact against a named schema. If the artifact is an array,
+ * every element is validated and errors are aggregated (index-prefixed).
+ */
+export function validateArtifact(schema: SchemaName, data: unknown): ValidationResult {
+  const fn = VALIDATORS[schema];
+  if (!fn) return { ok: false, errors: [`unknown schema: ${schema}`] };
+  if (Array.isArray(data)) {
+    const errors: string[] = [];
+    data.forEach((item, i) => {
+      const r = fn(item);
+      if (!r.ok) errors.push(...r.errors.map((e) => `[${i}] ${e}`));
+    });
+    return finish(errors);
+  }
+  return fn(data);
+}
+
+export const SCHEMA_NAMES = Object.keys(VALIDATORS) as SchemaName[];

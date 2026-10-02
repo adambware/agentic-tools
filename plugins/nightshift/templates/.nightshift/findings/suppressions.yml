@@ -1,0 +1,24 @@
+# .nightshift/findings/suppressions.yml — finding suppressions (TEMPLATE)
+# =======================================================================
+#
+# Suppressions tell the engine to SKIP re-filing a matching dedupe_key. Small, on
+# demand, time-boxed. Each conforms to the suppression sub-schema in
+# ${CLAUDE_PLUGIN_ROOT}/schemas/finding.yml:
+#   {dedupe_key: {surface, symptom, root_cause}, reason, expires, approved_by}
+#
+# A suppression auto-lifts after `expires` — there is no permanent silence. Use to
+# accept/defer a known finding WITHOUT losing the coverage, never to hide a real issue.
+# ---------------------------------------------------------------------------
+
+suppressions: []
+
+# ---- Commented example suppression (uncomment + adapt):
+#
+# suppressions:
+#   - dedupe_key:
+#       surface:    "PROJ-SEC-01"
+#       symptom:    "cross-tenant read of account config"
+#       root_cause: "missing account-scope policy check"
+#     reason:      "Accepted risk for internal-only beta; scoped fix tracked in PROJ-512."
+#     expires:     2026-09-01
+#     approved_by: "security-lead@example.com"

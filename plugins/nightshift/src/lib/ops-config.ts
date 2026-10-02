@@ -1,0 +1,491 @@
+// $OPS/config.yml — the operator's answer to "which repos, which lanes, how
+// wide" (A7). The file itself is hand-written and NEVER committed; this module
+// is the committed, tested reader for it.
+//
+// WHY A READER MODULE AND NOT `yq` IN THE SHELL. `ns` is a thin shell (plan
+// §9.4): every decision it appears to make — is this repo enabled, is this lane
+// enabled for it, where is the pack, how wide may the fan-out go — is resolved
+// here, in vitest-covered code, and handed back to the shell as flat values it
+// only echoes into other commands. That is also what lets A9's sentinel reuse
+// `ns`'s logic instead of reimplementing it against the same YAML.
+//
+// SHAPE (a7-ops-launcher.md §config.yml — the canonical spelling):
+//
+//   repos:
+//     - path: ~/code/novudesk
+//       lanes: [security, design]
+//       enabled: true
+//   dashboard: { out: dashboard.html, open_after_run: true }
+//   sentinel:  { enabled: false, hour: 7, cooldown_days: 2, weekly_floor_days: 7 }
+//   max_concurrent_reviewers: 3
+//
+// The lane-MAP spelling (`lanes: {security: true}`) is also accepted, matching
+// what dashboard-cli.ts already tolerates — one config file feeds both readers,
+// and a repo silently rendering with both lanes off is the exact failure A6 hit.
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { readYaml } from "./io.js";
+import type { Lane } from "./types.js";
+
+export const LANES: readonly Lane[] = ["security", "design"];
+
+/** Default fan-out cap when config.yml does not set one. */
+export const DEFAULT_MAX_CONCURRENT_REVIEWERS = 3;
+
+export interface OpsRepo {
+  /**
+   * Display name — explicit `name`, else the path's basename. Never "undefined",
+   * never empty, and always a single SAFE_NAME token: it is used unquoted as a
+   * path segment and as a word in a space-delimited line protocol.
+   */
+  name: string;
+  /** Absolute, tilde-expanded repo root. */
+  path: string;
+  enabled: boolean;
+  lanes: Lane[];
+}
+
+export interface OpsConfig {
+  repos: OpsRepo[];
+  dashboard: { out: string; open_after_run: boolean };
+  sentinel: { enabled: boolean; hour: number; cooldown_days: number; weekly_floor_days: number };
+  max_concurrent_reviewers: number;
+}
+
+export type OpsConfigResult = { ok: true; config: OpsConfig } | { ok: false; reason: string };
+
+/** One repo+lane the launcher can actually act on, with every path resolved. */
+export interface OpsTarget {
+  repo: OpsRepo;
+  lane: Lane;
+  /** <repo>/.nightshift */
+  packDir: string;
+  /** <repo>/.nightshift/metrics */
+  metricsDir: string;
+  /** <repo>/.nightshift/.run */
+  runRoot: string;
+  max_concurrent_reviewers: number;
+}
+
+export type OpsTargetResult = { ok: true; target: OpsTarget } | { ok: false; reason: string };
+
+type Obj = Record<string, unknown>;
+
+function isObj(x: unknown): x is Obj {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+function filled(x: unknown): x is string {
+  return typeof x === "string" && x.trim() !== "";
+}
+
+/**
+ * Expand a leading `~` against `home`.
+ *
+ * Only a leading "~" or "~/" is expanded — never "~user", which this cannot
+ * resolve and must not silently mangle into a relative path that resolves under
+ * the operator's cwd. Everything else is returned untouched and resolved
+ * against `base` (the config file's own directory), so a relative `path:` in
+ * config.yml means "next to my config", not "wherever I happened to run ns".
+ */
+export function expandPath(raw: string, home: string, base: string): string {
+  const p = raw.trim();
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return join(home, p.slice(2));
+  if (isAbsolute(p)) return resolve(p);
+  return resolve(base, p);
+}
+
+/**
+ * The only shape a repo display name may take: ASCII letters and digits, plus
+ * `.`, `_` and `-` after the first character.
+ *
+ * WHY AN ALLOWLIST AND NOT A BLOCKLIST. The display name is never quoted by
+ * anything downstream, and it is spliced into two protocols that both take
+ * whatever bytes it holds. (1) It is a PATH SEGMENT: `$OPS/evidence/<name>/`
+ * and `$OPS/digests/<name>.md`. retain.ts joins the evidence root with the name
+ * and then lifecycle-PRUNES the directory that comes out, so a name of
+ * "../logs" is not merely evidence filed in the wrong place — it is a delete of
+ * files that belong to something else entirely. Barring `/` and `\`, and
+ * barring a leading dot, makes "..", "." and every escaping spelling of them
+ * unrepresentable rather than merely unlikely. (2) It is a WORD IN A
+ * SPACE-DELIMITED LINE PROTOCOL: `bin/due.mjs --format sh` emits "<repo>
+ * <lane>" lines that `ns` reads back with `while IFS=' ' read -r _r _l`, so a
+ * name like "My App" splits into the pair ("My", "App") and the nightly sweep
+ * runs a repo that does not exist — quietly, still exiting 0. Barring
+ * whitespace keeps the name one word there, and the allowlist incidentally
+ * bars the shell metacharacters ($, `, *, quotes, ~) that the same unquoted
+ * value would otherwise hand to the shell that interpolates it.
+ */
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Basename of a path with trailing slashes stripped; never empty. */
+function basenameOf(path: string): string {
+  const cleaned = path.replace(/[/\\]+$/, "");
+  const cut = Math.max(cleaned.lastIndexOf("/"), cleaned.lastIndexOf("\\"));
+  return cleaned.slice(cut + 1) || "unnamed";
+}
+
+function parseLanes(raw: unknown): Lane[] {
+  if (Array.isArray(raw)) {
+    return LANES.filter((lane) => raw.some((v) => filled(v) && v.trim() === lane));
+  }
+  if (isObj(raw)) {
+    return LANES.filter((lane) => {
+      const v = raw[lane];
+      return v === true || v === "on";
+    });
+  }
+  return [];
+}
+
+function parseBool(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return fallback;
+}
+
+function parsePositiveInt(raw: unknown, fallback: number): number | undefined {
+  if (raw === undefined || raw === null) return fallback;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < 1) return undefined;
+  return n;
+}
+
+function parseNonNegativeInt(raw: unknown, fallback: number): number | undefined {
+  if (raw === undefined || raw === null) return fallback;
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < 0) return undefined;
+  return n;
+}
+
+/** Default `dashboard.out` when config.yml does not set one. */
+const DASHBOARD_OUT_DEFAULT = "dashboard.html";
+
+/**
+ * Validate `dashboard.out` at read time.
+ *
+ * bin/ns never resolves this value through node's path module — it is
+ * concatenated verbatim as `"$OPS_HOME/$NS_DASHBOARD_OUT"` and the result is
+ * atomically overwritten on every finalization. A `..` segment therefore walks
+ * straight back out of the ops home: "../runbook.md" is not a cosmetic mistake
+ * but a real operator-authored file silently clobbered on every single run.
+ *
+ * An absolute value does NOT escape — shell concatenation is not
+ * path.resolve(), so "/etc/x" yields "$OPS_HOME//etc/x", harmlessly inside the
+ * ops home. It is refused anyway because it is unhonorable rather than
+ * dangerous: the operator plainly asked for one location and would silently
+ * get a mirrored tree under another, if the write succeeded at all.
+ *
+ * Config-read time is the only enforcement point available. bin/ns has no
+ * path-resolution logic of its own to lean on, only concatenation, so whatever
+ * this function lets through is exactly what gets written over.
+ *
+ * A single path segment (no "/" at all) is required, not merely "resolves
+ * inside the ops home" — bin/ns concatenates this value directly onto
+ * $OPS_HOME and never `mkdir -p`s an intermediate directory, so a CONTAINED
+ * subpath like "reports/dashboard.html" would pass a resolves-inside check
+ * and then fail at write time with a shell error the operator would have to
+ * trace back to this config file by hand. Refusing it here, with a reason
+ * that names the actual rule, is strictly better than a downstream write
+ * failure with no context.
+ */
+function validateDashboardOut(
+  raw: unknown,
+  configPath: string,
+): { ok: true; value: string } | { ok: false; reason: string } {
+  if (!filled(raw)) return { ok: true, value: DASHBOARD_OUT_DEFAULT };
+  const out = raw.trim();
+  if (isAbsolute(out)) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" is an absolute path — bin/ns concatenates it ` +
+        `onto $OPS_HOME rather than resolving it, so this would not write where you asked; ` +
+        `it names a file inside the ops home, and must be a plain filename`,
+    };
+  }
+  const segments = out.split(/[\\/]+/);
+  if (segments.includes("..")) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" contains a ".." segment — bin/ns concatenates ` +
+        `it onto $OPS_HOME and atomically overwrites whatever path results on every ` +
+        `finalization, so this would silently clobber a file outside the ops home (an ` +
+        `operator's runbook.md, for example) instead of writing the dashboard`,
+    };
+  }
+  if (segments.length > 1) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: dashboard.out "${out}" has more than one path segment — bin/ns writes ` +
+        `it directly under $OPS_HOME and never creates intermediate directories, so a subpath ` +
+        `would fail at write time with a shell error; use a plain filename`,
+    };
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Read and normalize $OPS/config.yml. Read-only and total: an operator-fixable
+ * problem is always {ok:false, reason}, never a throw and never a silent
+ * default. The one thing this deliberately does NOT check is whether each repo
+ * path exists — `ns status` should be able to LIST a repo whose clone is
+ * missing and say so, rather than refusing to load the config at all.
+ */
+export function readOpsConfig(
+  configPath: string,
+  opts?: { home?: string },
+): OpsConfigResult {
+  const home = opts?.home ?? process.env.HOME ?? "";
+  if (!existsSync(configPath)) {
+    return {
+      ok: false,
+      reason:
+        `ops config not found: ${configPath} — create it (see a7-ops-launcher.md §config.yml) ` +
+        `or point --config / $NIGHTSHIFT_OPS at the ops home that holds it`,
+    };
+  }
+
+  let doc: unknown;
+  try {
+    doc = readYaml(configPath);
+  } catch (err) {
+    return { ok: false, reason: `ops config is not valid YAML: ${configPath} — ${(err as Error).message}` };
+  }
+  if (!isObj(doc)) {
+    return {
+      ok: false,
+      reason: `ops config is not a YAML mapping: ${configPath} — expected top-level \`repos:\``,
+    };
+  }
+
+  const rawRepos = doc.repos;
+  if (!Array.isArray(rawRepos)) {
+    return { ok: false, reason: `ops config has no \`repos:\` list: ${configPath}` };
+  }
+  if (rawRepos.length === 0) {
+    return {
+      ok: false,
+      reason:
+        `ops config \`repos:\` is empty: ${configPath} — add at least one repo ` +
+        `({path, lanes: [security], enabled: true}) before running anything`,
+    };
+  }
+
+  // The config file's own directory is the base for relative repo paths.
+  const base = resolve(configPath, "..");
+
+  const repos: OpsRepo[] = [];
+  // Keyed by the LOWERCASED name, valued by the first original spelling seen —
+  // see the comment at the collision check below for why the key is
+  // normalized but the message still needs the original spellings.
+  const seenNames = new Map<string, string>();
+  for (let i = 0; i < rawRepos.length; i++) {
+    const raw = rawRepos[i];
+    if (!isObj(raw)) {
+      return { ok: false, reason: `${configPath}: repos[${i}] is not a mapping` };
+    }
+    if (!filled(raw.path)) {
+      return { ok: false, reason: `${configPath}: repos[${i}] has no \`path:\`` };
+    }
+    const path = expandPath(raw.path, home, base);
+    // An ABSENT `name:` means "use the path's basename" — the documented
+    // default, and the same undefined/null-is-not-set rule the numeric fields
+    // use. A `name:` that is present but blank, or present but not a string,
+    // is a typo the operator wants to hear about; treating it as a second way
+    // of spelling the default is how a config ends up naming a repo something
+    // its author never wrote.
+    const rawName = raw.name;
+    if (rawName !== undefined && rawName !== null && typeof rawName !== "string") {
+      return {
+        ok: false,
+        reason:
+          `${configPath}: repos[${i}] \`name:\` must be a string, got ${typeof rawName} — ` +
+          `quote it if you meant a literal like "2024"`,
+      };
+    }
+    const name = typeof rawName === "string" ? rawName.trim() : basenameOf(path);
+    // The display name is a path segment AND a word in a space-delimited line
+    // protocol (see SAFE_NAME) — refuse anything else here, at read time,
+    // rather than sanitizing it into something the operator did not ask for
+    // and will not recognize in `$OPS/evidence/`.
+    if (!SAFE_NAME.test(name)) {
+      const rule =
+        `it must match ${SAFE_NAME.source} — ASCII letters, digits, dot, underscore and ` +
+        `hyphen, starting with a letter or digit. No slashes, no "..", no leading dot, ` +
+        `no spaces: the name becomes a directory ($OPS/evidence/<name>/, ` +
+        `$OPS/digests/<name>.md, which evidence retention PRUNES) and a word in the ` +
+        `"<repo> <lane>" pairs \`ns run --due\` reads back`;
+      if (typeof rawName === "string") {
+        return {
+          ok: false,
+          reason: `${configPath}: repos[${i}] has an unusable \`name:\` "${name}" — ${rule}`,
+        };
+      }
+      return {
+        ok: false,
+        reason:
+          `${configPath}: repos[${i}] has no \`name:\`, and the basename of its path ` +
+          `(${path}) is "${name}", which is unusable as a display name — ${rule}. ` +
+          `Add an explicit \`name:\` to this entry; renaming the checkout is not required`,
+      };
+    }
+    // Two repos sharing a display name would collide in $OPS/evidence/<repo>/
+    // and in $OPS/digests/<repo>.md — one would silently overwrite the other.
+    // The comparison key is lowercased before this lookup because the ops
+    // home is explicitly a fact about THIS machine (see the file banner
+    // above), and this machine's default filesystem (APFS/HFS+) is
+    // case-insensitive: "Foo" and "foo" both satisfy SAFE_NAME as distinct
+    // strings, but $OPS/evidence/Foo/ and $OPS/evidence/foo/ are the SAME
+    // directory on disk, so one repo's evidence prune and digest write would
+    // silently land on the other's. The refusal below still names the
+    // ORIGINAL spelling of each repo, not the normalized key: an operator who
+    // wrote "Foo" and "foo" needs to see both spellings to recognize why they
+    // collided — pointing at the lowercased key alone would look unrelated to
+    // what either of them typed.
+    const nameKey = name.toLowerCase();
+    const priorSpelling = seenNames.get(nameKey);
+    if (priorSpelling !== undefined) {
+      return {
+        ok: false,
+        reason:
+          `${configPath}: two repos resolve to the display name "${name}" — evidence and ` +
+          `digests are stored per name, so one would overwrite the other; give one an ` +
+          `explicit \`name:\`` +
+          (priorSpelling !== name
+            ? ` (case-only collision with the earlier "${priorSpelling}" — names collide ` +
+              `case-insensitively here because they become paths on this machine's ` +
+              `case-insensitive filesystem)`
+            : ""),
+      };
+    }
+    seenNames.set(nameKey, name);
+    repos.push({ name, path, enabled: parseBool(raw.enabled, true), lanes: parseLanes(raw.lanes) });
+  }
+
+  const maxConcurrent = parsePositiveInt(doc.max_concurrent_reviewers, DEFAULT_MAX_CONCURRENT_REVIEWERS);
+  if (maxConcurrent === undefined) {
+    return {
+      ok: false,
+      reason:
+        `${configPath}: max_concurrent_reviewers must be an integer >= 1, got ` +
+        `"${String(doc.max_concurrent_reviewers)}"`,
+    };
+  }
+
+  const dashboardRaw = isObj(doc.dashboard) ? doc.dashboard : {};
+  const sentinelRaw = isObj(doc.sentinel) ? doc.sentinel : {};
+
+  const dashboardOut = validateDashboardOut(dashboardRaw.out, configPath);
+  if (!dashboardOut.ok) return dashboardOut;
+
+  const hour = parseNonNegativeInt(sentinelRaw.hour, 7);
+  const cooldown = parseNonNegativeInt(sentinelRaw.cooldown_days, 2);
+  const weeklyFloor = parsePositiveInt(sentinelRaw.weekly_floor_days, 7);
+  if (hour === undefined || hour > 23) {
+    return { ok: false, reason: `${configPath}: sentinel.hour must be an integer 0-23` };
+  }
+  if (cooldown === undefined) {
+    return { ok: false, reason: `${configPath}: sentinel.cooldown_days must be an integer >= 0` };
+  }
+  if (weeklyFloor === undefined) {
+    return { ok: false, reason: `${configPath}: sentinel.weekly_floor_days must be an integer >= 1` };
+  }
+
+  return {
+    ok: true,
+    config: {
+      repos,
+      dashboard: {
+        out: dashboardOut.value,
+        open_after_run: parseBool(dashboardRaw.open_after_run, true),
+      },
+      sentinel: {
+        enabled: parseBool(sentinelRaw.enabled, false),
+        hour,
+        cooldown_days: cooldown,
+        weekly_floor_days: weeklyFloor,
+      },
+      max_concurrent_reviewers: maxConcurrent,
+    },
+  };
+}
+
+/** Look a repo up by display name, then by exact resolved path. */
+export function findRepo(config: OpsConfig, nameOrPath: string, opts?: { home?: string }): OpsRepo | undefined {
+  const wanted = nameOrPath.trim();
+  const byName = config.repos.find((r) => r.name === wanted);
+  if (byName !== undefined) return byName;
+  const home = opts?.home ?? process.env.HOME ?? "";
+  const resolved = expandPath(wanted, home, process.cwd());
+  return config.repos.find((r) => r.path === resolved);
+}
+
+/**
+ * Resolve one repo+lane into every path `ns run` needs, refusing loudly for
+ * anything the operator has to fix. This is where "the repo is configured" and
+ * "the repo is actually runnable" are separated: a lane that is not listed for
+ * the repo is a config problem, a missing clone or pack is a machine problem,
+ * and each gets its own reason.
+ */
+export function resolveTarget(config: OpsConfig, repoName: string, lane: string): OpsTargetResult {
+  if (lane !== "security" && lane !== "design") {
+    return {
+      ok: false,
+      reason: `unknown lane "${lane}" — expected "security" or "design"`,
+    };
+  }
+  const repo = findRepo(config, repoName);
+  if (repo === undefined) {
+    const known = config.repos.map((r) => r.name).join(", ");
+    return {
+      ok: false,
+      reason: `repo "${repoName}" is not in the ops config — configured repos: ${known || "(none)"}`,
+    };
+  }
+  if (!repo.enabled) {
+    return {
+      ok: false,
+      reason: `repo "${repo.name}" is disabled in the ops config (enabled: false) — enable it to run`,
+    };
+  }
+  if (!repo.lanes.includes(lane)) {
+    const listed = repo.lanes.join(", ");
+    return {
+      ok: false,
+      reason:
+        `lane "${lane}" is not enabled for repo "${repo.name}" — its \`lanes:\` list is ` +
+        `[${listed}]; add "${lane}" to run it`,
+    };
+  }
+  if (!existsSync(repo.path) || !statSync(repo.path).isDirectory()) {
+    return {
+      ok: false,
+      reason: `repo path for "${repo.name}" is not a directory: ${repo.path} — fix \`path:\` or clone it`,
+    };
+  }
+  const packDir = join(repo.path, ".nightshift");
+  if (!existsSync(packDir)) {
+    return {
+      ok: false,
+      reason:
+        `no .nightshift pack in ${repo.path} — run /nightshift:onboard in that repo before ` +
+        `the launcher can review it`,
+    };
+  }
+  return {
+    ok: true,
+    target: {
+      repo,
+      lane,
+      packDir,
+      metricsDir: join(packDir, "metrics"),
+      runRoot: join(packDir, ".run"),
+      max_concurrent_reviewers: config.max_concurrent_reviewers,
+    },
+  };
+}

@@ -1,0 +1,93 @@
+# Cost Record Schema — cost_record (one record PER RUN)
+# ======================================================
+#
+# Every run appends ONE cost record as a single NDJSON object to
+# <repo>/.nightshift/metrics/costs.jsonl (append-only). Kept SEPARATE from
+# metrics/runs/<YYYY-MM>.jsonl so the deterministic record path stays untouched
+# and append-only semantics are preserved; readers JOIN on run_id.
+#
+# Capture path: `ns` parses the headless `claude -p --output-format json` result
+# envelope and calls bin/record-cost (validate + atomic append).
+#
+# THE LOAD-BEARING RULE (plan §9.7): status is gated on the envelope's
+# `is_error` field and NOTHING else. A failed run's envelope reports
+# `subtype: "success"` right next to `is_error: true` — keying on subtype
+# would record failures as normal runs. `subtype` is never consulted.
+#
+# There is NO cost estimate anywhere (plan §9.10): no expected-cost baseline is
+# printed or documented. The runbook's baseline is TBD until A7 fills it from
+# the first three real runs.
+#
+# All fields are (auto) — engine-managed, written by bin/record-cost.
+# ---------------------------------------------------------------------------
+
+cost_record:
+  run_id:                  # string, (auto). Join key to metrics/runs/*.jsonl,
+                           #   e.g. "ns-2026-06-18-sec-01". A failed run may have a
+                           #   cost line with no matching run record — that is honest.
+
+  lane:                    # enum, (auto). security | design.
+
+  date:                    # date (YYYY-MM-DD), (auto). Run date; the rollup's
+                           #   trailing cost windows group on this.
+
+  ts:                      # string (ISO-8601), (auto). When the cost was recorded.
+
+  usd:                     # number, (auto). total_cost_usd from the CLI envelope
+                           #   (0 for failed runs — recorded, not averaged).
+
+  input_tokens:            # int, (auto). usage.input_tokens.
+
+  output_tokens:           # int, (auto). usage.output_tokens.
+
+  cache_read_tokens:       # int, (auto). usage.cache_read_input_tokens.
+
+  cache_creation_tokens:   # int, (auto). usage.cache_creation_input_tokens.
+
+  source:                  # enum, (auto). cli-json | manual.
+                           #   cli-json: parsed from the headless result envelope.
+                           #   manual:   `ns cost add` after an interactive/debug run
+                           #             without JSON output. Skipping is allowed —
+                           #             the dashboard shows the gap honestly.
+
+  status:                  # enum, (auto). ok | error.
+                           #   ok    <=> envelope is_error === false (or source=manual).
+                           #   error <=> is_error === true. Error rows are excluded
+                           #   from cost_usd_avg_per_run_30d in the daily rollup and
+                           #   rendered in the dashboard's hygiene strip.
+
+  terminal_reason:         # string, (auto). Present iff status=error — the envelope's
+                           #   terminal_reason (e.g. "api_error"), "unknown" if absent.
+
+# ---------------------------------------------------------------------------
+# Examples (lines appended to metrics/costs.jsonl):
+#
+# example_ok:
+#   cost_record:
+#     run_id:                "ns-2026-06-18-sec-01"
+#     lane:                  security
+#     date:                  2026-06-18
+#     ts:                    "2026-06-18T07:03:12Z"
+#     usd:                   1.84
+#     input_tokens:          182034
+#     output_tokens:         24110
+#     cache_read_tokens:     1204882
+#     cache_creation_tokens: 88213
+#     source:                cli-json
+#     status:                ok
+#
+# example_error (failed run — note the envelope it came from carried
+# subtype:"success" next to is_error:true; only is_error decided this):
+#   cost_record:
+#     run_id:                "ns-2026-06-20-sec-01"
+#     lane:                  security
+#     date:                  2026-06-20
+#     ts:                    "2026-06-20T07:01:44Z"
+#     usd:                   0
+#     input_tokens:          0
+#     output_tokens:         0
+#     cache_read_tokens:     0
+#     cache_creation_tokens: 0
+#     source:                cli-json
+#     status:                error
+#     terminal_reason:       "api_error"

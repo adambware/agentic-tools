@@ -1,0 +1,867 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { computeDailyRollup, type RollupInput } from "./rollup-run.js";
+import { runRollup } from "./rollup-cli.js";
+import { readJsonl } from "./io.js";
+import {
+  COMPLETE_DIRNAME,
+  isRunComplete,
+  runCompleteDir,
+  runCompletePath,
+} from "./run-complete.js";
+import { runOutcome } from "./run-outcome.js";
+import { MAX_STALENESS } from "./staleness.js";
+import type { DailyMetrics, Lane, RegistryEntry, RunMetrics } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeEntry(
+  id: string,
+  last_reviewed: string | undefined,
+  weight: RegistryEntry["weight"] = "medium",
+  interval_days = 30,
+): RegistryEntry {
+  return {
+    id,
+    title: id,
+    kind: "vector",
+    area: [`app/${id}/*`],
+    weight,
+    interval_days,
+    owner: "security",
+    ...(last_reviewed !== undefined ? { last_reviewed } : {}),
+  };
+}
+
+function makeRun(
+  date: string,
+  lane: Lane,
+  findings_created: number,
+  rejected_tier1: number,
+  rejected_tier2: number,
+): RunMetrics {
+  return {
+    run_id: `run-${date}-${lane}`,
+    ts: `${date}T07:00:00Z`,
+    date,
+    lane,
+    pack_sha: "abc",
+    selected: 1,
+    reviewed: 1,
+    findings_created,
+    confirmed: findings_created - rejected_tier1 - rejected_tier2,
+    rejected_tier1,
+    rejected_tier2,
+    suppressed: 0,
+    usage_by_model: {},
+    usage_spent: 0,
+    elapsed: 60,
+  };
+}
+
+function baseInput(overrides: Partial<RollupInput> = {}): RollupInput {
+  return {
+    date: "2026-06-21",
+    lane: "security",
+    ts: "2026-06-21T07:00:00Z",
+    entries: [],
+    openFindingsCount: 0,
+    runRecords: [],
+    today: "2026-06-21",
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// computeDailyRollup — core unit tests
+// ---------------------------------------------------------------------------
+
+describe("computeDailyRollup", () => {
+  describe("surfaces_total === 0", () => {
+    it("returns coverage_freshness_pct=100 and median_staleness_ratio=0", () => {
+      const result = computeDailyRollup(baseInput({ entries: [] }));
+      expect(result.surfaces_total).toBe(0);
+      expect(result.surfaces_green).toBe(0);
+      expect(result.surfaces_stale).toBe(0);
+      expect(result.surfaces_overdue).toBe(0);
+      expect(result.coverage_freshness_pct).toBe(100);
+      expect(result.median_staleness_ratio).toBe(0);
+    });
+  });
+
+  describe("freshness math and surfaces_* counts", () => {
+    it("correctly bins entries into green/stale/overdue and sums to total", () => {
+      // today = 2026-06-21
+      // green: reviewed 10 days ago with 30-day interval → staleness = 10/30 = 0.33
+      // stale: reviewed 40 days ago with 30-day interval → staleness = 40/30 = 1.33
+      // overdue: reviewed 70 days ago with 30-day interval → staleness = 70/30 = 2.33
+      const entries = [
+        makeEntry("green-1", "2026-06-11", "medium", 30),
+        makeEntry("stale-1", "2026-05-12", "medium", 30),
+        makeEntry("overdue-1", "2026-04-12", "medium", 30),
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.surfaces_total).toBe(3);
+      expect(result.surfaces_green).toBe(1);
+      expect(result.surfaces_stale).toBe(1);
+      expect(result.surfaces_overdue).toBe(1);
+      expect(result.surfaces_green + result.surfaces_stale + result.surfaces_overdue).toBe(
+        result.surfaces_total,
+      );
+      // freshness: 1/3 = 33.3%
+      expect(result.coverage_freshness_pct).toBe(33.3);
+    });
+
+    it("all green entries → freshness 100%", () => {
+      const entries = [
+        makeEntry("a", "2026-06-20", "medium", 30),
+        makeEntry("b", "2026-06-19", "medium", 30),
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.surfaces_green).toBe(2);
+      expect(result.surfaces_stale).toBe(0);
+      expect(result.surfaces_overdue).toBe(0);
+      expect(result.coverage_freshness_pct).toBe(100);
+    });
+
+    it("boundary at staleness exactly 1.0 → green", () => {
+      // reviewed exactly interval_days ago → staleness = 1.0 → green
+      const entries = [makeEntry("exact", "2026-05-22", "medium", 30)]; // 30 days ago
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.surfaces_green).toBe(1);
+      expect(result.surfaces_stale).toBe(0);
+    });
+
+    it("boundary at staleness exactly 2.0 → stale (not overdue)", () => {
+      // reviewed exactly 2 * interval_days ago → staleness = 2.0 → stale
+      const entries = [makeEntry("exact2", "2026-05-22", "medium", 15)]; // 30 days ago, interval 15 → staleness 2.0
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.surfaces_stale).toBe(1);
+      expect(result.surfaces_overdue).toBe(0);
+    });
+  });
+
+  describe("never-reviewed entry", () => {
+    it("counts as overdue and pulls freshness down", () => {
+      const entries = [
+        makeEntry("reviewed", "2026-06-20", "medium", 30), // green
+        makeEntry("never", undefined, "medium", 30), // no last_reviewed → MAX_STALENESS → overdue
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.surfaces_green).toBe(1);
+      expect(result.surfaces_overdue).toBe(1);
+      expect(result.surfaces_stale).toBe(0);
+      // freshness: 1/2 = 50%
+      expect(result.coverage_freshness_pct).toBe(50);
+    });
+  });
+
+  describe("median staleness", () => {
+    it("computes median for odd number of entries", () => {
+      // staleness values: [0.33, 1.33, 2.33]
+      // sorted: [0.33, 1.33, 2.33] → median = 1.33
+      const entries = [
+        makeEntry("a", "2026-06-11", "medium", 30), // 10/30 = 0.33
+        makeEntry("b", "2026-05-12", "medium", 30), // 40/30 = 1.33
+        makeEntry("c", "2026-04-12", "medium", 30), // 70/30 = 2.33
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      expect(result.median_staleness_ratio).toBe(1.33);
+    });
+
+    it("computes median for even number of entries (average of two middle)", () => {
+      // staleness: [0.33, 1.33] → median = (0.33 + 1.33) / 2 = 0.83
+      const entries = [
+        makeEntry("a", "2026-06-11", "medium", 30), // 10/30 = 0.333...
+        makeEntry("b", "2026-05-12", "medium", 30), // 40/30 = 1.333...
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      // (0.3333 + 1.3333) / 2 = 0.8333 → rounded to 2dp = 0.83
+      expect(result.median_staleness_ratio).toBe(0.83);
+    });
+
+    it("includes MAX_STALENESS value in median sort (never-reviewed)", () => {
+      // Two entries: one green (staleness ~0.33), one never-reviewed (MAX_STALENESS)
+      // sorted: [0.33, MAX_STALENESS] → median = (0.33 + MAX_STALENESS) / 2 (very large)
+      const entries = [
+        makeEntry("a", "2026-06-11", "medium", 30),
+        makeEntry("b", undefined, "medium", 30),
+      ];
+      const result = computeDailyRollup(baseInput({ entries, today: "2026-06-21" }));
+      // median will be enormous due to MAX_STALENESS, just verify it's >> 1
+      expect(result.median_staleness_ratio).toBeGreaterThan(1e8);
+    });
+  });
+
+  describe("runs count", () => {
+    it("counts only run records matching the exact (date, lane)", () => {
+      const runs: RunMetrics[] = [
+        makeRun("2026-06-21", "security", 1, 0, 0),
+        makeRun("2026-06-21", "security", 2, 1, 0), // same date+lane = 2 runs
+        makeRun("2026-06-20", "security", 1, 0, 0), // wrong date
+        makeRun("2026-06-21", "design", 1, 0, 0), // wrong lane
+      ];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      expect(result.runs).toBe(2);
+    });
+
+    it("returns runs=0 when no records match", () => {
+      const runs: RunMetrics[] = [makeRun("2026-06-20", "security", 1, 0, 0)];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      expect(result.runs).toBe(0);
+    });
+  });
+
+  describe("FPR computation", () => {
+    it("returns null for fpr_7d and fpr_30d when findings_created=0", () => {
+      const runs: RunMetrics[] = [makeRun("2026-06-21", "security", 0, 0, 0)];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      expect(result.fpr_7d).toBeNull();
+      expect(result.fpr_30d).toBeNull();
+    });
+
+    it("computes correct FPR integer percentage when rejected and created > 0", () => {
+      // 3 rejected out of 4 created = 75%
+      const runs: RunMetrics[] = [makeRun("2026-06-21", "security", 4, 2, 1)];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      expect(result.fpr_7d).toBe(75);
+      expect(result.fpr_30d).toBe(75);
+    });
+
+    it("fpr_7d is null when all runs have findings_created=0 but fpr_30d is not", () => {
+      // A run 10 days ago (outside 7d window, inside 30d window) with created>0
+      // A run today with created=0
+      const today = "2026-06-21";
+      const runs: RunMetrics[] = [
+        makeRun("2026-06-11", "security", 4, 1, 1), // 10 days ago → outside 7d, inside 30d
+        makeRun("2026-06-21", "security", 0, 0, 0), // today, but created=0
+      ];
+      const result = computeDailyRollup(
+        baseInput({ runRecords: runs, date: today, today }),
+      );
+      // 7d window: only today's run (created=0) → null
+      expect(result.fpr_7d).toBeNull();
+      // 30d window: both runs → created=4, rejected=2 → 50%
+      expect(result.fpr_30d).toBe(50);
+    });
+
+    describe("FPR window boundary", () => {
+      it("includes a run exactly N-1 days before endDate (inside window)", () => {
+        // 7-day window: [date-6, date]. A run 6 days ago should be included.
+        const runs: RunMetrics[] = [makeRun("2026-06-15", "security", 4, 2, 0)]; // 6 days before 2026-06-21
+        const result = computeDailyRollup(
+          baseInput({ runRecords: runs, date: "2026-06-21", today: "2026-06-21" }),
+        );
+        expect(result.fpr_7d).toBe(50); // 2/4 = 50%
+      });
+
+      it("excludes a run exactly N days before endDate (outside 7d window)", () => {
+        // A run 7 days ago is outside the window (window is [date-6, date])
+        const runs: RunMetrics[] = [makeRun("2026-06-14", "security", 4, 2, 0)]; // 7 days before 2026-06-21
+        const result = computeDailyRollup(
+          baseInput({ runRecords: runs, date: "2026-06-21", today: "2026-06-21" }),
+        );
+        expect(result.fpr_7d).toBeNull(); // excluded → created=0 → null
+      });
+
+      it("includes today's run (d=0, inside every window)", () => {
+        const runs: RunMetrics[] = [makeRun("2026-06-21", "security", 2, 1, 0)];
+        const result = computeDailyRollup(baseInput({ runRecords: runs }));
+        expect(result.fpr_7d).toBe(50);
+        expect(result.fpr_30d).toBe(50);
+      });
+
+      it("includes a run exactly 29 days before endDate (inside 30d window)", () => {
+        const runs: RunMetrics[] = [makeRun("2026-05-23", "security", 2, 2, 0)]; // 29 days before 2026-06-21
+        const result = computeDailyRollup(
+          baseInput({ runRecords: runs, date: "2026-06-21", today: "2026-06-21" }),
+        );
+        expect(result.fpr_30d).toBe(100); // 2/2 = 100%
+        expect(result.fpr_7d).toBeNull(); // outside 7d
+      });
+
+      it("excludes a run exactly 30 days before endDate (outside 30d window)", () => {
+        const runs: RunMetrics[] = [makeRun("2026-05-22", "security", 2, 2, 0)]; // 30 days before 2026-06-21
+        const result = computeDailyRollup(
+          baseInput({ runRecords: runs, date: "2026-06-21", today: "2026-06-21" }),
+        );
+        expect(result.fpr_30d).toBeNull();
+      });
+    });
+
+    it("aggregates multiple runs within the window for FPR", () => {
+      const runs: RunMetrics[] = [
+        makeRun("2026-06-21", "security", 3, 1, 0), // today: 3 created, 1 rejected
+        makeRun("2026-06-19", "security", 5, 2, 1), // 2 days ago: 5 created, 3 rejected
+      ];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      // total: 8 created, 4 rejected → 50%
+      expect(result.fpr_7d).toBe(50);
+    });
+
+    it("sums both rejected_tier1 and rejected_tier2 for FPR", () => {
+      const runs: RunMetrics[] = [makeRun("2026-06-21", "security", 10, 3, 2)];
+      const result = computeDailyRollup(baseInput({ runRecords: runs }));
+      // (3 + 2) / 10 = 50%
+      expect(result.fpr_7d).toBe(50);
+    });
+  });
+
+  describe("output shape", () => {
+    it("returns all required DailyMetrics fields", () => {
+      const result = computeDailyRollup(
+        baseInput({
+          date: "2026-06-21",
+          lane: "security",
+          ts: "2026-06-21T07:00:00Z",
+          openFindingsCount: 3,
+        }),
+      );
+      expect(result.date).toBe("2026-06-21");
+      expect(result.lane).toBe("security");
+      expect(result.ts).toBe("2026-06-21T07:00:00Z");
+      expect(result.open_findings).toBe(3);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rollup-cli happy-path: writes and reads back from daily.jsonl
+// ---------------------------------------------------------------------------
+
+describe("runRollup (cli integration)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ns-rollup-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("appends a line to daily.jsonl and returns DailyMetrics", () => {
+    const registryPath = join(dir, "vectors.yml");
+    writeFileSync(
+      registryPath,
+      `vectors:
+  - id: SEC-01
+    title: Auth
+    kind: vector
+    area: ["app/auth/*"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-20
+`,
+    );
+
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    const dailyPath = join(metricsDir, "daily.jsonl");
+
+    const result = runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      date: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      outPath: dailyPath,
+    });
+
+    expect(result.date).toBe("2026-06-21");
+    expect(result.lane).toBe("security");
+    expect(result.surfaces_total).toBe(1);
+    expect(result.surfaces_green).toBe(1); // 1/7 = 0.14, within interval
+
+    const lines = readJsonl<DailyMetrics>(dailyPath);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.date).toBe("2026-06-21");
+    expect(lines[0]!.surfaces_total).toBe(1);
+  });
+
+  it("appends a second line without overwriting the first", () => {
+    const registryPath = join(dir, "vectors.yml");
+    writeFileSync(
+      registryPath,
+      `vectors:
+  - id: SEC-01
+    title: Auth
+    kind: vector
+    area: ["app/auth/*"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-20
+`,
+    );
+
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    const dailyPath = join(metricsDir, "daily.jsonl");
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      outPath: dailyPath,
+    });
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T08:00:00Z",
+      outPath: dailyPath,
+    });
+
+    const lines = readJsonl<DailyMetrics>(dailyPath);
+    // both lines present (append-only; reader uses max-ts dedup)
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.ts).toBe("2026-06-21T07:00:00Z");
+    expect(lines[1]!.ts).toBe("2026-06-21T08:00:00Z");
+  });
+
+  it("throws when registry file is missing", () => {
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    expect(() =>
+      runRollup({
+        registryPath: join(dir, "nope.yml"),
+        metricsDir,
+        lane: "security",
+        today: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+      }),
+    ).toThrow(/registry not found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost windows (v3 A2) — cost_usd_7d / cost_usd_30d / cost_usd_avg_per_run_30d
+// ---------------------------------------------------------------------------
+
+function makeCost(
+  date: string,
+  usd: number,
+  status: "ok" | "error" = "ok",
+  lane: Lane = "security",
+): import("./types.js").CostRecord {
+  return {
+    run_id: `run-${date}-${lane}-${usd}`,
+    lane,
+    date,
+    ts: `${date}T07:00:00Z`,
+    usd,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    source: "cli-json",
+    status,
+    ...(status === "error" ? { terminal_reason: "api_error" } : {}),
+  };
+}
+
+describe("computeDailyRollup — cost windows", () => {
+  it("omitted costRecords yields zero sums and a null average (additive default)", () => {
+    const result = computeDailyRollup(baseInput());
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_30d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("windows are trailing and inclusive: day-6 is in the 7d window, day-7 is out", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-15", 1.0), // 6 days back -> in 7d
+          makeCost("2026-06-14", 2.0), // 7 days back -> out of 7d, in 30d
+          makeCost("2026-05-23", 4.0), // 29 days back -> in 30d
+          makeCost("2026-05-22", 8.0), // 30 days back -> out of 30d
+          makeCost("2026-06-22", 16.0), // future -> out of every window
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(7.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(7.0 / 3, 4);
+  });
+
+  it("error rows count in the sums but are excluded from the per-run average", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.5),
+          makeCost("2026-06-19", 0, "error"),
+          makeCost("2026-06-18", 2.5),
+        ],
+      }),
+    );
+    // Sums include the error row's usd (honest total spend).
+    expect(result.cost_usd_7d).toBeCloseTo(4.0, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(4.0, 4);
+    // Average is over ok rows only: (1.5 + 2.5) / 2 — the $0 error row must not
+    // drag it down to 1.33.
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(2.0, 4);
+  });
+
+  it("a window with only error rows averages to null, not 0", () => {
+    const result = computeDailyRollup(
+      baseInput({ date: "2026-06-21", costRecords: [makeCost("2026-06-20", 0, "error")] }),
+    );
+    expect(result.cost_usd_7d).toBe(0);
+    expect(result.cost_usd_avg_per_run_30d).toBeNull();
+  });
+
+  it("filters cost records to the rollup's lane", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        lane: "security",
+        date: "2026-06-21",
+        costRecords: [
+          makeCost("2026-06-20", 1.0, "ok", "security"),
+          makeCost("2026-06-20", 100.0, "ok", "design"),
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(1.0, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(1.0, 4);
+  });
+});
+
+/* ---------- runRollup validates on the way in AND on the way out ---------- */
+
+// A malformed costs.jsonl row used to sum to NaN, serialize to null in
+// daily.jsonl, and reach the dashboard with no error anywhere. Both gates are
+// pinned here: the read-side one names the offending line, the write-side one
+// refuses to put a non-finite rollup into the stateful path at all.
+describe("runRollup — validation gates around costs.jsonl", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ns-rollup-gate-"));
+    mkdirSync(join(dir, "metrics"), { recursive: true });
+    writeFileSync(
+      join(dir, "vectors.yml"),
+      "vectors:\n  - id: V1\n    weight: low\n    interval_days: 90\n    last_reviewed: null\n",
+    );
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const rollupOpts = () => ({
+    registryPath: join(dir, "vectors.yml"),
+    metricsDir: join(dir, "metrics"),
+    lane: "security" as Lane,
+    date: "2026-06-21",
+    ts: "2026-06-21T07:00:00Z",
+    today: "2026-06-21",
+    outPath: join(dir, "metrics", "daily.jsonl"),
+  });
+
+  it("a cost row missing `usd` aborts, naming the file and line", () => {
+    writeFileSync(
+      join(dir, "metrics", "costs.jsonl"),
+      JSON.stringify({
+        run_id: "r1",
+        lane: "security",
+        date: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        source: "manual",
+        status: "ok",
+      }) + "\n",
+    );
+    expect(() => runRollup(rollupOpts())).toThrow(/costs\.jsonl:1: invalid cost-record/);
+  });
+
+  it("nothing is appended to daily.jsonl when the cost gate fires", () => {
+    writeFileSync(join(dir, "metrics", "costs.jsonl"), '{"run_id":"r1","lane":"security"}\n');
+    expect(() => runRollup(rollupOpts())).toThrow();
+    expect(existsSync(join(dir, "metrics", "daily.jsonl"))).toBe(false);
+  });
+
+  it("a clean costs.jsonl still rolls up and appends normally", () => {
+    writeFileSync(
+      join(dir, "metrics", "costs.jsonl"),
+      JSON.stringify(makeCost("2026-06-20", 1.5)) + "\n",
+    );
+    const out = runRollup(rollupOpts());
+    expect(out.cost_usd_7d).toBeCloseTo(1.5, 4);
+    expect(existsSync(join(dir, "metrics", "daily.jsonl"))).toBe(true);
+  });
+});
+
+/* ---------- cost rows are deduped per run_id before aggregation ---------- */
+
+// costs.jsonl is append-only, so a retried `record-cost` writes a SECOND row
+// for the same run. Summing both bills one run twice and inflates every window
+// with no error anywhere — the silent-overcount mirror of the silent-undercount
+// the is_error gate exists to prevent.
+describe("computeDailyRollup — duplicate run_id (retry replay)", () => {
+  it("counts a replayed run once, not twice", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME" },
+          { ...makeCost("2026-06-20", 5), run_id: "SAME" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(5, 4);
+    expect(result.cost_usd_30d).toBeCloseTo(5, 4);
+    expect(result.cost_usd_avg_per_run_30d).toBeCloseTo(5, 4);
+  });
+
+  it("keeps the max-ts row when a replay carries a corrected amount", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME", ts: "2026-06-20T06:00:00Z" },
+          { ...makeCost("2026-06-20", 9), run_id: "SAME", ts: "2026-06-20T18:00:00Z" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(9, 4);
+  });
+
+  // A retry stamped by bin/record-cost carries toISOString() milliseconds; the
+  // row it corrects may have been written at second precision. Lexicographically
+  // "…:00.500Z" < "…:00Z" ('.' sorts below 'Z'), so a string compare picks the
+  // SUPERSEDED amount and the corrected spend never lands in the window.
+  it("keeps the max-ts row when the two rows differ in timestamp precision", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "SAME", ts: "2026-06-20T18:00:00Z" },
+          { ...makeCost("2026-06-20", 9), run_id: "SAME", ts: "2026-06-20T18:00:00.500Z" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(9, 4);
+  });
+
+  it("distinct run_ids on the same day still both count", () => {
+    const result = computeDailyRollup(
+      baseInput({
+        date: "2026-06-21",
+        costRecords: [
+          { ...makeCost("2026-06-20", 5), run_id: "A" },
+          { ...makeCost("2026-06-20", 5), run_id: "B" },
+        ],
+      }),
+    );
+    expect(result.cost_usd_7d).toBeCloseTo(10, 4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier-2 rejections MOVE the FPR (A4/T2)
+// ---------------------------------------------------------------------------
+// rejected_tier2 was hard-coded to 0 before run-meta gained --tier2, so it was
+// possible for the field to be plumbed everywhere and still be inert. These
+// tests pin the actual arithmetic: a Tier-2 rejection changes fpr_7d.
+//
+// WHY findings_created moves together with rejected_tier2: bin/record does not
+// take findings_created as an input, it DERIVES it as
+//   confirmed + recurring + rejected_tier1 + rejected_tier2
+// (= proposed_count - suppressed). So a run that rejects one more candidate at
+// Tier-2 also created one more finding — the denominator grows with the
+// numerator. Holding findings_created fixed while incrementing rejected_tier2
+// would be a state bin/record can never emit, and would overstate the movement.
+
+describe("Tier-2 rejections move the FPR", () => {
+  it("fpr_7d differs between two otherwise-identical runs when one rejects at Tier-2", () => {
+    // Baseline: 4 findings created, 1 rejected at Tier-1, none at Tier-2.
+    const withoutTier2 = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 4, 1, 0)] }),
+    );
+    // Same run plus one Tier-2 rejection: findings_created 4 -> 5 (record's
+    // derivation), rejected_tier2 0 -> 1. Everything else identical.
+    const withTier2 = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 5, 1, 1)] }),
+    );
+
+    expect(withoutTier2.fpr_7d).toBe(25); // 1 / 4
+    expect(withTier2.fpr_7d).toBe(40); // (1 + 1) / 5
+    expect(withTier2.fpr_7d).not.toBe(withoutTier2.fpr_7d);
+    // Same movement in the 30-day window (single run, both windows cover it).
+    expect(withoutTier2.fpr_30d).toBe(25);
+    expect(withTier2.fpr_30d).toBe(40);
+  });
+
+  it("a Tier-2-only rejection lifts the FPR off zero", () => {
+    // No Tier-1 rejections at all: the whole FPR comes from Tier-2.
+    const clean = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 3, 0, 0)] }),
+    );
+    const tier2Only = computeDailyRollup(
+      baseInput({ runRecords: [makeRun("2026-06-21", "security", 4, 0, 1)] }),
+    );
+    expect(clean.fpr_7d).toBe(0); // 0 / 3
+    expect(tier2Only.fpr_7d).toBe(25); // 1 / 4
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The completion sentinel (run-complete.ts). rollup is the LAST durable step,
+// so it is the only step that can honestly stamp a run finished — see the
+// module header for the failure this closes.
+// ---------------------------------------------------------------------------
+
+describe("runRollup completion sentinel", () => {
+  let dir: string;
+
+  const REGISTRY_YML = `vectors:
+  - id: SEC-01
+    title: Auth
+    kind: vector
+    area: ["app/auth/*"]
+    weight: critical
+    interval_days: 7
+    owner: security
+    last_reviewed: 2026-06-20
+`;
+
+  function setup(): { registryPath: string; metricsDir: string } {
+    const registryPath = join(dir, "vectors.yml");
+    writeFileSync(registryPath, REGISTRY_YML);
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+    return { registryPath, metricsDir };
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ns-rollup-complete-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stamps the run complete when a run id is supplied", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "20260621T070000Z-security-abcd1234",
+    });
+
+    expect(isRunComplete(metricsDir, "20260621T070000Z-security-abcd1234")).toBe(true);
+  });
+
+  it("records ts/date/lane in the marker for a human reading the directory", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      date: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-a",
+    });
+
+    const marker = JSON.parse(readFileSync(runCompletePath(metricsDir, "run-a"), "utf8"));
+    expect(marker).toEqual({ ts: "2026-06-21T07:00:00Z", date: "2026-06-21", lane: "security" });
+  });
+
+  it("stamps nothing when no run id is supplied — a standalone recompute is not a run", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+    });
+
+    expect(existsSync(runCompleteDir(metricsDir))).toBe(false);
+  });
+
+  it("does not stamp when the rollup itself throws — the marker means the chain FINISHED", () => {
+    const metricsDir = join(dir, "metrics");
+    mkdirSync(metricsDir, { recursive: true });
+
+    expect(() =>
+      runRollup({
+        registryPath: join(dir, "does-not-exist.yml"),
+        metricsDir,
+        lane: "security",
+        today: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        runId: "run-b",
+      }),
+    ).toThrow(/registry not found/);
+
+    expect(isRunComplete(metricsDir, "run-b")).toBe(false);
+  });
+
+  it("re-stamping is allowed — the marker is a statement of fact, not a uniqueness token", () => {
+    const { registryPath, metricsDir } = setup();
+    const opts = {
+      registryPath,
+      metricsDir,
+      lane: "security" as Lane,
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-c",
+    };
+
+    runRollup(opts);
+    expect(() => runRollup(opts)).not.toThrow();
+    expect(isRunComplete(metricsDir, "run-c")).toBe(true);
+  });
+
+  it("refuses a run id that is not filename-safe, before it can reach a path", () => {
+    const { registryPath, metricsDir } = setup();
+
+    expect(() =>
+      runRollup({
+        registryPath,
+        metricsDir,
+        lane: "security",
+        today: "2026-06-21",
+        ts: "2026-06-21T07:00:00Z",
+        runId: "../../escape",
+      }),
+    ).toThrow(/filename-safe/);
+  });
+
+  it("keeps the sentinel dir out of the month-shard scans", () => {
+    const { registryPath, metricsDir } = setup();
+
+    runRollup({
+      registryPath,
+      metricsDir,
+      lane: "security",
+      today: "2026-06-21",
+      ts: "2026-06-21T07:00:00Z",
+      runId: "run-d",
+    });
+
+    // The shard readers filter to *.jsonl; the sentinel dir must never look like one.
+    expect(COMPLETE_DIRNAME.endsWith(".jsonl")).toBe(false);
+    expect(runOutcome(metricsDir, "run-d").reason).toMatch(/no run row/);
+  });
+});

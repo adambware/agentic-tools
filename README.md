@@ -16,13 +16,6 @@ More orchestration patterns and plugin types to come!
 /plugin install plan-critique@agentic-tools
 ```
 
-## Project Docs
-
-- [Changelog](CHANGELOG.md)
-- [Testing](TESTING.md)
-- [TODOs](TODOS.md)
-- [dev-doctor blend plan](env-preflight-branch-blend-plan.md)
-
 ## Available Plugins
 
 | Plugin | Type | Description |
@@ -30,9 +23,16 @@ More orchestration patterns and plugin types to come!
 | [plan-critique](plugins/plan-critique/) | Hook | Parallel critique system — spawns Opus + Codex reviewers for plan files |
 | [ab-code-review](plugins/ab-code-review/) | Skill | Parallel code review — spawns Opus + Codex to review your branch diff |
 | [onboardme](plugins/onboardme/) | Skill | Onboarding one-pager — traces one real request to make a codebase picturable in ~3 minutes |
-| [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present and suggests high-value missing tests |
-| [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code before tests are written |
-| [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight for runtimes, Docker/Compose, env files, ports, volumes, and worktrees |
+| [nightshift](plugins/nightshift/) | Skills + Agents | Budget-aware, two-lane assurance loop — `/nightshift:security` (security + mandatory refuter) and `/nightshift:design` (UX) — keeping security surfaces and user flows fresh and refuted; onboard any repo as a `.nightshift/` pack |
+| [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present, flags testability changes, suggests highest-value missing tests |
+| [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
+| [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight — runtimes, Docker/Compose, env files, ports, volumes, and worktrees, reported before any local command runs |
+
+## Changelog & Roadmap
+
+- [CHANGELOG.md](CHANGELOG.md) — version history and release notes
+- [TODOS.md](TODOS.md) — open work items and deferred decisions
+- [TESTING.md](TESTING.md) — how to run the shell test suite and what new plugins must cover
 
 ## Creating a New Plugin
 

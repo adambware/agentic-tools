@@ -1,0 +1,384 @@
+// Unit tests for record-cost-run (v3 A2 / T7). The load-bearing contract:
+// status gates on `is_error` ONLY — the committed fixture of a real failed-run
+// envelope carries subtype:"success" next to is_error:true, and this suite is
+// the regression test that we never key on subtype.
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  buildCostRecord,
+  buildFallbackErrorRecord,
+  buildManualCostRecord,
+  runRecordCost,
+  COSTS_FILENAME,
+  type CostMeta,
+} from "./record-cost-run.js";
+import { readJson, readJsonl } from "./io.js";
+import { runRollup } from "./rollup-cli.js";
+import { validateCostRecord } from "./validate.js";
+import type { CostRecord } from "./types.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = join(__dirname, "..", "..");
+const ERROR_ENVELOPE = join(PLUGIN_ROOT, "fixtures", "cli-envelope-error.json");
+const SUCCESS_ENVELOPE = join(PLUGIN_ROOT, "fixtures", "cli-envelope-success.json");
+const NOVUDESK_PACK = join(PLUGIN_ROOT, "examples", "novudesk", ".nightshift");
+
+const META: CostMeta = {
+  runId: "ns-2026-06-21-sec-01",
+  lane: "security",
+  date: "2026-06-21",
+  ts: "2026-06-21T07:00:00Z",
+};
+
+let dir: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ns-recordcost-"));
+});
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("buildCostRecord", () => {
+  it("REGRESSION: the real failed-run envelope (is_error:true, subtype:'success') writes status:'error'", () => {
+    const envelope = readJson(ERROR_ENVELOPE);
+    // The fixture is the exact live envelope shape — subtype:"success" must be present
+    // next to is_error:true or this regression test is not testing the trap.
+    expect((envelope as Record<string, unknown>).subtype).toBe("success");
+    expect((envelope as Record<string, unknown>).is_error).toBe(true);
+
+    const record = buildCostRecord(envelope, META);
+    expect(record.status).toBe("error");
+    expect(record.terminal_reason).toBe("api_error");
+    expect(record.usd).toBe(0);
+    expect(record.source).toBe("cli-json");
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+
+  it("never keys on subtype: is_error:false with a scary subtype is still status:'ok'", () => {
+    const record = buildCostRecord(
+      { is_error: false, subtype: "error_during_execution", total_cost_usd: 0.5 },
+      META,
+    );
+    expect(record.status).toBe("ok");
+    expect(record.terminal_reason).toBeUndefined();
+    expect(record.usd).toBe(0.5);
+  });
+
+  it("maps the success envelope's usage fields onto the record", () => {
+    const record = buildCostRecord(readJson(SUCCESS_ENVELOPE), META);
+    expect(record).toMatchObject({
+      run_id: META.runId,
+      lane: "security",
+      date: "2026-06-21",
+      usd: 1.8421,
+      input_tokens: 182034,
+      output_tokens: 24110,
+      cache_read_tokens: 1204882,
+      cache_creation_tokens: 88213,
+      source: "cli-json",
+      status: "ok",
+    });
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+
+  it("REGRESSION: a successful envelope with no total_cost_usd is refused, not recorded as free", () => {
+    // The mirror of the subtype trap: coercing a missing cost to 0 would file a
+    // real run as a $0 success and flatline the cost trend with no error.
+    expect(() => buildCostRecord({ is_error: false }, META)).toThrow(/total_cost_usd/);
+    expect(() => buildCostRecord({ is_error: false, total_cost_usd: "1.84" }, META)).toThrow(
+      /total_cost_usd/,
+    );
+    expect(() => buildCostRecord({ is_error: false, total_cost_usd: Number.NaN }, META)).toThrow(
+      /total_cost_usd/,
+    );
+  });
+
+  it("an error envelope is still exempt: total_cost_usd:0 is legitimate there", () => {
+    const record = buildCostRecord(
+      { is_error: true, total_cost_usd: 0, terminal_reason: "api_error" },
+      META,
+    );
+    expect(record.status).toBe("error");
+    expect(record.usd).toBe(0);
+  });
+
+  it("throws when is_error is missing or non-boolean (no subtype fallback)", () => {
+    expect(() => buildCostRecord({ subtype: "success", total_cost_usd: 1 }, META)).toThrow(
+      /is_error/,
+    );
+    expect(() => buildCostRecord({ is_error: "false" }, META)).toThrow(/is_error/);
+    expect(() => buildCostRecord(null, META)).toThrow(/not an object/);
+    expect(() => buildCostRecord([], META)).toThrow(/not an object/);
+  });
+
+  it("defaults missing usage/cost fields to 0 and missing terminal_reason to 'unknown'", () => {
+    const record = buildCostRecord({ is_error: true }, META);
+    expect(record.usd).toBe(0);
+    expect(record.input_tokens).toBe(0);
+    expect(record.output_tokens).toBe(0);
+    expect(record.cache_read_tokens).toBe(0);
+    expect(record.cache_creation_tokens).toBe(0);
+    expect(record.terminal_reason).toBe("unknown");
+  });
+});
+
+describe("buildManualCostRecord", () => {
+  it("writes source:'manual', status:'ok', with optional token fields defaulting to 0", () => {
+    const record = buildManualCostRecord(META, 2.5, { output_tokens: 100 });
+    expect(record.source).toBe("manual");
+    expect(record.status).toBe("ok");
+    expect(record.usd).toBe(2.5);
+    expect(record.output_tokens).toBe(100);
+    expect(record.input_tokens).toBe(0);
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+});
+
+describe("runRecordCost", () => {
+  it("appends one validated line per call to metrics/costs.jsonl", () => {
+    runRecordCost({ metricsDir: dir, meta: META, envelope: readJson(SUCCESS_ENVELOPE) });
+    runRecordCost({
+      metricsDir: dir,
+      meta: { ...META, runId: "ns-2026-06-21-sec-02" },
+      envelope: readJson(ERROR_ENVELOPE),
+    });
+    const lines = readJsonl<CostRecord>(join(dir, COSTS_FILENAME));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.status).toBe("ok");
+    expect(lines[1]!.status).toBe("error");
+    expect(lines.map((l) => validateCostRecord(l).ok)).toEqual([true, true]);
+  });
+
+  it("throws when given neither an envelope nor a manual usd", () => {
+    expect(() => runRecordCost({ metricsDir: dir, meta: META })).toThrow(/envelope or a manual/);
+  });
+
+  // The validator gate is the last line before the append. If it ever stops
+  // firing, a malformed row lands in costs.jsonl and every downstream cost
+  // window silently inherits it.
+  it("validates before appending: a bad meta throws and writes nothing", () => {
+    const badMeta = { ...META, lane: "marketing" } as unknown as CostMeta;
+    expect(() =>
+      runRecordCost({ metricsDir: dir, meta: badMeta, envelope: readJson(SUCCESS_ENVELOPE) }),
+    ).toThrow(/cost-record invalid/);
+    expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A7: fallbackErrorReason. A crashed headless run's envelope goes missing or
+// arrives unusable; without a fallback, `ns` had exactly two options — write no
+// cost row at all (the dashboard's verdict strip then reads "no run happened",
+// not "a run failed"), or let the shell synthesize one (decision logic §9.4
+// keeps out of `ns`). The opt-in keeps every pre-A7 caller's strict throw.
+// ---------------------------------------------------------------------------
+
+describe("buildFallbackErrorRecord", () => {
+  it("shape: usd/tokens 0, source cli-json, status error, terminal_reason set, meta passed through, and it validates", () => {
+    const record = buildFallbackErrorRecord(META, "envelope missing");
+    expect(record).toMatchObject({
+      run_id: META.runId,
+      lane: META.lane,
+      date: META.date,
+      ts: META.ts,
+      usd: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      source: "cli-json",
+      status: "error",
+      terminal_reason: "envelope missing",
+    });
+    // The whole point of a fallback row is that it is a LEGAL cost record, not a
+    // special case the rest of the pipeline (rollup, dashboard) has to know
+    // about. If this ever stops validating, the fallback becomes a second kind
+    // of malformed row instead of the uniform "error" row it is meant to be.
+    expect(validateCostRecord(record).ok).toBe(true);
+  });
+});
+
+describe("runRecordCost: fallbackErrorReason", () => {
+  it("unusable envelope + fallbackErrorReason set: appends ONE error row whose terminal_reason names both the caller's reason and the underlying failure", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: { is_error: "false" }, // is_error must be boolean -> buildCostRecord throws
+      fallbackErrorReason: "envelope unusable",
+    });
+    expect(record.status).toBe("error");
+    // Both halves must survive: the caller's own label (why record-cost was told
+    // to fall back) AND the actual parse/shape failure (what specifically broke).
+    // Losing either one turns every crashed-run row into the same opaque string.
+    expect(record.terminal_reason).toContain("envelope unusable");
+    expect(record.terminal_reason).toContain("is_error must be a boolean");
+    const lines = readJsonl<CostRecord>(join(dir, COSTS_FILENAME));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.status).toBe("error");
+  });
+
+  it("GOOD envelope + fallbackErrorReason set: records the real ok row, never masked by the fallback", () => {
+    // The fallback must be a last resort, not a shortcut that swallows a perfectly
+    // usable envelope. If this regressed, every successful run would file as an
+    // opaque error the moment a caller happened to pass the flag.
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(SUCCESS_ENVELOPE),
+      fallbackErrorReason: "should not be used",
+    });
+    expect(record.status).toBe("ok");
+    expect(record.usd).toBe(1.8421);
+    expect(record.terminal_reason).toBeUndefined();
+  });
+
+  it("unusable envelope WITHOUT fallbackErrorReason: still throws (pre-A7 strict path unweakened)", () => {
+    expect(() =>
+      runRecordCost({ metricsDir: dir, meta: META, envelope: { is_error: "false" } }),
+    ).toThrow(/is_error must be a boolean/);
+    expect(existsSync(join(dir, COSTS_FILENAME))).toBe(false);
+  });
+
+  it("REGRESSION (restates the A2 rule): is_error:true + subtype:'success' still records status:'error' even with fallbackErrorReason set — subtype is never consulted, fallback or not", () => {
+    const record = runRecordCost({
+      metricsDir: dir,
+      meta: META,
+      envelope: readJson(ERROR_ENVELOPE),
+      fallbackErrorReason: "should not be reached", // envelope IS usable; fallback must stay unused
+    });
+    expect(record.status).toBe("error");
+    expect(record.terminal_reason).toBe("api_error");
+    // Proof the fallback path was never entered: its reason string is absent.
+    expect(record.terminal_reason).not.toContain("should not be reached");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 gate: round-trip on a NovuDesk copy including the cost join.
+// Copy the example pack, append a fresh cost line via runRecordCost, run the
+// real rollup, and assert the daily line carries cost fields joined from
+// costs.jsonl (error row excluded from the per-run average).
+// ---------------------------------------------------------------------------
+
+describe("NovuDesk round-trip (cost join)", () => {
+  it("rollup on the copied pack joins costs.jsonl into the daily line", () => {
+    const pack = join(dir, ".nightshift");
+    cpSync(NOVUDESK_PACK, pack, { recursive: true });
+    const metricsDir = join(pack, "metrics");
+
+    // Example costs.jsonl (security, as of 2026-06-18):
+    //   06-10 ok 1.62 · 06-11 ok 1.91 · 06-16 ERROR 0 · 06-18 ok 1.44
+    // Append today's run on top via the real writer.
+    runRecordCost({
+      metricsDir,
+      meta: { runId: "ns-2026-06-18-sec-02", lane: "security", date: "2026-06-18", ts: "2026-06-18T09:00:00Z" },
+      envelope: { is_error: false, subtype: "success", total_cost_usd: 0.53 },
+    });
+
+    const rollup = runRollup({
+      registryPath: join(pack, "registries", "vectors.yml"),
+      metricsDir,
+      lane: "security",
+      today: "2026-06-18",
+      date: "2026-06-18",
+      ts: "2026-06-18T09:00:01Z",
+    });
+
+    // 7d window 06-12..06-18: 0 (error) + 1.44 + 0.53
+    expect(rollup.cost_usd_7d).toBeCloseTo(1.97, 4);
+    // 30d window: all six security rows
+    expect(rollup.cost_usd_30d).toBeCloseTo(1.62 + 1.91 + 0 + 1.44 + 0.53, 4);
+    // avg excludes the 06-16 error row: (1.62+1.91+1.44+0.53)/4
+    expect(rollup.cost_usd_avg_per_run_30d).toBeCloseTo(5.5 / 4, 4);
+
+    // The appended daily line round-trips with the cost fields on disk.
+    const daily = readJsonl<Record<string, unknown>>(join(metricsDir, "daily.jsonl"));
+    const last = daily[daily.length - 1]!;
+    expect(last.cost_usd_7d).toBeCloseTo(1.97, 4);
+    expect(last.cost_usd_30d).toBeCloseTo(5.5, 4);
+    expect(last.cost_usd_avg_per_run_30d).toBeCloseTo(1.375, 4);
+  });
+
+  it("design lane joins only design cost rows", () => {
+    const pack = join(dir, ".nightshift");
+    cpSync(NOVUDESK_PACK, pack, { recursive: true });
+    const rollup = runRollup({
+      registryPath: join(pack, "registries", "flows.yml"),
+      metricsDir: join(pack, "metrics"),
+      lane: "design",
+      today: "2026-06-18",
+      date: "2026-06-18",
+      ts: "2026-06-18T09:00:01Z",
+    });
+    // design rows: 06-13 ok 1.14 (cli-json), 06-17 ok 1.02 (manual)
+    expect(rollup.cost_usd_7d).toBeCloseTo(1.14 + 1.02, 4);
+    expect(rollup.cost_usd_30d).toBeCloseTo(2.16, 4);
+    expect(rollup.cost_usd_avg_per_run_30d).toBeCloseTo(1.08, 4);
+  });
+});
+
+describe("regression: an early-returning session under-reported its own cost by $4.10", () => {
+  // Measured, not hypothetical. A real run's session answered as soon as the
+  // Workflow tool handed back a task id; the envelope reported total_cost_usd
+  // 0.3633 while its own modelUsage summed to 4.4681813. The ledger whose entire
+  // job is making spend visible would have recorded the smaller number.
+  const meta = { runId: "R1", lane: "security" as const, date: "2026-08-23", ts: "2026-08-23T20:26:58.525Z" };
+
+  it("records the modelUsage sum when total_cost_usd is smaller", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 0.3633,
+        modelUsage: {
+          "claude-haiku-4-5-20251001": { costUSD: 0.33057804999999996 },
+          "claude-opus-5[1m]": { costUSD: 4.13760325 },
+        },
+      },
+      meta,
+    );
+    expect(rec.usd).toBeCloseTo(4.4681813, 6);
+  });
+
+  it("leaves a normal run alone — the two agree to floating-point noise", () => {
+    const rec = buildCostRecord(
+      {
+        is_error: false,
+        total_cost_usd: 4.652074950000001,
+        modelUsage: { "claude-opus-5[1m]": { costUSD: 4.652074949999999 } },
+      },
+      meta,
+    );
+    expect(rec.usd).toBe(4.652074950000001);
+  });
+
+  it("only ever revises UPWARD: a larger total_cost_usd wins", () => {
+    // total_cost_usd stays the primary figure. This is a floor-raiser, not a
+    // replacement — it must never talk a reported cost down.
+    const rec = buildCostRecord(
+      { is_error: false, total_cost_usd: 9, modelUsage: { a: { costUSD: 1 } } },
+      meta,
+    );
+    expect(rec.usd).toBe(9);
+  });
+
+  it("tolerates a missing, empty, or malformed modelUsage", () => {
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5 }, meta).usd).toBe(1.5);
+    expect(buildCostRecord({ is_error: false, total_cost_usd: 1.5, modelUsage: {} }, meta).usd).toBe(1.5);
+    const junk = { is_error: false, total_cost_usd: 1.5, modelUsage: [1, 2] } as unknown;
+    expect(buildCostRecord(junk, meta).usd).toBe(1.5);
+    const junk2 = { is_error: false, total_cost_usd: 1.5, modelUsage: { a: null, b: { costUSD: "x" } } } as unknown;
+    expect(buildCostRecord(junk2, meta).usd).toBe(1.5);
+  });
+
+  it("still gates status on is_error alone — this changes the amount, never the verdict", () => {
+    const rec = buildCostRecord(
+      { is_error: true, total_cost_usd: 0, modelUsage: { a: { costUSD: 3 } } },
+      meta,
+    );
+    expect(rec.status).toBe("error");
+    expect(rec.usd).toBe(3);
+  });
+});
