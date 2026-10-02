@@ -5,15 +5,42 @@
 # This script inspects the current checkout and writes Markdown + JSON reports
 # for an agent to read before local development work. It never installs,
 # migrates, starts/stops containers, runs tests, formats files, or prints secret
-# values. The only writes are its own report files.
+# values. The only writes are its own report files, which default to a
+# location outside the working tree (inside the git dir) so the checkout is
+# never dirtied by the preflight itself.
+#
+# Exit codes: 0 ok/caution, 2 blocked, 1 usage error or unexpected failure.
 
 # Keep fail-fast behavior without nounset. macOS Bash 3.2 makes empty-array
 # expansion brittle under nounset, but errexit/pipefail should still catch
 # unexpected probe failures.
 set -eo pipefail
 set +u
+trap 'printf "dev-doctor: unexpected failure (line %s)\n" "$LINENO" >&2; exit 1' ERR
 
 START_DIR="$(pwd)"
+
+usage() {
+  cat <<'USAGE'
+usage: dev-doctor.sh [MARKDOWN_OUT]
+
+Read-only local development preflight. Writes a Markdown and a JSON report and
+prints a short summary. Exit 0 = ok/caution, 2 = blocked, 1 = error.
+
+  MARKDOWN_OUT          Markdown report path (also: DEV_DOCTOR_MD_OUT)
+  DEV_DOCTOR_JSON_OUT   JSON report path
+Defaults live under <git-dir>/dev-doctor/ so the checkout is never dirtied.
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -*) usage >&2; exit 1 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  usage >&2
+  exit 1
+fi
 
 have() {
   command -v "$1" >/dev/null 2>&1
@@ -21,14 +48,29 @@ have() {
 
 if have git && git rev-parse --show-toplevel >/dev/null 2>&1; then
   PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+  GIT_DIR_ABS="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [ -z "$GIT_DIR_ABS" ] && GIT_DIR_ABS="$PROJECT_ROOT/.git"
+  # Inside the git dir: never tracked, never shows up in git status, and a
+  # linked worktree gets its own private directory.
+  DEFAULT_REPORT_DIR="$GIT_DIR_ABS/dev-doctor"
 else
   PROJECT_ROOT="$START_DIR"
+  DEFAULT_REPORT_DIR="${TMPDIR:-/tmp}/dev-doctor/$(basename "$PROJECT_ROOT")"
 fi
 
-DEFAULT_MD_OUT="$PROJECT_ROOT/reports/dev-doctor.md"
-DEFAULT_JSON_OUT="$PROJECT_ROOT/.agent/dev-doctor.json"
+DEFAULT_MD_OUT="$DEFAULT_REPORT_DIR/dev-doctor.md"
+DEFAULT_JSON_OUT="$DEFAULT_REPORT_DIR/dev-doctor.json"
 MD_OUT="${1:-${DEV_DOCTOR_MD_OUT:-${DEV_DOCTOR_OUT:-$DEFAULT_MD_OUT}}}"
 JSON_OUT="${DEV_DOCTOR_JSON_OUT:-$DEFAULT_JSON_OUT}"
+case "$MD_OUT" in /*) ;; *) MD_OUT="$START_DIR/$MD_OUT" ;; esac
+case "$JSON_OUT" in /*) ;; *) JSON_OUT="$START_DIR/$JSON_OUT" ;; esac
+
+# Path of a report relative to the project root, or empty when it is outside.
+report_rel() {
+  case "$1" in
+    "$PROJECT_ROOT"/*) printf '%s' "${1#"$PROJECT_ROOT"/}" ;;
+  esac
+}
 
 WARNINGS=()
 BLOCKERS=()
@@ -113,6 +155,36 @@ sanitize_compose_name() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
 }
 
+# Key names only, never values. Tolerates leading whitespace and an `export`
+# prefix, and requires an assignment so prose lines in .env.example are ignored.
+env_keys() {
+  sed -E 's/^[[:space:]]*(export[[:space:]]+)?//' "$1" 2>/dev/null \
+    | grep -Eo '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' \
+    | sed -E 's/[[:space:]]*=$//' \
+    | sort -u || true
+}
+
+# Replace every value defined in .env or a Compose env file with [redacted].
+# Used before any third-party output (e.g. `compose config` errors, which echo
+# interpolated values) is written into a report.
+redact_env_values() {
+  local text f line val
+  text="$1"
+  for f in .env "${COMPOSE_ENV_FILES[@]}"; do
+    [ -n "$f" ] && [ -f "$PROJECT_ROOT/$f" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|\#*) continue ;; esac
+      case "$line" in *=*) ;; *) continue ;; esac
+      val="${line#*=}"
+      val="$(trim_simple "$val")"
+      val="${val#\"}"; val="${val%\"}"; val="${val#\'}"; val="${val%\'}"
+      [ "${#val}" -lt 2 ] && continue
+      text="${text//"$val"/[redacted]}"
+    done < "$PROJECT_ROOT/$f"
+  done
+  printf '%s' "$text"
+}
+
 detect_compose_command() {
   if have docker && docker compose version >/dev/null 2>&1; then
     printf 'docker compose'
@@ -133,13 +205,19 @@ WORKTREE_COUNT=0
 if have git && git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   GIT_BRANCH="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   GIT_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
-  if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null)" ]; then
+  PORCELAIN="$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null || true)"
+  # Our own report files must not count as a dirty checkout.
+  for rel in "$(report_rel "$MD_OUT")" "$(report_rel "$JSON_OUT")"; do
+    [ -z "$rel" ] && continue
+    PORCELAIN="$(printf '%s\n' "$PORCELAIN" | awk -v p="$rel" 'NF { q=substr($0,4); if (q==p || index(p,q)==1) next; print }')"
+  done
+  if [ -n "$PORCELAIN" ]; then
     GIT_DIRTY=true
   fi
   if [ -f "$PROJECT_ROOT/.git" ]; then
     IS_WORKTREE=true
   fi
-  WORKTREE_COUNT="$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | wc -l | tr -d ' ')"
+  WORKTREE_COUNT="$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | wc -l | tr -d ' ' || true)"
   [ -z "$WORKTREE_COUNT" ] && WORKTREE_COUNT=1
 fi
 
@@ -271,17 +349,23 @@ if [ -n "$COMPOSE_FILE" ]; then
 $(awk '
   /^[[:space:]]*env_file:[[:space:]]*/ {
     line=$0
+    sub(/[[:space:]]#.*$/, "", line)
     sub(/^[[:space:]]*env_file:[[:space:]]*/, "", line)
-    gsub(/[\047"\[\],]/, "", line)
-    if (line != "") print line
+    gsub(/[\047"\[\]]/, "", line)
+    gsub(/,/, " ", line)
+    n=split(line, parts, /[[:space:]]+/)
+    for (i=1; i<=n; i++) if (parts[i] != "") print parts[i]
     in_env=1
     next
   }
   in_env && /^[[:space:]]*-[[:space:]]*/ {
     line=$0
+    sub(/[[:space:]]#.*$/, "", line)
     sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+    sub(/^path:[[:space:]]*/, "", line)
     gsub(/[\047"]/, "", line)
-    print line
+    gsub(/[[:space:]]+$/, "", line)
+    if (line != "") print line
     next
   }
   in_env && /^[[:space:]]+[A-Za-z0-9_.-]+:[[:space:]]*/ { in_env=0 }
@@ -290,9 +374,12 @@ $(awk '
 EOF_ENVFILES
 
   RAW_NAMED_VOLUMES="$(awk '
-    /^volumes:[[:space:]]*$/ { in_vol=1; next }
+    /^volumes:[[:space:]]*$/ { in_vol=1; ind=0; next }
     in_vol && /^[^[:space:]]/ { in_vol=0 }
     in_vol && /^[[:space:]]+[A-Za-z0-9_.-]+:/ {
+      match($0, /[^[:space:]]/)
+      if (ind == 0) ind = RSTART
+      if (RSTART != ind) next
       line=$0
       sub(/:.*/, "", line)
       gsub(/[[:space:]]/, "", line)
@@ -310,22 +397,22 @@ EOF_VOLUMES
   fi
 
   if [ -n "$COMPOSE_COMMAND" ]; then
-    set +e
-    CONFIG_OUT="$(cd "$PROJECT_ROOT" && $COMPOSE_COMMAND -f "$COMPOSE_FILE" config 2>&1)"
-    CONFIG_STATUS=$?
-    set -e
+    CONFIG_STATUS=0
+    CONFIG_OUT="$(cd "$PROJECT_ROOT" && $COMPOSE_COMMAND -f "$COMPOSE_FILE" config 2>&1)" || CONFIG_STATUS=$?
     if [ "$CONFIG_STATUS" -eq 0 ]; then
       COMPOSE_VALID=true
-      HOST_PORTS_LONG="$(printf '%s\n' "$CONFIG_OUT" | grep -Eo 'published:[[:space:]]*"?[0-9]{2,5}' | grep -Eo '[0-9]{2,5}' || true)"
-      HOST_PORTS_SHORT="$(printf '%s\n' "$CONFIG_OUT" | grep -Eo '"?[0-9]{2,5}:[0-9]{2,5}"?' | tr -d '"' | cut -d: -f1 || true)"
+      # `compose config` normalizes ports to long form, so only `published:` is
+      # trusted; a whole-document d:d scan would pick up user:/group ids too.
       while IFS= read -r port || [ -n "$port" ]; do
         [ -n "$port" ] && add_unique_array PUBLISHED_PORTS "$port"
       done <<EOF_PORTS
-$(printf '%s\n%s\n' "$HOST_PORTS_LONG" "$HOST_PORTS_SHORT" | grep -E '^[0-9]+$' | sort -un || true)
+$(printf '%s\n' "$CONFIG_OUT" | grep -Eo 'published:[[:space:]]*"?[0-9]{1,5}' | grep -Eo '[0-9]{1,5}' | sort -un || true)
 EOF_PORTS
     else
       COMPOSE_VALID=false
-      COMPOSE_CONFIG_ERROR="$(printf '%s\n' "$CONFIG_OUT" | head -n 8)"
+      # Compose echoes interpolated values in its errors; never let a secret
+      # value from an env file reach the report.
+      COMPOSE_CONFIG_ERROR="$(redact_env_values "$(printf '%s\n' "$CONFIG_OUT" | head -n 8)")"
       block "Compose config failed to validate"
     fi
   fi
@@ -363,9 +450,7 @@ elif [ "$ENV_EXAMPLE_PRESENT" = true ] && [ "$ENV_PRESENT" = true ]; then
   while IFS= read -r key || [ -n "$key" ]; do
     [ -n "$key" ] && MISSING_ENV_KEYS+=("$key")
   done <<EOF_KEYS
-$(comm -23 \
-  <(grep -Eo '^[A-Za-z_][A-Za-z0-9_]*' "$PROJECT_ROOT/.env.example" 2>/dev/null | sort -u) \
-  <(grep -Eo '^[A-Za-z_][A-Za-z0-9_]*' "$PROJECT_ROOT/.env" 2>/dev/null | sort -u) 2>/dev/null)
+$(comm -23 <(env_keys "$PROJECT_ROOT/.env.example") <(env_keys "$PROJECT_ROOT/.env") 2>/dev/null || true)
 EOF_KEYS
   if [ "${#MISSING_ENV_KEYS[@]}" -gt 0 ]; then
     warn ".env is missing keys defined in .env.example"
@@ -433,8 +518,8 @@ else
 fi
 
 # Write Markdown.
-MD_DIR="$(dirname "$MD_OUT")"
-JSON_DIR="$(dirname "$JSON_OUT")"
+MD_DIR="$(dirname -- "$MD_OUT")"
+JSON_DIR="$(dirname -- "$JSON_OUT")"
 mkdir -p "$MD_DIR" "$JSON_DIR" 2>/dev/null || {
   printf 'dev-doctor: could not create report directories\n' >&2
   exit 1
@@ -506,7 +591,7 @@ mkdir -p "$MD_DIR" "$JSON_DIR" 2>/dev/null || {
   printf -- '- Running project containers: '
   if [ "${#RUNNING_CONTAINERS[@]}" -eq 0 ]; then printf 'none\n'; else printf '`%s` ' "${RUNNING_CONTAINERS[@]}"; printf '\n'; fi
   if [ -n "$COMPOSE_CONFIG_ERROR" ]; then
-    printf '\nCompose config error excerpt:\n\n```text\n%s\n```\n' "$COMPOSE_CONFIG_ERROR"
+    printf '\nCompose config error excerpt (env values redacted):\n\n```text\n%s\n```\n' "$COMPOSE_CONFIG_ERROR"
   fi
 
   printf '\n## Env files\n\n'
@@ -562,6 +647,7 @@ FILES_JSON="$FILES_JSON}"
   printf '    "compose_command": "%s",\n' "$(json_escape "$COMPOSE_COMMAND")"
   printf '    "compose_file": "%s",\n' "$(json_escape "$COMPOSE_FILE")"
   printf '    "compose_valid": %s,\n' "$COMPOSE_VALID"
+  printf '    "compose_config_error": "%s",\n' "$(json_escape "$COMPOSE_CONFIG_ERROR")"
   printf '    "compose_project": "%s",\n' "$(json_escape "$COMPOSE_PROJECT")"
   printf '    "compose_project_source": "%s",\n' "$(json_escape "$COMPOSE_PROJECT_SOURCE")"
   printf '    "has_container_name": %s,\n' "$COMPOSE_HAS_CONTAINER_NAME"

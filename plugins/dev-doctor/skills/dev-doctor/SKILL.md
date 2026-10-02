@@ -29,10 +29,12 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dev-doctor.sh"
 ```
 
 Then read the terminal summary and the generated reports before proceeding. The
-script writes Markdown to `reports/dev-doctor.md` and JSON to
-`.agent/dev-doctor.json` by default. A first positional argument or
+summary prints the exact report paths. By default both reports are written
+inside the checkout's git directory (`<git-dir>/dev-doctor/dev-doctor.md` and
+`dev-doctor.json`; a linked worktree gets its own), so the preflight never adds
+untracked files to the project. A first positional argument or
 `DEV_DOCTOR_MD_OUT` changes the Markdown path; `DEV_DOCTOR_JSON_OUT` changes the
-JSON path.
+JSON path. Report paths inside the checkout are excluded from the dirty check.
 
 Report back to the user in this order:
 
@@ -47,8 +49,10 @@ Report back to the user in this order:
 
 ## Stop Conditions
 
-If the verdict is `blocked` or the script exits `2`, stop and surface the
-blockers before running dependent commands. Do not silently work around missing
+Exit codes: `0` ok or caution, `2` blocked, `1` usage error or unexpected
+failure. If the verdict is `blocked` or the script exits `2`, stop and surface
+the blockers before running dependent commands. On exit `1`, report the error
+line from the terminal output instead of guessing at the environment. Do not silently work around missing
 env files, invalid Compose config, or an unreachable Docker daemon for a
 Compose-backed repo.
 
@@ -58,7 +62,9 @@ continue when they do not block it.
 ## Standards
 
 - The script never installs packages, starts or stops services, runs migrations,
-  runs tests, formats files, or prints secret values.
+  runs tests, formats files, or prints secret values. Env-file values are
+  redacted from any third-party output (such as `compose config` errors)
+  before it reaches a report.
 - `.tool-versions` is treated as the source of truth for runtime versions.
 - Docker-dependent work requires both a Compose command and a reachable Docker
   daemon.

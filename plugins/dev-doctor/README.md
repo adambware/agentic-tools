@@ -38,34 +38,46 @@ Ask the agent:
 run dev doctor before starting the app
 ```
 
-Or run the script directly from the plugin directory:
+Or run the script directly. It inspects the git checkout that contains your
+current directory, so run it from inside the project you want to check and
+point Bash at the plugin script:
 
 ```bash
-bash scripts/dev-doctor.sh
+bash /path/to/dev-doctor/scripts/dev-doctor.sh
 ```
 
-From another project checkout, point Bash at the installed plugin script:
+Inside a skill, `${CLAUDE_PLUGIN_ROOT}` is set to the installed plugin
+directory, so the skill uses
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/dev-doctor.sh"`.
 
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/dev-doctor.sh"
-```
+Output defaults (printed in the terminal summary):
 
-Output defaults:
+- Markdown: `<git-dir>/dev-doctor/dev-doctor.md`
+- JSON: `<git-dir>/dev-doctor/dev-doctor.json`
 
-- Markdown: `reports/dev-doctor.md`
-- JSON: `.agent/dev-doctor.json`
+`<git-dir>` is `git rev-parse --absolute-git-dir`, which is `.git/` for a
+primary checkout and `.git/worktrees/<name>/` for a linked worktree. Reports
+there are never tracked and never show up in `git status`. Outside a git
+checkout the default is `${TMPDIR:-/tmp}/dev-doctor/<dir-name>/`.
 
 Overrides:
 
 ```bash
-bash scripts/dev-doctor.sh /tmp/dev-doctor.md
-DEV_DOCTOR_MD_OUT=/tmp/dev-doctor.md DEV_DOCTOR_JSON_OUT=/tmp/dev-doctor.json bash scripts/dev-doctor.sh
+bash /path/to/dev-doctor/scripts/dev-doctor.sh /tmp/dev-doctor.md
+DEV_DOCTOR_MD_OUT=/tmp/dev-doctor.md DEV_DOCTOR_JSON_OUT=/tmp/dev-doctor.json bash /path/to/dev-doctor/scripts/dev-doctor.sh
 ```
 
+Relative paths resolve against the current directory. If an override points
+inside the checkout, those report paths are excluded from the dirty check.
 `DEV_DOCTOR_OUT` is also accepted as a legacy Markdown output override.
+`--help` prints usage.
 
 ## Exit Codes
 
 - `0`: usable environment, with or without warnings
 - `2`: blockers detected; read the report before running dependent commands
-- `1`: script misuse or unexpected script failure
+- `1`: script misuse (unknown flag, extra arguments) or unexpected script failure
+
+Secret values from `.env` and Compose env files are never printed. Only key
+names are compared, and any third-party output embedded in a report (the
+`compose config` error excerpt) has those values redacted first.

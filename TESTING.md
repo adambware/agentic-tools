@@ -2,7 +2,8 @@
 
 This repository uses shell tests because the shipped artifacts are Claude Code
 plugin manifests, Markdown skills, and shell scripts. The local suite requires
-`bash`, `git`, and `jq`.
+`bash`, `git`, and `jq` (`brew install jq` on macOS; preinstalled on
+`ubuntu-latest`). Scripts under test must also run on macOS `/bin/bash` 3.2.
 
 Run the suite:
 
@@ -12,8 +13,9 @@ bash tests/dev-doctor-test.sh
 
 The tests validate plugin JSON, shell syntax, real `dev-doctor` report
 generation, machine-readable blocker behavior, and Compose collision-risk
-reporting. Tests write only to per-run temporary directories under
-`${TMPDIR:-/tmp}`.
+reporting. Tests write only to one per-run temporary directory under
+`${TMPDIR:-/tmp}`, removed on exit (set `KEEP_TMP=1` to keep it). CI runs every
+`tests/*-test.sh`.
 
 When adding a plugin:
 

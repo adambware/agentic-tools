@@ -2,7 +2,11 @@ name: Test
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   shell:
@@ -10,4 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run shell tests
-        run: bash tests/dev-doctor-test.sh
+        run: |
+          set -e
+          for t in tests/*-test.sh; do
+            echo "== $t"
+            bash "$t"
+          done
