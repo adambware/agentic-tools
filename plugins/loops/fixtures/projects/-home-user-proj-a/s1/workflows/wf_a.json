@@ -1,0 +1,6 @@
+{"runId":"wf_a","startTime":1788087600000,"durationMs":60000,"status":"completed","totalTokens":300,
+ "phases":[{"title":"Scan"},{"title":"Verify"}],
+ "workflowProgress":[
+  {"type":"workflow_phase","index":1,"title":"Scan"},
+  {"type":"workflow_agent","index":1,"model":"claude-haiku-4-5-20251001","state":"done","tokens":100},
+  {"type":"workflow_agent","index":2,"model":"claude-sonnet-5","state":"done","tokens":200}]}

@@ -73,6 +73,16 @@
       ]
     },
     {
+      "name": "loops",
+      "source": "./plugins/loops",
+      "description": "Loop metrics \u2014 `loop-metrics` reads local Claude Code transcripts and Workflow run records and appends one deduped baseline row (workflow phases, tokens, outcomes, per-model agents; session context peaks, compactions) to ~/.claude/metrics/loops.jsonl",
+      "keywords": [
+        "metrics",
+        "workflows",
+        "transcripts"
+      ]
+    },
+    {
       "name": "dev-doctor",
       "source": "./plugins/dev-doctor",
       "description": "Read-only local environment preflight \u2014 checks runtimes, Docker/Compose, env files, ports, volumes, worktrees, and likely next commands before local development",
