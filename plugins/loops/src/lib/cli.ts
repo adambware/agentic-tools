@@ -96,9 +96,16 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
   }
 
   const since = now - WIDEST_WINDOW_MS;
-  const { sessions, parse } = await collectSessions(projectsDir, since);
-  const runs = collectWorkflows(projectsDir, since, parse);
-  const line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+  let line: string;
+  try {
+    const { sessions, parse } = await collectSessions(projectsDir, since);
+    const runs = collectWorkflows(projectsDir, since, parse);
+    line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+  } catch (e) {
+    // The pre-check above passed, so the dir changed under us: still no row for a quiet week.
+    io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${(e as Error).message}\n`);
+    return 1;
+  }
 
   if (args["dry-run"] === undefined) {
     try {
@@ -131,7 +138,12 @@ function appendRow(out: string, line: string): void {
     try {
       written = writeSync(fd, data);
     } finally {
-      if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
+      // A failing fstat/truncate here must not mask the write error that brought us here.
+      try {
+        if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
+      } catch {
+        if (written === data.length) throw new Error("write succeeded but its length could not be confirmed");
+      }
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
     fsyncSync(fd);

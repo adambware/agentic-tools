@@ -42,7 +42,7 @@ later loop rules can be kept or dropped against recorded history instead of impr
   - Every row carries a parser `version`.
 - **A weekly launchd schedule** (README), with a `launchctl kickstart` proof run, plus a
   manual validation recipe against `jq`.
-- **CI** (`loops-ci`): typecheck, 70 vitest tests, build, and a check that the committed
+- **CI** (`loops-ci`): typecheck, 71 vitest tests, build, and a check that the committed
   bundle matches the source.
 
 ## [3.0.0] - 2026-08-23

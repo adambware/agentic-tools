@@ -216,8 +216,9 @@ async function parseFile(
 
       const ts = parseTimestamp(rec.timestamp);
       if (ts === undefined) {
-        // Records we never use (titles, prompts) may legitimately lack a timestamp.
-        if (usage || compact) parse.bad_records++;
+        // Records we never use (titles, prompts) may legitimately lack a timestamp. A metric
+        // record with neither uuid nor timestamp was already counted once above.
+        if ((usage || compact) && uuid !== undefined) parse.bad_records++;
         continue;
       }
       stats.recordTimes.push(ts);

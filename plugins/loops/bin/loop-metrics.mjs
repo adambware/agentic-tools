@@ -370,7 +370,7 @@ async function parseFile(file, live, seenUuids, seenMessages, parse) {
       }
       const ts = parseTimestamp(rec.timestamp);
       if (ts === void 0) {
-        if (usage || compact) parse.bad_records++;
+        if ((usage || compact) && uuid !== void 0) parse.bad_records++;
         continue;
       }
       stats.recordTimes.push(ts);
@@ -495,9 +495,16 @@ async function main(argv, io = processIo) {
     return 1;
   }
   const since = now - WIDEST_WINDOW_MS;
-  const { sessions, parse } = await collectSessions(projectsDir, since);
-  const runs = collectWorkflows(projectsDir, since, parse);
-  const line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+  let line;
+  try {
+    const { sessions, parse } = await collectSessions(projectsDir, since);
+    const runs = collectWorkflows(projectsDir, since, parse);
+    line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+  } catch (e) {
+    io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${e.message}
+`);
+    return 1;
+  }
   if (args["dry-run"] === void 0) {
     try {
       appendRow(out, line);
@@ -522,7 +529,11 @@ function appendRow(out, line) {
     try {
       written = writeSync(fd, data);
     } finally {
-      if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
+      try {
+        if (written !== data.length && fstatSync(fd).size === size + written) ftruncateSync(fd, size);
+      } catch {
+        if (written === data.length) throw new Error("write succeeded but its length could not be confirmed");
+      }
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
     fsyncSync(fd);

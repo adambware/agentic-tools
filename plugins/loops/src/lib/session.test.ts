@@ -268,6 +268,15 @@ describe("collectSessionFiles", () => {
     expect(parse.bad_records).toBe(2);
   });
 
+  it("counts a metric record with neither uuid nor timestamp once, not once per missing field", async () => {
+    const { uuid: _u, timestamp: _t, ...bare } = compact("c1", T(2));
+    const f = write("s.jsonl", [bare, assistant("a1", undefined, "m1", USAGE), assistant("a2", T(1), "m2", USAGE)]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.compactions).toEqual([]);
+    expect(sessions[0]!.messages).toEqual([[Date.parse(T(1)), 543]]);
+    expect(parse.bad_records).toBe(2);
+  });
+
   it("counts a usage object with none of the context fields as bad: a renamed field, not a zero", async () => {
     const f = write("s.jsonl", [assistant("a1", T(1), "m1", { inputTokens: 5, cacheReadInputTokens: 100 })]);
     const { sessions, parse } = await collectSessionFiles([f]);
