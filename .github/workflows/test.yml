@@ -1,0 +1,22 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shell tests
+        run: |
+          set -e
+          for t in tests/*-test.sh; do
+            echo "== $t"
+            bash "$t"
+          done

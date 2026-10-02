@@ -81,6 +81,18 @@
         "workflows",
         "transcripts"
       ]
+    },
+    {
+      "name": "dev-doctor",
+      "source": "./plugins/dev-doctor",
+      "description": "Read-only local environment preflight \u2014 checks runtimes, Docker/Compose, env files, ports, volumes, worktrees, and likely next commands before local development",
+      "keywords": [
+        "skills",
+        "environment",
+        "preflight",
+        "docker",
+        "worktrees"
+      ]
     }
   ]
 }

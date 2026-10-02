@@ -1,0 +1,5 @@
+{
+  "name": "dev-doctor",
+  "version": "1.0.0",
+  "description": "Read-only local environment preflight that checks git/worktree state, runtimes, Docker/Compose, ports, volumes, env files, and likely next commands before local development"
+}

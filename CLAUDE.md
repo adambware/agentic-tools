@@ -19,3 +19,11 @@ This repository is a Claude Code plugin marketplace. Each plugin lives in `plugi
 1. Create `plugins/<name>/` with the appropriate structure
 2. Add an entry to `.claude-plugin/marketplace.json`
 3. See the top-level README.md for the full template
+
+## Testing
+
+Run `bash tests/dev-doctor-test.sh` before shipping plugin changes.
+
+See `TESTING.md` for conventions. New plugin manifests should have JSON
+validation, shell scripts should pass `bash -n`, and behavior that affects agent
+decisions should have a regression test.

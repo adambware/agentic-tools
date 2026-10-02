@@ -27,11 +27,13 @@ More orchestration patterns and plugin types to come!
 | [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present, flags testability changes, suggests highest-value missing tests |
 | [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
 | [loops](plugins/loops/) | CLI | Loop metrics — appends one deduped baseline row of Workflow and session metrics to `~/.claude/metrics/loops.jsonl`, so loop rules are kept or dropped against measured history |
+| [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight — runtimes, Docker/Compose, env files, ports, volumes, and worktrees, reported before any local command runs |
 
 ## Changelog & Roadmap
 
 - [CHANGELOG.md](CHANGELOG.md) — version history and release notes
 - [TODOS.md](TODOS.md) — open work items and deferred decisions
+- [TESTING.md](TESTING.md) — how to run the shell test suite and what new plugins must cover
 
 ## Creating a New Plugin
 
@@ -66,5 +68,6 @@ agentic-tools/
 │       ├── .mcp.json           # MCP servers (if any)
 │       └── README.md
 ├── CLAUDE.md
+├── TESTING.md
 └── README.md
 ```

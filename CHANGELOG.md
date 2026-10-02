@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [dev-doctor 1.0.0] - 2026-10-01
+
+### Added
+
+- **`dev-doctor` 1.0.0** — an installable Claude Code plugin for read-only local environment preflights before agents run local development commands. Emits Markdown and JSON reports covering git/worktree state, runtime pins, Docker/Compose status, env-file gaps, collision risks, setup hints, and recommended next commands. Non-mutating by design: no installs, migrations, service starts/stops, tests, formatters, or secret-value printing.
+- Root README discovery for `dev-doctor`.
+- Reports default to `<git-dir>/dev-doctor/` so the preflight never adds untracked files to the checkout or flips its own `dirty` flag; `compose config` error excerpts have env-file values redacted.
+
+### For Contributors
+
+- Shell tests (`tests/dev-doctor-test.sh`, needs `bash`, `git`, `jq`) and a GitHub Actions `Test` workflow covering plugin manifests, report generation, env blockers, Compose parsing, env-key drift (including `export` prefixes), secret-value redaction, default report placement, worktree detection, and the exit-code contract.
+- `TESTING.md` with conventions for marketplace plugin changes.
+
 ## [loops 0.1.0] - 2026-09-28
 
 New plugin: **loops**. Wave 0, slice 1 measures how your engineering loops actually run, so
