@@ -3,6 +3,48 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.1.0] - 2026-09-28
+
+New plugin: **loops**. Wave 0, slice 1 measures how your engineering loops actually run, so
+later loop rules can be kept or dropped against recorded history instead of impressions.
+
+### Added
+
+- **`loop-metrics`**, a zero-install Node 18+ CLI (committed bundle). Each run reads Claude Code's
+  local session transcripts and Workflow run records and appends **one baseline row** to
+  `~/.claude/metrics/loops.jsonl`, covering 7-day and 30-day windows:
+  - Workflow runs: status mix, phases, tokens, duration, agents, per-model split.
+  - Sessions: context peaks, compactions, sessions with 10+ compactions.
+  - Parse counters.
+
+  It reads only numeric fields and ids; message text is never read.
+- **Counts that survive how transcripts repeat themselves.**
+  - Records are deduped by `uuid` across the whole run. Resumes replay records within a file,
+    and forks copy them across files; the original owns the shared records.
+  - API usage is deduped by `message.id`, because one message is written once per content
+    block.
+  - Synthetic API-error records are not counted as calls.
+  - Workflow runs are deduped by `runId`, and the finished copy is the one kept.
+  - `--session FILE` prints one transcript's deduped counts next to its naive ones for manual
+    validation.
+- **A drift tripwire.** A renamed or missing field reads as zero but is still counted in
+  `bad_records`, so a format change shows up in `parse` rather than as a quiet week. The same
+  applies to:
+  - an impossible or zone-less timestamp
+  - a negative count
+  - an unknown status or agent state
+  - an unreadable directory, which counts in `bad_files` instead
+- **Safe appends to the only history.**
+  - A torn last row is fenced off with a newline, so the new row never glues onto it.
+  - A failed write is truncated back.
+  - The row is synced to disk before the tool exits 0.
+  - A wrong `--projects-dir` or an unwritable `--out` exits non-zero with no row.
+  - Every row carries a parser `version`.
+- **A weekly launchd schedule** (README), with a `launchctl kickstart` proof run, plus a
+  manual validation recipe against `jq`.
+- **CI** (`loops-ci`): typecheck, 71 vitest tests, build, and a check that the committed
+  bundle matches the source.
+
 ## [3.0.0] - 2026-08-23
 
 Nightshift v3. The loop now runs **local-first behind one easy button** — `ns run <repo>

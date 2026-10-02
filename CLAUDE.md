@@ -4,7 +4,7 @@ Project-level instructions for Claude Code sessions.
 
 ## Project Overview
 
-This repository is a Claude Code plugin marketplace. Each plugin lives in `plugins/<name>/` and can contain hooks, skills, agents, or MCP servers.
+This repository is a Claude Code plugin marketplace. Each plugin lives in `plugins/<name>/` and can contain hooks, skills, agents, MCP servers, or standalone CLI tools.
 
 ## Conventions
 
