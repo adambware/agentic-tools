@@ -3,6 +3,30 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.2.1] - 2026-10-03
+
+Parser hardening from the loops 0.1.0 ship's final adversarial round. None of these cases occurs
+in current data; each was a way malformed input could get past the drift counters.
+
+### Changed
+
+- An empty `uuid` or `message.id` is treated as absent instead of as a dedupe key every such
+  record shares. A `message.id` that is empty or a non-null non-string falls back to `requestId`
+  and counts in `bad_records`, once per record that carries it.
+- Token counts and Workflow `durationMs` must be non-negative safe integers (session context
+  fields, Workflow token counts and durations), so a sum or median can no longer overflow to
+  `Infinity`, which JSON writes as `null`.
+- A Workflow `workflowProgress` entry whose type is not `workflow_phase` or `workflow_agent`, or
+  that is not an object, counts in `bad_records`.
+- A transcript whose mtime is more than a minute in the future is not treated as live, so its
+  torn last line counts.
+- Appending a row also syncs the history file's directory, every run (an earlier run may have
+  created the file and died before syncing it), and any directories created for it. A failed sync
+  (or a failed close after it) now reports `row written but may not be on disk` rather than
+  `cannot append`, and still prints the row. A filesystem that cannot sync directories at all
+  skips the directory sync instead of failing every run.
+- `version` is `0.2.1`.
+
 ## [loops 0.2.0] - 2026-10-03
 
 Wave 0, slice 2 (lens noise, first pass): the weekly row now records how often each gstack review

@@ -16,7 +16,7 @@ exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`]
     "dup_records": 1,
   },
   "schema": 1,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "w30": {
     "lenses": {
       "by_lens": {

@@ -86,7 +86,8 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
     try {
       const st = statSync(file);
       born = st.birthtimeMs;
-      live = Date.now() - st.mtimeMs < LIVE_MS;
+      const age = Date.now() - st.mtimeMs;
+      live = age > -FUTURE_SLACK_MS && age < LIVE_MS;
     } catch {
     }
     ordered.push({ file, first: head.ts, copied: head.copied ? 1 : 0, born, live });
@@ -139,6 +140,7 @@ async function* readLines(file) {
   }
 }
 var LIVE_MS = 60 * 60 * 1e3;
+var FUTURE_SLACK_MS = 60 * 1e3;
 async function parseFile(file, live, seenUuids, seenMessages, parse) {
   const stats = {
     file,
@@ -159,7 +161,7 @@ async function parseFile(file, live, seenUuids, seenMessages, parse) {
       const compact = rec.type === "system" && rec.subtype === "compact_boundary";
       if (usage) stats.naive.usage_records++;
       if (compact) stats.naive.compact_records++;
-      const uuid = typeof rec.uuid === "string" ? rec.uuid : void 0;
+      const uuid = nonEmpty(rec.uuid);
       if (uuid === void 0 && (usage || compact)) parse.bad_records++;
       if (uuid !== void 0) {
         if (seenUuids.has(uuid)) {
@@ -176,7 +178,8 @@ async function parseFile(file, live, seenUuids, seenMessages, parse) {
       stats.recordTimes.push(ts);
       if (compact) stats.compactions.push(ts);
       if (usage) {
-        const key = messageKey(rec);
+        const { key, bad: badKey } = messageKey(rec);
+        if (badKey && uuid !== void 0) parse.bad_records++;
         if (key !== void 0) {
           if (seenMessages.has(key)) continue;
           seenMessages.add(key);
@@ -211,12 +214,16 @@ function usageOf(rec) {
   const usage = message.usage;
   return usage !== null && typeof usage === "object" ? usage : void 0;
 }
+function nonEmpty(v) {
+  return typeof v === "string" && v !== "" ? v : void 0;
+}
 function messageKey(rec) {
-  const id = rec.message.id;
-  if (typeof id === "string") return `m:${id}`;
-  if (typeof rec.requestId === "string") return `r:${rec.requestId}`;
-  if (typeof rec.uuid === "string") return `u:${rec.uuid}`;
-  return void 0;
+  const raw = rec.message.id;
+  const id = nonEmpty(raw);
+  const requestId = nonEmpty(rec.requestId);
+  const uuid = nonEmpty(rec.uuid);
+  const key = id !== void 0 ? `m:${id}` : requestId !== void 0 ? `r:${requestId}` : uuid !== void 0 ? `u:${uuid}` : void 0;
+  return { key, bad: raw !== void 0 && raw !== null && id === void 0 };
 }
 var CONTEXT_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"];
 function contextSize(usage) {
@@ -227,7 +234,7 @@ function contextSize(usage) {
     const v = usage[f];
     if (v === void 0 || v === null) continue;
     present++;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) ctx += v;
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ctx += v;
     else bad = true;
   }
   return present === 0 ? { ctx: void 0, bad: true } : { ctx, bad };
@@ -375,6 +382,7 @@ function collectReviews(gstackDir, sinceMs) {
 import { readFileSync as readFileSync2, readdirSync as readdirSync3, statSync as statSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
+var PROGRESS_TYPES = /* @__PURE__ */ new Set(["workflow_phase", "workflow_agent"]);
 function parseWorkflow(json) {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
   const rec = json;
@@ -382,7 +390,7 @@ function parseWorkflow(json) {
   let badRecords = 0;
   const num = (v) => {
     if (v === void 0 || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return v;
     badRecords++;
     return 0;
   };
@@ -392,7 +400,7 @@ function parseWorkflow(json) {
   if (typeof rec.status !== "string") badRecords++;
   const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : void 0;
   if (runId === void 0) badRecords++;
-  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
+  const durationOk = typeof rec.durationMs === "number" && Number.isSafeInteger(rec.durationMs) && rec.durationMs >= 0;
   if (!durationOk) badRecords++;
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run = {
@@ -409,7 +417,10 @@ function parseWorkflow(json) {
   };
   const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
   for (const entry of progress) {
-    if (entry === null || typeof entry !== "object") continue;
+    if (entry === null || typeof entry !== "object" || !PROGRESS_TYPES.has(entry.type)) {
+      badRecords++;
+      continue;
+    }
     const agent = entry;
     if (agent.type !== "workflow_agent") continue;
     run.agents++;
@@ -484,7 +495,7 @@ function isMissing(e) {
 }
 
 // src/lib/row.ts
-var VERSION = "0.2.0";
+var VERSION = "0.2.1";
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
 var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
@@ -715,7 +726,13 @@ async function main(argv, io = processIo) {
     try {
       appendRow(out, line);
     } catch (e) {
-      io.stderr(`error: cannot append to --out ${out}: ${e.message}
+      if (!(e instanceof NotDurableError)) {
+        io.stderr(`error: cannot append to --out ${out}: ${e.message}
+`);
+        return 1;
+      }
+      io.stdout(line);
+      io.stderr(`error: --out ${out}: ${e.message}
 `);
       return 1;
     }
@@ -724,8 +741,9 @@ async function main(argv, io = processIo) {
   return 0;
 }
 function appendRow(out, line) {
-  mkdirSync(dirname(out), { recursive: true });
+  const madeDir = mkdirSync(dirname(out), { recursive: true });
   const fd = openSync(out, "a+");
+  let synced = false;
   try {
     const size = fstatSync(fd).size;
     const last = Buffer.alloc(1);
@@ -742,9 +760,49 @@ function appendRow(out, line) {
       }
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
-    fsyncSync(fd);
+    durably(() => fsyncSync(fd));
+    synced = true;
   } finally {
-    closeSync(fd);
+    try {
+      closeSync(fd);
+    } catch (e) {
+      if (synced) durably(() => {
+        throw e;
+      });
+    }
+  }
+  const top = madeDir === void 0 ? dirname(out) : dirname(madeDir);
+  durably(() => {
+    for (let dir = dirname(out); ; dir = dirname(dir)) {
+      syncDir(dir);
+      if (dir === top || dir === dirname(dir)) break;
+    }
+  });
+}
+var NO_DIR_SYNC = /* @__PURE__ */ new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES"]);
+function syncDir(dir) {
+  let dirFd;
+  try {
+    dirFd = openSync(dir, "r");
+  } catch (e) {
+    if (NO_DIR_SYNC.has(e.code ?? "")) return;
+    throw e;
+  }
+  try {
+    fsyncSync(dirFd);
+  } catch (e) {
+    if (!NO_DIR_SYNC.has(e.code ?? "")) throw e;
+  } finally {
+    closeSync(dirFd);
+  }
+}
+var NotDurableError = class extends Error {
+};
+function durably(sync) {
+  try {
+    sync();
+  } catch (e) {
+    throw new NotDurableError(`row written but may not be on disk: ${e.message}`);
   }
 }
 async function sessionReport(file, io) {

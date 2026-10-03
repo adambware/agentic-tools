@@ -83,7 +83,7 @@ describe("parseWorkflow", () => {
     expect(p.badRecords).toBe(2);
   });
 
-  it("rejects null and non-objects; defaults a missing status and model to unknown; skips non-object progress entries", () => {
+  it("rejects null and non-objects; defaults a missing status and model to unknown; counts non-object progress entries", () => {
     expect(parseWorkflow(null)).toEqual({ ok: false });
     expect(parseWorkflow("wf")).toEqual({ ok: false });
     expect(parseWorkflow({ status: "completed" })).toEqual({ ok: false });
@@ -99,7 +99,28 @@ describe("parseWorkflow", () => {
     expect(p.run.durationMs).toBeNull();
     expect(p.run.agents).toBe(2);
     expect(p.run.byModel).toEqual({ unknown: { agents: 2, tokens: 6 } });
-    expect(p.badRecords).toBe(2); // the non-string status and durationMs
+    expect(p.badRecords).toBe(5); // the non-string status and durationMs, and the 3 non-object entries
+  });
+
+  it("counts an unknown workflowProgress entry type as drift, and skips it", () => {
+    const p = parseWorkflow({
+      ...FULL,
+      startTime: 1,
+      workflowProgress: [{ type: "workflow_phase" }, { type: "workflow_subagent", tokens: 9 }, { tokens: 1 }, agent("m", "done", 2)],
+    });
+    if (!p.ok) throw new Error("expected ok");
+    expect([p.run.agents, p.run.byModel.m!.tokens, p.badRecords]).toEqual([1, 2, 2]);
+  });
+
+  it("reads a token count that is not a non-negative safe integer as 0 and bad, so sums stay finite", () => {
+    const p = parseWorkflow({
+      ...FULL,
+      startTime: 1,
+      totalTokens: 1e308,
+      workflowProgress: [agent("m", "done", 1e308), agent("m", "done", 1.5), agent("m", "done", 2 ** 53), agent("m", "done", 7)],
+    });
+    if (!p.ok) throw new Error("expected ok");
+    expect([p.run.tokens, p.run.byModel.m!.tokens, p.badRecords]).toEqual([0, 7, 4]);
   });
 
   it("counts each missing run-level field as a bad record, so a renamed field trips the counter", () => {
@@ -209,6 +230,30 @@ describe("collectWorkflows", () => {
     expect(runs.map((r) => [r.status, r.tokens])).toEqual([["completed", 400]]);
     expect(parse.dup_records).toBe(2);
     expect(parse.bad_records).toBe(1); // only the kept copy's non-array phases
+  });
+
+  it("breaks a tie between equally finished, equally long copies by path, never by directory order", () => {
+    // Same status and duration: only the path decides. Write the later path first, then the
+    // earlier, so neither creation nor readdir order can be what picks the winner.
+    for (const [sess, tokens] of [["z-copy", 2], ["a-orig", 1]] as const) {
+      mkdirSync(join(dir, "proj", sess, "workflows"), { recursive: true });
+      writeFileSync(join(dir, "proj", sess, "workflows", "wf_x.json"), JSON.stringify({ ...FULL, startTime: 5, totalTokens: tokens }));
+    }
+    const parse = emptyCounters();
+    expect(collectWorkflows(dir, 0, parse).map((r) => r.tokens)).toEqual([1]);
+    expect(parse.dup_records).toBe(1);
+    // A different project dir sorts the same way: the full path decides, not the session name.
+    mkdirSync(join(dir, "0proj", "zz", "workflows"), { recursive: true });
+    writeFileSync(join(dir, "0proj", "zz", "workflows", "wf_x.json"), JSON.stringify({ ...FULL, startTime: 5, totalTokens: 3 }));
+    expect(collectWorkflows(dir, 0, emptyCounters()).map((r) => r.tokens)).toEqual([3]);
+  });
+
+  it("reads a durationMs that is not a non-negative safe integer as bad and null, so the median stays finite", () => {
+    for (const durationMs of [1e308, 1.5]) {
+      const p = parseWorkflow({ ...FULL, startTime: 1, durationMs });
+      if (!p.ok) throw new Error("expected ok");
+      expect([p.run.durationMs, p.badRecords]).toEqual([null, 1]);
+    }
   });
 
   it("treats an empty runId as missing, and a negative durationMs as bad and null", () => {
