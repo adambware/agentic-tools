@@ -1,6 +1,6 @@
 {
   "name": "loops-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Deterministic metrics for engineering loops. Author TS, ship a bundled node-runnable bin/loop-metrics.mjs (zero runtime install).",
