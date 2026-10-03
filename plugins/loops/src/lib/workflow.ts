@@ -25,6 +25,8 @@ type Rec = Record<string, unknown>;
 
 /** Every agent state seen in real records; another one is a renamed state (format drift). */
 const AGENT_STATES = new Set(["start", "progress", "done", "error"]);
+/** Every workflowProgress entry type seen in real records; another one is format drift. */
+const PROGRESS_TYPES = new Set(["workflow_phase", "workflow_agent"]);
 
 /** Parse one run record. A non-object or a non-numeric startTime is a bad file. */
 export function parseWorkflow(json: unknown): ParsedWorkflow {
@@ -35,7 +37,8 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   let badRecords = 0;
   const num = (v: unknown): number => {
     if (v === undefined || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    // Safe integers only: summing huge floats can overflow to Infinity, which JSON writes as null.
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return v;
     badRecords++;
     return 0;
   };
@@ -48,7 +51,8 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
   if (typeof rec.status !== "string") badRecords++;
   const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : undefined;
   if (runId === undefined) badRecords++;
-  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
+  // Safe integer like the counts: two huge durations would overflow the median to Infinity (null).
+  const durationOk = typeof rec.durationMs === "number" && Number.isSafeInteger(rec.durationMs) && rec.durationMs >= 0;
   if (!durationOk) badRecords++;
 
   const status = typeof rec.status === "string" ? rec.status : "unknown";
@@ -67,7 +71,10 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
 
   const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
   for (const entry of progress) {
-    if (entry === null || typeof entry !== "object") continue;
+    if (entry === null || typeof entry !== "object" || !PROGRESS_TYPES.has((entry as Rec).type as string)) {
+      badRecords++;
+      continue;
+    }
     const agent = entry as Rec;
     if (agent.type !== "workflow_agent") continue;
     run.agents++;

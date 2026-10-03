@@ -277,6 +277,90 @@ describe("collectSessionFiles", () => {
     expect(parse.bad_records).toBe(2);
   });
 
+  it("treats an empty uuid as absent: counted bad, never a shared key that swallows other records", async () => {
+    const f = write("s.jsonl", [compact("", T(1)), compact("", T(2)), assistant("", T(3), "m1", USAGE)]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.compactions).toHaveLength(2);
+    expect(sessions[0]!.messages).toHaveLength(1);
+    expect(parse.dup_records).toBe(0);
+    expect(parse.bad_records).toBe(3);
+  });
+
+  it("treats an empty or non-string message.id as absent: falls back and counts each record carrying it bad", async () => {
+    const f = write("s.jsonl", [
+      { type: "assistant", uuid: "a1", timestamp: T(1), requestId: "r1", message: { id: "", usage: USAGE } },
+      { type: "assistant", uuid: "a2", timestamp: T(1), requestId: "r1", message: { id: "", usage: USAGE } },
+      { type: "assistant", uuid: "a3", timestamp: T(2), requestId: "r2", message: { id: "", usage: USAGE } },
+      { type: "assistant", uuid: "a4", timestamp: T(3), requestId: "", message: { id: "", usage: USAGE } },
+      { type: "assistant", uuid: "a5", timestamp: T(4), requestId: "r5", message: { id: 5, usage: USAGE } },
+      { type: "assistant", uuid: "a6", timestamp: T(5), requestId: "r6", message: { id: null, usage: USAGE } },
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    // r1's two blocks are one message; r2 is another; a4 falls through to its uuid. A null id is
+    // a missing one, so a6 is not drift.
+    const times = [T(1), T(2), T(3), T(4), T(5)].map((t) => Date.parse(t));
+    expect(sessions[0]!.messages.map(([t]) => t)).toEqual(times);
+    expect(parse.bad_records).toBe(5); // both r1 blocks, r2, a4, a5
+  });
+
+  it("counts an empty message.id that falls back onto a key a good record already took", async () => {
+    const f = write("s.jsonl", [
+      { type: "assistant", uuid: "a1", timestamp: T(1), requestId: "r1", message: { usage: USAGE } },
+      { type: "assistant", uuid: "a2", timestamp: T(1), requestId: "r1", message: { id: "", usage: USAGE } },
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toHaveLength(1);
+    expect(parse.bad_records).toBe(1);
+  });
+
+  it("counts a usage record with neither uuid nor message.id once, not once per missing field", async () => {
+    const f = write("s.jsonl", [{ type: "assistant", timestamp: T(1), requestId: "r1", message: { id: "", usage: USAGE } }]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toHaveLength(1);
+    expect(parse.bad_records).toBe(1);
+  });
+
+  // Value: protects=an empty requestId alone is a silent fallback to uuid (not bad, not a shared key); fails_when=requestId uses typeof-string so "" keys every record as r: and collapses them, or the empty requestId is counted bad; why_new=the existing empty-id test sets message.id "" too and only checks the all-empty chain; seam=none
+  it("falls back to uuid past an empty requestId when message.id is absent, without counting it bad", async () => {
+    const f = write("s.jsonl", [
+      { type: "assistant", uuid: "a1", timestamp: T(1), requestId: "", message: { usage: USAGE } },
+      { type: "assistant", uuid: "a2", timestamp: T(2), requestId: "", message: { usage: USAGE } },
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toHaveLength(2);
+    expect(parse.dup_records).toBe(0);
+    expect(parse.bad_records).toBe(0);
+  });
+
+  it("counts a context field that is not a non-negative safe integer as bad, so sums stay finite", async () => {
+    const f = write("s.jsonl", [
+      assistant("a1", T(1), "m1", { input_tokens: 1e308, cache_read_input_tokens: 1e308, cache_creation_input_tokens: 4 }),
+      assistant("a2", T(2), "m2", { input_tokens: 2.5, cache_read_input_tokens: 10 }),
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.messages).toEqual([
+      [Date.parse(T(1)), 4],
+      [Date.parse(T(2)), 10],
+    ]);
+    expect(parse.bad_records).toBe(2);
+  });
+
+  it("does not treat a file with a future mtime as live: its torn last line is counted", async () => {
+    const f = join(dir, "future.jsonl");
+    writeFileSync(f, JSON.stringify(assistant("a1", T(1), "m1", USAGE)) + "\n" + '{"type":"assistant","uuid":"a2","timest');
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    utimesSync(f, future, future);
+    expect((await collectSessionFiles([f])).parse.bad_lines).toBe(1);
+    // Just past the minute of slack is already the future.
+    const soon = new Date(Date.now() + 2 * 60 * 1000);
+    utimesSync(f, soon, soon);
+    expect((await collectSessionFiles([f])).parse.bad_lines).toBe(1);
+    // An mtime a moment ahead is a file written just now (mtime is finer than Date.now()): live.
+    const now = new Date(Date.now() + 1000);
+    utimesSync(f, now, now);
+    expect((await collectSessionFiles([f])).parse.bad_lines).toBe(0);
+  });
+
   it("counts a usage object with none of the context fields as bad: a renamed field, not a zero", async () => {
     const f = write("s.jsonl", [assistant("a1", T(1), "m1", { inputTokens: 5, cacheReadInputTokens: 100 })]);
     const { sessions, parse } = await collectSessionFiles([f]);
