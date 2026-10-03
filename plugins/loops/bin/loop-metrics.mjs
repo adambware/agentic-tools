@@ -293,6 +293,8 @@ function parseReview(rec) {
     }
   }
   let findings = null;
+  const fl = rec.findings;
+  if (fl !== void 0 && fl !== null && !Array.isArray(fl) && typeof fl !== "number") badRecords++;
   if (Array.isArray(rec.findings)) {
     findings = [];
     for (const entry of rec.findings) {
@@ -318,7 +320,7 @@ function parseReview(rec) {
 function collectReviews(gstackDir, sinceMs) {
   const parse = emptyCounters();
   const reviews = [];
-  const seen = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Map();
   const repos = readdirSync2(gstackDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
   for (const repo of repos) {
     let names;
@@ -343,22 +345,23 @@ function collectReviews(gstackDir, sinceMs) {
       for (const raw of text.split("\n")) {
         const line = raw.trim();
         if (line === "") continue;
+        const prior = seen.get(line);
+        if (prior !== void 0) {
+          if (prior) parse.dup_records++;
+          continue;
+        }
         let rec;
         try {
           rec = JSON.parse(line);
         } catch {
+          rec = void 0;
+        }
+        const isObject = rec !== null && typeof rec === "object" && !Array.isArray(rec);
+        seen.set(line, isObject);
+        if (!isObject) {
           parse.bad_lines++;
           continue;
         }
-        if (rec === null || typeof rec !== "object" || Array.isArray(rec)) {
-          parse.bad_lines++;
-          continue;
-        }
-        if (seen.has(line)) {
-          parse.dup_records++;
-          continue;
-        }
-        seen.add(line);
         const parsed = parseReview(rec);
         parse.bad_records += parsed.badRecords;
         if (parsed.ok) reviews.push(parsed.review);

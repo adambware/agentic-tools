@@ -71,10 +71,11 @@ counting; in an older file it counts in `bad_lines`. A Workflow run copied into 
 
 Review logs have their own counters in `parse_lenses`, so drift can be traced to its source. A
 line that is not a JSON object counts in `bad_lines` (a pretty-printed record counts once per
-line). A review with no zoned ISO `timestamp`, a non-object specialists block or entry, a
-dispatched lens without a numeric `findings`, a negative or fractional count, and a finding with
-a missing or unknown `action` count in `bad_records`. An identical line seen twice counts once,
-with the copy in `dup_records`.
+distinct line). A review with no zoned ISO `timestamp`, a non-object specialists block or entry, a
+dispatched lens without a numeric `findings`, a negative or fractional count, a finding with
+a missing or unknown `action`, and a `findings` value that is neither a list nor a count
+all count in `bad_records`. An identical line seen twice counts once: a
+record's copy goes in `dup_records`, and a malformed line is not counted again.
 
 When a fork copies a session from its first record, the two files' first timestamps tie. The
 original owns the shared records: the file whose first record names another session is the copy,
@@ -226,7 +227,7 @@ The row records counts only; rates and thresholds belong to the weekly read. Per
 the last 30 days, from the latest row:
 
 ```bash
-tail -n 1 ~/.claude/metrics/loops.jsonl | jq -r '.w30.lenses.by_lens | to_entries[] | select(.value.findings >= 5) | .value as $v | "\(.key)\tn=\($v.findings)\taddressed=\(100*($v.fixed+$v.auto_fixed)/$v.findings|floor)%\tskipped=\(100*$v.skipped/$v.findings|floor)%\tcrit_skipped=\($v.critical_skipped)/\($v.critical)"'
+tail -n 1 ~/.claude/metrics/loops.jsonl | jq -r '(.w30.lenses.by_lens // {}) | to_entries[] | select(.value.findings >= 5) | .value as $v | "\(.key)\tn=\($v.findings)\taddressed=\(100*($v.fixed+$v.auto_fixed)/$v.findings|floor)%\tskipped=\(100*$v.skipped/$v.findings|floor)%\tcrit_skipped=\($v.critical_skipped)/\($v.critical)"'
 ```
 
 Starting points to calibrate against your own baseline: a skip rate above 60%, or more than 25%

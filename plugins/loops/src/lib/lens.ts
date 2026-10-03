@@ -5,7 +5,8 @@
 // Rules (mirroring the transcript parser's):
 //   1. Only lens names, counts, severities and actions are read; finding text never is.
 //   2. Malformed input is counted in the lens parse counters, never fatal.
-//   3. An identical line seen twice (a copied log) counts once.
+//   3. An identical line seen twice (a copied log) counts once: a record's copies go to
+//      dup_records, and a malformed line counts in bad_lines once.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { emptyCounters, type ParseCounters } from "./session.js";
@@ -116,6 +117,9 @@ export function parseReview(rec: Rec): ParsedReview {
   }
 
   let findings: FindingStats[] | null = null;
+  // Old logs store a count instead of a list; any other non-list value is drift.
+  const fl = rec.findings;
+  if (fl !== undefined && fl !== null && !Array.isArray(fl) && typeof fl !== "number") badRecords++;
   if (Array.isArray(rec.findings)) {
     findings = [];
     for (const entry of rec.findings) {
@@ -151,7 +155,8 @@ export interface LensCollection {
 export function collectReviews(gstackDir: string, sinceMs: number): LensCollection {
   const parse = emptyCounters();
   const reviews: ReviewStats[] = [];
-  const seen = new Set<string>();
+  /** Each distinct non-empty line -> whether it was a JSON object (only those copies count). */
+  const seen = new Map<string, boolean>();
   const repos = readdirSync(gstackDir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
@@ -180,22 +185,23 @@ export function collectReviews(gstackDir: string, sinceMs: number): LensCollecti
       for (const raw of text.split("\n")) {
         const line = raw.trim();
         if (line === "") continue;
+        const prior = seen.get(line);
+        if (prior !== undefined) {
+          if (prior) parse.dup_records++;
+          continue;
+        }
         let rec: unknown;
         try {
           rec = JSON.parse(line);
         } catch {
+          rec = undefined;
+        }
+        const isObject = rec !== null && typeof rec === "object" && !Array.isArray(rec);
+        seen.set(line, isObject);
+        if (!isObject) {
           parse.bad_lines++;
           continue;
         }
-        if (rec === null || typeof rec !== "object" || Array.isArray(rec)) {
-          parse.bad_lines++;
-          continue;
-        }
-        if (seen.has(line)) {
-          parse.dup_records++;
-          continue;
-        }
-        seen.add(line);
         const parsed = parseReview(rec as Rec);
         parse.bad_records += parsed.badRecords;
         if (parsed.ok) reviews.push(parsed.review);

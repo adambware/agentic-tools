@@ -126,6 +126,13 @@ describe("parseReview", () => {
     const p = parseReview(review({ findings: 3 }));
     expect(p).toMatchObject({ ok: true, badRecords: 0, review: { findings: null } });
   });
+
+  it("counts a findings field that is neither a list nor a count as drift", () => {
+    for (const findings of ["3", { testing: 1 }, true]) {
+      expect(parseReview(review({ findings }))).toMatchObject({ ok: true, badRecords: 1, review: { findings: null } });
+    }
+    expect(parseReview(review({ findings: null }))).toMatchObject({ ok: true, badRecords: 0 });
+  });
 });
 
 describe("collectReviews", () => {
@@ -160,6 +167,15 @@ describe("collectReviews", () => {
     const { reviews, parse } = collectReviews(tmp, 0);
     expect(reviews).toHaveLength(1);
     expect(parse.bad_lines).toBe(5);
+  });
+
+  it("counts a copied malformed line once in bad_lines and never in dup_records", () => {
+    const torn = '{"skill":"review",';
+    write("a", "x-reviews.jsonl", [torn, "}", "}", JSON.stringify(review())]);
+    write("b", "copy-reviews.jsonl", [torn, JSON.stringify(review())]);
+    const { reviews, parse } = collectReviews(tmp, 0);
+    expect(reviews).toHaveLength(1);
+    expect(parse).toEqual({ bad_lines: 2, bad_files: 0, bad_records: 0, dup_records: 1 });
   });
 
   it("keeps a U+2028 inside a JSON string in one record", () => {
