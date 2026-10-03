@@ -3,18 +3,20 @@
 Measure how your engineering loops actually run, so loop rules are kept or dropped against
 measured history instead of impressions.
 
-Slice 1 ships one tool, `loop-metrics`: a deterministic script that reads Claude Code's local
-session transcripts and Workflow run records and appends **one baseline row** to
-`~/.claude/metrics/loops.jsonl`. It reads only numeric fields and ids; message text is never read.
+It ships one tool, `loop-metrics`: a deterministic script that reads Claude Code's local session
+transcripts and Workflow run records, plus gstack's review logs, and appends **one baseline row**
+to `~/.claude/metrics/loops.jsonl`. It reads only numeric fields, ids, lens names, severities and
+actions; message and finding text is never read.
 
 ## What a row holds
 
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.1.0","generated_at":"…","window_end":"…",
- "w7": {"workflows": {…}, "sessions": {…}}, "w30": {…},
- "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
+{"schema":1,"version":"0.2.0","generated_at":"…","window_end":"…",
+ "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}}, "w30": {…},
+ "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
+ "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
 ```
 
 - `workflows` (from `~/.claude/projects/<project>/<session>/workflows/wf_*.json`): `runs`,
@@ -26,6 +28,21 @@ Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus pars
   separate contexts and excluded): `n`, `with_usage`, `context_peak_median`, `context_peak_max`
   (context = input + cache-creation + cache-read tokens of one API call), `compactions_total`,
   `compacted` (sessions with >= 1), `compacted_10plus`.
+
+- `lenses` (from gstack's `~/.gstack/projects/<repo>/*-reviews.jsonl`, `skill: "review"` records
+  only; `null` when gstack is not installed): `reviews`, `with_specialists` (a specialists block,
+  possibly empty when the army dispatched nothing), `with_findings` (a `findings[]` list), and
+  `by_lens` (`{<lens>: {…}}`). Each lens has two sets of counts:
+  - from the specialists block: `dispatched`, `not_dispatched`, `reported` and
+    `reported_critical` (the counts the lens reported);
+  - from `findings[]`, attributed by the fingerprint's last `:` segment: `findings`, `fixed`,
+    `auto_fixed`, `skipped`, `other_action` (deferred, asked, and the like), `critical`
+    (severity CRITICAL or P1) and `critical_skipped`.
+
+  Findings whose category is not one of gstack's lenses (`stale-comment`, `input-validation`), or
+  that have no fingerprint, are counted in `other` with the same fields. Lens names are
+  normalized (`red_team` -> `red-team`). A review counts in the window its `timestamp` falls in,
+  and a re-review counts again what it finds again.
 
 Medians of an empty set are `null`, never 0. A session counts in a window if any of its records
 falls in it, and its peak and compactions are counted per record, so a month-long session is not
@@ -50,6 +67,15 @@ transcript written to in the last hour is a session still being written and is s
 counting; in an older file it counts in `bad_lines`. A Workflow run copied into another session's
 `workflows/` counts once (by `runId`, keeping the finished copy), with the copy in `dup_records`.
 `version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
+`schema` is bumped only when a field changes meaning or goes away; new fields are additive.
+
+Review logs have their own counters in `parse_lenses`, so drift can be traced to its source. A
+line that is not a JSON object counts in `bad_lines` (a pretty-printed record counts once per
+distinct line). A review with no zoned ISO `timestamp`, a non-object specialists block or entry, a
+dispatched lens without a numeric `findings`, a negative or fractional count, a finding with
+a missing or unknown `action`, and a `findings` value that is neither a list nor a count
+all count in `bad_records`. An identical line seen twice counts once: a
+record's copy goes in `dup_records`, and a malformed line is not counted again.
 
 When a fork copies a session from its first record, the two files' first timestamps tie. The
 original owns the shared records: the file whose first record names another session is the copy,
@@ -73,18 +99,20 @@ node ~/bin/loop-metrics --dry-run
 ```
 
 ```
-loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]
+loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]
 ```
 
 - Default: append one row to `--out` (default `~/.claude/metrics/loops.jsonl`, directory created
-  if needed) and print it. `--projects-dir` defaults to `~/.claude/projects`.
+  if needed) and print it. `--projects-dir` defaults to `~/.claude/projects`, and `--gstack-dir`
+  to `~/.gstack/projects`.
 - `--dry-run` prints the row without appending. `--now` fixes the window end (for tests).
 - `--session FILE` prints one transcript's deduped counts next to its naive ones.
 - If `loops.jsonl` does not end in a newline (a torn write or a hand edit), the new row starts on a
   line of its own; a failed write is truncated back, and the row is synced to disk before exit 0.
-- Exits non-zero without writing a row when `--projects-dir` is missing or unreadable or `--out`
-  is unwritable: a wrong path must not record a quiet week. An existing empty directory gives a
-  valid zero row.
+- Exits non-zero without writing a row when `--projects-dir` is missing or unreadable, `--out`
+  is unwritable, or `--gstack-dir` is unreadable: a wrong path must not record a quiet week. The
+  one exception is a missing default `~/.gstack/projects` (gstack is not installed), which gives
+  `lenses: null`. An existing empty directory gives a valid zero row.
 
 Claude Code may prune old transcripts, so `loops.jsonl` is the only history. Past windows cannot
 be recomputed later, which is why the schedule below matters.
@@ -193,9 +221,23 @@ cd plugins/loops && npm install && npm run check
 `npm run check` is typecheck, vitest, and build. Tests use synthetic fixtures only; never commit
 real transcripts. Commit the rebuilt `bin/` with its source: CI fails on a stale bundle.
 
+## Reading the lens numbers
+
+The row records counts only; rates and thresholds belong to the weekly read. Per-lens rates over
+the last 30 days, from the latest row:
+
+```bash
+tail -n 1 ~/.claude/metrics/loops.jsonl | jq -r '(.w30.lenses.by_lens // {}) | to_entries[] | select(.value.findings >= 5) | .value as $v | "\(.key)\tn=\($v.findings)\taddressed=\(100*($v.fixed+$v.auto_fixed)/$v.findings|floor)%\tskipped=\(100*$v.skipped/$v.findings|floor)%\tcrit_skipped=\($v.critical_skipped)/\($v.critical)"'
+```
+
+Starting points to calibrate against your own baseline: a skip rate above 60%, or more than 25%
+of a lens's criticals skipped. `auto_fixed` inflates the addressed rate of lenses whose findings
+are trivial cleanups, which is why it is kept apart from `fixed`. A delta under ~25% at n < 5 is
+no decision.
+
 ## Roadmap
 
-Slice 2 adds per-repo metrics from a private config kept outside this repo: lens noise from review
-logs, merged PRs, revert/fix proxy, cost and sessions per merged PR, and session token totals.
+Later slices add per-repo metrics from a private config kept outside this repo: merged PRs,
+revert/fix proxy, cost and sessions per merged PR, and session token totals.
 
 See [`docs/wave0-plan.md`](docs/wave0-plan.md) for the reviewed Wave 0 design and its open items.

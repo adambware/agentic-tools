@@ -6,9 +6,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { main, USAGE } from "./cli.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "projects");
+const GSTACK_FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "gstack", "projects");
 const NOW = "2026-09-01T00:00:00.000Z";
 
+/** Never reads the real ~/.gstack: the fixtures stand in unless a test names its own dir. */
 async function run(argv: string[]) {
+  if (!argv.includes("--gstack-dir") && !argv.includes("--help")) argv = [...argv, "--gstack-dir", GSTACK_FIXTURES];
+  return runBare(argv);
+}
+
+/** Runs with argv as given: the default --gstack-dir is $HOME/.gstack/projects. */
+async function runBare(argv: string[]) {
   let stdout = "";
   let stderr = "";
   const code = await main(argv, { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) });
@@ -172,6 +180,72 @@ describe("loop-metrics", () => {
         chmodSync(f, 0o644);
       }
     }
+  });
+
+  it("reads the fixture review logs into lenses with their own parse counters", async () => {
+    const r = await run(["--projects-dir", tmp, "--now", NOW, "--dry-run"]);
+    expect(r.code).toBe(0);
+    const row = JSON.parse(r.stdout);
+    // One duplicate line, one torn line, one zone-less timestamp; the July review is past w30.
+    expect(row.parse_lenses).toEqual({ bad_lines: 1, bad_files: 0, bad_records: 1, dup_records: 1 });
+    expect(row.parse).toEqual({ bad_lines: 0, bad_files: 0, bad_records: 0, dup_records: 0 });
+    expect(row.w7.lenses).toMatchObject({ reviews: 1, with_specialists: 1, with_findings: 1 });
+    expect(row.w30.lenses).toMatchObject({ reviews: 3, with_specialists: 3, with_findings: 2 });
+    expect(row.w7.lenses.by_lens["red-team"]).toEqual({
+      dispatched: 1,
+      not_dispatched: 0,
+      reported: 2,
+      reported_critical: 1,
+      findings: 2,
+      fixed: 1,
+      auto_fixed: 0,
+      skipped: 1,
+      other_action: 0,
+      critical: 1,
+      critical_skipped: 1,
+    });
+    expect(row.w7.lenses.other).toMatchObject({ findings: 2, fixed: 1, other_action: 1, critical: 1 });
+    expect(row.w30.lenses.by_lens.testing).toMatchObject({ dispatched: 2, reported: 2, findings: 2 });
+    expect(row.w30.lenses.by_lens.performance).toMatchObject({ dispatched: 1, not_dispatched: 1, skipped: 1 });
+  });
+
+  it("gives lenses: null when the default gstack dir does not exist (gstack not installed)", async () => {
+    const prevHome = process.env.HOME;
+    process.env.HOME = tmp;
+    try {
+      const r = await runBare(["--projects-dir", tmp, "--now", NOW, "--dry-run"]);
+      expect(r.code).toBe(0);
+      const row = JSON.parse(r.stdout);
+      expect(row.w7.lenses).toBeNull();
+      expect(row.w30.lenses).toBeNull();
+      expect(row.parse_lenses).toBeNull();
+
+      mkdirSync(join(tmp, ".gstack", "projects"), { recursive: true });
+      const empty = JSON.parse((await runBare(["--projects-dir", tmp, "--now", NOW, "--dry-run"])).stdout);
+      expect(empty.w30.lenses).toEqual({
+        reviews: 0,
+        with_specialists: 0,
+        with_findings: 0,
+        by_lens: {},
+        other: { findings: 0, fixed: 0, auto_fixed: 0, skipped: 0, other_action: 0, critical: 0, critical_skipped: 0 },
+      });
+    } finally {
+      process.env.HOME = prevHome;
+    }
+  });
+
+  it("refuses a named --gstack-dir that is missing or a file, writing no row", async () => {
+    const out = join(tmp, "loops.jsonl");
+    const missing = await run(["--projects-dir", tmp, "--gstack-dir", join(tmp, "nope"), "--out", out, "--now", NOW]);
+    expect(missing.code).toBe(1);
+    expect(missing.stdout).toBe("");
+    expect(missing.stderr).toMatch(/^error: cannot read --gstack-dir .*nope: ENOENT/);
+    const file = join(tmp, "a-file");
+    writeFileSync(file, "");
+    const asFile = await run(["--projects-dir", tmp, "--gstack-dir", file, "--out", out, "--now", NOW]);
+    expect(asFile.code).toBe(1);
+    expect(asFile.stderr).toBe(`error: cannot read --gstack-dir ${file}: not a directory\n`);
+    expect(existsSync(out)).toBe(false);
   });
 
   it("defaults --projects-dir and --out under $HOME/.claude and prints exactly the appended line", async () => {

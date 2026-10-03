@@ -13,15 +13,16 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { collectReviews, type LensCollection } from "./lens.js";
 import { buildRow, WIDEST_WINDOW_MS } from "./row.js";
 import { collectSessionFiles, collectSessions, emptyCounters } from "./session.js";
 import { parseIso } from "./time.js";
 import { collectWorkflows } from "./workflow.js";
 
 export const USAGE =
-  "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
+  "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
 
-const VALUE_FLAGS = new Set(["projects-dir", "out", "now", "session"]);
+const VALUE_FLAGS = new Set(["projects-dir", "gstack-dir", "out", "now", "session"]);
 const BARE_FLAGS = new Set(["dry-run", "help"]);
 
 /**
@@ -95,12 +96,35 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
     return 1;
   }
 
+  // No gstack install (the default dir is missing) gives `lenses: null`, not zeros. Any other
+  // failure, or a missing dir that was asked for by name, is a wrong path: refuse.
+  const gstackDir = args["gstack-dir"] ?? join(homedir(), ".gstack", "projects");
+  let readLenses = true;
+  try {
+    if (!statSync(gstackDir).isDirectory()) throw new Error("not a directory");
+    readdirSync(gstackDir);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (args["gstack-dir"] !== undefined || code !== "ENOENT") {
+      io.stderr(`error: cannot read --gstack-dir ${gstackDir}: ${(e as Error).message}\n`);
+      return 1;
+    }
+    readLenses = false;
+  }
+
   const since = now - WIDEST_WINDOW_MS;
   let line: string;
   try {
     const { sessions, parse } = await collectSessions(projectsDir, since);
     const runs = collectWorkflows(projectsDir, since, parse);
-    line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+    let lenses: LensCollection | null = null;
+    try {
+      if (readLenses) lenses = collectReviews(gstackDir, since);
+    } catch (e) {
+      io.stderr(`error: cannot read --gstack-dir ${gstackDir}: ${(e as Error).message}\n`);
+      return 1;
+    }
+    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses)) + "\n";
   } catch (e) {
     // The pre-check above passed, so the dir changed under us: still no row for a quiet week.
     io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${(e as Error).message}\n`);

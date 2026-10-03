@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.2.0] - 2026-10-03
+
+Wave 0, slice 2 (lens noise, first pass): the weekly row now records how often each gstack review
+lens is dispatched and what happens to its findings, with no change to gstack.
+
+### Added
+
+- **`lenses`** in each window, read from `~/.gstack/projects/<repo>/*-reviews.jsonl`
+  (`skill: "review"` records only): review counts, and per lens the specialists block's
+  dispatched / not-dispatched / reported counts plus the `findings[]` outcome counts (fixed,
+  auto-fixed, skipped, other, critical, critical skipped). Findings whose category is not a lens
+  go to `other`. Lens names are normalized (`red_team` -> `red-team`).
+- **`parse_lenses`**: the review-log parser's own drift counters, separate from `parse`.
+- **`--gstack-dir DIR`** (default `~/.gstack/projects`). Without gstack installed, `lenses` is
+  `null` rather than zeros; a named directory that cannot be read refuses to write a row.
+
+### Changed
+
+- `version` is `0.2.0`. `schema` stays `1`: the new fields are additive.
+
 ## [dev-doctor 1.0.0] - 2026-10-01
 
 ### Added

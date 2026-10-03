@@ -10,221 +10,21 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
-  readdirSync as readdirSync3,
+  readdirSync as readdirSync4,
   readSync,
-  statSync as statSync3,
+  statSync as statSync4,
   writeSync
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join as join3 } from "node:path";
+import { dirname, join as join4 } from "node:path";
 
-// src/lib/workflow.ts
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
-var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
-function parseWorkflow(json) {
-  if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
-  const rec = json;
-  if (typeof rec.startTime !== "number" || !Number.isFinite(rec.startTime)) return { ok: false };
-  let badRecords = 0;
-  const num = (v) => {
-    if (v === void 0 || v === null) return 0;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
-    badRecords++;
-    return 0;
-  };
-  if (rec.totalTokens === void 0 || rec.totalTokens === null) badRecords++;
-  if (!Array.isArray(rec.phases)) badRecords++;
-  if (!Array.isArray(rec.workflowProgress)) badRecords++;
-  if (typeof rec.status !== "string") badRecords++;
-  const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : void 0;
-  if (runId === void 0) badRecords++;
-  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
-  if (!durationOk) badRecords++;
-  const status = typeof rec.status === "string" ? rec.status : "unknown";
-  const run = {
-    startMs: rec.startTime,
-    durationMs: durationOk ? rec.durationMs : null,
-    status,
-    phases: Array.isArray(rec.phases) ? rec.phases.length : 0,
-    tokens: num(rec.totalTokens),
-    agents: 0,
-    agentsErrored: 0,
-    agentsKilled: 0,
-    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
-    byModel: /* @__PURE__ */ Object.create(null)
-  };
-  const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
-  for (const entry of progress) {
-    if (entry === null || typeof entry !== "object") continue;
-    const agent = entry;
-    if (agent.type !== "workflow_agent") continue;
-    run.agents++;
-    if (!AGENT_STATES.has(agent.state)) badRecords++;
-    if (agent.state === "error") run.agentsErrored++;
-    if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;
-    const model = typeof agent.model === "string" && agent.model !== "" ? agent.model : "unknown";
-    const slot = run.byModel[model] ??= { agents: 0, tokens: 0 };
-    slot.agents++;
-    slot.tokens += num(agent.tokens);
-  }
-  return { ok: true, run, runId, badRecords };
-}
-function collectWorkflows(projectsDir, sinceMs, parse) {
-  const kept = /* @__PURE__ */ new Map();
-  for (const project of subdirs(projectsDir, parse)) {
-    for (const session of subdirs(join(projectsDir, project))) {
-      const dir = join(projectsDir, project, session, "workflows");
-      let names;
-      try {
-        names = readdirSync(dir);
-      } catch (e) {
-        if (!isMissing(e)) parse.bad_files++;
-        continue;
-      }
-      for (const name of names) {
-        if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
-        const path = join(dir, name);
-        let parsed;
-        try {
-          if (statSync(path).mtimeMs < sinceMs) continue;
-          parsed = parseWorkflow(JSON.parse(readFileSync(path, "utf8")));
-        } catch {
-          parse.bad_files++;
-          continue;
-        }
-        if (!parsed.ok) {
-          parse.bad_files++;
-          continue;
-        }
-        const key = parsed.runId ?? path;
-        const prev = kept.get(key);
-        if (prev !== void 0) parse.dup_records++;
-        if (prev === void 0 || better({ run: parsed.run, path }, prev)) {
-          kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
-        }
-      }
-    }
-  }
-  for (const k of kept.values()) parse.bad_records += k.badRecords;
-  return [...kept.values()].map((k) => k.run);
-}
-var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["completed", "killed", "failed"]);
-function better(a, b) {
-  const done = Number(TERMINAL_STATUSES.has(a.run.status)) - Number(TERMINAL_STATUSES.has(b.run.status));
-  if (done !== 0) return done > 0;
-  const dur = (a.run.durationMs ?? -1) - (b.run.durationMs ?? -1);
-  if (dur !== 0) return dur > 0;
-  return a.path < b.path;
-}
-function subdirs(dir, parse) {
-  try {
-    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-  } catch (e) {
-    if (parse !== void 0 && !isMissing(e)) parse.bad_files++;
-    return [];
-  }
-}
-function isMissing(e) {
-  const code = e.code;
-  return code === "ENOENT" || code === "ENOTDIR";
-}
-
-// src/lib/row.ts
-var VERSION = "0.1.0";
-var DAY_MS = 24 * 60 * 60 * 1e3;
-var WINDOW_DAYS = [7, 30];
-var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
-function buildRow(sessions, runs, parse, now) {
-  const iso = new Date(now).toISOString();
-  const window = (days) => {
-    const start = now - days * DAY_MS;
-    const inWindow = (t) => t > start && t <= now;
-    return { workflows: workflowWindow(runs, inWindow), sessions: sessionWindow(sessions, inWindow) };
-  };
-  return {
-    schema: 1,
-    version: VERSION,
-    generated_at: iso,
-    window_end: iso,
-    w7: window(7),
-    w30: window(30),
-    parse: { ...parse }
-  };
-}
-function workflowWindow(all, inWindow) {
-  const runs = all.filter((r) => inWindow(r.startMs));
-  const byModel = /* @__PURE__ */ Object.create(null);
-  for (const r of runs) {
-    for (const [model, m] of Object.entries(r.byModel)) {
-      const slot = byModel[model] ??= { agents: 0, tokens: 0 };
-      slot.agents += m.agents;
-      slot.tokens += m.tokens;
-    }
-  }
-  const phases = runs.map((r) => r.phases);
-  return {
-    runs: runs.length,
-    completed: runs.filter((r) => r.status === "completed").length,
-    killed: runs.filter((r) => r.status === "killed").length,
-    failed: runs.filter((r) => r.status === "failed").length,
-    other: runs.filter((r) => !TERMINAL_STATUSES.has(r.status)).length,
-    phases_median: median(phases),
-    phases_max: max(phases),
-    tokens_sum: sum(runs.map((r) => r.tokens)),
-    tokens_median: median(runs.map((r) => r.tokens)),
-    duration_ms_median: median(runs.flatMap((r) => r.durationMs === null ? [] : [r.durationMs])),
-    agents: sum(runs.map((r) => r.agents)),
-    agents_errored: sum(runs.map((r) => r.agentsErrored)),
-    agents_killed: sum(runs.map((r) => r.agentsKilled)),
-    by_model: sortKeys(byModel)
-  };
-}
-function sessionWindow(all, inWindow) {
-  let n = 0;
-  let compactionsTotal = 0;
-  let compacted = 0;
-  let compacted10 = 0;
-  const peaks = [];
-  for (const s of all) {
-    if (!s.recordTimes.some(inWindow)) continue;
-    n++;
-    const ctx = s.messages.filter(([t]) => inWindow(t)).map(([, c]) => c);
-    if (ctx.length > 0) peaks.push(max(ctx));
-    const compactions = s.compactions.filter(inWindow).length;
-    compactionsTotal += compactions;
-    if (compactions >= 1) compacted++;
-    if (compactions >= 10) compacted10++;
-  }
-  return {
-    n,
-    with_usage: peaks.length,
-    context_peak_median: median(peaks),
-    context_peak_max: max(peaks),
-    compactions_total: compactionsTotal,
-    compacted,
-    compacted_10plus: compacted10
-  };
-}
-function median(xs) {
-  if (xs.length === 0) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
-function max(xs) {
-  return xs.length === 0 ? null : xs.reduce((a, b) => b > a ? b : a);
-}
-function sum(xs) {
-  return xs.reduce((a, b) => a + b, 0);
-}
-function sortKeys(o) {
-  return Object.fromEntries(Object.entries(o).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
-}
+// src/lib/lens.ts
+import { readFileSync, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 
 // src/lib/session.ts
-import { createReadStream, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
-import { basename, join as join2 } from "node:path";
+import { createReadStream, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 
 // src/lib/time.ts
 var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -244,21 +44,21 @@ function emptyCounters() {
 }
 function listSessionFiles(projectsDir, sinceMs, parse) {
   const files = [];
-  for (const project of readdirSync2(projectsDir, { withFileTypes: true })) {
+  for (const project of readdirSync(projectsDir, { withFileTypes: true })) {
     if (!project.isDirectory()) continue;
-    const projectDir = join2(projectsDir, project.name);
+    const projectDir = join(projectsDir, project.name);
     let entries;
     try {
-      entries = readdirSync2(projectDir, { withFileTypes: true });
+      entries = readdirSync(projectDir, { withFileTypes: true });
     } catch {
       parse.bad_files++;
       continue;
     }
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
-      const path = join2(projectDir, e.name);
+      const path = join(projectDir, e.name);
       try {
-        if (statSync2(path).mtimeMs < sinceMs) continue;
+        if (statSync(path).mtimeMs < sinceMs) continue;
       } catch {
         parse.bad_files++;
         continue;
@@ -284,7 +84,7 @@ async function collectSessionFiles(files, parse = emptyCounters()) {
     let born = 0;
     let live = false;
     try {
-      const st = statSync2(file);
+      const st = statSync(file);
       born = st.birthtimeMs;
       live = Date.now() - st.mtimeMs < LIVE_MS;
     } catch {
@@ -433,9 +233,393 @@ function contextSize(usage) {
   return present === 0 ? { ctx: void 0, bad: true } : { ctx, bad };
 }
 
+// src/lib/lens.ts
+var KNOWN_LENSES = /* @__PURE__ */ new Set([
+  "api-contract",
+  "data-migration",
+  "design",
+  "maintainability",
+  "performance",
+  "red-team",
+  "security",
+  "simplification",
+  "testing"
+]);
+var OTHER_ACTIONS = /* @__PURE__ */ new Set(["deferred", "unresolved", "pending", "asked"]);
+var LENS_NAME = /^[a-z0-9][a-z0-9-]*$/;
+function normalizeLens(s) {
+  return s.trim().toLowerCase().replace(/_/g, "-");
+}
+function count(v) {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : void 0;
+}
+function parseReview(rec) {
+  if (rec.skill !== "review") return { ok: false, badRecords: 0 };
+  const ts = typeof rec.timestamp === "string" ? parseIso(rec.timestamp) : void 0;
+  if (ts === void 0) return { ok: false, badRecords: 1 };
+  let badRecords = 0;
+  let specialists = null;
+  const sp = rec.specialists;
+  if (Array.isArray(sp) && sp.length === 0) {
+    specialists = [];
+  } else if (sp !== void 0 && sp !== null) {
+    if (typeof sp !== "object" || Array.isArray(sp)) {
+      badRecords++;
+    } else {
+      specialists = [];
+      for (const [key, value] of Object.entries(sp)) {
+        const lens = normalizeLens(key);
+        if (!LENS_NAME.test(lens) || value === null || typeof value !== "object" || Array.isArray(value)) {
+          badRecords++;
+          continue;
+        }
+        const v = value;
+        if (typeof v.dispatched !== "boolean") {
+          badRecords++;
+          continue;
+        }
+        let reported = 0;
+        let reportedCritical = 0;
+        if (v.dispatched) {
+          const f = count(v.findings);
+          if (f === void 0) badRecords++;
+          reported = f ?? 0;
+          const c = v.critical === void 0 ? 0 : count(v.critical);
+          if (c === void 0) badRecords++;
+          reportedCritical = c ?? 0;
+        }
+        specialists.push({ lens, dispatched: v.dispatched, reported, reportedCritical });
+      }
+    }
+  }
+  let findings = null;
+  const fl = rec.findings;
+  if (fl !== void 0 && fl !== null && !Array.isArray(fl) && typeof fl !== "number") badRecords++;
+  if (Array.isArray(rec.findings)) {
+    findings = [];
+    for (const entry of rec.findings) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        badRecords++;
+        continue;
+      }
+      const f = entry;
+      let action = "other";
+      if (f.action === "fixed" || f.action === "auto-fixed" || f.action === "skipped") action = f.action;
+      else if (!OTHER_ACTIONS.has(f.action)) badRecords++;
+      const sev = typeof f.severity === "string" ? f.severity.trim().toUpperCase() : "";
+      let lens = null;
+      if (typeof f.fingerprint === "string") {
+        const category = normalizeLens(f.fingerprint.slice(f.fingerprint.lastIndexOf(":") + 1));
+        if (KNOWN_LENSES.has(category)) lens = category;
+      }
+      findings.push({ lens, action, critical: sev === "CRITICAL" || sev === "P1" });
+    }
+  }
+  return { ok: true, review: { ts, specialists, findings }, badRecords };
+}
+function collectReviews(gstackDir, sinceMs) {
+  const parse = emptyCounters();
+  const reviews = [];
+  const seen = /* @__PURE__ */ new Map();
+  const repos = readdirSync2(gstackDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  for (const repo of repos) {
+    let names;
+    try {
+      names = readdirSync2(join2(gstackDir, repo)).sort();
+    } catch {
+      parse.bad_files++;
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith("-reviews.jsonl")) continue;
+      const path = join2(gstackDir, repo, name);
+      let text;
+      try {
+        const st = statSync2(path);
+        if (!st.isFile() || st.mtimeMs < sinceMs) continue;
+        text = readFileSync(path, "utf8");
+      } catch {
+        parse.bad_files++;
+        continue;
+      }
+      for (const raw of text.split("\n")) {
+        const line = raw.trim();
+        if (line === "") continue;
+        const prior = seen.get(line);
+        if (prior !== void 0) {
+          if (prior) parse.dup_records++;
+          continue;
+        }
+        let rec;
+        try {
+          rec = JSON.parse(line);
+        } catch {
+          rec = void 0;
+        }
+        const isObject = rec !== null && typeof rec === "object" && !Array.isArray(rec);
+        seen.set(line, isObject);
+        if (!isObject) {
+          parse.bad_lines++;
+          continue;
+        }
+        const parsed = parseReview(rec);
+        parse.bad_records += parsed.badRecords;
+        if (parsed.ok) reviews.push(parsed.review);
+      }
+    }
+  }
+  return { reviews, parse };
+}
+
+// src/lib/workflow.ts
+import { readFileSync as readFileSync2, readdirSync as readdirSync3, statSync as statSync3 } from "node:fs";
+import { join as join3 } from "node:path";
+var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
+function parseWorkflow(json) {
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return { ok: false };
+  const rec = json;
+  if (typeof rec.startTime !== "number" || !Number.isFinite(rec.startTime)) return { ok: false };
+  let badRecords = 0;
+  const num = (v) => {
+    if (v === void 0 || v === null) return 0;
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    badRecords++;
+    return 0;
+  };
+  if (rec.totalTokens === void 0 || rec.totalTokens === null) badRecords++;
+  if (!Array.isArray(rec.phases)) badRecords++;
+  if (!Array.isArray(rec.workflowProgress)) badRecords++;
+  if (typeof rec.status !== "string") badRecords++;
+  const runId = typeof rec.runId === "string" && rec.runId !== "" ? rec.runId : void 0;
+  if (runId === void 0) badRecords++;
+  const durationOk = typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) && rec.durationMs >= 0;
+  if (!durationOk) badRecords++;
+  const status = typeof rec.status === "string" ? rec.status : "unknown";
+  const run = {
+    startMs: rec.startTime,
+    durationMs: durationOk ? rec.durationMs : null,
+    status,
+    phases: Array.isArray(rec.phases) ? rec.phases.length : 0,
+    tokens: num(rec.totalTokens),
+    agents: 0,
+    agentsErrored: 0,
+    agentsKilled: 0,
+    // Null prototype: model names come from untrusted files ("__proto__" must be a plain key).
+    byModel: /* @__PURE__ */ Object.create(null)
+  };
+  const progress = Array.isArray(rec.workflowProgress) ? rec.workflowProgress : [];
+  for (const entry of progress) {
+    if (entry === null || typeof entry !== "object") continue;
+    const agent = entry;
+    if (agent.type !== "workflow_agent") continue;
+    run.agents++;
+    if (!AGENT_STATES.has(agent.state)) badRecords++;
+    if (agent.state === "error") run.agentsErrored++;
+    if (status === "killed" && (agent.state === "progress" || agent.state === "start")) run.agentsKilled++;
+    const model = typeof agent.model === "string" && agent.model !== "" ? agent.model : "unknown";
+    const slot = run.byModel[model] ??= { agents: 0, tokens: 0 };
+    slot.agents++;
+    slot.tokens += num(agent.tokens);
+  }
+  return { ok: true, run, runId, badRecords };
+}
+function collectWorkflows(projectsDir, sinceMs, parse) {
+  const kept = /* @__PURE__ */ new Map();
+  for (const project of subdirs(projectsDir, parse)) {
+    for (const session of subdirs(join3(projectsDir, project))) {
+      const dir = join3(projectsDir, project, session, "workflows");
+      let names;
+      try {
+        names = readdirSync3(dir);
+      } catch (e) {
+        if (!isMissing(e)) parse.bad_files++;
+        continue;
+      }
+      for (const name of names) {
+        if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
+        const path = join3(dir, name);
+        let parsed;
+        try {
+          if (statSync3(path).mtimeMs < sinceMs) continue;
+          parsed = parseWorkflow(JSON.parse(readFileSync2(path, "utf8")));
+        } catch {
+          parse.bad_files++;
+          continue;
+        }
+        if (!parsed.ok) {
+          parse.bad_files++;
+          continue;
+        }
+        const key = parsed.runId ?? path;
+        const prev = kept.get(key);
+        if (prev !== void 0) parse.dup_records++;
+        if (prev === void 0 || better({ run: parsed.run, path }, prev)) {
+          kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
+        }
+      }
+    }
+  }
+  for (const k of kept.values()) parse.bad_records += k.badRecords;
+  return [...kept.values()].map((k) => k.run);
+}
+var TERMINAL_STATUSES = /* @__PURE__ */ new Set(["completed", "killed", "failed"]);
+function better(a, b) {
+  const done = Number(TERMINAL_STATUSES.has(a.run.status)) - Number(TERMINAL_STATUSES.has(b.run.status));
+  if (done !== 0) return done > 0;
+  const dur = (a.run.durationMs ?? -1) - (b.run.durationMs ?? -1);
+  if (dur !== 0) return dur > 0;
+  return a.path < b.path;
+}
+function subdirs(dir, parse) {
+  try {
+    return readdirSync3(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch (e) {
+    if (parse !== void 0 && !isMissing(e)) parse.bad_files++;
+    return [];
+  }
+}
+function isMissing(e) {
+  const code = e.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+// src/lib/row.ts
+var VERSION = "0.2.0";
+var DAY_MS = 24 * 60 * 60 * 1e3;
+var WINDOW_DAYS = [7, 30];
+var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
+function buildRow(sessions, runs, parse, now, lenses = null) {
+  const iso = new Date(now).toISOString();
+  const window = (days) => {
+    const start = now - days * DAY_MS;
+    const inWindow = (t) => t > start && t <= now;
+    return {
+      workflows: workflowWindow(runs, inWindow),
+      sessions: sessionWindow(sessions, inWindow),
+      lenses: lenses === null ? null : lensWindow(lenses.reviews, inWindow)
+    };
+  };
+  return {
+    schema: 1,
+    version: VERSION,
+    generated_at: iso,
+    window_end: iso,
+    w7: window(7),
+    w30: window(30),
+    parse: { ...parse },
+    parse_lenses: lenses === null ? null : { ...lenses.parse }
+  };
+}
+function workflowWindow(all, inWindow) {
+  const runs = all.filter((r) => inWindow(r.startMs));
+  const byModel = /* @__PURE__ */ Object.create(null);
+  for (const r of runs) {
+    for (const [model, m] of Object.entries(r.byModel)) {
+      const slot = byModel[model] ??= { agents: 0, tokens: 0 };
+      slot.agents += m.agents;
+      slot.tokens += m.tokens;
+    }
+  }
+  const phases = runs.map((r) => r.phases);
+  return {
+    runs: runs.length,
+    completed: runs.filter((r) => r.status === "completed").length,
+    killed: runs.filter((r) => r.status === "killed").length,
+    failed: runs.filter((r) => r.status === "failed").length,
+    other: runs.filter((r) => !TERMINAL_STATUSES.has(r.status)).length,
+    phases_median: median(phases),
+    phases_max: max(phases),
+    tokens_sum: sum(runs.map((r) => r.tokens)),
+    tokens_median: median(runs.map((r) => r.tokens)),
+    duration_ms_median: median(runs.flatMap((r) => r.durationMs === null ? [] : [r.durationMs])),
+    agents: sum(runs.map((r) => r.agents)),
+    agents_errored: sum(runs.map((r) => r.agentsErrored)),
+    agents_killed: sum(runs.map((r) => r.agentsKilled)),
+    by_model: sortKeys(byModel)
+  };
+}
+function sessionWindow(all, inWindow) {
+  let n = 0;
+  let compactionsTotal = 0;
+  let compacted = 0;
+  let compacted10 = 0;
+  const peaks = [];
+  for (const s of all) {
+    if (!s.recordTimes.some(inWindow)) continue;
+    n++;
+    const ctx = s.messages.filter(([t]) => inWindow(t)).map(([, c]) => c);
+    if (ctx.length > 0) peaks.push(max(ctx));
+    const compactions = s.compactions.filter(inWindow).length;
+    compactionsTotal += compactions;
+    if (compactions >= 1) compacted++;
+    if (compactions >= 10) compacted10++;
+  }
+  return {
+    n,
+    with_usage: peaks.length,
+    context_peak_median: median(peaks),
+    context_peak_max: max(peaks),
+    compactions_total: compactionsTotal,
+    compacted,
+    compacted_10plus: compacted10
+  };
+}
+function emptyFindings() {
+  return { findings: 0, fixed: 0, auto_fixed: 0, skipped: 0, other_action: 0, critical: 0, critical_skipped: 0 };
+}
+function lensWindow(all, inWindow) {
+  const reviews = all.filter((r) => inWindow(r.ts));
+  const byLens = /* @__PURE__ */ Object.create(null);
+  const slot = (lens) => byLens[lens] ??= { dispatched: 0, not_dispatched: 0, reported: 0, reported_critical: 0, ...emptyFindings() };
+  const other = emptyFindings();
+  for (const r of reviews) {
+    for (const s of r.specialists ?? []) {
+      const c = slot(s.lens);
+      if (s.dispatched) c.dispatched++;
+      else c.not_dispatched++;
+      c.reported += s.reported;
+      c.reported_critical += s.reportedCritical;
+    }
+    for (const f of r.findings ?? []) {
+      const c = f.lens === null ? other : slot(f.lens);
+      c.findings++;
+      if (f.action === "fixed") c.fixed++;
+      else if (f.action === "auto-fixed") c.auto_fixed++;
+      else if (f.action === "skipped") c.skipped++;
+      else c.other_action++;
+      if (f.critical) {
+        c.critical++;
+        if (f.action === "skipped") c.critical_skipped++;
+      }
+    }
+  }
+  return {
+    reviews: reviews.length,
+    with_specialists: reviews.filter((r) => r.specialists !== null).length,
+    with_findings: reviews.filter((r) => r.findings !== null).length,
+    by_lens: sortKeys(byLens),
+    other
+  };
+}
+function median(xs) {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+function max(xs) {
+  return xs.length === 0 ? null : xs.reduce((a, b) => b > a ? b : a);
+}
+function sum(xs) {
+  return xs.reduce((a, b) => a + b, 0);
+}
+function sortKeys(o) {
+  return Object.fromEntries(Object.entries(o).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+}
+
 // src/lib/cli.ts
-var USAGE = "usage: loop-metrics [--projects-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "out", "now", "session"]);
+var USAGE = "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "gstack-dir", "out", "now", "session"]);
 var BARE_FLAGS = /* @__PURE__ */ new Set(["dry-run", "help"]);
 function parseCli(argv) {
   const args = {};
@@ -484,22 +668,44 @@ async function main(argv, io = processIo) {
     }
   }
   if (args.session !== void 0) return sessionReport(args.session, io);
-  const projectsDir = args["projects-dir"] ?? join3(homedir(), ".claude", "projects");
-  const out = args.out ?? join3(homedir(), ".claude", "metrics", "loops.jsonl");
+  const projectsDir = args["projects-dir"] ?? join4(homedir(), ".claude", "projects");
+  const out = args.out ?? join4(homedir(), ".claude", "metrics", "loops.jsonl");
   try {
-    if (!statSync3(projectsDir).isDirectory()) throw new Error("not a directory");
-    readdirSync3(projectsDir);
+    if (!statSync4(projectsDir).isDirectory()) throw new Error("not a directory");
+    readdirSync4(projectsDir);
   } catch (e) {
     io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${e.message}
 `);
     return 1;
+  }
+  const gstackDir = args["gstack-dir"] ?? join4(homedir(), ".gstack", "projects");
+  let readLenses = true;
+  try {
+    if (!statSync4(gstackDir).isDirectory()) throw new Error("not a directory");
+    readdirSync4(gstackDir);
+  } catch (e) {
+    const code = e.code;
+    if (args["gstack-dir"] !== void 0 || code !== "ENOENT") {
+      io.stderr(`error: cannot read --gstack-dir ${gstackDir}: ${e.message}
+`);
+      return 1;
+    }
+    readLenses = false;
   }
   const since = now - WIDEST_WINDOW_MS;
   let line;
   try {
     const { sessions, parse } = await collectSessions(projectsDir, since);
     const runs = collectWorkflows(projectsDir, since, parse);
-    line = JSON.stringify(buildRow(sessions, runs, parse, now)) + "\n";
+    let lenses = null;
+    try {
+      if (readLenses) lenses = collectReviews(gstackDir, since);
+    } catch (e) {
+      io.stderr(`error: cannot read --gstack-dir ${gstackDir}: ${e.message}
+`);
+      return 1;
+    }
+    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses)) + "\n";
   } catch (e) {
     io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${e.message}
 `);
@@ -543,7 +749,7 @@ function appendRow(out, line) {
 }
 async function sessionReport(file, io) {
   try {
-    if (!statSync3(file).isFile()) throw new Error("not a file");
+    if (!statSync4(file).isFile()) throw new Error("not a file");
   } catch (e) {
     io.stderr(`error: cannot read --session ${file}: ${e.message}
 `);

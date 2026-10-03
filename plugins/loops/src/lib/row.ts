@@ -1,10 +1,11 @@
 // Pure row builder: windows, counts, medians. No I/O.
+import type { ReviewStats } from "./lens.js";
 import type { ParseCounters, SessionStats } from "./session.js";
 import { type RunStats, TERMINAL_STATUSES } from "./workflow.js";
 
 /** The parser that produced a row. Keep equal to package.json (a test checks); bump it when a
  * parser rule changes, so rows before and after the change can be told apart. */
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;
@@ -39,9 +40,40 @@ export interface SessionWindow {
   compacted_10plus: number;
 }
 
+/** Counts from `findings[]`: one per finding per review (a re-review re-counts what it re-finds). */
+export interface FindingCounts {
+  findings: number;
+  fixed: number;
+  auto_fixed: number;
+  skipped: number;
+  /** deferred, unresolved, pending, asked, or an action this version does not know. */
+  other_action: number;
+  critical: number;
+  critical_skipped: number;
+}
+
+/** One lens: the specialists block's counts, then the findings it was attributed. */
+export interface LensCounts extends FindingCounts {
+  dispatched: number;
+  not_dispatched: number;
+  reported: number;
+  reported_critical: number;
+}
+
+export interface LensWindow {
+  reviews: number;
+  with_specialists: number;
+  with_findings: number;
+  by_lens: Record<string, LensCounts>;
+  /** Findings whose category is not a known lens, or that have no fingerprint. */
+  other: FindingCounts;
+}
+
 export interface Window {
   workflows: WorkflowWindow;
   sessions: SessionWindow;
+  /** null when there is no gstack review log directory to read. */
+  lenses: LensWindow | null;
 }
 
 export interface Row {
@@ -52,14 +84,31 @@ export interface Row {
   w7: Window;
   w30: Window;
   parse: ParseCounters;
+  /** The review-log parser's own counters, so drift can be traced to its source. */
+  parse_lenses: ParseCounters | null;
 }
 
-export function buildRow(sessions: SessionStats[], runs: RunStats[], parse: ParseCounters, now: number): Row {
+export interface LensInput {
+  reviews: ReviewStats[];
+  parse: ParseCounters;
+}
+
+export function buildRow(
+  sessions: SessionStats[],
+  runs: RunStats[],
+  parse: ParseCounters,
+  now: number,
+  lenses: LensInput | null = null,
+): Row {
   const iso = new Date(now).toISOString();
   const window = (days: number): Window => {
     const start = now - days * DAY_MS;
     const inWindow = (t: number) => t > start && t <= now;
-    return { workflows: workflowWindow(runs, inWindow), sessions: sessionWindow(sessions, inWindow) };
+    return {
+      workflows: workflowWindow(runs, inWindow),
+      sessions: sessionWindow(sessions, inWindow),
+      lenses: lenses === null ? null : lensWindow(lenses.reviews, inWindow),
+    };
   };
   return {
     schema: 1,
@@ -69,6 +118,7 @@ export function buildRow(sessions: SessionStats[], runs: RunStats[], parse: Pars
     w7: window(7),
     w30: window(30),
     parse: { ...parse },
+    parse_lenses: lenses === null ? null : { ...lenses.parse },
   };
 }
 
@@ -125,6 +175,47 @@ function sessionWindow(all: SessionStats[], inWindow: (t: number) => boolean): S
     compactions_total: compactionsTotal,
     compacted,
     compacted_10plus: compacted10,
+  };
+}
+
+function emptyFindings(): FindingCounts {
+  return { findings: 0, fixed: 0, auto_fixed: 0, skipped: 0, other_action: 0, critical: 0, critical_skipped: 0 };
+}
+
+function lensWindow(all: ReviewStats[], inWindow: (t: number) => boolean): LensWindow {
+  const reviews = all.filter((r) => inWindow(r.ts));
+  // Null prototype: lens names come from untrusted files ("__proto__" must be a plain key).
+  const byLens: Record<string, LensCounts> = Object.create(null);
+  const slot = (lens: string) =>
+    (byLens[lens] ??= { dispatched: 0, not_dispatched: 0, reported: 0, reported_critical: 0, ...emptyFindings() });
+  const other = emptyFindings();
+  for (const r of reviews) {
+    for (const s of r.specialists ?? []) {
+      const c = slot(s.lens);
+      if (s.dispatched) c.dispatched++;
+      else c.not_dispatched++;
+      c.reported += s.reported;
+      c.reported_critical += s.reportedCritical;
+    }
+    for (const f of r.findings ?? []) {
+      const c: FindingCounts = f.lens === null ? other : slot(f.lens);
+      c.findings++;
+      if (f.action === "fixed") c.fixed++;
+      else if (f.action === "auto-fixed") c.auto_fixed++;
+      else if (f.action === "skipped") c.skipped++;
+      else c.other_action++;
+      if (f.critical) {
+        c.critical++;
+        if (f.action === "skipped") c.critical_skipped++;
+      }
+    }
+  }
+  return {
+    reviews: reviews.length,
+    with_specialists: reviews.filter((r) => r.specialists !== null).length,
+    with_findings: reviews.filter((r) => r.findings !== null).length,
+    by_lens: sortKeys(byLens),
+    other,
   };
 }
 
