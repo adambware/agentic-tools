@@ -135,7 +135,15 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
     try {
       appendRow(out, line);
     } catch (e) {
-      io.stderr(`error: cannot append to --out ${out}: ${(e as Error).message}\n`);
+      // After a failed sync the row is in the file: "cannot append" would invite a rerun that
+      // records the week twice.
+      if (!(e instanceof NotDurableError)) {
+        io.stderr(`error: cannot append to --out ${out}: ${(e as Error).message}\n`);
+        return 1;
+      }
+      // Print the row anyway, so the log keeps a copy to check the file against.
+      io.stdout(line);
+      io.stderr(`error: --out ${out}: ${e.message}\n`);
       return 1;
     }
   }
@@ -148,11 +156,14 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
  * gets one first, so the row never glues onto it. A failed or short write is truncated back, so it
  * cannot tear next week's row either, but only while the file still ends where this write left
  * it: another run's row appended since then is never cut. The row is synced before success is
- * reported, since this file is the only history.
+ * reported, since this file is the only history; so is the file's directory entry, every run (an
+ * earlier run may have created the file and died before syncing it), and the entry of every
+ * directory this run made for it, or a crash could lose them along with the row.
  */
 function appendRow(out: string, line: string): void {
-  mkdirSync(dirname(out), { recursive: true });
+  const madeDir = mkdirSync(dirname(out), { recursive: true });
   const fd = openSync(out, "a+");
+  let synced = false;
   try {
     const size = fstatSync(fd).size;
     const last = Buffer.alloc(1);
@@ -170,9 +181,60 @@ function appendRow(out: string, line: string): void {
       }
     }
     if (written !== data.length) throw new Error(`short write (${written} of ${data.length} bytes)`);
-    fsyncSync(fd);
+    durably(() => fsyncSync(fd));
+    synced = true;
   } finally {
-    closeSync(fd);
+    // A failing close must not mask the error in flight (a not-durable row must not read as
+    // "cannot append"); after a synced row it means the row is in the file but unconfirmed.
+    try {
+      closeSync(fd);
+    } catch (e) {
+      if (synced) durably(() => { throw e; });
+    }
+  }
+  // From the file's dir up to the parent of the first dir mkdir made: each holds an entry this run
+  // (or an earlier one that died) may have added. Dirs an earlier run made above the file's own are
+  // not revisited.
+  const top = madeDir === undefined ? dirname(out) : dirname(madeDir);
+  durably(() => {
+    for (let dir = dirname(out); ; dir = dirname(dir)) {
+      syncDir(dir);
+      if (dir === top || dir === dirname(dir)) break;
+    }
+  });
+}
+
+/** Errors meaning this filesystem (or this dir's permissions) cannot sync a directory at all. */
+const NO_DIR_SYNC = new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES"]);
+
+/** Sync one directory's entries. Best effort where directories cannot be synced (some network and
+ * FUSE mounts, Windows, an unlistable dir): failing every run there would invite reruns that
+ * record a week twice. A real I/O error still throws. */
+function syncDir(dir: string): void {
+  let dirFd: number;
+  try {
+    dirFd = openSync(dir, "r");
+  } catch (e) {
+    if (NO_DIR_SYNC.has((e as NodeJS.ErrnoException).code ?? "")) return;
+    throw e;
+  }
+  try {
+    fsyncSync(dirFd);
+  } catch (e) {
+    if (!NO_DIR_SYNC.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
+  } finally {
+    closeSync(dirFd);
+  }
+}
+
+/** The row was written but a sync failed, so it may not be on disk (or survive a crash). */
+class NotDurableError extends Error {}
+
+function durably(sync: () => void): void {
+  try {
+    sync();
+  } catch (e) {
+    throw new NotDurableError(`row written but may not be on disk: ${(e as Error).message}`);
   }
 }
 

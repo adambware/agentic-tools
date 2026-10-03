@@ -13,7 +13,7 @@ actions; message and finding text is never read.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.2.0","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.2.1","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
@@ -61,11 +61,14 @@ Transcripts repeat themselves, and a naive count inflates both headline metrics:
 The `parse` counters are the tripwire for format drift: the transcript format is undocumented,
 and a jump in `bad_*` means the parser needs a look. A missing field reads as 0 but still counts
 in `bad_records`, so a renamed field shows up there instead of as a quiet week of zeros. The same
-goes for a negative count, a timestamp that is not ISO-8601 with a zone and a real date, and a
-metric record with no `uuid`; an unreadable directory counts in `bad_files`. A torn last line in a
+goes for a count that is not a non-negative safe integer, a timestamp that is not ISO-8601 with a
+zone and a real date, a metric record with no `uuid`, a `message.id` that is empty or a non-null
+non-string, and a Workflow progress entry of an unknown type; an empty id counts as a missing one,
+never as a shared key. An unreadable directory counts in `bad_files`. A torn last line in a
 transcript written to in the last hour is a session still being written and is skipped without
-counting; in an older file it counts in `bad_lines`. A Workflow run copied into another session's
-`workflows/` counts once (by `runId`, keeping the finished copy), with the copy in `dup_records`.
+counting; in an older file, or one whose mtime is over a minute in the future, it counts in
+`bad_lines`. A Workflow run copied into another session's `workflows/` counts once (by `runId`,
+keeping the finished copy), with the copy in `dup_records`.
 `version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
 `schema` is bumped only when a field changes meaning or goes away; new fields are additive.
 
@@ -108,11 +111,21 @@ loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [-
 - `--dry-run` prints the row without appending. `--now` fixes the window end (for tests).
 - `--session FILE` prints one transcript's deduped counts next to its naive ones.
 - If `loops.jsonl` does not end in a newline (a torn write or a hand edit), the new row starts on a
-  line of its own; a failed write is truncated back, and the row is synced to disk before exit 0.
+  line of its own; a failed write is truncated back, and the row is fsynced before exit 0, along
+  with the file's directory entry and those of any directories the run created. (On macOS, fsync
+  hands the data to the drive, which may still cache it.) Not covered: directories an earlier,
+  failed run created above the file's own, and the target directory of a symlinked `--out`.
+  The truncate is skipped if another run appended in the meantime, so cutting back cannot take
+  that row with it; the failed fragment then stays, glued to the front of the other run's row.
 - Exits non-zero without writing a row when `--projects-dir` is missing or unreadable, `--out`
   is unwritable, or `--gstack-dir` is unreadable: a wrong path must not record a quiet week. The
   one exception is a missing default `~/.gstack/projects` (gstack is not installed), which gives
   `lenses: null`. An existing empty directory gives a valid zero row.
+- The one non-zero exit that does write a row is `error: --out FILE: row written but may not be on
+  disk`: the row was appended but syncing it failed. The row is still printed to stdout, so the log
+  keeps a copy. Check the file's last line against it before running again, or the week is
+  recorded twice. A filesystem that cannot sync directories at all (some network and FUSE mounts,
+  an unlistable directory) is not an error: the directory sync is skipped there.
 
 Claude Code may prune old transcripts, so `loops.jsonl` is the only history. Past windows cannot
 be recomputed later, which is why the schedule below matters.
