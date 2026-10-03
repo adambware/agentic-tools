@@ -5,7 +5,7 @@ import { type RunStats, TERMINAL_STATUSES } from "./workflow.js";
 
 /** The parser that produced a row. Keep equal to package.json (a test checks); bump it when a
  * parser rule changes, so rows before and after the change can be told apart. */
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;

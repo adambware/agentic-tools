@@ -8,12 +8,6 @@
   - **Context:** The last unchecked items in `plugins/loops/docs/wave0-plan.md`. On 2026-09-28 the user decided the install waits for the merge to main.
   - **Depends on / blocked by:** The loops PR merging to main.
 
-- [ ] **loops: parser hardening from the final adversarial round** [P2 correctness]
-  - **What:** Treat an empty `uuid` or empty `message.id` as absent: fall back and count it as bad, instead of collapsing records onto a shared key. Require safe-integer token counts so sums cannot overflow to `null`. Fsync the parent directory when the file is first created. Treat a future mtime as not live. Count unknown `workflowProgress` entry types as drift. Make fsync failure say "row written, not confirmed durable". Add tests for `better()`'s path tie-break and for the short-write truncate path (via a mocked `node:fs`).
-  - **Why:** Each item is a way malformed input could get past the drift counters, or a rare error could be reported misleadingly. None of them occurs in current data: checked 2026-09-28 across 372 transcripts and 170 runs, with 0 empty ids, 0 non-safe-integer counts, 0 future mtimes, and only `workflow_phase`/`workflow_agent` progress entries.
-  - **Context:** Raised by the third review round in the loops 0.1.0 /ship. The user chose to ship and file them here, since that round had reached the review loop's cap. The first two rounds fixed real defects.
-  - **Depends on / blocked by:** None.
-
 - [ ] **`lock.stress.test.ts` fails CI at random — the substitution bound assumes injections are serialized with recovery** [P2 test-robustness]
   - **What:** `never lets two processes into the critical section` asserts `total.substitutions <= injected` (`src/lib/lock.stress.test.ts:207`) after injecting 25 abandoned locks into a live 8-child contention run. It intermittently observes 26. Reproduced locally 1-in-3 on 96a9b1c and 2-in-4 on cf5c7bc, and it reddened `nightshift-engine` on PR #13 with the identical `expected 26 to be less than or equal to 25`.
   - **Why:** It is a false alarm on a load-bearing safety test, which is the worst kind: the assertion that actually proves mutual exclusion — `total.violations === 0` — passes every time, including on the failing runs. A test that cries wolf on the recovery mutex trains everyone to re-run CI, which is exactly how a real de-serialized-recovery regression would get waved through.
@@ -105,7 +99,35 @@
   - **Context:** Codex adversarial pass during /ship of nightshift v3 lane B, 2026-08-23. Pre-existing in `validate.ts` (predates A6), but A6 added the crash surface, so it was deliberately kept out of lane B's diff rather than fixed inline. Start at `validateCandidateFinding` and the `evidence` field; `dashboard-cli.ts` `loadRepo()` is the consumer.
   - **Depends on / blocked by:** None. Own branch, own tests.
 
+- [ ] **loops: a failed truncate after a short write leaves the fragment and reports only `short write`** [P3 correctness]
+  - **What:** In `appendRow` (`plugins/loops/src/lib/cli.ts`), when a write comes up short and the rollback `fstatSync`/`ftruncateSync` itself fails, the catch swallows it and the error reads only `short write`. The fragment stays in `loops.jsonl` and every later row is appended after it, so one line of history is corrupt with no message saying so.
+  - **Why:** It needs a short write (full disk) plus a failed truncate, so it is rare, but the result is silent: the user is told to rerun, not to repair the file.
+  - **Context:** Pre-existing since loops 0.1.0; raised by the Codex adversarial pass during the loops 0.2.1 ship (2026-10-03). Fix: when the rollback fails, report that the file needs repair (name the byte offset) instead of a plain short write.
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: sums of safe-integer token counts can still lose precision** [P3 correctness]
+  - **What:** 0.2.1 requires each token count and `durationMs` to be a safe integer, but `session.ts` (context sums), `workflow.ts` (token sums) and `row.ts` (aggregates) add them without checking that the total stays safe. Two `MAX_SAFE_INTEGER` values give a silently rounded total with `bad_records` at 0.
+  - **Why:** Not reachable with real data (counts are around 1e6), but it is the same class of drift the safe-integer rule was added to catch.
+  - **Context:** Raised by the Codex adversarial pass during the loops 0.2.1 ship (2026-10-03). Fix: check `Number.isSafeInteger` on each running sum and count a record bad when it would push the total past it.
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: a symlinked `--out` syncs the link's directory, not the target's** [P3 correctness]
+  - **What:** `appendRow` (`plugins/loops/src/lib/cli.ts`) opens `--out` through the symlink but syncs `dirname(out)`, the link's directory. When the target file is new, its directory entry is never synced, so a crash after exit 0 can lose the row.
+  - **Why:** `loops.jsonl` is the only history, and this is the one way a run that exited 0 can still lose its row. The default path is not a symlink, so the installed launchd job is not affected; the README lists it under "Not covered".
+  - **Context:** Raised by the Codex adversarial pass (labeled P1) during the third loops 0.2.1 ship (2026-10-03); the user chose to defer it. Fix: after the open, also sync `dirname(realpathSync(out))` when it differs from `dirname(out)`, inside `durably`, and drop the README caveat.
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: `syncDir`'s directory close can replace the fsync error or turn a best-effort skip into "not durable"** [P3 correctness]
+  - **What:** In `syncDir` (`plugins/loops/src/lib/cli.ts`), `closeSync(dirFd)` runs in a bare `finally`. If `fsyncSync` throws EIO and the close also throws, the close error is reported instead. If the fsync fails with a best-effort code (ENOTSUP) and the close throws, the skip becomes `row written but may not be on disk`.
+  - **Why:** Rare (it needs a failing close), but it misreports the cause, or fails a run that should be best effort.
+  - **Context:** Raised by the Claude adversarial pass during the third loops 0.2.1 ship (2026-10-03); the user chose to defer it. Fix: guard the close the way `appendRow` does, rethrowing a close error only when the fsync succeeded, and add a mocked-`closeSync` test.
+  - **Depends on / blocked by:** None.
+
 ## Completed
+
+- [x] **loops: parser hardening from the final adversarial round** [P2 correctness]
+  - Done (loops 0.2.1): an empty `uuid` or `message.id` is absent (an empty `message.id` falls back and counts bad); token counts must be non-negative safe integers; a future mtime is not live; unknown or non-object `workflowProgress` entries count as drift; the history file's dir (and any dirs made for it) is fsynced every run, best effort where directories cannot be synced; a failed sync says "row written but may not be on disk" and still prints the row. Tests added for `better()`'s path tie-break and, via a mocked `node:fs`, the short-write truncate and both sync-failure paths.
+  - **Completed:** loops 0.2.1 (2026-10-03)
 
 - [x] **Per-run artifact isolation + record run-id cross-check** [P2 concurrency]
   - Done (v3.0.0): BOTH halves of the either/or landed. A1 restored per-run isolation (each run gets its own `.nightshift/.run/<run-id>/` dir, self-cleaning on success and retained on failure), and `runRecord` now opens with a provenance assert — `src/lib/record-run.ts:118-132` refuses the run unless `decisions.run_id`, `decisions.lane` and `decisions.date` all match run-meta, so a stale or forged `decisions.json` can never be replayed into another run's durable appends. Backed by run_id uniqueness across every month shard and the per-repo lock around the append.
