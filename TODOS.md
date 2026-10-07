@@ -2,12 +2,6 @@
 
 ## Pending
 
-- [ ] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
-  - **What:** Once the PR merges to main, link `~/bin/loop-metrics` to `plugins/loops/bin/loop-metrics.mjs` in a stable main checkout (not a worktree, not the plugin cache). Install the plist from `plugins/loops/README.md` "Schedule" with an absolute node path, then run `launchctl kickstart -p` and confirm a fresh row in `~/.claude/metrics/loops.jsonl`. While there, spot-check one Workflow run's `totalTokens` and `status` against `/workflows`.
-  - **Why:** Transcripts get pruned, so `loops.jsonl` is the only history, and every week without the job is a week that cannot be recomputed. Two plan items are still open: the proof run and the `/workflows` spot-check.
-  - **Context:** The last unchecked items in `plugins/loops/docs/wave0-plan.md`. On 2026-09-28 the user decided the install waits for the merge to main.
-  - **Depends on / blocked by:** The loops PR merging to main.
-
 - [ ] **`lock.stress.test.ts` fails CI at random — the substitution bound assumes injections are serialized with recovery** [P2 test-robustness]
   - **What:** `never lets two processes into the critical section` asserts `total.substitutions <= injected` (`src/lib/lock.stress.test.ts:207`) after injecting 25 abandoned locks into a live 8-child contention run. It intermittently observes 26. Reproduced locally 1-in-3 on 96a9b1c and 2-in-4 on cf5c7bc, and it reddened `nightshift-engine` on PR #13 with the identical `expected 26 to be less than or equal to 25`.
   - **Why:** It is a false alarm on a load-bearing safety test, which is the worst kind: the assertion that actually proves mutual exclusion — `total.violations === 0` — passes every time, including on the failing runs. A test that cries wolf on the recovery mutex trains everyone to re-run CI, which is exactly how a real de-serialized-recovery regression would get waved through.
@@ -57,11 +51,6 @@
   - **Context:** Surfaced by Codex outside-voice during /plan-eng-review of `onboardme-eval-system-promptfoo.md`. V1 (saved outputs) and V1.5 (Claude Agent SDK, `.claude/skills`) are unaffected. Start by confirming Codex's skill-install convention and whether Codex support is strategic for this marketplace at all.
   - **Depends on / blocked by:** Blocks the V2 provider lane only.
 
-- [ ] **Delete nightshift planning artifacts from repo root** [P1]
-  - **What:** Delete `assurance-engine-review-plan.md` and `nightshift-review.md` from the repo root. Also make an explicit git-history decision (accept history vs `git filter-repo`).
-  - **Why:** Plan §7 required this one-time cleanup before shipping nightshift 2.0.0. Deferred via /ship.
-  - **Context:** Files are currently untracked (not committed). Clean up on the next commit.
-
 - [ ] **Non-gating LLM-judge relational signal for the onboardme eval**
   - **What:** A separate Promptfoo `llm-rubric` run that grades deeper relational/semantic correctness (full sole-writer ownership, paraphrased facts) beyond the deterministic asserts — reported, never blocking.
   - **Why:** The deterministic presence + relation checks have a ceiling: the hardest "sole writer / no other writer" cases and legitimate paraphrase can't be settled by token/co-occurrence checks alone.
@@ -79,6 +68,12 @@
   - **Why:** Those edits are invisible to `change_flag` until pure staleness eventually re-selects the surface — up to `interval_days` later (90 days for a low-weight vector). Worse for v3: WS8's sentinel is specified as due when "commits touching any registry area since last run", so the sentinel inherits this blind spot directly and a same-day hotfix to a critical surface would not trigger a run.
   - **Context:** Codex outside-voice (#11) during /plan-eng-review, 2026-08-23. Verified by reading `src/lib/git.ts:11-40`. `registry-entry.yml` already carries `last_reviewed` as `(auto)`; adding `last_reviewed_sha` alongside it is the natural shape. `bin/record` is where the stamp is written, `bin/select` is where the baseline is read.
   - **Depends on / blocked by:** None, but should land BEFORE WS8/A9 or the sentinel ships with the blind spot.
+
+- [ ] **Registry `status` enum conflates freshness with finding state** [P2 model]
+  - **What:** `schemas/registry-entry.yml` carries `open-findings` inside a status enum whose other three values (`green | stale | overdue`) all describe *when the area was last reviewed*. Split it: `status` becomes freshness-only, and finding state is derived by joining the findings log on `dedupe_key.surface`.
+  - **Why:** One field encodes two orthogonal axes, so an area that is both 57 days overdue **and** carrying an open critical can only be stamped as one of them — the operator loses whichever fact the engine happened to write last. Every consumer (`select`, `record`, `rollup`, the digest skill) has to know that one of the four values means something different in kind from the other three.
+  - **Context:** Surfaced by `/plan-design-review` of `local-first-v3-plan.md` (§15.3), 2026-08-23. The operator-visible half is already fixed dashboard-side: WS6 renders two columns and derives freshness from `last_reviewed` + `interval_days`, so nothing is blocked. This TODO is the source-side cleanup. Deferred deliberately — it is a schema change rippling through 4 consumers plus the NovuDesk example pack, outside WS6's scope, and §13's worktree lanes were drawn assuming A1/A2/A6 touch disjoint files.
+  - **Depends on / blocked by:** Nothing. Cleanest after nightshift 3.0.0 ships and the two-axis model has proven itself on the dashboard.
 
 - [ ] **Multi-repo identity: config entries need a stable slug** [P2 scale]
   - **What:** `$OPS/config.yml` identifies repos by filesystem path only. `ns run <repo>`, `$OPS/digests/<repo>.md`, and `$OPS/evidence/<repo>/` all key off a name derived from that path, so two repos with the same basename collide. YAML `~` expansion is also unspecified. Fix: require an explicit unique `slug` per config entry plus a canonicalized absolute path, and key every generated artifact on the slug.
@@ -124,6 +119,14 @@
   - **Depends on / blocked by:** None.
 
 ## Completed
+
+- [x] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
+  - Done: `~/bin/loop-metrics` links into a persistent `main` worktree; the plist runs Mondays 09:00 with an absolute node path. The kickstart exited 0 and wrote a fresh row, and a jq recount of `w7.workflows` matched it exactly. The stable checkout was fast-forwarded to 0.2.1 after PR #18.
+  - **Completed:** 2026-10-01 (installed), 2026-10-06 (on 0.2.1)
+
+- [x] **Delete nightshift planning artifacts from repo root** [P1]
+  - Done: the seven root planning files were never committed, so there is no git history to rewrite. They were moved to a private archive outside the repo.
+  - **Completed:** 2026-10-06
 
 - [x] **loops: parser hardening from the final adversarial round** [P2 correctness]
   - Done (loops 0.2.1): an empty `uuid` or `message.id` is absent (an empty `message.id` falls back and counts bad); token counts must be non-negative safe integers; a future mtime is not live; unknown or non-object `workflowProgress` entries count as drift; the history file's dir (and any dirs made for it) is fsynced every run, best effort where directories cannot be synced; a failed sync says "row written but may not be on disk" and still prints the row. Tests added for `better()`'s path tie-break and, via a mocked `node:fs`, the short-write truncate and both sync-failure paths.
