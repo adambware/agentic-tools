@@ -12,6 +12,8 @@ function session(p: Partial<SessionStats>): SessionStats {
   const compactions = p.compactions ?? [];
   return {
     file: "s.jsonl",
+    project: p.project ?? "p",
+    tokens: p.tokens ?? [],
     recordTimes: p.recordTimes ?? [...messages.map(([t]) => t), ...compactions],
     messages,
     compactions,
@@ -21,6 +23,7 @@ function session(p: Partial<SessionStats>): SessionStats {
 
 function run(p: Partial<RunStats>): RunStats {
   return {
+    project: "p",
     startMs: ago(1),
     durationMs: 1000,
     status: "completed",
@@ -170,5 +173,74 @@ describe("buildRow", () => {
     const row = buildRow([], [], parse, NOW);
     parse.bad_lines = 9;
     expect(row.parse.bad_lines).toBe(0);
+  });
+});
+
+describe("buildRow repos", () => {
+  const REPO = "/r/app";
+  const MINE = "-r-app";
+  const pr = (number: number, title: string, daysAgo: number, files: string[]) => ({ number, title, mergedAt: ago(daysAgo), files });
+
+  it("is null without a config, and empty-but-present with an empty one", () => {
+    expect(buildRow([], [], emptyCounters(), NOW).w7.repos).toBeNull();
+    expect(buildRow([], [], emptyCounters(), NOW).repo_errors).toBeNull();
+    const r = buildRow([], [], emptyCounters(), NOW, null, []);
+    expect(r.w7.repos).toEqual({});
+    expect(r.repo_errors).toEqual([]);
+  });
+
+  it("windows PRs, escapes, sessions and tokens per repo", () => {
+    const prs = [
+      pr(1, "feat: a", 20, ["a.ts"]),
+      pr(2, "fix: a", 18, ["a.ts"]), // escapes #1, observed (merged > 14 days ago)
+      pr(3, "feat: b", 3, ["b.ts"]),
+      pr(4, "fix: b", 1, ["b.ts"]), // escapes #3, not yet observed
+    ];
+    const sessions = [
+      session({ project: MINE, recordTimes: [ago(2)], tokens: [[ago(2), 100]] }),
+      session({ project: `${MINE}--claude-worktrees-x`, recordTimes: [ago(10)], tokens: [[ago(10), 50]] }),
+      session({ project: "-r-app-two", recordTimes: [ago(2)], tokens: [[ago(2), 999]] }),
+    ];
+    const runs = [run({ project: MINE, startMs: ago(2), tokens: 1000 }), run({ project: "-other", startMs: ago(2), tokens: 5 })];
+    const row = buildRow(sessions, runs, emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, prs }]);
+    expect(row.w7.repos!["o/app"]).toEqual({
+      merged_prs: 2,
+      fix_prs: 1,
+      escaped: 1,
+      observed_14d: 0,
+      escaped_observed: 0,
+      sessions: 1,
+      session_tokens: 100,
+      workflow_runs: 1,
+      workflow_tokens: 1000,
+      tokens_per_merged_pr: 550,
+      sessions_per_merged_pr: 0.5,
+    });
+    expect(row.w30.repos!["o/app"]).toMatchObject({
+      merged_prs: 4,
+      fix_prs: 2,
+      escaped: 2,
+      observed_14d: 2,
+      escaped_observed: 1,
+      sessions: 2,
+      session_tokens: 150,
+      tokens_per_merged_pr: 288,
+      sessions_per_merged_pr: 0.5,
+    });
+  });
+
+  it("gives null ratios when no local session or run exists: the cost is unknown, not zero", () => {
+    const row = buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/web", path: "/w", prs: [pr(1, "feat: a", 1, ["a.ts"])] }]);
+    expect(row.w7.repos!["o/web"]).toMatchObject({ merged_prs: 1, sessions: 0, tokens_per_merged_pr: null, sessions_per_merged_pr: null });
+  });
+
+  it("gives null ratios at zero merged PRs, and a failed repo is null and named", () => {
+    const row = buildRow([], [], emptyCounters(), NOW, null, [
+      { slug: "o/quiet", path: "/q", prs: [] },
+      { slug: "o/broken", path: "/b", prs: null },
+    ]);
+    expect(row.w7.repos!["o/quiet"]).toMatchObject({ merged_prs: 0, tokens_per_merged_pr: null, sessions_per_merged_pr: null });
+    expect(row.w7.repos!["o/broken"]).toBeNull();
+    expect(row.repo_errors).toEqual(["o/broken"]);
   });
 });

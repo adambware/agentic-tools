@@ -27,7 +27,11 @@ async function run(out: string) {
   let stdout = "";
   let stderr = "";
   const argv = ["--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--out", out, "--now", NOW];
-  const code = await main(argv, { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) });
+  const code = await main(
+    argv,
+    { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+    { defaultConfig: join(FIXTURES, "no-config.json") },
+  );
   return { code, stdout, stderr };
 }
 

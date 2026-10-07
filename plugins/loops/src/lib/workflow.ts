@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { ParseCounters } from "./session.js";
 
 export interface RunStats {
+  /** The project dir of the session that ran it ("" until collected). */
+  project: string;
   startMs: number;
   /** null when the record has no numeric durationMs (excluded from the median). */
   durationMs: number | null;
@@ -57,6 +59,7 @@ export function parseWorkflow(json: unknown): ParsedWorkflow {
 
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run: RunStats = {
+    project: "",
     startMs: rec.startTime,
     durationMs: durationOk ? (rec.durationMs as number) : null,
     status,
@@ -125,6 +128,7 @@ export function collectWorkflows(projectsDir: string, sinceMs: number, parse: Pa
         const key = parsed.runId ?? path;
         const prev = kept.get(key);
         if (prev !== undefined) parse.dup_records++;
+        parsed.run.project = project;
         if (prev === undefined || better({ run: parsed.run, path }, prev)) {
           kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
         }

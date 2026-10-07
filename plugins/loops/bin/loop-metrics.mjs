@@ -15,8 +15,8 @@ import {
   statSync as statSync4,
   writeSync
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join as join4 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { dirname as dirname3, join as join5 } from "node:path";
 
 // src/lib/lens.ts
 import { readFileSync, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
@@ -24,7 +24,7 @@ import { join as join2 } from "node:path";
 
 // src/lib/session.ts
 import { createReadStream, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // src/lib/time.ts
 var ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -144,8 +144,10 @@ var FUTURE_SLACK_MS = 60 * 1e3;
 async function parseFile(file, live, seenUuids, seenMessages, parse) {
   const stats = {
     file,
+    project: basename(dirname(file)),
     recordTimes: [],
     messages: [],
+    tokens: [],
     compactions: [],
     naive: { usage_records: 0, compact_records: 0 }
   };
@@ -187,6 +189,9 @@ async function parseFile(file, live, seenUuids, seenMessages, parse) {
         const { ctx, bad } = contextSize(usage);
         if (bad) parse.bad_records++;
         if (ctx !== void 0) stats.messages.push([ts, ctx]);
+        const out = outputTokens(usage);
+        if (out.bad) parse.bad_records++;
+        if (ctx !== void 0 || out.n !== void 0) stats.tokens.push([ts, (ctx ?? 0) + (out.n ?? 0)]);
       }
     }
   } catch {
@@ -238,6 +243,12 @@ function contextSize(usage) {
     else bad = true;
   }
   return present === 0 ? { ctx: void 0, bad: true } : { ctx, bad };
+}
+function outputTokens(usage) {
+  const v = usage.output_tokens;
+  if (v === void 0 || v === null) return { n: void 0, bad: false };
+  if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return { n: v, bad: false };
+  return { n: void 0, bad: true };
 }
 
 // src/lib/lens.ts
@@ -378,9 +389,113 @@ function collectReviews(gstackDir, sinceMs) {
   return { reviews, parse };
 }
 
+// src/lib/repos.ts
+import { execFileSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
+var DAY_MS = 24 * 60 * 60 * 1e3;
+var SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+function loadConfig(file) {
+  const json = JSON.parse(readFileSync2(file, "utf8"));
+  if (json === null || typeof json !== "object" || !Array.isArray(json.repos)) {
+    throw new Error("config needs a repos array");
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const repos = json.repos.map((r, i) => {
+    const e = r;
+    if (e === null || typeof e !== "object" || typeof e.slug !== "string" || !SLUG.test(e.slug)) {
+      throw new Error(`repos[${i}]: slug must be owner/name`);
+    }
+    if (typeof e.path !== "string" || e.path === "") throw new Error(`repos[${i}]: path must be a string`);
+    if (seen.has(e.slug)) throw new Error(`repos[${i}]: duplicate slug ${e.slug}`);
+    const ignore = e.escape_ignore ?? [];
+    if (!Array.isArray(ignore) || !ignore.every((x) => typeof x === "string")) {
+      throw new Error(`repos[${i}]: escape_ignore must be a list of paths`);
+    }
+    seen.add(e.slug);
+    const p = e.path === "~" ? homedir() : e.path.startsWith("~/") ? join3(homedir(), e.path.slice(2)) : e.path;
+    return { slug: e.slug, path: isAbsolute(p) ? resolve(p) : resolve(dirname2(file), p), escape_ignore: ignore };
+  });
+  return { repos };
+}
+function projectKey(path) {
+  return path.replace(/[^A-Za-z0-9]/g, "-");
+}
+function ownsProject(repoPath, project) {
+  const key = projectKey(repoPath);
+  return project === key || project.startsWith(`${key}--claude-worktrees-`);
+}
+function parsePrList(json) {
+  if (!Array.isArray(json)) throw new Error("gh output is not an array");
+  return json.map((p, i) => {
+    const e = p;
+    const mergedAt = typeof e?.mergedAt === "string" ? parseIso(e.mergedAt) : void 0;
+    if (e === null || typeof e !== "object" || typeof e.number !== "number" || typeof e.title !== "string" || mergedAt === void 0 || !Array.isArray(e.files)) {
+      throw new Error(`gh pr ${i}: unexpected shape`);
+    }
+    const files = e.files.map((f) => f?.path);
+    if (!files.every((f) => typeof f === "string")) throw new Error(`gh pr #${e.number}: file without a path`);
+    return { number: e.number, title: e.title, mergedAt, files };
+  });
+}
+var PR_LIMIT = 1e3;
+var runGh = (args) => execFileSync("gh", args, {
+  encoding: "utf8",
+  maxBuffer: 256 * 1024 * 1024,
+  stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? "/usr/bin:/bin"}` }
+});
+function fetchMergedPrs(slug, sinceMs, gh = runGh) {
+  const day = new Date(sinceMs).toISOString().slice(0, 10);
+  const out = gh([
+    "pr",
+    "list",
+    "-R",
+    slug,
+    "--state",
+    "merged",
+    "--search",
+    `merged:>=${day}`,
+    "--limit",
+    String(PR_LIMIT),
+    "--json",
+    "number,title,mergedAt,files"
+  ]);
+  const prs = parsePrList(JSON.parse(out));
+  if (prs.length >= PR_LIMIT) throw new Error(`${PR_LIMIT}+ merged PRs: the list may be cut short`);
+  return prs.filter((p) => p.mergedAt >= sinceMs);
+}
+var FIX_TITLE = /^\s*(v?\d+(\.\d+)*\s+)?(revert|fix|hotfix)\b/i;
+function isFixPr(pr) {
+  return FIX_TITLE.test(pr.title);
+}
+var ESCAPE_DAYS = 14;
+var BOOKKEEPING = /(^|\/)(VERSION|package\.json|plugin\.json|marketplace\.json|[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|go\.sum)$|\.(md|mdx|txt|snap)$|(^|\/)(__tests__|__snapshots__|tests?|spec)\/|\.(test|spec)\.[A-Za-z]+$/i;
+function isBookkeeping(path) {
+  return BOOKKEEPING.test(path);
+}
+function ignored(path, ignore) {
+  return isBookkeeping(path) || ignore.some((x) => x.endsWith("/") ? path.startsWith(x) : path === x);
+}
+function escaped(pr, all, ignore = []) {
+  const until = pr.mergedAt + ESCAPE_DAYS * DAY_MS;
+  for (const fix of all) {
+    if (fix.number === pr.number || fix.mergedAt <= pr.mergedAt || fix.mergedAt > until || !isFixPr(fix)) continue;
+    for (const file of fix.files) {
+      if (ignored(file, ignore) || !pr.files.includes(file)) continue;
+      const later = all.some(
+        (o) => o.number !== pr.number && o.number !== fix.number && o.mergedAt > pr.mergedAt && o.mergedAt < fix.mergedAt && o.files.includes(file)
+      );
+      if (!later) return true;
+    }
+  }
+  return false;
+}
+
 // src/lib/workflow.ts
-import { readFileSync as readFileSync2, readdirSync as readdirSync3, statSync as statSync3 } from "node:fs";
-import { join as join3 } from "node:path";
+import { readFileSync as readFileSync3, readdirSync as readdirSync3, statSync as statSync3 } from "node:fs";
+import { join as join4 } from "node:path";
 var AGENT_STATES = /* @__PURE__ */ new Set(["start", "progress", "done", "error"]);
 var PROGRESS_TYPES = /* @__PURE__ */ new Set(["workflow_phase", "workflow_agent"]);
 function parseWorkflow(json) {
@@ -404,6 +519,7 @@ function parseWorkflow(json) {
   if (!durationOk) badRecords++;
   const status = typeof rec.status === "string" ? rec.status : "unknown";
   const run = {
+    project: "",
     startMs: rec.startTime,
     durationMs: durationOk ? rec.durationMs : null,
     status,
@@ -437,8 +553,8 @@ function parseWorkflow(json) {
 function collectWorkflows(projectsDir, sinceMs, parse) {
   const kept = /* @__PURE__ */ new Map();
   for (const project of subdirs(projectsDir, parse)) {
-    for (const session of subdirs(join3(projectsDir, project))) {
-      const dir = join3(projectsDir, project, session, "workflows");
+    for (const session of subdirs(join4(projectsDir, project))) {
+      const dir = join4(projectsDir, project, session, "workflows");
       let names;
       try {
         names = readdirSync3(dir);
@@ -448,11 +564,11 @@ function collectWorkflows(projectsDir, sinceMs, parse) {
       }
       for (const name of names) {
         if (!name.startsWith("wf_") || !name.endsWith(".json")) continue;
-        const path = join3(dir, name);
+        const path = join4(dir, name);
         let parsed;
         try {
           if (statSync3(path).mtimeMs < sinceMs) continue;
-          parsed = parseWorkflow(JSON.parse(readFileSync2(path, "utf8")));
+          parsed = parseWorkflow(JSON.parse(readFileSync3(path, "utf8")));
         } catch {
           parse.bad_files++;
           continue;
@@ -464,6 +580,7 @@ function collectWorkflows(projectsDir, sinceMs, parse) {
         const key = parsed.runId ?? path;
         const prev = kept.get(key);
         if (prev !== void 0) parse.dup_records++;
+        parsed.run.project = project;
         if (prev === void 0 || better({ run: parsed.run, path }, prev)) {
           kept.set(key, { run: parsed.run, path, badRecords: parsed.badRecords });
         }
@@ -495,19 +612,20 @@ function isMissing(e) {
 }
 
 // src/lib/row.ts
-var VERSION = "0.2.1";
-var DAY_MS = 24 * 60 * 60 * 1e3;
+var VERSION = "0.3.0";
+var DAY_MS2 = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
-var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS;
-function buildRow(sessions, runs, parse, now, lenses = null) {
+var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS2;
+function buildRow(sessions, runs, parse, now, lenses = null, repos = null) {
   const iso = new Date(now).toISOString();
   const window = (days) => {
-    const start = now - days * DAY_MS;
+    const start = now - days * DAY_MS2;
     const inWindow = (t) => t > start && t <= now;
     return {
       workflows: workflowWindow(runs, inWindow),
       sessions: sessionWindow(sessions, inWindow),
-      lenses: lenses === null ? null : lensWindow(lenses.reviews, inWindow)
+      lenses: lenses === null ? null : lensWindow(lenses.reviews, inWindow),
+      repos: repos === null ? null : reposWindow(repos, sessions, runs, now, inWindow)
     };
   };
   return {
@@ -518,8 +636,42 @@ function buildRow(sessions, runs, parse, now, lenses = null) {
     w7: window(7),
     w30: window(30),
     parse: { ...parse },
-    parse_lenses: lenses === null ? null : { ...lenses.parse }
+    parse_lenses: lenses === null ? null : { ...lenses.parse },
+    repo_errors: repos === null ? null : repos.filter((r) => r.prs === null).map((r) => r.slug).sort()
   };
+}
+function reposWindow(repos, sessions, runs, now, inWindow) {
+  const out = /* @__PURE__ */ Object.create(null);
+  for (const repo of repos) {
+    if (repo.prs === null) {
+      out[repo.slug] = null;
+      continue;
+    }
+    const all = repo.prs;
+    const esc = (p) => escaped(p, all, repo.escape_ignore);
+    const merged = all.filter((p) => inWindow(p.mergedAt));
+    const observed = merged.filter((p) => p.mergedAt + ESCAPE_DAYS * DAY_MS2 <= now);
+    const mine = sessions.filter((s) => ownsProject(repo.path, s.project) && s.recordTimes.some(inWindow));
+    const sessionTokens = sum(mine.flatMap((s) => s.tokens.filter(([t]) => inWindow(t)).map(([, n]) => n)));
+    const myRuns = runs.filter((r) => ownsProject(repo.path, r.project) && inWindow(r.startMs));
+    const workflowTokens = sum(myRuns.map((r) => r.tokens));
+    const local = mine.length > 0 || myRuns.length > 0;
+    const per = merged.length > 0 && local;
+    out[repo.slug] = {
+      merged_prs: merged.length,
+      fix_prs: merged.filter(isFixPr).length,
+      escaped: merged.filter(esc).length,
+      observed_14d: observed.length,
+      escaped_observed: observed.filter(esc).length,
+      sessions: mine.length,
+      session_tokens: sessionTokens,
+      workflow_runs: myRuns.length,
+      workflow_tokens: workflowTokens,
+      tokens_per_merged_pr: per ? Math.round((sessionTokens + workflowTokens) / merged.length) : null,
+      sessions_per_merged_pr: per ? Math.round(100 * mine.length / merged.length) / 100 : null
+    };
+  }
+  return sortKeys(out);
 }
 function workflowWindow(all, inWindow) {
   const runs = all.filter((r) => inWindow(r.startMs));
@@ -629,8 +781,8 @@ function sortKeys(o) {
 }
 
 // src/lib/cli.ts
-var USAGE = "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "gstack-dir", "out", "now", "session"]);
+var USAGE = "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--config FILE] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["projects-dir", "gstack-dir", "config", "out", "now", "session"]);
 var BARE_FLAGS = /* @__PURE__ */ new Set(["dry-run", "help"]);
 function parseCli(argv) {
   const args = {};
@@ -658,7 +810,7 @@ var processIo = {
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s)
 };
-async function main(argv, io = processIo) {
+async function main(argv, io = processIo, deps = {}) {
   if (argv.includes("--help")) {
     io.stdout(USAGE);
     return 0;
@@ -679,8 +831,8 @@ async function main(argv, io = processIo) {
     }
   }
   if (args.session !== void 0) return sessionReport(args.session, io);
-  const projectsDir = args["projects-dir"] ?? join4(homedir(), ".claude", "projects");
-  const out = args.out ?? join4(homedir(), ".claude", "metrics", "loops.jsonl");
+  const projectsDir = args["projects-dir"] ?? join5(homedir2(), ".claude", "projects");
+  const out = args.out ?? join5(homedir2(), ".claude", "metrics", "loops.jsonl");
   try {
     if (!statSync4(projectsDir).isDirectory()) throw new Error("not a directory");
     readdirSync4(projectsDir);
@@ -689,7 +841,7 @@ async function main(argv, io = processIo) {
 `);
     return 1;
   }
-  const gstackDir = args["gstack-dir"] ?? join4(homedir(), ".gstack", "projects");
+  const gstackDir = args["gstack-dir"] ?? join5(homedir2(), ".gstack", "projects");
   let readLenses = true;
   try {
     if (!statSync4(gstackDir).isDirectory()) throw new Error("not a directory");
@@ -703,7 +855,31 @@ async function main(argv, io = processIo) {
     }
     readLenses = false;
   }
+  const configNamed = args.config ?? process.env.LOOPS_CONFIG;
+  const configPath = configNamed ?? deps.defaultConfig ?? join5(homedir2(), ".config", "agentic-loops", "config.json");
+  let config = null;
+  try {
+    config = loadConfig(configPath);
+  } catch (e) {
+    if (configNamed !== void 0 || e.code !== "ENOENT") {
+      io.stderr(`error: cannot read config ${configPath}: ${e.message}
+`);
+      return 1;
+    }
+  }
   const since = now - WIDEST_WINDOW_MS;
+  let repos = null;
+  if (config !== null) {
+    repos = config.repos.map((r) => {
+      try {
+        return { ...r, prs: fetchMergedPrs(r.slug, since, deps.gh ?? runGh) };
+      } catch (e) {
+        io.stderr(`warning: ${r.slug}: cannot read merged PRs: ${e.message.split("\n")[0]}
+`);
+        return { ...r, prs: null };
+      }
+    });
+  }
   let line;
   try {
     const { sessions, parse } = await collectSessions(projectsDir, since);
@@ -716,7 +892,7 @@ async function main(argv, io = processIo) {
 `);
       return 1;
     }
-    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses)) + "\n";
+    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses, repos)) + "\n";
   } catch (e) {
     io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${e.message}
 `);
@@ -741,7 +917,7 @@ async function main(argv, io = processIo) {
   return 0;
 }
 function appendRow(out, line) {
-  const madeDir = mkdirSync(dirname(out), { recursive: true });
+  const madeDir = mkdirSync(dirname3(out), { recursive: true });
   const fd = openSync(out, "a+");
   let synced = false;
   try {
@@ -771,11 +947,11 @@ function appendRow(out, line) {
       });
     }
   }
-  const top = madeDir === void 0 ? dirname(out) : dirname(madeDir);
+  const top = madeDir === void 0 ? dirname3(out) : dirname3(madeDir);
   durably(() => {
-    for (let dir = dirname(out); ; dir = dirname(dir)) {
+    for (let dir = dirname3(out); ; dir = dirname3(dir)) {
       syncDir(dir);
-      if (dir === top || dir === dirname(dir)) break;
+      if (dir === top || dir === dirname3(dir)) break;
     }
   });
 }

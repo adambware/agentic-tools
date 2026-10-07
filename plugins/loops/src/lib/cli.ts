@@ -14,15 +14,16 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { collectReviews, type LensCollection } from "./lens.js";
-import { buildRow, WIDEST_WINDOW_MS } from "./row.js";
+import { fetchMergedPrs, loadConfig, type LoopsConfig, type RunGh, runGh } from "./repos.js";
+import { buildRow, type RepoInput, WIDEST_WINDOW_MS } from "./row.js";
 import { collectSessionFiles, collectSessions, emptyCounters } from "./session.js";
 import { parseIso } from "./time.js";
 import { collectWorkflows } from "./workflow.js";
 
 export const USAGE =
-  "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
+  "usage: loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--config FILE] [--out FILE] [--now ISO] [--dry-run] [--session FILE]\n";
 
-const VALUE_FLAGS = new Set(["projects-dir", "gstack-dir", "out", "now", "session"]);
+const VALUE_FLAGS = new Set(["projects-dir", "gstack-dir", "config", "out", "now", "session"]);
 const BARE_FLAGS = new Set(["dry-run", "help"]);
 
 /**
@@ -60,8 +61,14 @@ const processIo: Io = {
   stderr: (s) => process.stderr.write(s),
 };
 
+/** Seams for tests: the default config path and the `gh` runner. */
+export interface Deps {
+  defaultConfig?: string;
+  gh?: RunGh;
+}
+
 /** Returns the exit code. */
-export async function main(argv: string[], io: Io = processIo): Promise<number> {
+export async function main(argv: string[], io: Io = processIo, deps: Deps = {}): Promise<number> {
   if (argv.includes("--help")) {
     io.stdout(USAGE);
     return 0;
@@ -112,7 +119,36 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
     readLenses = false;
   }
 
+  // The private repo list. --config, then $LOOPS_CONFIG, then the default path. Only a missing
+  // default means "no per-repo metrics" (`repos: null`); a config that was named but cannot be
+  // read, or any malformed config, is refused, so a typo never records every repo as quiet.
+  const configNamed = args.config ?? process.env.LOOPS_CONFIG;
+  const configPath = configNamed ?? deps.defaultConfig ?? join(homedir(), ".config", "agentic-loops", "config.json");
+  let config: LoopsConfig | null = null;
+  try {
+    config = loadConfig(configPath);
+  } catch (e) {
+    if (configNamed !== undefined || (e as NodeJS.ErrnoException).code !== "ENOENT") {
+      io.stderr(`error: cannot read config ${configPath}: ${(e as Error).message}\n`);
+      return 1;
+    }
+  }
+
   const since = now - WIDEST_WINDOW_MS;
+  // One gh call per repo. A failed call records that repo as unknown (null) and names it in
+  // repo_errors; it does not cost the week's row, which cannot be recomputed later.
+  let repos: RepoInput[] | null = null;
+  if (config !== null) {
+    repos = config.repos.map((r) => {
+      try {
+        return { ...r, prs: fetchMergedPrs(r.slug, since, deps.gh ?? runGh) };
+      } catch (e) {
+        io.stderr(`warning: ${r.slug}: cannot read merged PRs: ${(e as Error).message.split("\n")[0]}\n`);
+        return { ...r, prs: null };
+      }
+    });
+  }
+
   let line: string;
   try {
     const { sessions, parse } = await collectSessions(projectsDir, since);
@@ -124,7 +160,7 @@ export async function main(argv: string[], io: Io = processIo): Promise<number> 
       io.stderr(`error: cannot read --gstack-dir ${gstackDir}: ${(e as Error).message}\n`);
       return 1;
     }
-    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses)) + "\n";
+    line = JSON.stringify(buildRow(sessions, runs, parse, now, lenses, repos)) + "\n";
   } catch (e) {
     // The pre-check above passed, so the dir changed under us: still no row for a quiet week.
     io.stderr(`error: cannot read --projects-dir ${projectsDir}: ${(e as Error).message}\n`);

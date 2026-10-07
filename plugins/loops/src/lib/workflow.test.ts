@@ -25,6 +25,7 @@ describe("parseWorkflow", () => {
       runId: "r",
       badRecords: 0,
       run: {
+        project: "",
         startMs: 1000,
         durationMs: 60_000,
         status: "completed",

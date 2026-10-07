@@ -19,7 +19,12 @@ async function run(argv: string[]) {
 async function runBare(argv: string[]) {
   let stdout = "";
   let stderr = "";
-  const code = await main(argv, { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) });
+  // Never reads the real private config, nor calls gh: a test that wants repos names --config.
+  const code = await main(
+    argv,
+    { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+    { defaultConfig: join(tmp, "no-config.json"), gh: () => { throw new Error("gh called"); } },
+  );
   return { code, stdout, stderr };
 }
 
@@ -261,5 +266,61 @@ describe("loop-metrics", () => {
     } finally {
       process.env.HOME = prevHome;
     }
+  });
+});
+
+describe("loop-metrics --config", () => {
+  const PRS = JSON.stringify([{ number: 7, title: "feat: x", mergedAt: "2026-08-30T00:00:00Z", files: [{ path: "x.ts" }] }]);
+
+  async function runWith(argv: string[], gh: (args: string[]) => string) {
+    let stdout = "";
+    let stderr = "";
+    const code = await main(
+      [...argv, "--gstack-dir", GSTACK_FIXTURES],
+      { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+      { defaultConfig: join(tmp, "no-config.json"), gh },
+    );
+    return { code, stdout, stderr };
+  }
+
+  it("adds a repos block per window from the named config", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/app", path: "/nowhere/app" }] }));
+    const r = await runWith(["--projects-dir", FIXTURES, "--config", config, "--now", NOW, "--dry-run"], () => PRS);
+    expect(r.code).toBe(0);
+    const row = JSON.parse(r.stdout);
+    expect(row.w7.repos["o/app"]).toMatchObject({ merged_prs: 1, fix_prs: 0, sessions: 0 });
+    expect(row.repo_errors).toEqual([]);
+  });
+
+  it("records a repo whose gh call fails as null, warns, and still writes the row", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/app", path: "/a" }, { slug: "o/ok", path: "/b" }] }));
+    const r = await runWith(["--projects-dir", FIXTURES, "--config", config, "--now", NOW, "--dry-run"], (args) => {
+      if (args.includes("o/app")) throw new Error("HTTP 401\nmore");
+      return "[]";
+    });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("warning: o/app: cannot read merged PRs: HTTP 401\n");
+    const row = JSON.parse(r.stdout);
+    expect(row.w7.repos).toEqual({ "o/app": null, "o/ok": expect.objectContaining({ merged_prs: 0 }) });
+    expect(row.repo_errors).toEqual(["o/app"]);
+  });
+
+  it("refuses a named config that is missing or malformed", async () => {
+    const missing = await runWith(["--projects-dir", FIXTURES, "--config", join(tmp, "nope.json"), "--dry-run"], () => "[]");
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/cannot read config/);
+    const bad = join(tmp, "bad.json");
+    writeFileSync(bad, "{");
+    expect((await runWith(["--projects-dir", FIXTURES, "--config", bad, "--dry-run"], () => "[]")).code).toBe(1);
+  });
+
+  it("a missing default config means no repos and no gh call", async () => {
+    const r = await runWith(["--projects-dir", FIXTURES, "--now", NOW, "--dry-run"], () => {
+      throw new Error("gh called");
+    });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout).w7.repos).toBeNull();
   });
 });

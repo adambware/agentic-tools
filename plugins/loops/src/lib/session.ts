@@ -12,7 +12,7 @@
 //   3. Only numeric fields and ids are read; message text never is.
 //   4. Malformed input is counted, never fatal.
 import { createReadStream, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseIso } from "./time.js";
 
 export interface ParseCounters {
@@ -31,8 +31,12 @@ export interface SessionStats {
   file: string;
   /** Timestamp of every unique record that carries a valid one (window membership). */
   recordTimes: number[];
+  /** The project dir it was found in (maps a session to a repo). */
+  project: string;
   /** One entry per unique API message: [timestamp, context size]. */
   messages: Array<[number, number]>;
+  /** One entry per unique API message: [timestamp, context size + output tokens]. */
+  tokens: Array<[number, number]>;
   /** Timestamp of each unique compact_boundary record. */
   compactions: number[];
   /** Undeduped counts, for `--session` validation only. */
@@ -189,8 +193,10 @@ async function parseFile(
 ): Promise<SessionStats | undefined> {
   const stats: SessionStats = {
     file,
+    project: basename(dirname(file)),
     recordTimes: [],
     messages: [],
+    tokens: [],
     compactions: [],
     naive: { usage_records: 0, compact_records: 0 },
   };
@@ -243,6 +249,9 @@ async function parseFile(
         if (bad) parse.bad_records++;
         // No context field at all is a renamed field, not a zero-token call: keep it out of peaks.
         if (ctx !== undefined) stats.messages.push([ts, ctx]);
+        const out = outputTokens(usage);
+        if (out.bad) parse.bad_records++;
+        if (ctx !== undefined || out.n !== undefined) stats.tokens.push([ts, (ctx ?? 0) + (out.n ?? 0)]);
       }
     }
   } catch {
@@ -313,4 +322,13 @@ function contextSize(usage: Rec): { ctx: number | undefined; bad: boolean } {
     else bad = true;
   }
   return present === 0 ? { ctx: undefined, bad: true } : { ctx, bad };
+}
+
+/** `output_tokens` of one API call: undefined when absent; anything but a non-negative safe
+ * integer is bad and reads as absent. */
+function outputTokens(usage: Rec): { n: number | undefined; bad: boolean } {
+  const v = usage.output_tokens;
+  if (v === undefined || v === null) return { n: undefined, bad: false };
+  if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return { n: v, bad: false };
+  return { n: undefined, bad: true };
 }

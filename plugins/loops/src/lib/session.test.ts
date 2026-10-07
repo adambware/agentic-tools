@@ -30,6 +30,23 @@ function write(name: string, lines: Array<object | string>): string {
 const USAGE = { input_tokens: 3, cache_creation_input_tokens: 40, cache_read_input_tokens: 500, output_tokens: 9 };
 
 describe("collectSessionFiles", () => {
+  it("records the project dir and context + output tokens once per message", async () => {
+    const f = write("proj-a/s.jsonl", [
+      assistant("a1", T(1), "m1", USAGE),
+      assistant("a2", T(1), "m1", USAGE),
+      assistant("a3", T(2), "m2", { input_tokens: 1, output_tokens: 2 }),
+      assistant("a4", T(3), "m3", { input_tokens: 1, output_tokens: -1 }),
+    ]);
+    const { sessions, parse } = await collectSessionFiles([f]);
+    expect(sessions[0]!.project).toBe("proj-a");
+    expect(sessions[0]!.tokens).toEqual([
+      [Date.parse(T(1)), 552],
+      [Date.parse(T(2)), 3],
+      [Date.parse(T(3)), 1],
+    ]);
+    expect(parse.bad_records).toBe(1);
+  });
+
   it("counts a message split across three records once", async () => {
     const f = write("s.jsonl", [
       assistant("a1", T(1), "m1", USAGE),

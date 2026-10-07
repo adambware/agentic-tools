@@ -13,10 +13,11 @@ actions; message and finding text is never read.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.2.1","generated_at":"…","window_end":"…",
- "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}}, "w30": {…},
+{"schema":1,"version":"0.3.0","generated_at":"…","window_end":"…",
+ "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
- "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
+ "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
+ "repo_errors":[]}
 ```
 
 - `workflows` (from `~/.claude/projects/<project>/<session>/workflows/wf_*.json`): `runs`,
@@ -43,6 +44,12 @@ Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus pars
   that have no fingerprint, are counted in `other` with the same fields. Lens names are
   normalized (`red_team` -> `red-team`). A review counts in the window its `timestamp` falls in,
   and a re-review counts again what it finds again.
+
+- `repos` (`null` without a config; see [Per-repo metrics](#per-repo-metrics)):
+  `{<owner/name>: {…}}`, one entry per configured repo: `merged_prs`, `fix_prs`, `escaped`,
+  `observed_14d`, `escaped_observed`, `sessions`, `session_tokens`, `workflow_runs`,
+  `workflow_tokens`, `tokens_per_merged_pr`, `sessions_per_merged_pr`. A repo whose merged PRs
+  could not be read is `null`, and its slug is listed in the row's `repo_errors`.
 
 Medians of an empty set are `null`, never 0. A session counts in a window if any of its records
 falls in it, and its peak and compactions are counted per record, so a month-long session is not
@@ -102,7 +109,7 @@ node ~/bin/loop-metrics --dry-run
 ```
 
 ```
-loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--out FILE] [--now ISO] [--dry-run] [--session FILE]
+loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--config FILE] [--out FILE] [--now ISO] [--dry-run] [--session FILE]
 ```
 
 - Default: append one row to `--out` (default `~/.claude/metrics/loops.jsonl`, directory created
@@ -234,6 +241,51 @@ cd plugins/loops && npm install && npm run check
 `npm run check` is typecheck, vitest, and build. Tests use synthetic fixtures only; never commit
 real transcripts. Commit the rebuilt `bin/` with its source: CI fails on a stale bundle.
 
+## Per-repo metrics
+
+Per-repo numbers come from a private config that names your repos, so no repo name or path lives
+in this plugin. It is read from `--config FILE`, then `$LOOPS_CONFIG`, then
+`~/.config/agentic-loops/config.json`. With no file at the default path, `repos` is `null` and
+nothing else changes. A config that was named but is missing, or any malformed config, exits
+non-zero without a row.
+
+```json
+{
+  "repos": [
+    { "slug": "your-org/your-app", "path": "~/src/your-app" },
+    { "slug": "your-org/tools", "path": "~/src/tools", "escape_ignore": ["dist/", "REPO_MAP.yml"] }
+  ]
+}
+```
+
+- `slug` is the GitHub `owner/name`; `path` is the main checkout (`~` expands, a relative path
+  resolves against the config's directory).
+- **Merged PRs** come from one `gh pr list --state merged` call per repo, so `gh` must be
+  installed and signed in. The scheduled job finds it in `/opt/homebrew/bin` or `/usr/local/bin`.
+  A failed call warns, records that repo as `null`, and names it in `repo_errors`; the rest of the
+  row is still written, since a lost week cannot be recomputed. A month of 1000+ merged PRs is
+  refused the same way rather than silently cut short.
+- **Sessions and tokens** belong to a repo when their project directory is the checkout's own or
+  one of its `.claude/worktrees/` worktrees. `session_tokens` sums input, cache-creation,
+  cache-read and output tokens per unique API message; `workflow_tokens` sums the Workflow runs
+  started there. Work done elsewhere (claude.ai on the web, another machine) leaves no local
+  transcript: with no local session or run, the two per-PR ratios are `null`, not 0.
+- **The escape proxy.** `fix_prs` counts merged PRs whose title starts with `revert`, `fix` or
+  `hotfix` (after an optional version, as in `v1.2.0 fix(api): …`). A merged PR has `escaped`
+  when a fix PR merged within the next 14 days touched one of its files and it was the **last**
+  PR to touch that file before the fix, as `git blame` would point. Docs, `VERSION`, manifests,
+  lockfiles, snapshots and test files never count, nor does anything in the repo's
+  `escape_ignore` (exact paths, or directory prefixes ending in `/`; use it for committed
+  bundles and repo-wide bookkeeping files). The recent PRs have not had their 14 days yet, so use
+  `escaped_observed / observed_14d` for a rate. It is a proxy: a fix titled otherwise is missed,
+  and a fix that touches a file for another reason still counts.
+
+Escape rate and cost per merged PR over 30 days, from the latest row:
+
+```bash
+tail -n 1 ~/.claude/metrics/loops.jsonl | jq -r '.w30.repos // {} | to_entries[] | select(.value != null) | .value as $v | "\(.key)\tmerged=\($v.merged_prs)\tescaped=\($v.escaped_observed)/\($v.observed_14d)\tMtok/PR=\(if $v.tokens_per_merged_pr then ($v.tokens_per_merged_pr/1e6*10|floor/10) else "?" end)\tsessions/PR=\($v.sessions_per_merged_pr // "?")"'
+```
+
 ## Reading the lens numbers
 
 The row records counts only; rates and thresholds belong to the weekly read. Per-lens rates over
@@ -250,7 +302,7 @@ no decision.
 
 ## Roadmap
 
-Later slices add per-repo metrics from a private config kept outside this repo: merged PRs,
-revert/fix proxy, cost and sessions per merged PR, and session token totals.
+Per-repo metrics landed in 0.3.0. Still to come: CI rounds per PR, hook blocks, and the
+unrouted-spawn share, as their sources come online.
 
 See [`docs/wave0-plan.md`](docs/wave0-plan.md) for the reviewed Wave 0 design and its open items.
