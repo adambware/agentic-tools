@@ -7,7 +7,8 @@
 //      their first record's timestamp and the first occurrence wins.
 //   2. Usage is deduped by `message.id` (fallback `requestId`, then `uuid`). One API
 //      message is written as one record per content block, each with a new uuid and
-//      the same `usage`, so uuid dedupe alone still double-counts.
+//      the same `usage`, so uuid dedupe alone still double-counts. An empty id is absent:
+//      "" as a key would collapse every record that carries it onto one.
 //   3. Only numeric fields and ids are read; message text never is.
 //   4. Malformed input is counted, never fatal.
 import { createReadStream, readdirSync, statSync } from "node:fs";
@@ -94,7 +95,10 @@ export async function collectSessionFiles(
     try {
       const st = statSync(file);
       born = st.birthtimeMs;
-      live = Date.now() - st.mtimeMs < LIVE_MS;
+      // A future mtime (a bad clock, a restored backup) says nothing about a write in progress.
+      // A just-written file's sub-ms mtime can still read a hair ahead of Date.now(): allow that.
+      const age = Date.now() - st.mtimeMs;
+      live = age > -FUTURE_SLACK_MS && age < LIVE_MS;
     } catch {
       // Vanished since it was read: parseFile counts it.
     }
@@ -173,6 +177,8 @@ async function* readLines(file: string): AsyncGenerator<{ text: string; partial:
 
 /** A file written to this recently may be mid-write: its torn last line is not drift (yet). */
 const LIVE_MS = 60 * 60 * 1000;
+/** How far ahead of now an mtime may be and still count as now (clock granularity, not skew). */
+const FUTURE_SLACK_MS = 60 * 1000;
 
 async function parseFile(
   file: string,
@@ -203,7 +209,7 @@ async function parseFile(
       if (usage) stats.naive.usage_records++;
       if (compact) stats.naive.compact_records++;
 
-      const uuid = typeof rec.uuid === "string" ? rec.uuid : undefined;
+      const uuid = nonEmpty(rec.uuid);
       // Every real record has a uuid; without one a replayed record cannot be deduped.
       if (uuid === undefined && (usage || compact)) parse.bad_records++;
       if (uuid !== undefined) {
@@ -225,7 +231,10 @@ async function parseFile(
 
       if (compact) stats.compactions.push(ts);
       if (usage) {
-        const key = messageKey(rec);
+        const { key, bad: badKey } = messageKey(rec);
+        // Once per record carrying the bad id, before dedupe, so a fallback onto a key a good record
+        // already took still counts; a record with no uuid was counted above.
+        if (badKey && uuid !== undefined) parse.bad_records++;
         if (key !== undefined) {
           if (seenMessages.has(key)) continue;
           seenMessages.add(key);
@@ -268,18 +277,27 @@ function usageOf(rec: Rec): Rec | undefined {
   return usage !== null && typeof usage === "object" ? (usage as Rec) : undefined;
 }
 
-function messageKey(rec: Rec): string | undefined {
-  const id = (rec.message as Rec).id;
-  if (typeof id === "string") return `m:${id}`;
-  if (typeof rec.requestId === "string") return `r:${rec.requestId}`;
-  if (typeof rec.uuid === "string") return `u:${rec.uuid}`;
-  return undefined;
+function nonEmpty(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/** The usage dedupe key. A `message.id` that is empty or a non-string (other than null, which is
+ * missing) falls back like a missing one, but is drift: bad. */
+function messageKey(rec: Rec): { key: string | undefined; bad: boolean } {
+  const raw = (rec.message as Rec).id;
+  const id = nonEmpty(raw);
+  const requestId = nonEmpty(rec.requestId);
+  const uuid = nonEmpty(rec.uuid);
+  const key =
+    id !== undefined ? `m:${id}` : requestId !== undefined ? `r:${requestId}` : uuid !== undefined ? `u:${uuid}` : undefined;
+  return { key, bad: raw !== undefined && raw !== null && id === undefined };
 }
 
 const CONTEXT_FIELDS = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
 
 /**
- * Context size of one API call. Missing fields read as 0; a non-numeric or negative one is 0 and bad.
+ * Context size of one API call. Missing fields read as 0; anything but a non-negative safe integer
+ * is 0 and bad, so a sum can never overflow to Infinity (which JSON writes as null).
  * A usage object with none of the three fields is bad too: that is a renamed field, not a
  * zero-token call.
  */
@@ -291,7 +309,7 @@ function contextSize(usage: Rec): { ctx: number | undefined; bad: boolean } {
     const v = usage[f];
     if (v === undefined || v === null) continue;
     present++;
-    if (typeof v === "number" && Number.isFinite(v) && v >= 0) ctx += v;
+    if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ctx += v;
     else bad = true;
   }
   return present === 0 ? { ctx: undefined, bad: true } : { ctx, bad };
