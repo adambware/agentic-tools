@@ -274,6 +274,12 @@ describe("loop-metrics", () => {
   });
 });
 
+// fetchMergedPrs resolves the slug first (`gh repo view`); the fakes below answer that with the slug.
+const withRepoView =
+  (gh: (args: string[]) => string) =>
+  (args: string[]): string =>
+    args[0] === "repo" && args[1] === "view" ? (args[2] ?? "") : gh(args);
+
 describe("loop-metrics --config", () => {
   const PRS = JSON.stringify([{ number: 7, title: "feat: x", mergedAt: "2026-08-30T00:00:00Z", files: [{ path: "x.ts" }] }]);
 
@@ -283,7 +289,7 @@ describe("loop-metrics --config", () => {
     const code = await main(
       [...argv, "--gstack-dir", GSTACK_FIXTURES],
       { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
-      { defaultConfig: join(tmp, "no-config.json"), gh },
+      { defaultConfig: join(tmp, "no-config.json"), gh: withRepoView(gh) },
     );
     return { code, stdout, stderr };
   }
@@ -310,6 +316,28 @@ describe("loop-metrics --config", () => {
     const row = JSON.parse(r.stdout);
     expect(row.w7.repos).toEqual({ "o/app": null, "o/ok": expect.objectContaining({ merged_prs: 0 }) });
     expect(row.repo_errors).toEqual(["o/app"]);
+  });
+
+  it("records a slug gh cannot resolve as null and in repo_errors, not as quiet", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/typo", path: "/a" }] }));
+    let stdout = "";
+    let stderr = "";
+    // Like gh for an unknown slug: `repo view` fails where `pr list` would print [] with exit 0.
+    const gh = (args: string[]): string => {
+      if (args[0] === "repo") throw new Error("Could not resolve to a Repository");
+      return "[]";
+    };
+    const code = await main(
+      ["--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--config", config, "--now", NOW, "--dry-run"],
+      { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+      { defaultConfig: join(tmp, "no-config.json"), gh },
+    );
+    expect(code).toBe(0);
+    expect(stderr).toBe("warning: o/typo: cannot read merged PRs: Could not resolve to a Repository\n");
+    const row = JSON.parse(stdout);
+    expect(row.w7.repos).toEqual({ "o/typo": null });
+    expect(row.repo_errors).toEqual(["o/typo"]);
   });
 
   it("refuses a named config that is missing or malformed", async () => {
@@ -342,7 +370,7 @@ describe("loop-metrics --config", () => {
       const code = await main(
         [...argv, "--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--now", NOW, "--dry-run"],
         { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
-        { defaultConfig, gh: () => "[]" },
+        { defaultConfig, gh: withRepoView(() => "[]") },
       );
       return { code, stdout, stderr };
     };

@@ -6,7 +6,9 @@ measured history instead of impressions.
 It ships one tool, `loop-metrics`: a deterministic script that reads Claude Code's local session
 transcripts and Workflow run records, plus gstack's review logs, and appends **one baseline row**
 to `~/.claude/metrics/loops.jsonl`. It reads only numeric fields, ids, lens names, severities and
-actions; message and finding text is never read.
+actions; message and finding text is never read. With a private repo config (see
+[Per-repo metrics](#per-repo-metrics)) it also reads merged PRs from GitHub via `gh`; without
+one, everything stays local.
 
 ## What a row holds
 
@@ -263,7 +265,9 @@ non-zero without a row.
 - **Merged PRs** come from one `gh pr list --state merged` call per repo, so `gh` must be
   installed and signed in. The scheduled job finds it in `/opt/homebrew/bin` or `/usr/local/bin`.
   A failed call warns, records that repo as `null`, and names it in `repo_errors`; the rest of the
-  row is still written, since a lost week cannot be recomputed. A month of 1000+ merged PRs is
+  row is still written, since a lost week cannot be recomputed. A slug `gh` cannot resolve (a
+  typo, a rename, no access) is reported the same way, via a `gh repo view` check first, because
+  `gh pr list` alone answers `[]` for it and the repo would read as quiet. A month of 1000+ merged PRs is
   refused the same way rather than silently cut short, and so is a call still running after 5
   minutes.
 - **Sessions and tokens** belong to a repo when their project directory is the checkout's own or
@@ -271,7 +275,10 @@ non-zero without a row.
   such a worktree). Not counted: a session started in a subdirectory of the main checkout, and
   worktrees outside `.claude/worktrees/`. `session_tokens` sums input, cache-creation,
   cache-read and output tokens per unique API message; `workflow_tokens` sums the Workflow runs
-  started there. Work done elsewhere (claude.ai on the web, another machine) leaves no local
+  started there. `session_tokens` counts main-thread session transcripts only: Agent-tool
+  subagent transcripts (`<session>/subagents/*.jsonl`) are not counted yet, so
+  `tokens_per_merged_pr` understates sessions that use subagents (Workflow runs are counted
+  separately, in `workflow_tokens`). Work done elsewhere (claude.ai on the web, another machine) leaves no local
   transcript: with no local session or run, the two per-PR ratios are `null`, not 0.
 - **The escape proxy.** `fix_prs` counts merged PRs whose title starts with `revert`, `fix` or
   `hotfix` (after an optional version, as in `v1.2.0 fix(api): …`). A merged PR has `escaped`

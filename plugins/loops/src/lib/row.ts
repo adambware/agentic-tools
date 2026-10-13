@@ -75,14 +75,18 @@ export interface RepoWindow {
   merged_prs: number;
   /** Merged PRs whose title marks a revert or fix. */
   fix_prs: number;
-  /** Merged PRs a later fix or revert touched within 14 days (the defect-escape proxy), on files
-   * other than docs, VERSION, manifests, lockfiles and the repo's escape_ignore list. */
+  /** Merged PRs a later fix or revert (within 14 days) blames: for a file both touched, this PR was
+   * the last to touch it before the fix (the defect-escape proxy). Docs, VERSION, manifests,
+   * lockfiles, snapshots, test files and the repo's escape_ignore never count. */
   escaped: number;
   /** Merged PRs whose 14 days have fully passed: the denominator for an escape rate. */
   observed_14d: number;
   escaped_observed: number;
   /** Sessions in the repo's checkout or its .claude/worktrees/, with a record in the window. */
   sessions: number;
+  /** Main-thread session transcripts only: Agent-tool subagent transcripts
+   * (<session>/subagents/*.jsonl) are not counted yet, so tokens_per_merged_pr understates
+   * sessions that use subagents. Workflow runs are counted separately, in workflow_tokens. */
   session_tokens: number;
   workflow_runs: number;
   workflow_tokens: number;

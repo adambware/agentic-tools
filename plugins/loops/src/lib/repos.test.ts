@@ -116,6 +116,7 @@ describe("fetchMergedPrs", () => {
   it("asks gh for PRs merged since the window's day and keeps those at or after the ms", () => {
     let seen: string[] = [];
     const prs = fetchMergedPrs("o/a", T0 + 12 * 60 * 60 * 1000, (args) => {
+      if (args[0] === "repo") return "o/a\n";
       seen = args;
       return JSON.stringify([
         { number: 1, title: "early", mergedAt: "2026-09-01T06:00:00Z", files: [] },
@@ -129,7 +130,26 @@ describe("fetchMergedPrs", () => {
 
   it("refuses a list that hit the limit, which may be cut short", () => {
     const many = Array.from({ length: PR_LIMIT }, (_, i) => ({ number: i, title: "t", mergedAt: "2026-09-02T00:00:00Z", files: [] }));
-    expect(() => fetchMergedPrs("o/a", T0, () => JSON.stringify(many))).toThrow(/cut short/);
+    expect(() => fetchMergedPrs("o/a", T0, (args) => (args[0] === "repo" ? "o/a" : JSON.stringify(many)))).toThrow(/cut short/);
+  });
+
+  // gh pr list answers [] with exit 0 for a slug it cannot resolve; only the repo view tells.
+  it("throws for a slug gh cannot resolve instead of reading it as quiet", () => {
+    const gh = (args: string[]) => {
+      if (args[0] === "repo") throw new Error("Could not resolve to a Repository");
+      return "[]";
+    };
+    expect(() => fetchMergedPrs("o/typo", T0, gh)).toThrow(/resolve/);
+  });
+
+  it("throws for a renamed slug, naming both", () => {
+    const gh = (args: string[]) => (args[0] === "repo" ? "o/new-name\n" : "[]");
+    expect(() => fetchMergedPrs("o/old-name", T0, gh)).toThrow(/o\/old-name.*o\/new-name/);
+  });
+
+  it("accepts a case-only difference in the resolved name", () => {
+    const gh = (args: string[]) => (args[0] === "repo" ? "O/App\n" : "[]");
+    expect(fetchMergedPrs("o/app", T0, gh)).toEqual([]);
   });
 });
 

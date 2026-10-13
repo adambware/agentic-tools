@@ -449,6 +449,8 @@ var runGh = (args) => execFileSync("gh", args, {
   env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? "/usr/bin:/bin"}` }
 });
 function fetchMergedPrs(slug, sinceMs, gh = runGh) {
+  const name = gh(["repo", "view", slug, "--json", "nameWithOwner", "-q", ".nameWithOwner"]).trim();
+  if (name.toLowerCase() !== slug.toLowerCase()) throw new Error(`${slug}: gh resolves it to ${name === "" ? "nothing" : name}`);
   const day = new Date(sinceMs).toISOString().slice(0, 10);
   const out = gh([
     "pr",

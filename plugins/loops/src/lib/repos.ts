@@ -13,7 +13,7 @@ export interface RepoConfig {
   slug: string;
   /** Absolute path of the main checkout. */
   path: string;
-  /** Repo-specific bookkeeping files (exact paths) that never count toward an escape. */
+  /** Repo-specific paths that never count toward an escape: exact paths, or directory prefixes ending in "/". */
   escape_ignore: string[];
 }
 
@@ -111,8 +111,15 @@ export const runGh: RunGh = (args) =>
     env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? "/usr/bin:/bin"}` },
   });
 
-/** PRs merged at or after sinceMs (the search is by day, so filter to the ms). */
+/**
+ * PRs merged at or after sinceMs (the search is by day, so filter to the ms). `gh pr list -R`
+ * prints `[]` with exit 0 for a slug it cannot resolve (typo, rename, no access), which would
+ * record the repo as quiet; so the slug is resolved first, and a rename (gh returns the new
+ * name) is refused too.
+ */
 export function fetchMergedPrs(slug: string, sinceMs: number, gh: RunGh = runGh): MergedPr[] {
+  const name = gh(["repo", "view", slug, "--json", "nameWithOwner", "-q", ".nameWithOwner"]).trim();
+  if (name.toLowerCase() !== slug.toLowerCase()) throw new Error(`${slug}: gh resolves it to ${name === "" ? "nothing" : name}`);
   const day = new Date(sinceMs).toISOString().slice(0, 10);
   const out = gh([
     "pr", "list", "-R", slug, "--state", "merged", "--search", `merged:>=${day}`,

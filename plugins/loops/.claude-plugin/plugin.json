@@ -1,7 +1,7 @@
 {
   "name": "loops",
   "version": "0.3.0",
-  "description": "Measure how your engineering loops actually run. `loop-metrics` reads Claude Code's local session transcripts and Workflow run records, plus gstack review logs, and appends one baseline row per run to ~/.claude/metrics/loops.jsonl, so loop rules are kept or dropped against measured history.",
+  "description": "Measure how your engineering loops actually run. `loop-metrics` reads Claude Code's local session transcripts and Workflow run records, plus gstack review logs (and, with a private repo config, merged PRs from GitHub via `gh`), and appends one baseline row per run to ~/.claude/metrics/loops.jsonl, so loop rules are kept or dropped against measured history.",
   "author": {
     "name": "adambware"
   },
