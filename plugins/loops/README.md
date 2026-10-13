@@ -117,7 +117,8 @@ loop-metrics [--projects-dir DIR] [--gstack-dir DIR] [--config FILE] [--out FILE
 - Default: append one row to `--out` (default `~/.claude/metrics/loops.jsonl`, directory created
   if needed) and print it. `--projects-dir` defaults to `~/.claude/projects`, and `--gstack-dir`
   to `~/.gstack/projects`.
-- `--dry-run` prints the row without appending. `--now` fixes the window end (for tests).
+- `--dry-run` prints the row without appending. `--now` fixes the window end (for tests); PRs
+  merged after it are ignored, so a rerun with an earlier `--now` sees the PRs that week saw.
 - `--session FILE` prints one transcript's deduped counts next to its naive ones.
 - If `loops.jsonl` does not end in a newline (a torn write or a hand edit), the new row starts on a
   line of its own; a failed write is truncated back, and the row is fsynced before exit 0, along
@@ -247,9 +248,9 @@ real transcripts. Commit the rebuilt `bin/` with its source: CI fails on a stale
 
 Per-repo numbers come from a private config that names your repos, so no repo name or path lives
 in this plugin. It is read from `--config FILE`, then `$LOOPS_CONFIG`, then
-`~/.config/agentic-loops/config.json`. With no file at the default path, `repos` is `null` and
-nothing else changes. A config that was named but is missing, or any malformed config, exits
-non-zero without a row.
+`~/.config/agentic-loops/config.json`; an empty `$LOOPS_CONFIG` counts as unset. With no file
+at the default path, `repos` and `repo_errors` are `null` and nothing else changes. A config
+that was named but is missing, or any malformed config, exits non-zero without a row.
 
 ```json
 {
@@ -262,14 +263,15 @@ non-zero without a row.
 
 - `slug` is the GitHub `owner/name`; `path` is the main checkout (`~` expands, a relative path
   resolves against the config's directory).
-- **Merged PRs** come from one `gh pr list --state merged` call per repo, so `gh` must be
-  installed and signed in. The scheduled job finds it in `/opt/homebrew/bin` or `/usr/local/bin`.
-  A failed call warns, records that repo as `null`, and names it in `repo_errors`; the rest of the
-  row is still written, since a lost week cannot be recomputed. A slug `gh` cannot resolve (a
-  typo, a rename, no access) is reported the same way, via a `gh repo view` check first, because
-  `gh pr list` alone answers `[]` for it and the repo would read as quiet. A month of 1000+ merged PRs is
-  refused the same way rather than silently cut short, and so is a call still running after 5
-  minutes.
+- **Merged PRs** come from a `gh repo view` check and then one `gh pr list --state merged` call
+  per repo, so `gh` must be installed and signed in. The scheduled job finds it in
+  `/opt/homebrew/bin` or `/usr/local/bin`. A failed call warns, records that repo as `null`, and
+  names it in `repo_errors`; the rest of the row is still written, since a lost week cannot be
+  recomputed. A slug `gh` cannot resolve (a typo, a rename, no access) is reported the same way:
+  `gh pr list` alone answers `[]` for it, so without the check the repo would read as quiet. A
+  month of 1000+ merged PRs is refused the same way rather than silently cut short. Each `gh` call
+  times out after 5 minutes (a `SIGTERM`) and is then reported the same way, so a stalled call
+  no longer waits forever; a `gh` that ignores `SIGTERM` is not covered yet.
 - **Sessions and tokens** belong to a repo when their project directory is the checkout's own or
   one of its `.claude/worktrees/` worktrees (including a session started in a subdirectory of
   such a worktree). Not counted: a session started in a subdirectory of the main checkout, and
@@ -278,19 +280,20 @@ non-zero without a row.
   started there. `session_tokens` counts main-thread session transcripts only: Agent-tool
   subagent transcripts (`<session>/subagents/*.jsonl`) are not counted yet, so
   `tokens_per_merged_pr` understates sessions that use subagents (Workflow runs are counted
-  separately, in `workflow_tokens`). Work done elsewhere (claude.ai on the web, another machine) leaves no local
-  transcript: with no local session or run, the two per-PR ratios are `null`, not 0.
+  separately, in `workflow_tokens`). Work done elsewhere (claude.ai on the web, another machine)
+  leaves no local transcript: with no local session or run, the two per-PR ratios are `null`,
+  not 0.
 - **The escape proxy.** `fix_prs` counts merged PRs whose title starts with `revert`, `fix` or
   `hotfix` (after an optional version, as in `v1.2.0 fix(api): …`). A merged PR has `escaped`
   when a fix PR merged within the next 14 days touched one of its files and it was the **last**
   PR to touch that file before the fix, as `git blame` would point. Docs (`.md`, `.mdx`, any
   `.txt`), `VERSION`, manifests, lockfiles, snapshots and test files never count, nor does
-  anything in the repo's `escape_ignore` (exact paths, or directory prefixes ending in `/`; use it for committed
-  bundles and repo-wide bookkeeping files). The recent PRs have not had their 14 days yet, so use
-  `escaped_observed / observed_14d` for a rate, from `w30` only: no PR in `w7` is 14 days old, so
-  there it is always 0/0. It is a proxy: a fix titled otherwise is missed, a fix that touches a
-  file for another reason still counts, and `gh` lists at most 100 files per PR, so files past
-  the first 100 of a large PR are not compared.
+  anything in the repo's `escape_ignore` (exact paths, or directory prefixes ending in `/`; use
+  it for committed bundles and repo-wide bookkeeping files). The recent PRs have not had their
+  14 days yet, so use `escaped_observed / observed_14d` for a rate, from `w30` only: no PR in
+  `w7` is 14 days old, so there it is always 0/0. It is a proxy: a fix titled otherwise is
+  missed, a fix that touches a file for another reason still counts, and `gh` lists at most 100
+  files per PR, so files past the first 100 of a large PR are not compared.
 
 Escape rate and cost per merged PR over 30 days, from the latest row:
 

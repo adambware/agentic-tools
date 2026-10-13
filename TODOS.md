@@ -118,6 +118,118 @@
   - **Context:** Raised by the Claude adversarial pass during the third loops 0.2.1 ship (2026-10-03); the user chose to defer it. Fix: guard the close the way `appendRow` does, rethrowing a close error only when the fsync succeeded, and add a mocked-`closeSync` test.
   - **Depends on / blocked by:** None.
 
+- [ ] **loops: parse Agent-tool subagent transcripts into `session_tokens`** [P2 correctness]
+  - **What:** `session_tokens` (`plugins/loops/src/lib/session.ts`, `row.ts`) reads main-thread transcripts only; read `<session>/subagents/*.jsonl` too, crediting the parent session's project.
+  - **Why:** `tokens_per_merged_pr` understates subagent-heavy work. 0.3.0 documents the gap in the README, the CHANGELOG and the `RepoWindow` comment but does not close it.
+  - **Context:** Workflow agents already count in `workflow_tokens`, so the new reader must not double-count them (they are not Agent-tool subagents). Check the transcript layout against real data first. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: bound the `gh` search to the window and the run's day** [P3 correctness]
+  - **What:** In `fetchMergedPrs` (`plugins/loops/src/lib/repos.ts`) query `merged:<since-1d>..<now day>` instead of `merged:>=<since day>`.
+  - **Why:** The search is by UTC day, so a PR merged just before `since` on the same day is fetched and filtered, and a PR near the day boundary can be missed. A rerun with an earlier `--now` also over-fetches everything after it, and can hit the `PR_LIMIT` refusal for no reason.
+  - **Context:** Filtering to the millisecond already happens after the fetch; this only narrows what `gh` returns. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: `FIX_TITLE` misses "Fixes ..." and "Fixed ..." titles** [P3 correctness]
+  - **What:** `FIX_TITLE` in `plugins/loops/src/lib/repos.ts` matches `fix` with a word boundary, so "Fixes ..." and "Fixed ..." are not counted as fix PRs.
+  - **Why:** `fix_prs` and the escape proxy undercount for repos that use those verb forms.
+  - **Context:** Extend the pattern to `fix(es|ed)?` and add title cases to `repos.test.ts`. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: show `gh` stderr in the failure warning; correct the stale one-call and worst-case notes** [P3 diagnostics]
+  - **What:** The catch in `plugins/loops/src/lib/cli.ts` prints only the first line (`Command failed: <cmd>`) of the error. Print the stderr instead, and fix the comment "One gh call per repo" (now two: `repo view`, then `pr list`); state the stalled-repo worst case (about 10 minutes: two 5-minute calls) in the README's timeout sentence.
+  - **Why:** The warning names the command but not why it failed (no auth, rate limit, not found), so the operator has to rerun by hand to find out.
+  - **Context:** Keep the warning to one line per repo; truncate the stderr. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: `runGh` should append to `PATH`, not prepend** [P3 safety]
+  - **What:** `runGh` (`plugins/loops/src/lib/repos.ts`) puts `/opt/homebrew/bin:/usr/local/bin` ahead of the inherited `PATH`. Append them instead.
+  - **Why:** launchd's `PATH` has no `gh`, so the extra dirs are a fallback; prepending lets a binary in those dirs shadow the one the user's own `PATH` selects.
+  - **Context:** Appending still finds `gh` under launchd. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: warn when a configured repo path is not an existing directory** [P3 correctness]
+  - **What:** `loadConfig` / `ownsProject` (`plugins/loops/src/lib/repos.ts`) accept any `path`. Warn when it is not an existing directory, and consider `realpath` so case and symlink differences still match.
+  - **Why:** A mistyped or moved path makes the repo read as zero sessions, so `tokens_per_merged_pr` is `null` with no hint why.
+  - **Context:** The path is compared with the encoded project dir names, so the check needs to run on the config path, not the transcripts. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: escape-proxy file classification gaps** [P3 correctness]
+  - **What:** In the ignore rules of `plugins/loops/src/lib/repos.ts`: stop counting every `.txt` as docs (`CMakeLists.txt` and `requirements.txt` are build inputs); add the Go and Python test patterns (`_test.go`, `test_*.py`, `*_test.py`) and `fixtures/` directories; exclude non-npm manifests (`go.mod`, `Cargo.toml`, `pyproject.toml`, `setup.cfg`, `Gemfile`, `*.gemspec`, `build.gradle`, `pom.xml`, `composer.json`).
+  - **Why:** Files every PR touches, or files that are not production code, make PRs look like they caused later fixes. This is the failure the 0.3.0 rules were added for, for repos that are not npm projects.
+  - **Context:** `escape_ignore` in the config works around it per repo until this lands. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: `gh pr list` counts PRs merged into any base branch and bot PRs** [P3 correctness]
+  - **What:** `fetchMergedPrs` (`plugins/loops/src/lib/repos.ts`) lists every merged PR. Consider `--base <default branch>` and excluding `[bot]` authors.
+  - **Why:** A PR merged into a feature branch, or a dependency bot's PR, counts as a merged PR and a candidate for blame, which changes the denominators of the per-PR ratios.
+  - **Context:** Decide whether stacked-branch PRs count before changing it. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: stricter config validation** [P3 correctness]
+  - **What:** In `loadConfig` (`plugins/loops/src/lib/repos.ts`): reject unknown keys; reject `escape_ignore` entries starting with `/` or `./` (they never match); make the duplicate-slug check case-insensitive; stop `SLUG` allowing a leading `-` segment.
+  - **Why:** A typo'd key (`escape_ignored`) or an entry that cannot match is silently ignored, and the numbers are wrong with no signal.
+  - **Context:** Refuse the config with a message naming the entry, as the other validation errors do. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: `escaped()` blames PRs with identical `mergedAt` both ways** [P3 correctness]
+  - **What:** `escaped` (`plugins/loops/src/lib/repos.ts`) compares `mergedAt` only. Two PRs merged in the same millisecond are both blamed, and a fix with the same timestamp as its target never matches. Break ties by PR number and add a test.
+  - **Why:** Rare with real data, but the result depends on array order, so a rerun can differ.
+  - **Context:** PR numbers are monotonic in merge order on one repo. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: attribute sessions to a repo by the transcript's recorded `cwd`, not the encoded dir name** [P3 correctness]
+  - **What:** `ownsProject` (`plugins/loops/src/lib/repos.ts`) matches the encoded project dir name. Its `--claude-worktrees-` prefix also matches `<repo>/.claude/worktrees-foo` siblings, `/r/a-b` and `/r/a/b` encode to the same name, and Claude Code truncates names over 200 characters with a hash. Read the `cwd` each transcript records instead.
+  - **Why:** The encoding is lossy, so a session can be credited to the wrong repo or to none.
+  - **Context:** Needs `cwd` kept on the session and run records (`session.ts`, `workflow.ts`); the Workflow run records its own project. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: kill a hung `gh` with `SIGKILL`** [P3 reliability]
+  - **What:** `runGh` (`plugins/loops/src/lib/repos.ts`) passes `timeout` to `execFileSync`, which sends `SIGTERM`. Pass `killSignal: "SIGKILL"`.
+  - **Why:** A `gh` that ignores `SIGTERM` can still block the weekly job past the timeout.
+  - **Context:** One option on the call; no test is practical beyond a fake runner. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: a rename or access loss between `gh repo view` and `gh pr list` can still read as quiet** [P4 correctness]
+  - **What:** `fetchMergedPrs` makes two `gh` calls. If the slug stops resolving between them, `pr list` answers `[]` with exit 0. A single GraphQL query would close it.
+  - **Why:** Theoretical: the window is seconds wide.
+  - **Context:** Not worth a rewrite unless it is seen. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: a Workflow run copied into another project's dir takes the project of whichever copy wins the tie** [P3 correctness]
+  - **What:** In `plugins/loops/src/lib/workflow.ts`, a run copied into another project's directory is deduped to one record, and the winner (by the tie-break) sets the project. Keep the origin's project.
+  - **Why:** Per-repo workflow runs and tokens are credited to the wrong repo.
+  - **Context:** The origin is the project dir of the run's own `cwd`, once that is read. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: a session record with a bad context and a bad `output_tokens` counts twice in `bad_records`** [P4 correctness]
+  - **What:** In `plugins/loops/src/lib/session.ts`, one record with both an invalid context field and an invalid `output_tokens` adds 2 to `bad_records`.
+  - **Why:** Cosmetic: `bad_records` is a drift signal, and an overcount only makes it louder.
+  - **Context:** Count once per record. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: test gaps from the 0.3.0 review** [P3 test-coverage]
+  - **What:** Add tests for: `local = sessions || runs` with only one of the two present (only both-or-neither is tested); per-message session tokens when a session straddles the window; the `isBookkeeping` alternatives and a bare `~` path; the `resolves it to nothing` error arm in `repos.test.ts`.
+  - **Why:** These branches shipped with no test that fails when they are broken.
+  - **Context:** `row.test.ts`, `repos.test.ts`, `session.test.ts`. Deferred from: loops 0.3.0 ship review (2026-10-13).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
 ## Completed
 
 - [x] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
