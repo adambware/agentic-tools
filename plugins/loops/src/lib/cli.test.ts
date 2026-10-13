@@ -28,12 +28,17 @@ async function runBare(argv: string[]) {
   return { code, stdout, stderr };
 }
 
+// main() reads $LOOPS_CONFIG: keep an ambient one (a developer's real config) out of every test.
+const AMBIENT_CONFIG = process.env.LOOPS_CONFIG;
 let tmp: string;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "loops-cli-"));
+  delete process.env.LOOPS_CONFIG;
 });
 afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
+  if (AMBIENT_CONFIG === undefined) delete process.env.LOOPS_CONFIG;
+  else process.env.LOOPS_CONFIG = AMBIENT_CONFIG;
 });
 
 describe("loop-metrics", () => {
@@ -322,5 +327,55 @@ describe("loop-metrics --config", () => {
     });
     expect(r.code).toBe(0);
     expect(JSON.parse(r.stdout).w7.repos).toBeNull();
+  });
+
+  // Value: protects=config selection order (--config, $LOOPS_CONFIG, default) and that an unreadable present default is refused, not treated as absent; fails_when=env is ignored, precedence flips, or a malformed default reads as no config; why_new=only --config and a missing default are tested; seam=none
+  describe("config selection", () => {
+    const cfg = (name: string, slug: string) => {
+      const f = join(tmp, name);
+      writeFileSync(f, JSON.stringify({ repos: [{ slug, path: "/nowhere/app" }] }));
+      return f;
+    };
+    const go = async (argv: string[], defaultConfig: string) => {
+      let stdout = "";
+      let stderr = "";
+      const code = await main(
+        [...argv, "--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--now", NOW, "--dry-run"],
+        { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+        { defaultConfig, gh: () => "[]" },
+      );
+      return { code, stdout, stderr };
+    };
+
+    it("reads $LOOPS_CONFIG over the default, and --config over $LOOPS_CONFIG", async () => {
+      const def = cfg("def.json", "o/default");
+      process.env.LOOPS_CONFIG = cfg("env.json", "o/env");
+      expect(Object.keys(JSON.parse((await go([], def)).stdout).w7.repos)).toEqual(["o/env"]);
+      expect(Object.keys(JSON.parse((await go(["--config", cfg("flag.json", "o/flag")], def)).stdout).w7.repos)).toEqual(["o/flag"]);
+    });
+
+    it("refuses a missing $LOOPS_CONFIG file", async () => {
+      process.env.LOOPS_CONFIG = join(tmp, "nope.json");
+      const r = await go([], cfg("def.json", "o/default"));
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+    });
+
+    it("treats an empty $LOOPS_CONFIG as unset, so a blank plist entry falls back to the default", async () => {
+      process.env.LOOPS_CONFIG = "";
+      const r = await go([], cfg("def.json", "o/default"));
+      expect(r.code).toBe(0);
+      expect(Object.keys(JSON.parse(r.stdout).w7.repos)).toEqual(["o/default"]);
+    });
+
+    it("uses a present default, and refuses a present but malformed one", async () => {
+      delete process.env.LOOPS_CONFIG;
+      expect(Object.keys(JSON.parse((await go([], cfg("def.json", "o/default"))).stdout).w7.repos)).toEqual(["o/default"]);
+      const bad = join(tmp, "bad-default.json");
+      writeFileSync(bad, "{");
+      const r = await go([], bad);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(/cannot read config/);
+    });
   });
 });

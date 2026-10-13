@@ -264,21 +264,26 @@ non-zero without a row.
   installed and signed in. The scheduled job finds it in `/opt/homebrew/bin` or `/usr/local/bin`.
   A failed call warns, records that repo as `null`, and names it in `repo_errors`; the rest of the
   row is still written, since a lost week cannot be recomputed. A month of 1000+ merged PRs is
-  refused the same way rather than silently cut short.
+  refused the same way rather than silently cut short, and so is a call still running after 5
+  minutes.
 - **Sessions and tokens** belong to a repo when their project directory is the checkout's own or
-  one of its `.claude/worktrees/` worktrees. `session_tokens` sums input, cache-creation,
+  one of its `.claude/worktrees/` worktrees (including a session started in a subdirectory of
+  such a worktree). Not counted: a session started in a subdirectory of the main checkout, and
+  worktrees outside `.claude/worktrees/`. `session_tokens` sums input, cache-creation,
   cache-read and output tokens per unique API message; `workflow_tokens` sums the Workflow runs
   started there. Work done elsewhere (claude.ai on the web, another machine) leaves no local
   transcript: with no local session or run, the two per-PR ratios are `null`, not 0.
 - **The escape proxy.** `fix_prs` counts merged PRs whose title starts with `revert`, `fix` or
   `hotfix` (after an optional version, as in `v1.2.0 fix(api): …`). A merged PR has `escaped`
   when a fix PR merged within the next 14 days touched one of its files and it was the **last**
-  PR to touch that file before the fix, as `git blame` would point. Docs, `VERSION`, manifests,
-  lockfiles, snapshots and test files never count, nor does anything in the repo's
-  `escape_ignore` (exact paths, or directory prefixes ending in `/`; use it for committed
+  PR to touch that file before the fix, as `git blame` would point. Docs (`.md`, `.mdx`, any
+  `.txt`), `VERSION`, manifests, lockfiles, snapshots and test files never count, nor does
+  anything in the repo's `escape_ignore` (exact paths, or directory prefixes ending in `/`; use it for committed
   bundles and repo-wide bookkeeping files). The recent PRs have not had their 14 days yet, so use
-  `escaped_observed / observed_14d` for a rate. It is a proxy: a fix titled otherwise is missed,
-  and a fix that touches a file for another reason still counts.
+  `escaped_observed / observed_14d` for a rate, from `w30` only: no PR in `w7` is 14 days old, so
+  there it is always 0/0. It is a proxy: a fix titled otherwise is missed, a fix that touches a
+  file for another reason still counts, and `gh` lists at most 100 files per PR, so files past
+  the first 100 of a large PR are not compared.
 
 Escape rate and cost per merged PR over 30 days, from the latest row:
 

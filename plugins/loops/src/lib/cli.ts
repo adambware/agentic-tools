@@ -121,8 +121,9 @@ export async function main(argv: string[], io: Io = processIo, deps: Deps = {}):
 
   // The private repo list. --config, then $LOOPS_CONFIG, then the default path. Only a missing
   // default means "no per-repo metrics" (`repos: null`); a config that was named but cannot be
-  // read, or any malformed config, is refused, so a typo never records every repo as quiet.
-  const configNamed = args.config ?? process.env.LOOPS_CONFIG;
+  // read, or any malformed config, is refused, so a typo never records every repo as quiet. An
+  // empty $LOOPS_CONFIG (a blank plist entry) is unset, not a config named "".
+  const configNamed = args.config ?? (process.env.LOOPS_CONFIG || undefined);
   const configPath = configNamed ?? deps.defaultConfig ?? join(homedir(), ".config", "agentic-loops", "config.json");
   let config: LoopsConfig | null = null;
   try {

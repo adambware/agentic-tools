@@ -243,4 +243,20 @@ describe("buildRow repos", () => {
     expect(row.w7.repos!["o/broken"]).toBeNull();
     expect(row.repo_errors).toEqual(["o/broken"]);
   });
+
+  // Value: protects=observed_14d counts a PR only once its 14 days are complete, and a repo's escape_ignore reaches the escape check; fails_when=the <= boundary flips or escape_ignore is not passed to escaped(); why_new=the windows test has no PR at exactly 14 days and no ignore list; seam=none
+  it("observes a PR at exactly 14 days, and applies the repo's escape_ignore", () => {
+    const prs = [pr(1, "feat: a", 14, ["gen/out.js"]), pr(2, "fix: a", 13, ["gen/out.js"]), pr(3, "feat: b", 13.9, ["b.ts"])];
+    const at = (ignore: string[]) =>
+      buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, escape_ignore: ignore, prs }]).w30.repos!["o/app"]!;
+    expect(at([])).toMatchObject({ merged_prs: 3, observed_14d: 1, escaped: 1, escaped_observed: 1 });
+    expect(at(["gen/"])).toMatchObject({ observed_14d: 1, escaped: 0, escaped_observed: 0 });
+  });
+
+  // Value: protects=a rerun with an earlier --now judges escapes only by PRs merged by then; fails_when=PRs fetched after now still blame or shield; why_new=no test feeds PRs merged after now; seam=none
+  it("ignores PRs merged after now, as a rerun with an earlier --now fetches them too", () => {
+    const prs = [pr(1, "feat: a", 3, ["a.ts"]), pr(2, "fix: a", -1, ["a.ts"])];
+    const r = buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, prs }]).w7.repos!["o/app"]!;
+    expect(r).toMatchObject({ merged_prs: 1, fix_prs: 0, escaped: 0 });
+  });
 });

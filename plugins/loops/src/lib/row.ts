@@ -174,7 +174,8 @@ function reposWindow(
       out[repo.slug] = null;
       continue;
     }
-    const all = repo.prs;
+    // A rerun with an earlier --now still fetched PRs merged after it: judge with what was known.
+    const all = repo.prs.filter((p) => p.mergedAt <= now);
     const esc = (p: MergedPr) => escaped(p, all, repo.escape_ignore);
     const merged = all.filter((p) => inWindow(p.mergedAt));
     const observed = merged.filter((p) => p.mergedAt + ESCAPE_DAYS * DAY_MS <= now);

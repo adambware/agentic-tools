@@ -440,8 +440,10 @@ function parsePrList(json) {
   });
 }
 var PR_LIMIT = 1e3;
+var GH_TIMEOUT_MS = 5 * 60 * 1e3;
 var runGh = (args) => execFileSync("gh", args, {
   encoding: "utf8",
+  timeout: GH_TIMEOUT_MS,
   maxBuffer: 256 * 1024 * 1024,
   stdio: ["ignore", "pipe", "pipe"],
   env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? "/usr/bin:/bin"}` }
@@ -647,7 +649,7 @@ function reposWindow(repos, sessions, runs, now, inWindow) {
       out[repo.slug] = null;
       continue;
     }
-    const all = repo.prs;
+    const all = repo.prs.filter((p) => p.mergedAt <= now);
     const esc = (p) => escaped(p, all, repo.escape_ignore);
     const merged = all.filter((p) => inWindow(p.mergedAt));
     const observed = merged.filter((p) => p.mergedAt + ESCAPE_DAYS * DAY_MS2 <= now);
@@ -855,7 +857,7 @@ async function main(argv, io = processIo, deps = {}) {
     }
     readLenses = false;
   }
-  const configNamed = args.config ?? process.env.LOOPS_CONFIG;
+  const configNamed = args.config ?? (process.env.LOOPS_CONFIG || void 0);
   const configPath = configNamed ?? deps.defaultConfig ?? join5(homedir2(), ".config", "agentic-loops", "config.json");
   let config = null;
   try {

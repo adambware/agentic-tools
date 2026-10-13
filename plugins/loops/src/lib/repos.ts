@@ -95,6 +95,9 @@ export const PR_LIMIT = 1000;
 
 export type RunGh = (args: string[]) => string;
 
+/** A stalled `gh` must not hang the scheduled job: past this, the repo is recorded as unknown. */
+export const GH_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
  * launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin, which has no `gh`. Prepend the usual install
  * dirs so the scheduled job finds it.
@@ -102,6 +105,7 @@ export type RunGh = (args: string[]) => string;
 export const runGh: RunGh = (args) =>
   execFileSync("gh", args, {
     encoding: "utf8",
+    timeout: GH_TIMEOUT_MS,
     maxBuffer: 256 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? "/usr/bin:/bin"}` },

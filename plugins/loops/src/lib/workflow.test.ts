@@ -179,6 +179,17 @@ describe("collectWorkflows", () => {
     expect(parse.bad_files).toBe(2);
   });
 
+  // Value: protects=a workflow run carries its project dir so row.ts can attribute tokens to a repo; fails_when=the project assignment in collectWorkflows is dropped; why_new=only parseWorkflow's "" default is asserted; seam=none
+  it("tags each run with the project dir it was found in", () => {
+    for (const proj of ["-Users-u-Dev-app", "-Users-u-Dev-app--claude-worktrees-x"]) {
+      const wf = join(dir, proj, "sess", "workflows");
+      mkdirSync(wf, { recursive: true });
+      writeFileSync(join(wf, "wf_1.json"), JSON.stringify({ ...FULL, runId: proj, startTime: 5 }));
+    }
+    const runs = collectWorkflows(dir, 0, emptyCounters());
+    expect(runs.map((r) => r.project).sort()).toEqual(["-Users-u-Dev-app", "-Users-u-Dev-app--claude-worktrees-x"]);
+  });
+
   it("sums per-run bad records into parse.bad_records", () => {
     const wf = join(dir, "proj", "sess", "workflows");
     mkdirSync(wf, { recursive: true });
