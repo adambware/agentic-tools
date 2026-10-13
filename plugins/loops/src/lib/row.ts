@@ -1,11 +1,12 @@
 // Pure row builder: windows, counts, medians. No I/O.
 import type { ReviewStats } from "./lens.js";
+import { escaped, ESCAPE_DAYS, isFixPr, type MergedPr, ownsProject } from "./repos.js";
 import type { ParseCounters, SessionStats } from "./session.js";
 import { type RunStats, TERMINAL_STATUSES } from "./workflow.js";
 
 /** The parser that produced a row. Keep equal to package.json (a test checks); bump it when a
  * parser rule changes, so rows before and after the change can be told apart. */
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const WINDOW_DAYS = [7, 30] as const;
@@ -69,11 +70,40 @@ export interface LensWindow {
   other: FindingCounts;
 }
 
+/** One configured repo over one window. PRs are the ones merged inside the window. */
+export interface RepoWindow {
+  merged_prs: number;
+  /** Merged PRs whose title marks a revert or fix. */
+  fix_prs: number;
+  /** Merged PRs a later fix or revert (within 14 days) blames: for a file both touched, this PR was
+   * the last to touch it before the fix (the defect-escape proxy). Docs, VERSION, manifests,
+   * lockfiles, snapshots, test files and the repo's escape_ignore never count. */
+  escaped: number;
+  /** Merged PRs whose 14 days have fully passed: the denominator for an escape rate. */
+  observed_14d: number;
+  escaped_observed: number;
+  /** Sessions in the repo's checkout or its .claude/worktrees/, with a record in the window. */
+  sessions: number;
+  /** Main-thread session transcripts only: Agent-tool subagent transcripts
+   * (<session>/subagents/*.jsonl) are not counted yet, so tokens_per_merged_pr understates
+   * sessions that use subagents. Workflow runs are counted separately, in workflow_tokens. */
+  session_tokens: number;
+  workflow_runs: number;
+  workflow_tokens: number;
+  /** (session_tokens + workflow_tokens) / merged_prs, rounded; null at 0 merged PRs, or with no
+   * local session or run (the work happened elsewhere, so its cost is unknown). */
+  tokens_per_merged_pr: number | null;
+  /** sessions / merged_prs to 2 decimals; null as for tokens_per_merged_pr. */
+  sessions_per_merged_pr: number | null;
+}
+
 export interface Window {
   workflows: WorkflowWindow;
   sessions: SessionWindow;
   /** null when there is no gstack review log directory to read. */
   lenses: LensWindow | null;
+  /** null with no config. A repo whose PRs could not be read is null (see repo_errors). */
+  repos: Record<string, RepoWindow | null> | null;
 }
 
 export interface Row {
@@ -86,6 +116,16 @@ export interface Row {
   parse: ParseCounters;
   /** The review-log parser's own counters, so drift can be traced to its source. */
   parse_lenses: ParseCounters | null;
+  /** Slugs whose merged PRs could not be read this run; null with no config. */
+  repo_errors: string[] | null;
+}
+
+export interface RepoInput {
+  slug: string;
+  path: string;
+  escape_ignore?: readonly string[];
+  /** null when gh failed: the repo is recorded as unknown, not as quiet. */
+  prs: MergedPr[] | null;
 }
 
 export interface LensInput {
@@ -99,6 +139,7 @@ export function buildRow(
   parse: ParseCounters,
   now: number,
   lenses: LensInput | null = null,
+  repos: RepoInput[] | null = null,
 ): Row {
   const iso = new Date(now).toISOString();
   const window = (days: number): Window => {
@@ -108,6 +149,7 @@ export function buildRow(
       workflows: workflowWindow(runs, inWindow),
       sessions: sessionWindow(sessions, inWindow),
       lenses: lenses === null ? null : lensWindow(lenses.reviews, inWindow),
+      repos: repos === null ? null : reposWindow(repos, sessions, runs, now, inWindow),
     };
   };
   return {
@@ -119,7 +161,51 @@ export function buildRow(
     w30: window(30),
     parse: { ...parse },
     parse_lenses: lenses === null ? null : { ...lenses.parse },
+    repo_errors: repos === null ? null : repos.filter((r) => r.prs === null).map((r) => r.slug).sort(),
   };
+}
+
+function reposWindow(
+  repos: RepoInput[],
+  sessions: SessionStats[],
+  runs: RunStats[],
+  now: number,
+  inWindow: (t: number) => boolean,
+): Record<string, RepoWindow | null> {
+  const out: Record<string, RepoWindow | null> = Object.create(null);
+  for (const repo of repos) {
+    if (repo.prs === null) {
+      out[repo.slug] = null;
+      continue;
+    }
+    // A rerun with an earlier --now still fetched PRs merged after it: judge with what was known.
+    const all = repo.prs.filter((p) => p.mergedAt <= now);
+    const esc = (p: MergedPr) => escaped(p, all, repo.escape_ignore);
+    const merged = all.filter((p) => inWindow(p.mergedAt));
+    const observed = merged.filter((p) => p.mergedAt + ESCAPE_DAYS * DAY_MS <= now);
+    const mine = sessions.filter((s) => ownsProject(repo.path, s.project) && s.recordTimes.some(inWindow));
+    const sessionTokens = sum(mine.flatMap((s) => s.tokens.filter(([t]) => inWindow(t)).map(([, n]) => n)));
+    const myRuns = runs.filter((r) => ownsProject(repo.path, r.project) && inWindow(r.startMs));
+    const workflowTokens = sum(myRuns.map((r) => r.tokens));
+    // No local session or run at all means the work happened elsewhere (the web, another
+    // machine): its cost is unknown, not zero.
+    const local = mine.length > 0 || myRuns.length > 0;
+    const per = merged.length > 0 && local;
+    out[repo.slug] = {
+      merged_prs: merged.length,
+      fix_prs: merged.filter(isFixPr).length,
+      escaped: merged.filter(esc).length,
+      observed_14d: observed.length,
+      escaped_observed: observed.filter(esc).length,
+      sessions: mine.length,
+      session_tokens: sessionTokens,
+      workflow_runs: myRuns.length,
+      workflow_tokens: workflowTokens,
+      tokens_per_merged_pr: per ? Math.round((sessionTokens + workflowTokens) / merged.length) : null,
+      sessions_per_merged_pr: per ? Math.round((100 * mine.length) / merged.length) / 100 : null,
+    };
+  }
+  return sortKeys(out);
 }
 
 function workflowWindow(all: RunStats[], inWindow: (t: number) => boolean): WorkflowWindow {

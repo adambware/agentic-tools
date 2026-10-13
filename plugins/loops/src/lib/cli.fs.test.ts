@@ -27,7 +27,11 @@ async function run(out: string) {
   let stdout = "";
   let stderr = "";
   const argv = ["--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--out", out, "--now", NOW];
-  const code = await main(argv, { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) });
+  const code = await main(
+    argv,
+    { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+    { defaultConfig: join(FIXTURES, "no-config.json") },
+  );
   return { code, stdout, stderr };
 }
 
@@ -39,11 +43,16 @@ function syncedPaths(): string[] {
   return sync.calls.map(([fd], i) => opens.filter((o) => o.fd === fd && o.at < sync.invocationCallOrder[i]!).pop()!.path);
 }
 
+// main() reads $LOOPS_CONFIG: keep an ambient one (a developer's real config) out of every test.
+const AMBIENT_CONFIG = process.env.LOOPS_CONFIG;
 let tmp: string;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "loops-cli-fs-"));
+  delete process.env.LOOPS_CONFIG;
 });
 afterEach(async () => {
+  if (AMBIENT_CONFIG === undefined) delete process.env.LOOPS_CONFIG;
+  else process.env.LOOPS_CONFIG = AMBIENT_CONFIG;
   // Reset, not just clear: a once-stub a failed test never reached must not fire in the next test.
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   vi.mocked(fs.openSync).mockReset().mockImplementation(actual.openSync);

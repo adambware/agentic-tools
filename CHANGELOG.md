@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.3.0] - 2026-10-13
+
+Per-repo metrics, the second half of Wave 0 slice 2.
+
+### Added
+
+- A private config (`--config`, `$LOOPS_CONFIG`, or `~/.config/agentic-loops/config.json`)
+  names the repos to measure. An empty `$LOOPS_CONFIG` counts as unset. Without a config,
+  `repos` and `repo_errors` are `null` and the row is otherwise unchanged.
+- Each window gains `repos`: per repo, merged PRs, fix/revert PRs, a defect-escape proxy, local
+  sessions and their tokens, Workflow runs and their tokens, and tokens and sessions per merged
+  PR. The row gains `repo_errors`, the repos whose PRs `gh` could not read or resolve.
+- A slug `gh` cannot resolve (a typo, a rename, no access) is recorded as `null` and named in
+  `repo_errors`, rather than read as a repo with no merged PRs: `gh pr list` answers `[]` with exit
+  0 for it, so each repo now makes a `gh repo view` check before the PR list. `gh` calls time out
+  after 5 minutes, so a stalled call no longer waits forever; a `gh` that ignores `SIGTERM` is
+  not covered yet.
+- `session_tokens` counts main-thread transcripts only. Agent-tool subagent transcripts are not
+  read yet, so `tokens_per_merged_pr` understates subagent-heavy work.
+- The escape proxy blames like `git blame`: a fix within 14 days counts only against the last
+  PR to touch a shared file, and docs, `VERSION`, manifests, lockfiles, snapshots and test files
+  never count. Without these rules the first real run blamed 49 of 83 PRs in one repo, nearly
+  all through the release files every PR bumps.
+- PRs merged after `--now` are ignored, so a rerun with an earlier `--now` matches what that
+  week's run would have seen.
+- Session records now keep their project dir and per-message token totals (context plus output).
+  An invalid `output_tokens` counts in `bad_records`.
+- `version` is `0.3.0`.
+
 ## [loops 0.2.1] - 2026-10-03
 
 Parser hardening from the loops 0.1.0 ship's final adversarial round. None of these cases occurs

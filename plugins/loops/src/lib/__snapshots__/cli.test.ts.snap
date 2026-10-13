@@ -15,8 +15,9 @@ exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`]
     "bad_records": 1,
     "dup_records": 1,
   },
+  "repo_errors": null,
   "schema": 1,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "w30": {
     "lenses": {
       "by_lens": {
@@ -73,6 +74,7 @@ exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`]
       "with_findings": 2,
       "with_specialists": 3,
     },
+    "repos": null,
     "sessions": {
       "compacted": 2,
       "compacted_10plus": 0,
@@ -164,6 +166,7 @@ exports[`loop-metrics > --dry-run prints the fixtures row and writes nothing 1`]
       "with_findings": 1,
       "with_specialists": 1,
     },
+    "repos": null,
     "sessions": {
       "compacted": 1,
       "compacted_10plus": 0,
