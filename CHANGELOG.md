@@ -3,6 +3,38 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [ship-lean 1.0.0] - 2026-10-22
+
+New plugin: a lean overlay for gstack's `/ship` skill, packaged from a
+previously hand-installed set of `~/.claude` files so the hook and agent register
+natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
+`settings.json` edit.
+
+### Added
+
+- `UserPromptSubmit` hook (`hooks/ship-playbook-hook`, python3, fail-open) that
+  injects a short overlay note when the prompt is an interactive `/ship`. Trigger
+  is `^/ship(\s|$)` only; the natural-language form is off unless `SHIP_HOOK_NL=1`.
+  Overlay and reviewers-workflow paths are resolved from `${CLAUDE_PLUGIN_ROOT}`;
+  on a non-match, unset root, or any error it emits nothing and exits 0 — it never
+  blocks or alters a prompt.
+- `ship-lean-reviewer` agent (`Read, Grep, Glob` only — read-only is harness-enforced)
+  and `playbooks/ship-lean/reviewers.workflow.js`, the parallel read-only fan-out
+  (per-lens `{lens, ok, findings}`, no silent lens drops, severity `CRITICAL|INFORMATIONAL`).
+- `playbooks/ship.md`, the ~1-page overlay. `SKILL.md` stays authoritative; it
+  overrides only Step 9 specialist dispatch + Step 11 adversarial pass (as a read-only
+  parallel Workflow over an out-of-repo patch) and the push gate, which fails toward
+  "Stop here — nothing pushed." Includes a degrade-to-standard path for when the
+  Workflow can't run (lean is interactive-only).
+- `scripts/migrate-from-manual-install.sh` (dry-run by default) and a README
+  MIGRATION section: enabling the plugin while the old manual install is present
+  double-fires the hook and duplicates the agent, so the manual files and the untagged
+  `settings.json` `UserPromptSubmit` entry must be removed first.
+- `test/ship-lean-test.sh`: hermetic, no-auth checks of the plugin's hook via
+  `${CLAUDE_PLUGIN_ROOT}` (trigger matrix, fail-open, plugin-resolved paths), static
+  manifest/JSON/syntax validation, and the `W` invariant (conditional on `gstack-wtree`).
+  Wired into CI via `tests/ship-lean-test.sh`.
+
 ## [loops 0.3.0] - 2026-10-13
 
 Per-repo metrics, the second half of Wave 0 slice 2.

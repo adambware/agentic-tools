@@ -1,0 +1,18 @@
+{
+  "name": "ship-lean",
+  "version": "1.0.0",
+  "description": "Lean overlay for gstack's /ship skill — a UserPromptSubmit hook injects a short note when you type /ship that moves ship Step 9 (specialist dispatch) and Step 11 (adversarial pass) into a read-only parallel Workflow over an out-of-repo patch file, and hardens the push gate to fail toward not pushing. gstack's SKILL.md stays authoritative; all its gates, logging, and bookkeeping run unchanged.",
+  "author": {
+    "name": "adambware"
+  },
+  "homepage": "https://github.com/adambware/agentic-tools",
+  "repository": "https://github.com/adambware/agentic-tools",
+  "license": "MIT",
+  "keywords": [
+    "hooks",
+    "agents",
+    "ship",
+    "code-review",
+    "gstack"
+  ]
+}
