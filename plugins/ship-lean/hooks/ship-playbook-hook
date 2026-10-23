@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# ship-playbook-hook — UserPromptSubmit injector for the lean /ship overlay
+# (ship-lean plugin). Paths are resolved from ${CLAUDE_PLUGIN_ROOT}, so there is
+# no machine-specific path baked in.
+#
+# Contract: read the UserPromptSubmit hook JSON on stdin. If the prompt is an
+# interactive `/ship` invocation, emit a hookSpecificOutput.additionalContext
+# note pointing at the bundled overlay and carrying the ABSOLUTE path of the
+# bundled reviewers workflow. On ANYTHING else — non-match, parse error, missing
+# field, CLAUDE_PLUGIN_ROOT unset, unexpected exception — emit nothing and exit
+# 0. It NEVER blocks or alters a prompt (no decision/block output), so a bug
+# here can only fail to inject the overlay; it can never break prompt submission.
+#
+# Trigger: `^/ship(\s|$)` only, by default. The natural-language "ship it" /
+# "ship this" form is OFF unless SHIP_HOOK_NL=1 — in a vuln-research repo
+# "ship this report/PoC" must not inject a push-oriented overlay.
+import sys, os, re, json
+
+
+def build_note(overlay, script):
+    """Build the overlay note from the plugin-resolved absolute paths."""
+    return (
+        "LEAN /ship OVERLAY IS ACTIVE for this turn.\n"
+        "Follow gstack's ship skill (~/.claude/skills/ship/SKILL.md) step by step as "
+        "loaded — it stays authoritative, and ALL of its gates, logging, telemetry, "
+        "version-bump, metrics and the Step 17 credential guard run unchanged. Apply "
+        "ONLY these two overrides from the overlay, and read the overlay in full "
+        "before Step 9:\n"
+        "  Read: " + overlay + "\n"
+        "1) Steps 9 and 11 (specialist dispatch + adversarial pass): run the reviewers "
+        "as a read-only parallel Workflow over a patch file written to this session's scratchpad "
+        "(outside the repo; do NOT add an rm -rf / trap EXIT cleanup — it trips the host safety "
+        "check; the scratchpad is auto-cleaned) "
+        "(absolute scriptPath " + script + ", "
+        "agentType ship-lean-reviewer). If the Workflow cannot run here (script won't load, or "
+        "an unattended/headless/spawned session can't approve a dynamic workflow), do NOT stop — "
+        "fall back to SKILL.md's standard in-context Step 9/11 reviewers (lean is interactive-only). "
+        "Freeze/commit first; capture the review-log --start token "
+        "in your own Bash BEFORE writing the patch; keep ONE gstack-wtree fingerprint W "
+        "across --start/--finish and the Step 11.5 read; reviewers apply ZERO fixes; "
+        "finish the review rows in your own Bash on the unchanged tree. No silent lens "
+        "drops — if any lens fails, finish the row completed:false, converged:false, "
+        "status:unavailable and STOP. All gstack-* calls run in the orchestrator Bash, "
+        "never inside a Workflow subagent.\n"
+        "2) Push gate is fail-safe: the (recommended) option is \"Stop here — nothing "
+        "pushed\"; a push happens only on a literal human AskUserQuestion selection. An "
+        "auto-decide, prose fallback, or SESSION_KIND unattended/spawned/headless is NOT "
+        "consent → print gate_pending, run gstack-skill-end in the same Bash call, stop.\n"
+        "Never `git add -A` (stage explicit paths only). This overlay does NOT run "
+        "instead of ship — it runs ship with these two steps done leaner."
+    )
+
+
+def build_context(prompt, note):
+    """Return the note if `prompt` is a ship invocation, else None."""
+    if not isinstance(prompt, str):
+        return None
+    # Match on a lowercased copy; slice args from the ORIGINAL by prefix length.
+    lc = prompt.lstrip().lower()
+    orig = prompt.lstrip()
+    m = re.match(r"^/ship(\s|$)", lc)
+    if m:
+        args = orig[len("/ship"):].strip()
+        return note + (("\nInvocation args: " + args) if args else "")
+    if os.environ.get("SHIP_HOOK_NL") == "1":
+        # Opt-in natural-language form, conservative: "ship it" / "ship this [branch/PR/change]".
+        if re.match(r"^ship\s+(it|this)(\s|$|[.!])", lc):
+            return note
+    return None
+
+
+def main():
+    try:
+        root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if not root:
+            # No plugin root → nothing to resolve; fail open.
+            return
+        overlay = os.path.join(root, "playbooks", "ship.md")
+        script = os.path.join(root, "playbooks", "ship-lean", "reviewers.workflow.js")
+        note = build_note(overlay, script)
+    except Exception:
+        return
+    try:
+        raw = sys.stdin.read()
+    except Exception:
+        return
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return
+    try:
+        if data.get("hook_event_name") not in (None, "UserPromptSubmit"):
+            return
+        ctx = build_context(data.get("prompt"), note)
+        if not ctx:
+            return
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": ctx,
+            }
+        }
+        sys.stdout.write(json.dumps(out))
+    except Exception:
+        # Fail open: emit nothing.
+        return
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

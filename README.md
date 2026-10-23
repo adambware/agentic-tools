@@ -28,6 +28,7 @@ More orchestration patterns and plugin types to come!
 | [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
 | [loops](plugins/loops/) | CLI | Loop metrics — appends one deduped baseline row of Workflow, session and gstack review-lens metrics (plus, with a private repo config, per-repo merged PRs, escape proxy and tokens per PR via `gh`) to `~/.claude/metrics/loops.jsonl`, so loop rules are kept or dropped against measured history |
 | [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight — runtimes, Docker/Compose, env files, ports, volumes, and worktrees, reported before any local command runs |
+| [ship-lean](plugins/ship-lean/) | Hook + Agent | Lean overlay for gstack's `/ship` — moves Step 9/11 reviews into a read-only parallel Workflow over an out-of-repo patch, hardens the push gate to fail toward not pushing; `SKILL.md` stays authoritative |
 
 ## Changelog & Roadmap
 

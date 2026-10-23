@@ -93,6 +93,18 @@
         "docker",
         "worktrees"
       ]
+    },
+    {
+      "name": "ship-lean",
+      "source": "./plugins/ship-lean",
+      "description": "Lean overlay for gstack's /ship — a UserPromptSubmit hook moves ship Step 9 (specialist dispatch) and Step 11 (adversarial pass) into a read-only parallel Workflow over an out-of-repo patch file, and hardens the push gate to fail toward not pushing; gstack's SKILL.md stays authoritative",
+      "keywords": [
+        "hooks",
+        "agents",
+        "ship",
+        "code-review",
+        "gstack"
+      ]
     }
   ]
 }
