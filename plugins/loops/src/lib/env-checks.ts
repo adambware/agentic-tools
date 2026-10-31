@@ -230,7 +230,7 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     GOTOOLCHAIN: "local",
     NO_COLOR: "1",
   };
-  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1000 });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {

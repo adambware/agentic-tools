@@ -33,7 +33,13 @@ export function envCheckMain(argv: string[], d: Deps): number {
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join(root, ".loops", "env-check.toml");
   if (!existsSync(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
-  const cfg = parseConfig(readFileSync(cfgFile, "utf8"), ".loops/env-check.toml");
+  let text: string;
+  try {
+    text = readFileSync(cfgFile, "utf8");
+  } catch (e) {
+    throw new UsageError(`cannot read ${cfgFile}: ${(e as Error).message}`);
+  }
+  const cfg = parseConfig(text, ".loops/env-check.toml");
   for (const l of cfg.locals) {
     if (!isExecutable(resolve(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
   }

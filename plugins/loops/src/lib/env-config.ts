@@ -17,6 +17,8 @@ export interface LocalCheck {
   run: string;
   static: boolean;
   timeoutS: number;
+  /** timeoutS in whole milliseconds, rounded once so float error (16.1 * 1000) cannot leak into the spawn timeout. */
+  timeoutMs: number;
 }
 export interface Config {
   sharedHint: string | null;
@@ -128,10 +130,11 @@ export function parseConfig(text: string, file: string): Config {
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
-    const timeoutS = pick(t, "timeout_s", where, (v): v is number => typeof v === "number" && v > 0, "a positive number", 15);
+    const timeoutS = pick(t, "timeout_s", where, (v): v is number => typeof v === "number" && v >= 0.001 && Number.isSafeInteger(Math.round(v * 1000)), "a positive number of seconds (at least 0.001)", 15);
+    const timeoutMs = Math.round(timeoutS * 1000);
     const run = pick(t, "run", where, isStr, "a path");
     if (isAbsolute(run) || /^\.\.(\/|$)/.test(normalize(run))) throw new UsageError(`${where}: run "${run}" must be a repo-relative path`);
-    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
+    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
 }

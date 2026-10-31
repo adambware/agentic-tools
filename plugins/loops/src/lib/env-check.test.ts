@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -323,6 +323,8 @@ describe("local checks", () => {
     const t = run("exec sleep 5", "timeout_s = 0.2\n");
     expect([t.code, t.out]).toEqual([0, expect.stringContaining("WARN d.x  timed out after 0.2s (not a pass)")]);
     expect(t.out).not.toContain("printed no results");
+    // Value: protects=a timeout_s whose *1000 has float error (16.1) is accepted and spawned with a whole-millisecond timeout; fails_when=the validator checks Number.isSafeInteger(v * 1000) again; why_new=the whole-millisecond guard rejected valid values; seam=none; no_claim=none beyond protects
+    expect(run('echo "PASS d.x ok"', "timeout_s = 16.1\n")).toMatchObject({ code: 0, out: expect.stringContaining("PASS d.x  ok") });
     const ft = run('echo "FAIL d.x.early broken"\nexec sleep 5', "timeout_s = 0.5\n");
     expect([ft.code, ft.lines.slice(0, 2)]).toEqual([1, ["FAIL d.x.early  broken — fix: address the message above and re-run", "WARN d.x  timed out after 0.5s (not a pass) — fix: raise timeout_s or run .loops/checks/d_x.sh by hand"]]);
   });
@@ -393,6 +395,8 @@ describe("output and exit codes", () => {
     ["empty sources", `${HEAD}[[pins]]\ntool = "go"\nsources = []\n`, /\[\[pins\]\] #1: sources is empty/],
     ["duplicate local id", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\n[[local]]\nid = "d.a"\nrun = "b"\n`, /\[\[local\]\] #2: duplicate id d\.a/],
     ["zero timeout", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\ntimeout_s = 0\n`, /timeout_s must be a positive number/],
+    ["infinite timeout", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\ntimeout_s = inf\n`, /timeout_s must be a positive number/],
+    ["sub-millisecond timeout", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\ntimeout_s = 0.0005\n`, /timeout_s must be a positive number/],
     ["absolute local run", `${HEAD}[[local]]\nid = "d.a"\nrun = "/bin/true"\n`, /\[\[local\]\] #1: run "\/bin\/true" must be a repo-relative path/],
     ["local run outside the repo", `${HEAD}[[local]]\nid = "d.a"\nrun = "x/../../x.sh"\n`, /run "x\/\.\.\/\.\.\/x\.sh" must be a repo-relative path/],
     ["missing local check", `${HEAD}[[local]]\nid = "d.a"\nrun = ".loops/checks/nope.sh"\n`, /local check d\.a: \.loops\/checks\/nope\.sh is missing or not executable/],
@@ -413,6 +417,13 @@ describe("output and exit codes", () => {
     expect(check(setup(`engine = ">=0.4.0"\n${HEAD}`)).code).toBe(0);
     // Value: protects=an engine floor below VERSION with a higher later component (>=0.3.9) is accepted; fails_when=checkEngine compares components independently instead of stopping at the first difference; why_new=only the equal floor was tested; seam=none; no_claim=none beyond protects
     expect(check(setup(`engine = ">=0.3.9"\n${HEAD}`)).code).toBe(0);
+  });
+
+  it("exits 2 naming the file when the config path is unreadable", () => {
+    const root = repo({ "README.md": "x\n" });
+    mkdirSync(join(root, CFG), { recursive: true });
+    const r = check(root);
+    expect([r.code, r.err]).toEqual([2, expect.stringContaining(`cannot read ${join(root, CFG)}`)]);
   });
 
   it("exits 2 when git ls-files fails on a corrupt index", () => {
