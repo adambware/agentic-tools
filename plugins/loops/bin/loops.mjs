@@ -945,12 +945,18 @@ var fcmp = (a, b) => {
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
   return 0;
 };
+var above = (v) => {
+  const p = v.split(".").map(Number);
+  p[p.length - 1]++;
+  while (p.length < 3) p.push(0);
+  return p.join(".");
+};
 function lowerBound(expr, tool) {
   const lows = expr.split("||").map((alt) => {
     const bounds = [];
-    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~>?|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)([-+][\w.-]+)?/g)) {
       const v = m[1]?.startsWith("<") ? null : ver(m[2]);
-      if (v) bounds.push(v);
+      if (v) bounds.push(m[1] === ">" && !m[3]?.startsWith("-") ? above(v) : v);
     }
     if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
     return bounds.sort(fcmp).at(-1);
@@ -1292,21 +1298,79 @@ function derive(c, root) {
   const hash = createHash("sha1").update(rp(root)).digest("hex").slice(0, 6);
   return `${norm(basename2(main2))}-${norm(basename2(root)).slice(0, 24)}-${hash}`;
 }
+function parseDotEnv(file) {
+  let text;
+  try {
+    text = readFileSync2(file, "utf8");
+  } catch {
+    return {};
+  }
+  const out = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const v = m[2];
+    out[m[1]] = /^(["'])(.*?)\1/.exec(v)?.[2] ?? v.replace(/(^|\s)#.*$/, "").trim();
+  }
+  return out;
+}
+function interpolate(raw, env) {
+  let bad = false;
+  const out = raw.replace(/\$(?:\$|\{(\w+)(?:(:?[-?])([^}]*))?\}|(\w+))/g, (m, braced, op, arg = "", bare) => {
+    if (m === "$$") return "$";
+    const v = env[braced ?? bare];
+    const set = op?.startsWith(":") ? !!v : v !== void 0;
+    if (op?.endsWith("?") ? !set : !op && v === void 0) bad = true;
+    return set ? v : op?.endsWith("-") ? arg : "";
+  });
+  return bad || out.includes("$") ? null : out;
+}
+var normProject = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+var scalar = (s) => /^(["'])(.*?)\1/.exec(s.trim())?.[2] ?? s.replace(/(^|\s)#.*$/, "").trim();
+function declaredName(c, dir) {
+  const env = { ...parseDotEnv(join3(dir, ".env")), ...c.env };
+  let last;
+  for (const f of c.cfg.compose.files) {
+    if (!existsSync2(join3(dir, f))) continue;
+    const lines = readFileSync2(join3(dir, f), "utf8").split(/\r?\n/);
+    lines.forEach((line, i) => {
+      const m = /^name:[ \t]*(.*)$/.exec(line);
+      if (!m) return;
+      let raw = scalar(m[1]);
+      if (!raw) {
+        const next = lines.slice(i + 1).find((l) => l.trim() && !/^\s*#/.test(l));
+        if (next && /^[ \t]+\S/.test(next) && !/:(\s|$)/.test(scalar(next))) raw = scalar(next);
+      }
+      if (!raw) return;
+      const v = interpolate(raw, env);
+      if (v === null) last = { bad: raw };
+      else if (v !== "") last = normProject(v) || { bad: raw };
+    });
+  }
+  return last;
+}
 function composeProject(c) {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose;
   const present = files.filter((f) => existsSync2(join3(c.root, f)));
   if (!present.length) return { name: null, result: res("FAIL", id, `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`) };
-  const nameIn = (dir) => existsSync2(join3(dir, present[0])) ? /^name:\s*["']?([\w.-]+)/m.exec(readFileSync2(join3(dir, present[0]), "utf8"))?.[1] ?? null : null;
-  const declared = nameIn(c.root);
+  const missing = files.filter((f) => !present.includes(f));
+  if (missing.length) return { name: null, result: res("FAIL", id, `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`) };
+  const mine = declaredName(c, c.root);
+  const declared = typeof mine === "string" ? mine : null;
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
+  const unresolved = (d, whose = "") => ({ name: null, result: res("FAIL", id, `${whose}compose name: ${d.bad} cannot be resolved`, "set the variable it uses, or declare a literal name: in the compose file") });
+  const envName = c.env.COMPOSE_PROJECT_NAME || parseDotEnv(join3(c.root, ".env")).COMPOSE_PROJECT_NAME || null;
+  if (typeof mine === "object" && !c.isWorktree && !envName) return unresolved(mine);
   const main2 = c.worktrees[0] ?? c.root;
-  const prod = (c.isWorktree ? nameIn(main2) ?? declared : declared) ?? derive(c, main2);
-  const envName = c.env.COMPOSE_PROJECT_NAME || null;
+  const theirs = c.isWorktree ? declaredName(c, main2) : mine;
+  const mainEnvName = normProject(parseDotEnv(join3(main2, ".env")).COMPOSE_PROJECT_NAME ?? "");
+  if (c.isWorktree && typeof theirs === "object" && !mainEnvName) return unresolved(theirs, "the main checkout's ");
+  const prod = mainEnvName || ((c.isWorktree ? (typeof theirs === "string" ? theirs : void 0) ?? declared : declared) ?? derive(c, main2));
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : declared ?? derive(c, c.root));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";
   const clash = c.worktrees.filter((w) => rp(w) !== rp(c.root) && derive(c, w) === name);
-  if (c.isWorktree && name === prod) {
+  if (c.isWorktree && normProject(name) === prod) {
     return { name, result: res("FAIL", id, `worktree would use the main checkout's project name ${name}`, 'set COMPOSE_PROJECT_NAME, or use derive = "slug-hash"') };
   }
   if (clash.length) return { name, result: res("FAIL", id, `project name ${name} also derives for worktree ${clash[0]}`, 'rename a worktree, or use derive = "slug-hash"') };
