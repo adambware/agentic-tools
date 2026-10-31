@@ -899,7 +899,7 @@ function globToRegExp(g) {
       i++;
     }
   }
-  return new RegExp(`^${r}$`);
+  return new RegExp(`^${r}$`, "s");
 }
 function compileGlob(token) {
   return expandBraces(token).map(globToRegExp);
@@ -919,7 +919,7 @@ var IMAGE = { go: "golang" };
 var toolVersions = (text, tool) => {
   for (const line of text.split("\n")) {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    if (m && (ALIAS[tool] ?? [tool]).includes(m[1])) return hit(m[2]);
+    if (m && (Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool]).includes(m[1])) return hit(m[2]);
   }
   return [];
 };
@@ -1000,7 +1000,7 @@ var splitSource = (spec) => {
   const i = spec.indexOf(":");
   return i < 0 ? [spec, void 0] : [spec.slice(0, i), spec.slice(i + 1)];
 };
-var isSourceKind = (spec) => splitSource(spec)[0] in KINDS;
+var isSourceKind = (spec) => Object.hasOwn(KINDS, splitSource(spec)[0]);
 function readSource(root, tracked, tool, spec) {
   const [kind, path] = splitSource(spec);
   const k = KINDS[kind];
@@ -1175,7 +1175,7 @@ function pinChecks(c) {
     const want = pinOf(vals, pin.compare);
     out.push(res("PASS", id, `${pin.tool} ${want} (${[...new Set(vals.map((v) => v.src))].join(", ")})`));
     if (c.static || pin.local === "off") continue;
-    const [bin, args] = VERSION_CMD[pin.tool] ?? [pin.tool, ["--version"]];
+    const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool] : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" } });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
@@ -1191,13 +1191,13 @@ function sharedCheck(c) {
   if (c.cfg.sharedHint === null) return [];
   if (c.static) return [res("SKIP", "c.shared", "not checked in --static mode")];
   if (c.isWorktree) return [res("PASS", "c.shared", "in a linked worktree")];
-  if (c.env.ENV_CHECK_ALLOW_MAIN) return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
+  if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
 }
 function autoEntrypoints(c) {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = /* @__PURE__ */ new Set();
-  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)))) {
+  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join3(c.root, t)))) {
     for (const m of readFileSync2(join3(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
   }
   return [...found].sort();
@@ -1219,8 +1219,8 @@ function harnessChecks(c) {
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
   if (h.tracked) {
-    const deleted = (git(c.run, c.root, ["ls-files", "-d"]) ?? "").split("\n").filter(Boolean);
-    const lost = (git(c.run, c.root, ["ls-files", "-s"]) ?? "").split("\n").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
+    const deleted = (git(c.run, c.root, ["ls-files", "-d", "-z"]) ?? "").split("\0").filter(Boolean);
+    const lost = (git(c.run, c.root, ["ls-files", "-s", "-z"]) ?? "").split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
     const parts = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts.length ? res("FAIL", "d.tracked", parts.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
@@ -1255,19 +1255,20 @@ function composeProject(c) {
   if (clash.length) return { name, result: res("FAIL", id, `project name ${name} also derives for worktree ${clash[0]}`, 'rename a worktree, or use derive = "slug-hash"') };
   return { name, result: res("PASS", id, `${name} (${source})`) };
 }
+var DOCKER_TIMEOUT_MS = 1e4;
 function containersCheck(c, project) {
   const cfg = c.cfg.compose;
   const id = "b.containers";
   if (!cfg.inputs.length || !project) return [];
-  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root });
-  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, or the daemon is down)")];
+  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root, timeoutMs: DOCKER_TIMEOUT_MS });
+  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, the daemon is down, or it did not answer in 10s)")];
   const running = ids.stdout.split("\n").filter(Boolean);
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
   const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
-  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root });
+  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root, timeoutMs: DOCKER_TIMEOUT_MS });
   if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
   const stale = info.stdout.split("\n").map((l) => l.trim().split(" ")).filter(([name, created]) => name && Date.parse(created ?? "") < ct * 1e3).map(([name]) => name.replace(/^\//, ""));
   const fix = `docker compose -p ${project} up -d --build`;
@@ -1309,7 +1310,7 @@ function runLocal(c, l, project) {
   const out = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
     const m = LINE.exec(line);
-    if (m && m[2].startsWith(l.id)) out.push(mk(m[1], m[2], m[3], m[4]));
+    if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id starting with the configured id"));
   }
   const stderr = r.stderr.trim().split("\n")[0] ?? "";
@@ -1347,7 +1348,7 @@ function envCheckMain(argv, d) {
     if (!isExecutable(resolve(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
   }
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const tracked = (git(d.run, root, ["ls-files"]) ?? "").split("\n").filter(Boolean);
+  const tracked = (git(d.run, root, ["ls-files", "-z"]) ?? "").split("\0").filter(Boolean);
   let isWorktree = false;
   let worktrees = [];
   if (!isStatic) {

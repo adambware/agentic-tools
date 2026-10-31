@@ -48,6 +48,7 @@ describe("glob", () => {
     ["src/{api,{db,ui}}/**", "src/ui/x.go", true],
     ["a.b", "axb", false], // dots are literal
     ["Makefile", "makefile", false], // case-sensitive
+    [".github/**", ".github/workflows/x\n.yml", true], // ** crosses a newline in a filename, so a red row still matches
   ];
   it.each(cases)("%s vs %s", (g, p, want) => {
     expect(compileGlob(g).some((re) => re.test(p))).toBe(want);

@@ -39,7 +39,7 @@ export function envCheckMain(argv: string[], d: Deps): number {
   }
 
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const tracked = (git(d.run, root, ["ls-files"]) ?? "").split("\n").filter(Boolean);
+  const tracked = (git(d.run, root, ["ls-files", "-z"]) ?? "").split("\0").filter(Boolean);
   let isWorktree = false;
   let worktrees: string[] = [];
   if (!isStatic) {

@@ -26,7 +26,7 @@ const IMAGE: Record<string, string> = { go: "golang" };
 const toolVersions: Parser = (text, tool) => {
   for (const line of text.split("\n")) {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    if (m && (ALIAS[tool] ?? [tool]).includes(m[1]!)) return hit(m[2]);
+    if (m && (Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool]).includes(m[1]!)) return hit(m[2]);
   }
   return [];
 };
@@ -114,7 +114,7 @@ export const splitSource = (spec: string): [string, string | undefined] => {
   const i = spec.indexOf(":");
   return i < 0 ? [spec, undefined] : [spec.slice(0, i), spec.slice(i + 1)];
 };
-export const isSourceKind = (spec: string): boolean => splitSource(spec)[0] in KINDS;
+export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, splitSource(spec)[0]);
 
 /** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. */
 export function readSource(root: string, tracked: string[], tool: string, spec: string): PinValue[] {

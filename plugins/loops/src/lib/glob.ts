@@ -66,7 +66,7 @@ export function globToRegExp(g: string): RegExp {
       i++;
     }
   }
-  return new RegExp(`^${r}$`);
+  return new RegExp(`^${r}$`, "s");
 }
 
 /** Compile a glob with braces: a path matches when any expansion matches. */

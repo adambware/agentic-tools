@@ -470,7 +470,10 @@ A container older than that commit is `containers` severity (FAIL by default). D
 down, or no running container, is a SKIP ("stack down"), never a WARN.
 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
-a timeout. It must be read-only, offline, and never print secret values. It prints one line per
+a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
+(local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
+`timeout_s` stops the check itself; a child it leaves running can hold the run open, so `exec`
+long commands. It prints one line per
 result on stdout:
 
 ```

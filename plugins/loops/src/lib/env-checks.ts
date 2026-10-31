@@ -65,7 +65,7 @@ export function pinChecks(c: Ctx): Result[] {
     const want = pinOf(vals, pin.compare);
     out.push(res("PASS", id, `${pin.tool} ${want} (${[...new Set(vals.map((v) => v.src))].join(", ")})`));
     if (c.static || pin.local === "off") continue;
-    const [bin, args] = VERSION_CMD[pin.tool] ?? [pin.tool, ["--version"]];
+    const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" } });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
@@ -82,7 +82,7 @@ export function sharedCheck(c: Ctx): Result[] {
   if (c.cfg.sharedHint === null) return [];
   if (c.static) return [res("SKIP", "c.shared", "not checked in --static mode")];
   if (c.isWorktree) return [res("PASS", "c.shared", "in a linked worktree")];
-  if (c.env.ENV_CHECK_ALLOW_MAIN) return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
+  if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
 }
 
@@ -90,7 +90,7 @@ export function sharedCheck(c: Ctx): Result[] {
 function autoEntrypoints(c: Ctx): string[] {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = new Set<string>();
-  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)))) {
+  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync(join(c.root, t)))) {
     for (const m of readFileSync(join(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]!);
   }
   return [...found].sort();
@@ -113,9 +113,9 @@ export function harnessChecks(c: Ctx): Result[] {
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
   if (h.tracked) {
-    const deleted = (git(c.run, c.root, ["ls-files", "-d"]) ?? "").split("\n").filter(Boolean);
-    const lost = (git(c.run, c.root, ["ls-files", "-s"]) ?? "")
-      .split("\n")
+    const deleted = (git(c.run, c.root, ["ls-files", "-d", "-z"]) ?? "").split("\0").filter(Boolean);
+    const lost = (git(c.run, c.root, ["ls-files", "-s", "-z"]) ?? "")
+      .split("\0")
       .flatMap((l) => (l.startsWith("100755 ") ? [l.split("\t")[1] ?? ""] : []))
       .filter((p) => p && existsSync(join(c.root, p)) && !isExecutable(join(c.root, p)));
     const parts = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
@@ -162,19 +162,21 @@ export function composeProject(c: Ctx): { name: string | null; result: Result } 
  * newest commit touching a `[compose] inputs` glob is running stale code. Docker (via the injected
  * Runner) being absent or down, or the stack not running, is a SKIP, never a WARN.
  */
+const DOCKER_TIMEOUT_MS = 10_000;
+
 export function containersCheck(c: Ctx, project: string | null): Result[] {
   const cfg = c.cfg.compose!;
   const id = "b.containers";
   if (!cfg.inputs.length || !project) return [];
-  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root });
-  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, or the daemon is down)")];
+  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root, timeoutMs: DOCKER_TIMEOUT_MS });
+  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, the daemon is down, or it did not answer in 10s)")];
   const running = ids.stdout.split("\n").filter(Boolean);
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
   const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
-  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root });
+  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root, timeoutMs: DOCKER_TIMEOUT_MS });
   if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
   const stale = info.stdout
     .split("\n")
@@ -227,7 +229,7 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   const out: Result[] = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
     const m = LINE.exec(line);
-    if (m && m[2]!.startsWith(l.id)) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]));
+    if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id starting with the configured id"));
   }
   const stderr = r.stderr.trim().split("\n")[0] ?? "";

@@ -98,6 +98,7 @@ describe("c.shared", () => {
     commit(root);
     const r = check(root);
     expect([r.code, r.lines[0]]).toEqual([1, "FAIL c.shared  this is the shared checkout; agents and branches belong in a worktree — fix: git worktree add .claude/worktrees/<name>"]);
+    expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "0" }).code).toBe(1); // only "1" allows it
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 0, out: expect.stringContaining("INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN") });
     expect(check(worktree(root, "feat-x")).lines[0]).toBe("PASS c.shared  in a linked worktree");
   });
@@ -127,6 +128,9 @@ describe("harness", () => {
     const r = run('entrypoints = "auto"', files);
     expect(r.out).toContain("FAIL d.entrypoints  missing or not executable: scripts/x.sh — fix: chmod +x scripts/x.sh");
     expect(run('entrypoints = ["bin/ci.sh"]', files).out).toContain("PASS d.entrypoints  1 executable");
+    // A tracked workflow deleted from the worktree is d.tracked's finding, not a crash.
+    const gone = run('entrypoints = "auto"\ntracked = true', files, (root) => rmSync(join(root, ".github/workflows/ci.yml")));
+    expect([gone.code, gone.out]).toEqual([1, expect.stringContaining("FAIL d.tracked  deleted: .github/workflows/ci.yml")]);
   });
 
   it("d.tracked catches a deleted tracked file and a lost exec bit", () => {
@@ -137,6 +141,9 @@ describe("harness", () => {
       chmodSync(join(root, "run.sh"), 0o644);
     });
     expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL d.tracked  deleted: a.txt; exec bit lost: run.sh")]);
+    // git quotes non-ASCII names unless -z; the report names the file as it is on disk.
+    const u = run("tracked = true", { "ü.txt": "u\n" }, (root) => rmSync(join(root, "ü.txt")));
+    expect(u.out).toContain("FAIL d.tracked  deleted: ü.txt");
   });
 
   it("d.sparse warns when sparse checkout is on", () => {
@@ -285,6 +292,7 @@ describe("local checks", () => {
   it.each([
     ["an unparseable line", 'echo "all good"', /FAIL d\.x\.protocol {2}unparseable line: all good/],
     ["an id outside the configured one", 'echo "PASS other.id ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS other\.id ok/],
+    ["an id that only shares a prefix", 'echo "PASS d.xy ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS d\.xy ok/],
     ["no output", "true", /FAIL d\.x {2}printed no results/],
     ["a nonzero exit without a FAIL line", 'echo "PASS d.x fine"\necho boom >&2\nexit 4', /FAIL d\.x {2}exited 4 without a FAIL line \(boom\)/],
   ])("fails closed on %s", (_n, script, re) => {
@@ -356,6 +364,7 @@ describe("output and exit codes", () => {
     ["unknown top-level key", `${HEAD}colour = 1\n`, /unknown key "colour"/],
     ["unknown pins key", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\nfoo = 1\n`, /\[\[pins\]\] #1: unknown key "foo"/],
     ["unknown source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["gomod"]\n`, /unknown source kind in "gomod"/],
+    ["inherited source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["constructor"]\n`, /unknown source kind in "constructor"/],
     ["bad compare", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\ncompare = "close"\n`, /compare must be exact\|minor\|major\|floor/],
     ["engine too new", `engine = ">=9.0.0"\n${HEAD}`, /needs loops >=9\.0\.0, this is 0\.4\.0; update agentic-tools/],
     ["engine odd form", `engine = "^0.4"\n${HEAD}`, /engine must look like ">=0\.4\.0"/],
