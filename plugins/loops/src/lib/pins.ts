@@ -37,13 +37,35 @@ const plain: Parser = (text) => {
 };
 const goMod: Parser = (text, tool) =>
   tool !== "go" ? [] : hit(/^toolchain\s+go(\S+)/m.exec(text)?.[1] ?? /^go\s+(\S+)/m.exec(text)?.[1]);
-const engines: Parser = (text, tool) => {
+type Pkg = { engines?: Record<string, unknown>; volta?: Record<string, unknown> };
+const pkg = (text: string): Pkg => {
   try {
-    const e = (JSON.parse(text) as { engines?: Record<string, unknown> }).engines?.[tool];
-    return typeof e === "string" ? hit(e, true) : [];
+    return JSON.parse(text) as Pkg;
   } catch {
     throw new PinError("not valid JSON");
   }
+};
+/** The lowest lower bound of an npm range (`>=18 <21`, `^18 || ^20`); `<20` alone has none. */
+function lowerBound(expr: string, tool: string): string {
+  const lows = expr.split("||").map((alt) => {
+    for (const m of alt.matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+      const v = m[1]?.startsWith("<") ? null : ver(m[2]!);
+      if (v) return v;
+    }
+    throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+  });
+  return lows.sort((a, b) => cmp(a, b))[0]!;
+}
+const engines: Parser = (text, tool) => {
+  const e = pkg(text).engines?.[tool];
+  return typeof e === "string" ? [{ v: lowerBound(e, tool), floor: true }] : [];
+};
+/** `node-version-file: package.json` reads `volta.node`, else `engines.node` as a floor. */
+const pkgVersion: Parser = (text, tool, root) => {
+  const volta = pkg(text).volta?.[tool];
+  const out = typeof volta === "string" ? hit(volta) : engines(text, tool, root);
+  if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
+  return out;
 };
 const dockerfile: Parser = (text, tool) => {
   const out: Found = [];
@@ -59,7 +81,7 @@ const dockerfile: Parser = (text, tool) => {
 /** `-file` inputs of the setup-* actions point at one of the simple version files. */
 function byName(file: string): Parser {
   const b = basename(file);
-  return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : plain;
+  return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : b === "package.json" ? pkgVersion : plain;
 }
 
 /** Workflow actions whose `with:` input pins a tool: kind -> [action, tool, input key]. */
@@ -103,11 +125,11 @@ const KINDS: Record<string, { file: string; parse: Parser }> = {
   "go-mod": { file: "go.mod", parse: goMod },
   engines: { file: "package.json", parse: engines },
   dockerfile: { file: "Dockerfile", parse: dockerfile },
-  "setup-go": { file: ".github/workflows/*.yml", parse: setup("setup-go") },
-  "setup-node": { file: ".github/workflows/*.yml", parse: setup("setup-node") },
-  "setup-python": { file: ".github/workflows/*.yml", parse: setup("setup-python") },
-  "golangci-action": { file: ".github/workflows/*.yml", parse: setup("golangci-action") },
-  "goreleaser-action": { file: ".github/workflows/*.yml", parse: setup("goreleaser-action") },
+  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go") },
+  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node") },
+  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python") },
+  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
+  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") },
 };
 
 export const splitSource = (spec: string): [string, string | undefined] => {
@@ -148,8 +170,12 @@ export function cmp(a: string, b: string, depth = 3): number {
 }
 const maxFloor = (vals: PinValue[]): string | null => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => cmp(b, a))[0] ?? null;
 
-/** The version a pin stands for: the highest floor in floor mode, else the first source's. */
-export const pinOf = (vals: PinValue[], mode: Compare): string => (mode === "floor" ? maxFloor(vals) ?? vals[0]!.v : vals[0]!.v);
+const parts = (v: string): number => v.split(".").length;
+/** The version a pin stands for: the highest floor in floor mode, else the most specific source's (first on a tie). */
+export const pinOf = (vals: PinValue[], mode: Compare): string =>
+  mode === "floor" ? maxFloor(vals) ?? vals[0]!.v : pinned(vals).reduce((a, b) => (parts(b.v) > parts(a.v) ? b : a)).v;
+/** Pinned versions win over floors: a lower bound never becomes the exact pin. */
+const pinned = (vals: PinValue[]): PinValue[] => (vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals);
 
 /** Why the sources disagree, or null when they agree. */
 export function disagreement(vals: PinValue[], mode: Compare): string | null {
@@ -159,9 +185,8 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
     const bad = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
     return bad.length ? bad.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
   }
-  const ref = vals[0]!;
-  const bad = vals.filter((x) => cmp(x.v, ref.v, DEPTH[mode]) !== 0);
-  return bad.length ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+  const bad = vals.some((x, i) => vals.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
+  return bad ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
 
 /** Does a local toolchain version satisfy the pin? */

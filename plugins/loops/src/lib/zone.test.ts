@@ -72,6 +72,7 @@ describe("parseRiskZones", () => {
     ["no schema", doc(ROWS, "> no version here"), /^rz\.md:1: missing "Schema version/],
     ["schema 2", doc(ROWS, "> Schema version 2."), /^rz\.md:3: schema 2 unsupported by loops 0\.4\.0/],
     ["unknown zone", doc(["| `a` | orange | no | none | x |"]), /^rz\.md:8: unknown zone "orange"/],
+    ["inherited zone name", doc(["| `a` | constructor | no | none | x |"]), /^rz\.md:8: unknown zone "constructor"/],
     ["bad prod", doc(["| `a` | red | maybe | none | x |"]), /^rz\.md:8: Prod must be yes, no or \?/],
     ["wrong columns", doc(["| `a` | red | no | none |"]), /^rz\.md:8: expected 5 columns, found 4/],
     ["no backticks", doc(["| a | red | no | none | x |"]), /^rz\.md:8: Glob cell has no backticked glob/],
@@ -165,6 +166,8 @@ judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / tr
     expect([badDoc.code, badDoc.err]).toEqual([2, expect.stringMatching(/rz\.md:8: unknown zone "pink"/)]);
     const noShip = zone(tmp(), ["--file", withDoc(doc().replace(/- red:.*\n/, "")), "--paths", "Makefile"]);
     expect([noShip.code, noShip.err]).toEqual([2, expect.stringContaining('no "- red:" bullet')]);
+    const noShipJson = zone(tmp(), ["--file", withDoc(doc().replace(/- red:.*\n/, "")), "--paths", "Makefile", "--json"]);
+    expect([noShipJson.code, noShipJson.out, noShipJson.err]).toEqual([2, "", expect.stringContaining('no "- red:" bullet')]);
     expect(zone(tmp(), ["--file", withDoc(), "--bogus"]).code).toBe(2);
     expect(zone(tmp(), ["--file", withDoc(), "--paths", "a", "--stdin"]).code).toBe(2);
     expect(zone(tmp(), ["--file", "/nonexistent/rz.md", "--paths", "a"]).code).toBe(2);
@@ -197,6 +200,14 @@ judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / tr
       put(root, "ignored.log", "i\n");
       expect(paths(root)).toEqual([".gitignore", "Makefile", "untracked.txt"]);
       expect(zone(root, ["--committed"]).out).toBe("zone: none");
+    });
+
+    it("includes staged paths whose working copy was restored to HEAD", () => {
+      const root = setup();
+      put(root, "Makefile", "all:\n\techo\n");
+      sh(root, "add", "Makefile");
+      put(root, "Makefile", "all:\n");
+      expect(paths(root)).toEqual(["Makefile"]);
     });
 
     it("resolves the base as origin/HEAD, origin/main, main, or --base", () => {

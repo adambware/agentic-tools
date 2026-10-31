@@ -8,7 +8,10 @@ import { readFileSync as readFileSync5 } from "node:fs";
 // src/lib/env-check.ts
 import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join4, resolve } from "node:path";
+import { join as join4, resolve as resolve2 } from "node:path";
+
+// src/lib/env-config.ts
+import { isAbsolute, normalize } from "node:path";
 
 // node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
@@ -844,18 +847,18 @@ import { basename, join as join2 } from "node:path";
 
 // src/lib/glob.ts
 function splitTop(s) {
-  const parts = [];
+  const parts2 = [];
   let depth = 0;
   let cur = "";
   for (const ch of s) {
     if (ch === "{") depth++;
     if (ch === "}") depth--;
     if (ch === "," && depth === 0) {
-      parts.push(cur);
+      parts2.push(cur);
       cur = "";
     } else cur += ch;
   }
-  return [...parts, cur];
+  return [...parts2, cur];
 }
 function expandBraces(g) {
   let depth = 0;
@@ -867,9 +870,9 @@ function expandBraces(g) {
     } else if (c === "}") {
       if (depth === 0) throw new UsageError(`unbalanced "}" in ${g}`);
       if (--depth === 0) {
-        const parts = splitTop(g.slice(start + 1, i));
-        if (parts.length < 2) throw new UsageError(`brace group without a comma in ${g} ({a..b} is not supported)`);
-        return parts.flatMap((p) => expandBraces(g.slice(0, start) + p + g.slice(i + 1)));
+        const parts2 = splitTop(g.slice(start + 1, i));
+        if (parts2.length < 2) throw new UsageError(`brace group without a comma in ${g} ({a..b} is not supported)`);
+        return parts2.flatMap((p) => expandBraces(g.slice(0, start) + p + g.slice(i + 1)));
       }
     }
   }
@@ -929,13 +932,32 @@ var plain = (text) => {
   return [{ v }];
 };
 var goMod = (text, tool) => tool !== "go" ? [] : hit(/^toolchain\s+go(\S+)/m.exec(text)?.[1] ?? /^go\s+(\S+)/m.exec(text)?.[1]);
-var engines = (text, tool) => {
+var pkg = (text) => {
   try {
-    const e = JSON.parse(text).engines?.[tool];
-    return typeof e === "string" ? hit(e, true) : [];
+    return JSON.parse(text);
   } catch {
     throw new PinError("not valid JSON");
   }
+};
+function lowerBound(expr, tool) {
+  const lows = expr.split("||").map((alt) => {
+    for (const m of alt.matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+      const v = m[1]?.startsWith("<") ? null : ver(m[2]);
+      if (v) return v;
+    }
+    throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+  });
+  return lows.sort((a, b) => cmp(a, b))[0];
+}
+var engines = (text, tool) => {
+  const e = pkg(text).engines?.[tool];
+  return typeof e === "string" ? [{ v: lowerBound(e, tool), floor: true }] : [];
+};
+var pkgVersion = (text, tool, root) => {
+  const volta = pkg(text).volta?.[tool];
+  const out = typeof volta === "string" ? hit(volta) : engines(text, tool, root);
+  if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
+  return out;
 };
 var dockerfile = (text, tool) => {
   const out = [];
@@ -949,7 +971,7 @@ var dockerfile = (text, tool) => {
 };
 function byName(file) {
   const b = basename(file);
-  return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : plain;
+  return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : b === "package.json" ? pkgVersion : plain;
 }
 var ACTIONS = {
   "setup-go": ["actions/setup-go", "go", "go-version"],
@@ -990,11 +1012,11 @@ var KINDS = {
   "go-mod": { file: "go.mod", parse: goMod },
   engines: { file: "package.json", parse: engines },
   dockerfile: { file: "Dockerfile", parse: dockerfile },
-  "setup-go": { file: ".github/workflows/*.yml", parse: setup("setup-go") },
-  "setup-node": { file: ".github/workflows/*.yml", parse: setup("setup-node") },
-  "setup-python": { file: ".github/workflows/*.yml", parse: setup("setup-python") },
-  "golangci-action": { file: ".github/workflows/*.yml", parse: setup("golangci-action") },
-  "goreleaser-action": { file: ".github/workflows/*.yml", parse: setup("goreleaser-action") }
+  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go") },
+  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node") },
+  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python") },
+  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
+  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") }
 };
 var splitSource = (spec) => {
   const i = spec.indexOf(":");
@@ -1027,7 +1049,9 @@ function cmp(a, b, depth = 3) {
   return 0;
 }
 var maxFloor = (vals) => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => cmp(b, a))[0] ?? null;
-var pinOf = (vals, mode) => mode === "floor" ? maxFloor(vals) ?? vals[0].v : vals[0].v;
+var parts = (v) => v.split(".").length;
+var pinOf = (vals, mode) => mode === "floor" ? maxFloor(vals) ?? vals[0].v : pinned(vals).reduce((a, b) => parts(b.v) > parts(a.v) ? b : a).v;
+var pinned = (vals) => vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals;
 function disagreement(vals, mode) {
   if (mode === "floor") {
     const fl = maxFloor(vals);
@@ -1035,9 +1059,8 @@ function disagreement(vals, mode) {
     const bad2 = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
     return bad2.length ? bad2.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
   }
-  const ref = vals[0];
-  const bad = vals.filter((x) => cmp(x.v, ref.v, DEPTH[mode]) !== 0);
-  return bad.length ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+  const bad = vals.some((x, i) => vals.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
+  return bad ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
 var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
 
@@ -1135,7 +1158,9 @@ function parseConfig(text, file) {
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v > 0, "a positive number", 15);
-    return { id, run: pick(t, "run", where, isStr, "a path"), static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
+    const run2 = pick(t, "run", where, isStr, "a path");
+    if (isAbsolute(run2) || /^\.\.(\/|$)/.test(normalize(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
+    return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
   });
   return { sharedHint, pins, harness, compose, locals };
 }
@@ -1143,7 +1168,7 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 import { createHash } from "node:crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync, statSync as statSync2 } from "node:fs";
-import { basename as basename2, join as join3 } from "node:path";
+import { basename as basename2, join as join3, resolve } from "node:path";
 var res = (level, id, message, fix) => ({ level, id, message, fix, source: "builtin" });
 var CFG = ".loops/env-check.toml";
 var rp = (p) => {
@@ -1218,11 +1243,13 @@ function harnessChecks(c) {
     const bad = entries.filter((e) => !isExecutable(join3(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
-  if (h.tracked) {
-    const deleted = (git(c.run, c.root, ["ls-files", "-d", "-z"]) ?? "").split("\0").filter(Boolean);
-    const lost = (git(c.run, c.root, ["ls-files", "-s", "-z"]) ?? "").split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
-    const parts = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
-    out.push(parts.length ? res("FAIL", "d.tracked", parts.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
+  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"])) : [];
+  if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
+  else if (h.tracked) {
+    const deleted = deletedZ.split("\0").filter(Boolean);
+    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
+    const parts2 = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
+    out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
   if (h.sparse && !c.static && git(c.run, c.root, ["config", "--get", "core.sparseCheckout"])?.trim() === "true") {
     out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
@@ -1242,9 +1269,11 @@ function composeProject(c) {
   const { files, derive: how } = c.cfg.compose;
   const present = files.filter((f) => existsSync2(join3(c.root, f)));
   if (!present.length) return { name: null, result: res("FAIL", id, `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`) };
-  const declared = /^name:\s*["']?([\w.-]+)/m.exec(readFileSync2(join3(c.root, present[0]), "utf8"))?.[1] ?? null;
+  const nameIn = (dir) => existsSync2(join3(dir, present[0])) ? /^name:\s*["']?([\w.-]+)/m.exec(readFileSync2(join3(dir, present[0]), "utf8"))?.[1] ?? null : null;
+  const declared = nameIn(c.root);
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
-  const prod = declared ?? derive(c, c.worktrees[0] ?? c.root);
+  const main2 = c.worktrees[0] ?? c.root;
+  const prod = (c.isWorktree ? nameIn(main2) : declared) ?? derive(c, main2);
   const envName = c.env.COMPOSE_PROJECT_NAME || null;
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : declared ?? derive(c, c.root));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";
@@ -1304,15 +1333,15 @@ function runLocal(c, l, project) {
     GOTOOLCHAIN: "local",
     NO_COLOR: "1"
   };
-  const r = c.run(join3(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1e3 });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1e3 });
   const mk = (level, id, message, fix) => ({ level, id, message, fix, source: "local" });
-  if (r.timedOut) return [mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const out = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
     const m = LINE.exec(line);
     if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id starting with the configured id"));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
+  if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.trim().split("\n")[0] ?? "";
   const why = stderr ? ` (${stderr.slice(0, 120)})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
@@ -1345,14 +1374,16 @@ function envCheckMain(argv, d) {
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
   const cfg = parseConfig(readFileSync3(cfgFile, "utf8"), ".loops/env-check.toml");
   for (const l of cfg.locals) {
-    if (!isExecutable(resolve(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
+    if (!isExecutable(resolve2(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
   }
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const tracked = (git(d.run, root, ["ls-files", "-z"]) ?? "").split("\0").filter(Boolean);
+  const ls = d.run("git", ["ls-files", "-z"], { cwd: root });
+  if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
+  const tracked = ls.stdout.split("\0").filter(Boolean);
   let isWorktree = false;
   let worktrees = [];
   if (!isStatic) {
-    const dir = (flag) => resolve(root, git(d.run, root, ["rev-parse", flag])?.trim() ?? flag);
+    const dir = (flag) => resolve2(root, git(d.run, root, ["rev-parse", flag])?.trim() ?? flag);
     isWorktree = dir("--git-dir") !== dir("--git-common-dir");
     worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"]) ?? "").split("\n").flatMap((l) => l.startsWith("worktree ") ? [l.slice(9)] : []);
   }
@@ -1396,7 +1427,7 @@ function envCheckMain(argv, d) {
 
 // src/lib/zone-cli.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
-import { join as join5, relative, resolve as resolve2 } from "node:path";
+import { join as join5, relative, resolve as resolve3 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -1438,7 +1469,7 @@ function parseRiskZones(text, file) {
     if (cells.length !== width) fail(i + 1, `expected ${width} columns, found ${cells.length}`);
     const cell = (k) => cells[cols[k]];
     const zone = cell(1).toLowerCase();
-    if (!(zone in RANK)) fail(i + 1, `unknown zone "${cell(1)}" (green, yellow or red)`);
+    if (!Object.hasOwn(RANK, zone)) fail(i + 1, `unknown zone "${cell(1)}" (green, yellow or red)`);
     const prod = cell(2).toLowerCase();
     if (prod !== "yes" && prod !== "no" && prod !== "?") fail(i + 1, `Prod must be yes, no or ?, found "${cell(2)}"`);
     const tokens = [...cell(0).matchAll(/`([^`]+)`/g)].map((m) => m[1]);
@@ -1518,13 +1549,14 @@ function gitPaths(d, root, base, committed) {
   const paths = parseNameStatus(g(["diff", "--name-status", "-M", "-z", mergeBase, "HEAD"]));
   if (!committed) {
     paths.push(...parseNameStatus(g(["diff", "--name-status", "-M", "-z", "HEAD"])));
+    paths.push(...parseNameStatus(g(["diff", "--cached", "--name-status", "-M", "-z"])));
     paths.push(...g(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"));
   }
   return paths;
 }
 var plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 var LIST_CAP = 8;
-function renderText(rz, file, infos, s, explain) {
+function renderText(rz, ship, infos, s, explain) {
   if (s.zone === "none") return ["zone: none"];
   const lines = [`zone: ${s.zone}`];
   const note = s.unmatched ? `; ${s.unmatched} unmatched (counted as no)` : "";
@@ -1539,8 +1571,6 @@ function renderText(rz, file, infos, s, explain) {
   }
   const inc = s.unmatched ? ` incl. ${s.unmatched} unmatched` : "";
   lines.push(`paths: ${infos.length} (red ${s.counts.red}, yellow ${s.counts.yellow}${inc}, green ${s.counts.green})`);
-  const ship = rz.ship[s.zone];
-  if (ship === void 0) throw new UsageError(`${file}: no "- ${s.zone}:" bullet under "## Ship prefix"`);
   lines.push(`ship: ${ship}`);
   if (s.zone === "green") {
     const alt = ["docs-only", "trivial S0"].flatMap((k) => rz.ship[k] ? [`${k}: ${rz.ship[k]}`] : []);
@@ -1567,7 +1597,7 @@ function zoneMain(argv, d) {
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
   const root = repoRoot(d.run, d.cwd) ?? d.cwd;
-  const filePath = typeof f.file === "string" ? resolve2(d.cwd, f.file) : join5(root, "risk-zones.md");
+  const filePath = typeof f.file === "string" ? resolve3(d.cwd, f.file) : join5(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   const rz = parseRiskZones(readFileSync4(filePath, "utf8"), shown);
@@ -1579,8 +1609,9 @@ function zoneMain(argv, d) {
   const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "").trim()).filter(Boolean))].sort();
   const infos = paths.map((p) => classifyPath(rz, p));
   const s = summarize(infos);
+  const ship = s.zone === "none" ? null : rz.ship[s.zone] ?? null;
+  if (s.zone !== "none" && ship === null) throw new UsageError(`${shown}: no "- ${s.zone}:" bullet under "## Ship prefix"`);
   if (f.json) {
-    const ship = s.zone === "none" ? null : rz.ship[s.zone] ?? null;
     d.out(
       JSON.stringify({
         schema: 1,
@@ -1595,7 +1626,7 @@ function zoneMain(argv, d) {
         ship
       })
     );
-  } else d.out(renderText(rz, shown, infos, s, f.explain === true).join("\n"));
+  } else d.out(renderText(rz, ship ?? "", infos, s, f.explain === true).join("\n"));
   return 0;
 }
 

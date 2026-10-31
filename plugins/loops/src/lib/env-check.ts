@@ -39,7 +39,9 @@ export function envCheckMain(argv: string[], d: Deps): number {
   }
 
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const tracked = (git(d.run, root, ["ls-files", "-z"]) ?? "").split("\0").filter(Boolean);
+  const ls = d.run("git", ["ls-files", "-z"], { cwd: root });
+  if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
+  const tracked = ls.stdout.split("\0").filter(Boolean);
   let isWorktree = false;
   let worktrees: string[] = [];
   if (!isStatic) {

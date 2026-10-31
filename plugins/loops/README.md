@@ -437,7 +437,7 @@ allow_container_name = ["app"]
 
 [[local]]                               # a repo's own checks
 id = "d.lint-lock"                      # <a-e or x>.<name>
-run = ".loops/checks/lint-lock.sh"      # any executable; listed explicitly, never auto-discovered
+run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
 timeout_s = 15
 ```
@@ -449,12 +449,13 @@ Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files
 | `tool-versions` | `.tool-versions` | the line for the tool (`node` also matches `nodejs`) |
 | `nvmrc`, `node-version`, `python-version` | `.nvmrc`, `.node-version`, `.python-version` | the whole file |
 | `go-mod` | `go.mod` | `toolchain` if present, else `go` |
-| `engines` | `package.json` | `engines.<tool>`, as a floor |
-| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.yml` | `<tool>-version`, or the file named by `<tool>-version-file` |
-| `golangci-action`, `goreleaser-action` | `.github/workflows/*.yml` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) or `goreleaser/goreleaser-action` (tool `goreleaser`); `latest` is no version |
+| `engines` | `package.json` | `engines.<tool>`'s lowest lower bound, as a floor (`<20` alone is a FAIL) |
+| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.{yml,yaml}` | `<tool>-version`, or the file named by `<tool>-version-file` (`package.json`: `volta.node`, else `engines.node` as a floor) |
+| `golangci-action`, `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) or `goreleaser/goreleaser-action` (tool `goreleaser`); `latest` is no version |
 | `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
 
-Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`.
+Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`;
+every pair of sources must agree, and the pin is the most specific version.
 A configured source that is missing or has no version for the tool is a FAIL, never a PASS.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
 `python3 --version`, otherwise `<tool> --version`), so nothing downloads. The Compose project
@@ -480,11 +481,12 @@ result on stdout:
 (PASS|WARN|FAIL|SKIP|INFO) <id> <message>[ — fix: <fix>]
 ```
 
-`<id>` must start with the configured id. The environment has `ENV_CHECK_ROOT`,
+`<id>` must be the configured id or `<id>.<name>`. The environment has `ENV_CHECK_ROOT`,
 `ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
 (the Compose project, or empty), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
 It fails closed: an unparseable line is `FAIL <id>.protocol`; no lines is a FAIL; a nonzero exit
-without a FAIL line adds one (with the first stderr line); a timeout is a WARN, "not a pass".
+without a FAIL line adds one (with the first stderr line); a timeout adds a WARN, "not a pass",
+after any lines printed before it.
 
 **Wrapper.** `templates/env-check` is a 15-line POSIX `sh` wrapper to copy into a repo as
 `bin/env-check` (`chmod +x`). It runs `$LOOPS_BIN`, then `$HOME/bin/loops`, then `loops` on PATH,

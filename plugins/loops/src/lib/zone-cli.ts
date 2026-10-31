@@ -30,6 +30,8 @@ function gitPaths(d: Deps, root: string, base: string | undefined, committed: bo
   const paths = parseNameStatus(g(["diff", "--name-status", "-M", "-z", mergeBase, "HEAD"]));
   if (!committed) {
     paths.push(...parseNameStatus(g(["diff", "--name-status", "-M", "-z", "HEAD"])));
+    // staged paths count even when the working copy was restored to HEAD (index != HEAD == worktree)
+    paths.push(...parseNameStatus(g(["diff", "--cached", "--name-status", "-M", "-z"])));
     paths.push(...g(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"));
   }
   return paths;
@@ -38,7 +40,7 @@ function gitPaths(d: Deps, root: string, base: string | undefined, committed: bo
 const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 const LIST_CAP = 8;
 
-function renderText(rz: RiskZones, file: string, infos: PathInfo[], s: Summary, explain: boolean): string[] {
+function renderText(rz: RiskZones, ship: string, infos: PathInfo[], s: Summary, explain: boolean): string[] {
   if (s.zone === "none") return ["zone: none"];
   const lines = [`zone: ${s.zone}`];
   const note = s.unmatched ? `; ${s.unmatched} unmatched (counted as no)` : "";
@@ -53,8 +55,6 @@ function renderText(rz: RiskZones, file: string, infos: PathInfo[], s: Summary, 
   }
   const inc = s.unmatched ? ` incl. ${s.unmatched} unmatched` : "";
   lines.push(`paths: ${infos.length} (red ${s.counts.red}, yellow ${s.counts.yellow}${inc}, green ${s.counts.green})`);
-  const ship = rz.ship[s.zone];
-  if (ship === undefined) throw new UsageError(`${file}: no "- ${s.zone}:" bullet under "## Ship prefix"`);
   lines.push(`ship: ${ship}`);
   if (s.zone === "green") {
     const alt = ["docs-only", "trivial S0"].flatMap((k) => (rz.ship[k] ? [`${k}: ${rz.ship[k]}`] : []));
@@ -96,8 +96,10 @@ export function zoneMain(argv: string[], d: Deps): number {
 
   const infos = paths.map((p) => classifyPath(rz, p));
   const s = summarize(infos);
+  // validated before choosing the output format so --json and text agree on exit 2
+  const ship = s.zone === "none" ? null : (rz.ship[s.zone] ?? null);
+  if (s.zone !== "none" && ship === null) throw new UsageError(`${shown}: no "- ${s.zone}:" bullet under "## Ship prefix"`);
   if (f.json) {
-    const ship = s.zone === "none" ? null : (rz.ship[s.zone] ?? null);
     d.out(
       JSON.stringify({
         schema: 1,
@@ -112,6 +114,6 @@ export function zoneMain(argv: string[], d: Deps): number {
         ship,
       }),
     );
-  } else d.out(renderText(rz, shown, infos, s, f.explain === true).join("\n"));
+  } else d.out(renderText(rz, ship ?? "", infos, s, f.explain === true).join("\n"));
   return 0;
 }

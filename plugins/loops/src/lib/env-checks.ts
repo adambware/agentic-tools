@@ -2,7 +2,7 @@
 // Every check returns Results; a check that cannot decide fails or warns, never passes.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
@@ -112,9 +112,11 @@ export function harnessChecks(c: Ctx): Result[] {
     const bad = entries.filter((e) => !isExecutable(join(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
-  if (h.tracked) {
-    const deleted = (git(c.run, c.root, ["ls-files", "-d", "-z"]) ?? "").split("\0").filter(Boolean);
-    const lost = (git(c.run, c.root, ["ls-files", "-s", "-z"]) ?? "")
+  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"])) : [];
+  if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
+  else if (h.tracked) {
+    const deleted = deletedZ!.split("\0").filter(Boolean);
+    const lost = stagedZ!
       .split("\0")
       .flatMap((l) => (l.startsWith("100755 ") ? [l.split("\t")[1] ?? ""] : []))
       .filter((p) => p && existsSync(join(c.root, p)) && !isExecutable(join(c.root, p)));
@@ -143,9 +145,13 @@ export function composeProject(c: Ctx): { name: string | null; result: Result } 
   const { files, derive: how } = c.cfg.compose!;
   const present = files.filter((f) => existsSync(join(c.root, f)));
   if (!present.length) return { name: null, result: res("FAIL", id, `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`) };
-  const declared = /^name:\s*["']?([\w.-]+)/m.exec(readFileSync(join(c.root, present[0]!), "utf8"))?.[1] ?? null;
+  const nameIn = (dir: string): string | null =>
+    existsSync(join(dir, present[0]!)) ? (/^name:\s*["']?([\w.-]+)/m.exec(readFileSync(join(dir, present[0]!), "utf8"))?.[1] ?? null) : null;
+  const declared = nameIn(c.root);
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
-  const prod = declared ?? derive(c, c.worktrees[0] ?? c.root);
+  // A worktree may declare its own name:; the prod name is the main checkout's.
+  const main = c.worktrees[0] ?? c.root;
+  const prod = (c.isWorktree ? nameIn(main) : declared) ?? derive(c, main);
   const envName = c.env.COMPOSE_PROJECT_NAME || null;
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : (declared ?? derive(c, c.root)));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";
@@ -223,15 +229,16 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     GOTOOLCHAIN: "local",
     NO_COLOR: "1",
   };
-  const r = c.run(join(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1000 });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1000 });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
-  if (r.timedOut) return [mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const out: Result[] = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
     const m = LINE.exec(line);
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id starting with the configured id"));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
+  // What the check printed before the timeout still counts (an emitted FAIL survives).
+  if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.trim().split("\n")[0] ?? "";
   const why = stderr ? ` (${stderr.slice(0, 120)})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];

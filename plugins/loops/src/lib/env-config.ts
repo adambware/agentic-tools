@@ -1,5 +1,6 @@
 // `.loops/env-check.toml`: parse and strictly validate (unknown keys, wrong types and unsupported
 // schema versions are UsageErrors, exit 2).
+import { isAbsolute, normalize } from "node:path";
 import { parse } from "smol-toml";
 import { UsageError } from "./proc.js";
 import { isSourceKind, type Compare } from "./pins.js";
@@ -128,7 +129,9 @@ export function parseConfig(text: string, file: string): Config {
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v): v is number => typeof v === "number" && v > 0, "a positive number", 15);
-    return { id, run: pick(t, "run", where, isStr, "a path"), static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
+    const run = pick(t, "run", where, isStr, "a path");
+    if (isAbsolute(run) || /^\.\.(\/|$)/.test(normalize(run))) throw new UsageError(`${where}: run "${run}" must be a repo-relative path`);
+    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
   });
   return { sharedHint, pins, harness, compose, locals };
 }

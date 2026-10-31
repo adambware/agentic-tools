@@ -75,7 +75,7 @@ export function parseRiskZones(text: string, file: string): RiskZones {
     if (cells.length !== width) fail(i + 1, `expected ${width} columns, found ${cells.length}`);
     const cell = (k: number): string => cells[cols![k]!]!;
     const zone = cell(1).toLowerCase();
-    if (!(zone in RANK)) fail(i + 1, `unknown zone "${cell(1)}" (green, yellow or red)`);
+    if (!Object.hasOwn(RANK, zone)) fail(i + 1, `unknown zone "${cell(1)}" (green, yellow or red)`);
     const prod = cell(2).toLowerCase();
     if (prod !== "yes" && prod !== "no" && prod !== "?") fail(i + 1, `Prod must be yes, no or ?, found "${cell(2)}"`);
     const tokens = [...cell(0).matchAll(/`([^`]+)`/g)].map((m) => m[1]!);

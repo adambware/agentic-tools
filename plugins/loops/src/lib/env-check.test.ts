@@ -27,6 +27,8 @@ function worktree(root: string, name: string, parent = tmp()): string {
   sh(root, "worktree", "add", "-q", "-b", `b${n++}`, wt);
   return wt;
 }
+/** Runs everything for real, except that git ls-files `flag` fails. */
+const lsFails = (flag: string): Runner => (cmd, args, opts) => (cmd === "git" && args[0] === "ls-files" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: index file corrupt", timedOut: false } : run(cmd, args, opts));
 const withPath = (...dirs: string[]) => ({ PATH: [...dirs, process.env.PATH].join(":") });
 const goShim = (v = "1.26.1") => shim("go", `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] || exit 9\necho "go version go${v} darwin/arm64"`);
 
@@ -47,8 +49,8 @@ describe("pins and local toolchains", () => {
     const r = check(setup(GO_PIN, GO_FILES), [], withPath(goShim()));
     expect(r.code).toBe(0);
     expect(r.lines).toEqual([
-      "PASS a.pins.go  go 1.26 (go-mod:go.mod, tool-versions:.tool-versions)",
-      "PASS a.local.go  local go 1.26.1 matches pin 1.26",
+      "PASS a.pins.go  go 1.26.1 (go-mod:go.mod, tool-versions:.tool-versions)",
+      "PASS a.local.go  local go 1.26.1 matches pin 1.26.1",
       "env-check: 0 FAIL, 0 WARN, 2 PASS, 0 SKIP",
     ]);
   });
@@ -63,8 +65,8 @@ describe("pins and local toolchains", () => {
   });
 
   it.each([
-    ["warn", "1.25.0", 0, "WARN a.local.go  local go 1.25.0 does not match pin 1.26"],
-    ["fail", "1.25.0", 1, "FAIL a.local.go  local go 1.25.0 does not match pin 1.26"],
+    ["warn", "1.25.0", 0, "WARN a.local.go  local go 1.25.0 does not match pin 1.26.1"],
+    ["fail", "1.25.0", 1, "FAIL a.local.go  local go 1.25.0 does not match pin 1.26.1"],
     ["warn", "1.26.7", 0, "PASS a.local.go"], // minor compare ignores the patch
   ])("local = %s with go %s exits %i", (level, have, code, line) => {
     const root = setup(`${GO_PIN}local = "${level}"\n`, GO_FILES);
@@ -144,6 +146,9 @@ describe("harness", () => {
     // git quotes non-ASCII names unless -z; the report names the file as it is on disk.
     const u = run("tracked = true", { "ü.txt": "u\n" }, (root) => rmSync(join(root, "ü.txt")));
     expect(u.out).toContain("FAIL d.tracked  deleted: ü.txt");
+    // A failing ls-files -d is a FAIL, not "no tracked file deleted".
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, files);
+    expect(check(root, [], {}, lsFails("-d"))).toMatchObject({ code: 1, out: expect.stringContaining("FAIL d.tracked  git ls-files failed") });
   });
 
   it("d.sparse warns when sparse checkout is on", () => {
@@ -190,6 +195,10 @@ describe("compose", () => {
     worktree(root, "dup");
     const dup = check(worktree(root, "dup"));
     expect(dup.out).toMatch(/FAIL e\.project {2}project name dup also derives for worktree .*dup/);
+    // The prod name is the main checkout's name:, even when the worktree's compose file declares another.
+    const renamed = worktree(root, "app-prod");
+    put(renamed, "compose.yml", COMPOSE.replace("app-prod", "app-other"));
+    expect(check(renamed).out).toContain("FAIL e.project  worktree would use the main checkout's project name app-prod");
   });
 
   it("COMPOSE_PROJECT_NAME wins, unless it is the prod name", () => {
@@ -307,6 +316,9 @@ describe("local checks", () => {
     expect(f.lines).toEqual(["FAIL d.x  broken — fix: repair", "env-check: 1 FAIL, 0 WARN, 0 PASS, 0 SKIP"]);
     const t = run("exec sleep 5", "timeout_s = 0.2\n");
     expect([t.code, t.out]).toEqual([0, expect.stringContaining("WARN d.x  timed out after 0.2s (not a pass)")]);
+    expect(t.out).not.toContain("printed no results");
+    const ft = run('echo "FAIL d.x.early broken"\nexec sleep 5', "timeout_s = 0.5\n");
+    expect([ft.code, ft.lines.slice(0, 2)]).toEqual([1, ["FAIL d.x.early  broken — fix: address the message above and re-run", "WARN d.x  timed out after 0.5s (not a pass) — fix: raise timeout_s or run .loops/checks/d_x.sh by hand"]]);
   });
 
   it("runs only static = true checks under --static, skipping the rest", () => {
@@ -375,6 +387,8 @@ describe("output and exit codes", () => {
     ["empty sources", `${HEAD}[[pins]]\ntool = "go"\nsources = []\n`, /\[\[pins\]\] #1: sources is empty/],
     ["duplicate local id", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\n[[local]]\nid = "d.a"\nrun = "b"\n`, /\[\[local\]\] #2: duplicate id d\.a/],
     ["zero timeout", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\ntimeout_s = 0\n`, /timeout_s must be a positive number/],
+    ["absolute local run", `${HEAD}[[local]]\nid = "d.a"\nrun = "/bin/true"\n`, /\[\[local\]\] #1: run "\/bin\/true" must be a repo-relative path/],
+    ["local run outside the repo", `${HEAD}[[local]]\nid = "d.a"\nrun = "x/../../x.sh"\n`, /run "x\/\.\.\/\.\.\/x\.sh" must be a repo-relative path/],
     ["missing local check", `${HEAD}[[local]]\nid = "d.a"\nrun = ".loops/checks/nope.sh"\n`, /local check d\.a: \.loops\/checks\/nope\.sh is missing or not executable/],
   ];
   it.each(bad)("exits 2 on %s", (_n, config, re) => {
@@ -393,6 +407,13 @@ describe("output and exit codes", () => {
     expect(check(setup(`engine = ">=0.4.0"\n${HEAD}`)).code).toBe(0);
     // Value: protects=an engine floor below VERSION with a higher later component (>=0.3.9) is accepted; fails_when=checkEngine compares components independently instead of stopping at the first difference; why_new=only the equal floor was tested; seam=none; no_claim=none beyond protects
     expect(check(setup(`engine = ">=0.3.9"\n${HEAD}`)).code).toBe(0);
+  });
+
+  it("exits 2 when git ls-files fails on a corrupt index", () => {
+    const root = setup(HEAD);
+    put(root, ".git/index", "garbage, not an index");
+    const r = check(root);
+    expect([r.code, r.err]).toEqual([2, expect.stringMatching(/git ls-files failed: \S/)]);
   });
 
   it("--compose-project exits 2 when compose mode is not test", () => {

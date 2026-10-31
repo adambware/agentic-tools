@@ -23,12 +23,20 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25\n" }, ["1.25"]],
   ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25\ntoolchain go1.25.4\n" }, ["1.25.4"]],
   ["engines", "node", { "package.json": '{"engines":{"node":">=20.1 <23"}}' }, ["20.1"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">=18.17"}}' }, ["18.17"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"^20.11.0"}}' }, ["20.11.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">=18 <21"}}' }, ["18"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"^20 || ^18"}}' }, ["18"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"22.x || 16.*"}}' }, ["16"]],
   ["dockerfile", "go", { Dockerfile: "FROM golang:1.26.1-alpine AS build\nFROM alpine:3.20\nARG GO_VERSION=1.26.1\n" }, ["1.26.1", "1.26.1"]],
   ["dockerfile:build/Dockerfile", "node", { "build/Dockerfile": "FROM --platform=x node:20-slim\n" }, ["20"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: '1.26.1' # pinned")) }, ["1.26.1"]],
   ["setup-go:.github/workflows/*.yml", "go", { ".github/workflows/a.yml": WF(SETUP_GO("go-version: 1.25")), ".github/workflows/b.yml": WF("      - run: echo none") }, ["1.25"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: go.mod")), "go.mod": "go 1.24\n" }, ["1.24"]],
   ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n"), ".nvmrc": "20\n" }, ["20"]],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: package.json\n"), "package.json": '{"version":"1.2.3","engines":{"node":">=20"}}' }, ["20"]],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: package.json\n"), "package.json": '{"version":"1.2.3","volta":{"node":"22.1.0"},"engines":{"node":">=20"}}' }, ["22.1.0"]],
+  ["setup-go", "go", { ".github/workflows/ci.yaml": WF(SETUP_GO("go-version: 1.26.2")) }, ["1.26.2"]],
   ["golangci-action", "golangci-lint", { ".github/workflows/ci.yml": WF("      - uses: golangci/golangci-lint-action@v6\n        with:\n          version: v1.62.2\n          args: --timeout=5m\n") }, ["1.62.2"]],
   ["goreleaser-action", "goreleaser", { ".github/workflows/release.yml": WF("      - uses: goreleaser/goreleaser-action@v6\n        with:\n          distribution: goreleaser\n          version: \"~> v2\"\n") }, ["2"]],
   ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - name: py\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.12\"\n") }, ["3.12"]],
@@ -45,6 +53,8 @@ describe("readSource hits", () => {
     const root = tmp();
     put(root, "package.json", '{"engines":{"node":">=20"}}');
     expect(readSource(root, [], "node", "engines")).toEqual([{ src: "engines:package.json", v: "20", floor: true }]);
+    put(root, ".github/workflows/ci.yml", WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: package.json\n"));
+    expect(readSource(root, [".github/workflows/ci.yml"], "node", "setup-node")).toEqual([{ src: "setup-node:.github/workflows/ci.yml", v: "20", floor: true }]);
   });
 
   it("does not read a step's neighbours: go-version of the next step is not setup-go's", () => {
@@ -63,6 +73,9 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["go-mod", "node", { "go.mod": "go 1.25\n" }, /no node version found/],
   ["engines", "node", { "package.json": "{not json" }, /not valid JSON/],
   ["engines", "node", { "package.json": '{"engines":{"npm":">=9"}}' }, /no node version found/],
+  ["engines", "node", { "package.json": '{"engines":{"node":"<20"}}' }, /engines\.node "<20" has no lower bound/],
+  ["engines", "node", { "package.json": '{"engines":{"node":"<20.0.0-0"}}' }, /engines\.node "<20\.0\.0-0" has no lower bound/], // a prerelease tag is not a bound
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: package.json\n"), "package.json": '{"version":"1.2.3"}' }, /no volta\.node or engines\.node/],
   ["dockerfile", "go", { Dockerfile: "FROM golang:latest\n" }, /no go version found/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: ${{ matrix.go }}")) }, /no go version found/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: nope.mod")) }, /go-version-file nope\.mod not found/],
@@ -90,6 +103,9 @@ describe("compare modes", () => {
   const cases: [string, "exact" | "minor" | "major" | "floor", PinValue[], string | null][] = [
     ["exact agrees on stated parts", "exact", [v("a", "1.26"), v("b", "1.26.1")], null],
     ["exact flags a patch drift", "exact", [v("a", "1.26.0"), v("b", "1.26.1")], "a=1.26.0, b=1.26.1 disagree (exact)"],
+    ["exact compares every pair, not just the first", "exact", [v("a", "1.26"), v("b", "1.26.1"), v("c", "1.26.2")], "a=1.26, b=1.26.1, c=1.26.2 disagree (exact)"],
+    ["minor compares every pair, not just the first", "minor", [v("a", "1"), v("b", "1.25"), v("c", "1.26.0")], "a=1, b=1.25, c=1.26.0 disagree (minor)"],
+    ["exact agrees when the less specific source is first", "exact", [v("a", "1.26"), v("b", "1.26.1"), v("c", "1.26.1")], null],
     ["minor ignores the patch", "minor", [v("a", "1.26.0"), v("b", "1.26.9")], null],
     ["minor flags a minor drift", "minor", [v("a", "1.25.0"), v("b", "1.26.0")], "a=1.25.0, b=1.26.0 disagree (minor)"],
     ["major ignores the minor", "major", [v("a", "20.1"), v("b", "20.9")], null],
@@ -104,7 +120,9 @@ describe("compare modes", () => {
 
   it("pinOf and localOk follow the mode", () => {
     expect(pinOf([v("a", "1.26.1")], "exact")).toBe("1.26.1");
+    expect([pinOf([v("a", "1.26"), v("b", "1.26.1")], "exact"), pinOf([v("a", "1.26.1"), v("b", "1.26.2")], "exact"), pinOf([v("a", "1"), v("b", "1.25")], "minor")]).toEqual(["1.26.1", "1.26.1", "1.25"]);
     expect(pinOf([v("e", "18", true), v("f", "20", true), v("n", "22")], "floor")).toBe("20");
+    expect(pinOf([v("n", "20"), v("e", "20.11.0", true)], "exact")).toBe("20"); // a floor is never promoted to the exact pin
     expect([localOk("1.26.9", "1.26.1", "minor"), localOk("1.26.9", "1.26.1", "exact"), localOk("22.0.0", "20", "floor"), localOk("18.0.0", "20", "floor")]).toEqual([true, false, true, false]);
   });
 });
