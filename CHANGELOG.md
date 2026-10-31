@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.4.0] - Unreleased
+
+The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.mjs`.
+
+### Added
+
+- `loops zone` classifies a change's paths against a repo's `risk-zones.md`: a strict parser
+  (exit 2 with `file:line` for a bad row, glob or schema version), bash-style brace globs, zone =
+  highest matching row with an unmatched path rounding up to yellow, and the file's own
+  `## Ship prefix` bullet copied verbatim. The diff is the merge base against `origin/HEAD`,
+  `origin/main` or `main` (renames count both sides); uncommitted and untracked files are included
+  unless `--committed`. `--paths`, `--stdin [-z]`, `--file`, `--json` and `--explain` are supported.
+- `loops env-check` runs `.loops/env-check.toml`: version pins that must agree across
+  `.tool-versions`, `.nvmrc`, `go.mod`, `package.json` engines, `setup-*` workflow steps, Dockerfile
+  tags and `.python-version` (exact, minor, major or floor), local toolchains checked offline,
+  shared-checkout, harness (tools, files, entrypoints, tracked files, sparse checkout) and Compose
+  (`none` or `test`) checks, and repo-owned `[[local]]` checks over a one-line-per-result protocol that
+  fails closed. Exit 0 ok, 1 FAIL, 2 usage or config error; `--static`, `--json`, `--quiet`,
+  `--compose-project`; `$HOME` is redacted to `~`.
+- Results with the same level and message fold into one line that names the other ids, so one root
+  cause is one FAIL.
+- `templates/env-check`: a 15-line POSIX wrapper that runs `$LOOPS_BIN`, `~/bin/loops` or `loops`
+  on PATH, and exits 3 with `env-check: not run` when the engine or `node` is missing.
+- `smol-toml` is a dev dependency, bundled into `bin/loops.mjs` (still zero runtime install).
+
+### Changed
+
+- The `loop-metrics` row `version` is now `0.4.0` (it follows the plugin version).
+
+### Not in this release
+
+- Shim-aware `a.shadow.*` duplicate-binary checks, `b.containers`, Compose `dev` mode, a
+  `loops zone --lint`, and cross-result dedup keys.
+
 ## [loops 0.3.0] - 2026-10-13
 
 Per-repo metrics, the second half of Wave 0 slice 2.

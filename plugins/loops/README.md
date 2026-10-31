@@ -3,19 +3,20 @@
 Measure how your engineering loops actually run, so loop rules are kept or dropped against
 measured history instead of impressions.
 
-It ships one tool, `loop-metrics`: a deterministic script that reads Claude Code's local session
-transcripts and Workflow run records, plus gstack's review logs, and appends **one baseline row**
-to `~/.claude/metrics/loops.jsonl`. It reads only numeric fields, ids, lens names, severities and
-actions; message and finding text is never read. With a private repo config (see
-[Per-repo metrics](#per-repo-metrics)) it also reads merged PRs from GitHub via `gh`; without
-one, everything stays local.
+It ships two tools. The `loops` CLI (`zone` and `env-check`, see [The loops CLI](#the-loops-cli))
+triages a change by risk and checks a checkout's environment. `loop-metrics` is a deterministic
+script that reads Claude Code's local session transcripts and Workflow run records, plus gstack's
+review logs, and appends **one baseline row** to `~/.claude/metrics/loops.jsonl`. It reads only
+numeric fields, ids, lens names, severities and actions; message and finding text is never read.
+With a private repo config (see [Per-repo metrics](#per-repo-metrics)) it also reads merged PRs
+from GitHub via `gh`; without one, everything stays local.
 
 ## What a row holds
 
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.3.0","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.4.0","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
@@ -102,6 +103,12 @@ plugin update:
 
 ```bash
 mkdir -p ~/bin && ln -sf "/path/to/agentic-tools/plugins/loops/bin/loop-metrics.mjs" ~/bin/loop-metrics
+```
+
+The `loops` CLI is a second bundle, `bin/loops.mjs` (executable, zero runtime dependencies):
+
+```bash
+ln -sf "/path/to/agentic-tools/plugins/loops/bin/loops.mjs" ~/bin/loops
 ```
 
 ## Run
@@ -315,9 +322,166 @@ of a lens's criticals skipped. `auto_fixed` inflates the addressed rate of lense
 are trivial cleanups, which is why it is kept apart from `fixed`. A delta under ~25% at n < 5 is
 no decision.
 
+## The loops CLI
+
+`loops --version`, `loops zone`, `loops env-check`. Node 18+, no install step. Exit codes: 0 ok,
+1 an `env-check` FAIL, 2 usage or config error (the message goes to stderr).
+
+### `loops zone`
+
+Classifies a change against the repo's `risk-zones.md` (default `<repo root>/risk-zones.md`).
+
+```bash
+loops zone                      # merge-base diff vs origin/HEAD, origin/main, then main, plus dirty and untracked files
+loops zone --committed --base origin/main
+loops zone --paths a.go b/c.md  # skip git
+git diff --name-only -z main... | loops zone --stdin -z --json
+```
+
+Flags: `--base REF`, `--committed` (leave out uncommitted and untracked files), `--paths P...`,
+`--stdin [-z]` (newline or NUL separated), `--file F`, `--json`, `--explain` (one line per path
+with the rows that matched). Renames count both sides; deletions count. An empty change prints
+`zone: none`.
+
+```
+zone: red
+prod: yes (l7: required; prod-touching: 2 paths; 1 unmatched (counted as no))
+evidence: config, orchestration
+driving rows:
+  red  `.github/workflows/**`  2 paths: .github/workflows/ci.yml, .github/workflows/release.yml
+paths: 9 (red 3, yellow 4 incl. 1 unmatched, green 2)
+ship: /ship — red zone (<category>): full review + <one extra review chosen at L0>
+judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / trivial S0 rows;
+  one-way changes (migration, deleted history, published release, public post) are red regardless
+```
+
+The zone is never in the exit code; read `--json` (`zone`, `prod`, `evidence`, `counts`,
+`driving_rows`, `paths`, `ship`). The `ship:` line is the file's `## Ship prefix` bullet for the
+zone, verbatim (a missing bullet is exit 2). When every path is green, an `alt:` line lists the
+`docs-only` and `trivial S0` bullets for the triager to choose from.
+
+The file format, parsed strictly (any violation is exit 2 with `file:line`):
+
+- A header blockquote line containing `Schema version 1`. Other versions are rejected.
+- A `## Zones` section with a table. Columns are found by name: `Glob`, `Zone`, `Prod`,
+  `Evidence class`, `Why`. A row needs the full column count, a Zone of `green`, `yellow` or `red`,
+  a Prod of `yes`, `no` or `?`, and at least one backticked glob in the Glob cell (other text in
+  the cell is prose).
+- Globs match repo-relative paths, case-sensitively. `*` is `[^/]*` (it matches dotfiles, unlike
+  bash), `?` is one non-`/` character, `**/` is zero or more directories, any other `**` (such as a
+  trailing `/**`) matches anything. `{a,b}` braces nest. `[...]`, `!`, a leading `/`, `{a..b}` and
+  unbalanced braces are errors, so a typo cannot silently match nothing.
+- A path takes the highest zone of every matching row; a path no row matches is yellow. The
+  change takes the highest zone of its paths. A path is prod-touching if any matching row says
+  `yes` or `?`; its evidence is the union of the matching rows' classes (minus `none`).
+- A `## Ship prefix` section with `- <zone>: "<text>"` bullets (`red`, `yellow`, `green`, and
+  optionally `docs-only` and `trivial S0`).
+
+### `loops env-check`
+
+Runs the checks in `.loops/env-check.toml` at the repo root and prints one line per result:
+
+```
+LEVEL id  message — fix: what to do
+env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
+```
+
+Order is groups `a` (pins), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
+are not counted. Results with the same level and message fold into one line that ends
+`(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
+`--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
+`--compose-project` (print the Compose project name for this checkout, exit 1 if it cannot be
+resolved). `$HOME` is shown as `~` everywhere. `--json` is `{schema, engine, mode, root,
+results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
+
+`--static` reads repo files only: no toolchain, tool or worktree probes (`a.local.*`, `d.tools`,
+`d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
+`[[local]]` checks with `static = true` run.
+
+Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
+CLI, a missing or non-executable local check, and bad TOML are all exit 2.
+
+```toml
+schema_version = 1
+engine = ">=0.4.0"                      # only ">=X.Y.Z"; an older CLI exits 2 "update agentic-tools"
+
+[shared_checkout]                       # c.shared: FAIL in the main checkout, PASS in a linked worktree
+hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
+                                        # ENV_CHECK_ALLOW_MAIN=1 downgrades the FAIL to INFO
+
+[[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
+tool = "go"
+sources = ["go-mod:go.mod", "tool-versions", "setup-go:.github/workflows/*.yml"]
+compare = "minor"                       # exact (default) | minor | major | floor
+local = "warn"                          # warn (default) | fail | off
+
+[[pins]]
+tool = "node"
+sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
+compare = "floor"                       # engines is a floor; every other source must be >= it
+
+[harness]                               # d.*
+tools = ["git", "go", "make"]           # d.tools: on PATH
+files = ["go.mod", "VERSION"]           # d.files: present and non-empty
+entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by .github/workflows, or a list
+tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
+sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on
+
+[compose]                               # e.*; omit the table for no compose checks
+mode = "none"                           # none: FAIL if a compose file is tracked | test
+files = ["compose.yml"]                 # test only: e.project and e.container_name
+derive = "dirname"                      # dirname (default) | slug-hash (<main>-<worktree slug>-<hash6>)
+allow_container_name = ["app"]
+
+[[local]]                               # a repo's own checks
+id = "d.lint-lock"                      # <a-e or x>.<name>
+run = ".loops/checks/lint-lock.sh"      # any executable; listed explicitly, never auto-discovered
+static = true                           # also run under --static (default false)
+timeout_s = 15
+```
+
+Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files):
+
+| kind | default file | reads |
+|---|---|---|
+| `tool-versions` | `.tool-versions` | the line for the tool (`node` also matches `nodejs`) |
+| `nvmrc`, `node-version`, `python-version` | `.nvmrc`, `.node-version`, `.python-version` | the whole file |
+| `go-mod` | `go.mod` | `toolchain` if present, else `go` |
+| `engines` | `package.json` | `engines.<tool>`, as a floor |
+| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.yml` | `<tool>-version`, or the file named by `<tool>-version-file` |
+| `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
+
+Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`.
+A configured source that is missing or has no version for the tool is a FAIL, never a PASS.
+`a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
+`python3 --version`, otherwise `<tool> --version`), so nothing downloads. The Compose project
+(`mode = "test"`) is `COMPOSE_PROJECT_NAME`, else the file's `name:` in the main checkout, else
+the derived name in a worktree. `e.project` FAILs if a worktree would reuse the main checkout's
+name or two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
+unless allowlisted.
+
+**Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
+a timeout. It must be read-only, offline, and never print secret values. It prints one line per
+result on stdout:
+
+```
+(PASS|WARN|FAIL|SKIP|INFO) <id> <message>[ — fix: <fix>]
+```
+
+`<id>` must start with the configured id. The environment has `ENV_CHECK_ROOT`,
+`ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
+(the Compose project, or empty), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
+It fails closed: an unparseable line is `FAIL <id>.protocol`; no lines is a FAIL; a nonzero exit
+without a FAIL line adds one (with the first stderr line); a timeout is a WARN, "not a pass".
+
+**Wrapper.** `templates/env-check` is a 15-line POSIX `sh` wrapper to copy into a repo as
+`bin/env-check` (`chmod +x`). It runs `$LOOPS_BIN`, then `$HOME/bin/loops`, then `loops` on PATH,
+as `loops env-check "$@"`. With no engine or no `node` it prints a hint on stderr, `env-check:
+not run` on stdout, and exits 3, which contributors without the engine can ignore.
+
 ## Roadmap
 
-Per-repo metrics landed in 0.3.0. Still to come: CI rounds per PR, hook blocks, and the
+Per-repo metrics landed in 0.3.0 and the `loops` CLI in 0.4.0. Still to come: CI rounds per PR, hook blocks, and the
 unrouted-spawn share, as their sources come online.
 
 See [`docs/wave0-plan.md`](docs/wave0-plan.md) for the reviewed Wave 0 design and its open items.
