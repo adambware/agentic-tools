@@ -52,13 +52,20 @@ const fcmp = (a: string, b: string): number => {
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
   return 0;
 };
+/** The lowest version satisfying `>v` (semver x-ranges): bump the last stated component, zero the rest (`20.11.0` -> `20.11.1`, `20.11` -> `20.12.0`, `20` -> `21.0.0`). A prerelease bound (`>20.0.0-rc.1`) is satisfied by the stable core itself, so it is not bumped. */
+const above = (v: string): string => {
+  const p = v.split(".").map(Number);
+  p[p.length - 1]!++;
+  while (p.length < 3) p.push(0);
+  return p.join(".");
+};
 /** The lowest lower bound of an npm range (`>=18 <21`, `^18 || ^20`): the strongest bound within each `||` alternative, the weakest across them; `<20` alone has none. */
 function lowerBound(expr: string, tool: string): string {
   const lows = expr.split("||").map((alt) => {
     const bounds: string[] = [];
-    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~>?|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)([-+][\w.-]+)?/g)) {
       const v = m[1]?.startsWith("<") ? null : ver(m[2]!);
-      if (v) bounds.push(v);
+      if (v) bounds.push(m[1] === ">" && !m[3]?.startsWith("-") ? above(v) : v);
     }
     if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
     return bounds.sort(fcmp).at(-1)!;

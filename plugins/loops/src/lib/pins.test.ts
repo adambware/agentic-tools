@@ -31,6 +31,21 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["engines", "node", { "package.json": '{"engines":{"node":">=20.11.0 || >=20"}}' }, ["20"]], // lowest alternative; "20" is 20.0.0, below 20.11.0
   ["engines", "node", { "package.json": '{"engines":{"node":">=18.0.0 >=20.0.0"}}' }, ["20.0.0"]], // strongest bound within an alternative
   ["engines", "node", { "package.json": '{"engines":{"node":">=20 >=20.11.0 <23"}}' }, ["20.11.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.11.0"}}' }, ["20.11.1"]], // exclusive: the lowest satisfying version, not the bound itself
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.11"}}' }, ["20.12.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"~>20.11"}}' }, ["20.11"]], // node-semver "~>" is tilde, not an exclusive ">"
+  ["engines", "node", { "package.json": '{"engines":{"node":"~> 20.11.0"}}' }, ["20.11.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">20"}}' }, ["21.0.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"> 20.x"}}' }, ["21.0.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.11.*"}}' }, ["20.12.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">=20.11.0"}}' }, ["20.11.0"]], // inclusive stays
+  ["engines", "node", { "package.json": '{"engines":{"node":">18 >=20.1.0"}}' }, ["20.1.0"]], // strongest of a mixed alternative
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.0.0-rc.1"}}' }, ["20.0.0"]], // the stable core satisfies a prerelease bound
+  ["engines", "node", { "package.json": '{"engines":{"node":">=20.0.0-beta-30"}}' }, ["20.0.0"]], // a hyphen inside the prerelease is not a second bound
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.0.0-beta-30"}}' }, ["20.0.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"18 - 20.0.0-rc.1"}}' }, ["18"]], // a prerelease upper bound of a hyphen range is dropped whole
+  ["engines", "node", { "package.json": '{"engines":{"node":"18 - 20.0.0-beta-30"}}' }, ["18"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">20.0.0+build"}}' }, ["20.0.1"]], // build metadata is not a prerelease
   ["engines", "node", { "package.json": '{"engines":{"node":"18.0.0 - 20.0.0"}}' }, ["18.0.0"]], // the end of a hyphen range is not a bound
   ["dockerfile", "go", { Dockerfile: "FROM registry.example:5000/golang:1.26.1 AS build\nFROM localhost:5000/golang@sha256:abc\nFROM registry.example:5000/node:20\n" }, ["1.26.1"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - with:\n          go-version: 1.26.3\n        uses: actions/setup-go@v5\n") }, ["1.26.3"]], // with: before uses:
@@ -136,10 +151,20 @@ describe("compare modes", () => {
     ["floor flags a version below it", "floor", [v("engines", "20", true), v("nvmrc", "18.2.0")], "nvmrc=18.2.0 below the floor 20"],
     ["floor takes the strongest of several floors", "floor", [v("e1", "20", true), v("e2", "20.11.0", true), v("nvmrc", "20.5.0")], "nvmrc=20.5.0 below the floor 20.11.0"],
     ["floor order does not matter", "floor", [v("e2", "20.11.0", true), v("e1", "20", true), v("nvmrc", "20.5.0")], "nvmrc=20.5.0 below the floor 20.11.0"],
+    ["floor from an exclusive bound rejects the bound itself", "floor", [v("engines", "20.11.1", true), v("nvmrc", "20.11.0")], "nvmrc=20.11.0 below the floor 20.11.1"],
+    ["floor from an exclusive bound accepts the next version", "floor", [v("engines", "20.11.1", true), v("nvmrc", "20.11.1")], null],
     ["floor needs a floor source", "floor", [v("nvmrc", "20")], "compare = floor needs a floor source (engines)"],
   ];
   it.each(cases)("%s", (_n, mode, vals, want) => {
     expect(disagreement(vals, mode)).toBe(want);
+  });
+
+  it.each([["20.11.0", "nvmrc:.nvmrc=20.11.0 below the floor 20.11.1"], ["20.11.1", null]])("engines >20.11.0 with .nvmrc %s under floor", (nvmrc, want) => {
+    const root = tmp();
+    put(root, "package.json", '{"engines":{"node":">20.11.0"}}');
+    put(root, ".nvmrc", nvmrc + "\n");
+    const vals = [...readSource(root, ["package.json"], "node", "engines"), ...readSource(root, [".nvmrc"], "node", "nvmrc")];
+    expect(disagreement(vals, "floor")).toBe(want);
   });
 
   it("pinOf and localOk follow the mode", () => {
