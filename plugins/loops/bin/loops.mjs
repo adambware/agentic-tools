@@ -939,15 +939,23 @@ var pkg = (text) => {
     throw new PinError("not valid JSON");
   }
 };
+var fcmp = (a, b) => {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
+  return 0;
+};
 function lowerBound(expr, tool) {
   const lows = expr.split("||").map((alt) => {
-    for (const m of alt.matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+    const bounds = [];
+    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
       const v = m[1]?.startsWith("<") ? null : ver(m[2]);
-      if (v) return v;
+      if (v) bounds.push(v);
     }
-    throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+    if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+    return bounds.sort(fcmp).at(-1);
   });
-  return lows.sort((a, b) => cmp(a, b))[0];
+  return lows.sort(fcmp)[0];
 }
 var engines = (text, tool) => {
   const e = pkg(text).engines?.[tool];
@@ -962,8 +970,8 @@ var pkgVersion = (text, tool, root) => {
 var dockerfile = (text, tool) => {
   const out = [];
   for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)?(\S+)/gim)) {
-    const [name = "", tag = ""] = m[1].split(":");
-    if (name.split("/").pop() === (IMAGE[tool] ?? tool)) out.push(...hit(tag));
+    const [name = "", tag = ""] = m[1].split("@")[0].split("/").pop().split(":");
+    if (name === (IMAGE[tool] ?? tool)) out.push(...hit(tag));
   }
   const arg = new RegExp(`^ARG\\s+${tool.toUpperCase().replace(/\W/g, "_")}_VERSION=(\\S+)`, "gim");
   for (const m of text.matchAll(arg)) out.push(...hit(m[1]));
@@ -984,16 +992,30 @@ function setup(kind) {
   const [action, forTool, key] = ACTIONS[kind];
   return (text, tool, root) => {
     if (tool !== forTool) return [];
-    const lines = text.split("\n");
+    const lines = text.split(/\r?\n/);
     const out = [];
+    const indentOf = (l) => l.length - l.trimStart().length;
     lines.forEach((line, i) => {
-      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*${action}@`).exec(line);
-      if (!m) return;
-      const keyIndent = m[1].length + (m[2]?.length ?? 0);
+      const bare = /^(\s*)-\s*(#.*)?$/.exec(line);
+      const d = bare ?? /^(\s*)-\s+/.exec(line);
+      if (!d) return;
+      const dash = d[1].length;
+      let keyIndent = d[0].length;
+      const body = bare ? [] : [{ indent: keyIndent, text: line.slice(keyIndent).trimEnd() }];
       for (let j = i + 1; j < lines.length; j++) {
         const l = lines[j];
-        if (l.trim() && l.length - l.trimStart().length < keyIndent) break;
-        const kv = new RegExp(`^\\s*(${key}(-file)?):\\s*(.+?)\\s*(?:#.*)?$`).exec(l);
+        if (!l.trim() || l.trimStart().startsWith("#")) continue;
+        if (indentOf(l) <= dash) break;
+        if (bare && !body.length) keyIndent = indentOf(l);
+        body.push({ indent: indentOf(l), text: l.trim() });
+      }
+      if (!body.some((e) => e.indent === keyIndent && new RegExp(`^uses:\\s*${action}@`).test(e.text))) return;
+      const w = body.findIndex((e) => e.indent === keyIndent && /^with:\s*(#.*)?$/.test(e.text));
+      if (w < 0) return;
+      const mapIndent = body[w + 1]?.indent ?? 0;
+      for (const e of body.slice(w + 1)) {
+        if (e.indent <= keyIndent) break;
+        const kv = e.indent === mapIndent ? new RegExp(`^(${key}(-file)?):\\s*(.+?)\\s*(?:#.*)?$`).exec(e.text) : null;
         if (!kv || /\$\{\{|\[/.test(kv[3])) continue;
         const val = kv[3].replace(/^["']|["']$/g, "");
         if (!kv[2]) out.push(...hit(val));
@@ -1048,7 +1070,7 @@ function cmp(a, b, depth = 3) {
   for (let i = 0; i < Math.min(depth, x.length, y.length); i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
   return 0;
 }
-var maxFloor = (vals) => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => cmp(b, a))[0] ?? null;
+var maxFloor = (vals) => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => fcmp(b, a))[0] ?? null;
 var parts = (v) => v.split(".").length;
 var pinOf = (vals, mode) => mode === "floor" ? maxFloor(vals) ?? vals[0].v : pinned(vals).reduce((a, b) => parts(b.v) > parts(a.v) ? b : a).v;
 var pinned = (vals) => vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals;
@@ -1064,7 +1086,7 @@ function disagreement(vals, mode) {
 }
 var belowFloor = (local, vals) => {
   const fl = maxFloor(vals);
-  return fl !== null && cmp(local, fl) < 0 ? fl : null;
+  return fl !== null && fcmp(local, fl) < 0 ? fl : null;
 };
 var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
 
@@ -1161,10 +1183,11 @@ function parseConfig(text, file) {
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
-    const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v > 0, "a positive number", 15);
+    const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v >= 1e-3 && Number.isSafeInteger(Math.round(v * 1e3)), "a positive number of seconds (at least 0.001)", 15);
+    const timeoutMs = Math.round(timeoutS * 1e3);
     const run2 = pick(t, "run", where, isStr, "a path");
     if (isAbsolute(run2) || /^\.\.(\/|$)/.test(normalize(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
-    return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS };
+    return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
 }
@@ -1338,7 +1361,7 @@ function runLocal(c, l, project) {
     GOTOOLCHAIN: "local",
     NO_COLOR: "1"
   };
-  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutS * 1e3 });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
   const mk = (level, id, message, fix) => ({ level, id, message, fix, source: "local" });
   const out = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
@@ -1377,7 +1400,13 @@ function envCheckMain(argv, d) {
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join4(root, ".loops", "env-check.toml");
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
-  const cfg = parseConfig(readFileSync3(cfgFile, "utf8"), ".loops/env-check.toml");
+  let text;
+  try {
+    text = readFileSync3(cfgFile, "utf8");
+  } catch (e) {
+    throw new UsageError(`cannot read ${cfgFile}: ${e.message}`);
+  }
+  const cfg = parseConfig(text, ".loops/env-check.toml");
   for (const l of cfg.locals) {
     if (!isExecutable(resolve2(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
   }
@@ -1460,8 +1489,16 @@ function parseRiskZones(text, file) {
   const rows = [];
   let cols = null;
   let width = 0;
+  let inTable = false;
   for (let i = zonesAt + 1; i < sectionEnd(zonesAt); i++) {
     const line = lines[i].trim();
+    if (!line) inTable = false;
+    if (/^[\s:|-]+$/.test(line) && line.includes("|") && line.includes("-")) {
+      const prev = lines[i - 1]?.trim() ?? "";
+      if (!line.startsWith("|") || prev && !prev.startsWith("|")) fail(i + 1, "table must use leading pipes");
+      inTable = true;
+    }
+    if (inTable && !line.startsWith("|") && /(?<!\\)\|/.test(line) && !/^[\s:|-]+$/.test(line)) fail(i + 1, "table row must start with `|`");
     if (!line.startsWith("|") || /^\|[\s:|-]+$/.test(line)) continue;
     const cells = splitCells(line);
     if (!cols) {
@@ -1469,8 +1506,10 @@ function parseRiskZones(text, file) {
       cols = COLUMNS.map((name) => cells.findIndex((c) => c.toLowerCase().startsWith(name)));
       const missing = COLUMNS.filter((_, k) => cols[k] === -1);
       if (missing.length) fail(i + 1, `table header lacks column(s): ${missing.join(", ")}`);
+      inTable = true;
       continue;
     }
+    inTable = true;
     if (cells.length !== width) fail(i + 1, `expected ${width} columns, found ${cells.length}`);
     const cell = (k) => cells[cols[k]];
     const zone = cell(1).toLowerCase();
@@ -1605,13 +1644,19 @@ function zoneMain(argv, d) {
   const filePath = typeof f.file === "string" ? resolve3(d.cwd, f.file) : join5(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
-  const rz = parseRiskZones(readFileSync4(filePath, "utf8"), shown);
+  let text;
+  try {
+    text = readFileSync4(filePath, "utf8");
+  } catch (e) {
+    throw new UsageError(`cannot read ${filePath}: ${e.message}`);
+  }
+  const rz = parseRiskZones(text, shown);
   let raw;
   if (Array.isArray(f.paths)) raw = f.paths;
-  else if (f.stdin) raw = d.readStdin().split(f.z ? "\0" : "\n");
+  else if (f.stdin) raw = d.readStdin().split(f.z ? "\0" : "\n").map((p) => f.z ? p : p.replace(/\r$/, ""));
   else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
   else raw = gitPaths(d, root, typeof f.base === "string" ? f.base : void 0, f.committed === true);
-  const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "").trim()).filter(Boolean))].sort();
+  const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "")).filter(Boolean))].sort();
   const infos = paths.map((p) => classifyPath(rz, p));
   const s = summarize(infos);
   const ship = s.zone === "none" ? null : rz.ship[s.zone] ?? null;
