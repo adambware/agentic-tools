@@ -28,6 +28,13 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["engines", "node", { "package.json": '{"engines":{"node":">=18 <21"}}' }, ["18"]],
   ["engines", "node", { "package.json": '{"engines":{"node":"^20 || ^18"}}' }, ["18"]],
   ["engines", "node", { "package.json": '{"engines":{"node":"22.x || 16.*"}}' }, ["16"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":">=20.11.0 || >=20"}}' }, ["20"]], // lowest alternative; "20" is 20.0.0, below 20.11.0
+  ["engines", "node", { "package.json": '{"engines":{"node":">=18.0.0 >=20.0.0"}}' }, ["20.0.0"]], // strongest bound within an alternative
+  ["engines", "node", { "package.json": '{"engines":{"node":">=20 >=20.11.0 <23"}}' }, ["20.11.0"]],
+  ["engines", "node", { "package.json": '{"engines":{"node":"18.0.0 - 20.0.0"}}' }, ["18.0.0"]], // the end of a hyphen range is not a bound
+  ["dockerfile", "go", { Dockerfile: "FROM registry.example:5000/golang:1.26.1 AS build\nFROM localhost:5000/golang@sha256:abc\nFROM registry.example:5000/node:20\n" }, ["1.26.1"]],
+  ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - with:\n          go-version: 1.26.3\n        uses: actions/setup-go@v5\n") }, ["1.26.3"]], // with: before uses:
+  ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - name: go\n        with:\n          cache: true\n          go-version: 1.26.4\n        uses: actions/setup-go@v5\n        env:\n          go-version: 1.1\n") }, ["1.26.4"]],
   ["dockerfile", "go", { Dockerfile: "FROM golang:1.26.1-alpine AS build\nFROM alpine:3.20\nARG GO_VERSION=1.26.1\n" }, ["1.26.1", "1.26.1"]],
   ["dockerfile:build/Dockerfile", "node", { "build/Dockerfile": "FROM --platform=x node:20-slim\n" }, ["20"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: '1.26.1' # pinned")) }, ["1.26.1"]],
@@ -60,6 +67,21 @@ describe("readSource hits", () => {
   it("does not read a step's neighbours: go-version of the next step is not setup-go's", () => {
     const root = tmp();
     put(root, ".github/workflows/ci.yml", WF(SETUP_GO("cache: true") + "      - name: other\n        with:\n          go-version: 1.1\n"));
+    expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/no go version found/);
+  });
+
+  it("reads a step written as a bare dash with its keys on the following lines (and CRLF)", () => {
+    const root = tmp();
+    const bareDash = "      -\n        uses: actions/setup-go@v5\n        with:\n          go-version: 1.25.0\n";
+    put(root, ".github/workflows/ci.yml", WF(SETUP_GO("go-version: 1.26.1") + bareDash));
+    expect(readSource(root, [".github/workflows/ci.yml"], "go", "setup-go").map((v) => v.v)).toEqual(["1.26.1", "1.25.0"]);
+    put(root, ".github/workflows/ci.yml", WF("      - # setup\n        uses: actions/setup-go@v5\n        with:\n          go-version: 1.24.0\n").replace(/\n/g, "\r\n"));
+    expect(readSource(root, [".github/workflows/ci.yml"], "go", "setup-go").map((v) => v.v)).toEqual(["1.24.0"]);
+  });
+
+  it("does not read a with: that belongs to another step or a nested key", () => {
+    const root = tmp();
+    put(root, ".github/workflows/ci.yml", WF("      - with:\n          go-version: 1.1\n        uses: actions/checkout@v4\n      - uses: actions/setup-go@v5\n        env:\n          go-version: 1.2\n        with:\n          cache: true\n          extra:\n            go-version: 1.3\n"));
     expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/no go version found/);
   });
 });
@@ -112,6 +134,8 @@ describe("compare modes", () => {
     ["major flags a major drift", "major", [v("a", "18"), v("b", "20")], "a=18, b=20 disagree (major)"],
     ["floor accepts versions above it", "floor", [v("engines", "20", true), v("nvmrc", "22.1.0"), v("tv", "20.5")], null],
     ["floor flags a version below it", "floor", [v("engines", "20", true), v("nvmrc", "18.2.0")], "nvmrc=18.2.0 below the floor 20"],
+    ["floor takes the strongest of several floors", "floor", [v("e1", "20", true), v("e2", "20.11.0", true), v("nvmrc", "20.5.0")], "nvmrc=20.5.0 below the floor 20.11.0"],
+    ["floor order does not matter", "floor", [v("e2", "20.11.0", true), v("e1", "20", true), v("nvmrc", "20.5.0")], "nvmrc=20.5.0 below the floor 20.11.0"],
     ["floor needs a floor source", "floor", [v("nvmrc", "20")], "compare = floor needs a floor source (engines)"],
   ];
   it.each(cases)("%s", (_n, mode, vals, want) => {
@@ -124,6 +148,9 @@ describe("compare modes", () => {
     expect(pinOf([v("e", "18", true), v("f", "20", true), v("n", "22")], "floor")).toBe("20");
     expect(pinOf([v("n", "20"), v("e", "20.11.0", true)], "exact")).toBe("20"); // a floor is never promoted to the exact pin
     expect([belowFloor("20.5.0", [v("n", "20"), v("e", "20.11.0", true)]), belowFloor("20.12.0", [v("n", "20"), v("e", "20.11.0", true)])]).toEqual(["20.11.0", null]); // ...but still binds the local toolchain
+    expect(pinOf([v("e1", "20", true), v("e2", "20.11.0", true)], "floor")).toBe("20.11.0");
+    expect(pinOf([v("e1", "20.11.0", true), v("e2", "20", true)], "floor")).toBe("20.11.0");
+    expect(belowFloor("20.5.0", [v("e1", "20", true), v("e2", "20.11.0", true)])).toBe("20.11.0");
     expect([localOk("1.26.9", "1.26.1", "minor"), localOk("1.26.9", "1.26.1", "exact"), localOk("22.0.0", "20", "floor"), localOk("18.0.0", "20", "floor")]).toEqual([true, false, true, false]);
   });
 });

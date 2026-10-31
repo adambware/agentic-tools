@@ -45,16 +45,25 @@ const pkg = (text: string): Pkg => {
     throw new PinError("not valid JSON");
   }
 };
-/** The lowest lower bound of an npm range (`>=18 <21`, `^18 || ^20`); `<20` alone has none. */
+/** Zero-padded total order for floors: `20` is `20.0.0`, below `20.11.0` (unlike `cmp`, which treats them as equal). */
+const fcmp = (a: string, b: string): number => {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
+  return 0;
+};
+/** The lowest lower bound of an npm range (`>=18 <21`, `^18 || ^20`): the strongest bound within each `||` alternative, the weakest across them; `<20` alone has none. */
 function lowerBound(expr: string, tool: string): string {
   const lows = expr.split("||").map((alt) => {
-    for (const m of alt.matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
+    const bounds: string[] = [];
+    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+/g, "").matchAll(/(<=?|>=?|\^|~|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)(?:[-+][\w.]+)?/g)) {
       const v = m[1]?.startsWith("<") ? null : ver(m[2]!);
-      if (v) return v;
+      if (v) bounds.push(v);
     }
-    throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+    if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
+    return bounds.sort(fcmp).at(-1)!;
   });
-  return lows.sort((a, b) => cmp(a, b))[0]!;
+  return lows.sort(fcmp)[0]!;
 }
 const engines: Parser = (text, tool) => {
   const e = pkg(text).engines?.[tool];
@@ -70,8 +79,8 @@ const pkgVersion: Parser = (text, tool, root) => {
 const dockerfile: Parser = (text, tool) => {
   const out: Found = [];
   for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)?(\S+)/gim)) {
-    const [name = "", tag = ""] = m[1]!.split(":");
-    if (name.split("/").pop() === (IMAGE[tool] ?? tool)) out.push(...hit(tag));
+    const [name = "", tag = ""] = m[1]!.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
+    if (name === (IMAGE[tool] ?? tool)) out.push(...hit(tag));
   }
   const arg = new RegExp(`^ARG\\s+${tool.toUpperCase().replace(/\W/g, "_")}_VERSION=(\\S+)`, "gim");
   for (const m of text.matchAll(arg)) out.push(...hit(m[1]));
@@ -96,16 +105,32 @@ function setup(kind: keyof typeof ACTIONS): Parser {
   const [action, forTool, key] = ACTIONS[kind];
   return (text, tool, root) => {
     if (tool !== forTool) return [];
-    const lines = text.split("\n");
+    const lines = text.split(/\r?\n/);
     const out: Found = [];
+    const indentOf = (l: string) => l.length - l.trimStart().length;
     lines.forEach((line, i) => {
-      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*${action}@`).exec(line);
-      if (!m) return;
-      const keyIndent = m[1]!.length + (m[2]?.length ?? 0);
+      // A step starts at "- key" or at a bare "-" (optionally with a comment), whose keys follow on later lines.
+      const bare = /^(\s*)-\s*(#.*)?$/.exec(line);
+      const d = bare ?? /^(\s*)-\s+/.exec(line);
+      if (!d) return;
+      const dash = d[1]!.length;
+      let keyIndent = d[0].length;
+      const body: { indent: number; text: string }[] = bare ? [] : [{ indent: keyIndent, text: line.slice(keyIndent).trimEnd() }];
+      // This step's own lines: from its "- " until a line at or left of the dash.
       for (let j = i + 1; j < lines.length; j++) {
         const l = lines[j]!;
-        if (l.trim() && l.length - l.trimStart().length < keyIndent) break;
-        const kv = new RegExp(`^\\s*(${key}(-file)?):\\s*(.+?)\\s*(?:#.*)?$`).exec(l);
+        if (!l.trim() || l.trimStart().startsWith("#")) continue;
+        if (indentOf(l) <= dash) break;
+        if (bare && !body.length) keyIndent = indentOf(l);
+        body.push({ indent: indentOf(l), text: l.trim() });
+      }
+      if (!body.some((e) => e.indent === keyIndent && new RegExp(`^uses:\\s*${action}@`).test(e.text))) return;
+      const w = body.findIndex((e) => e.indent === keyIndent && /^with:\s*(#.*)?$/.test(e.text));
+      if (w < 0) return;
+      const mapIndent = body[w + 1]?.indent ?? 0;
+      for (const e of body.slice(w + 1)) {
+        if (e.indent <= keyIndent) break;
+        const kv = e.indent === mapIndent ? new RegExp(`^(${key}(-file)?):\\s*(.+?)\\s*(?:#.*)?$`).exec(e.text) : null;
         if (!kv || /\$\{\{|\[/.test(kv[3]!)) continue;
         const val = kv[3]!.replace(/^["']|["']$/g, "");
         if (!kv[2]) out.push(...hit(val));
@@ -168,7 +193,7 @@ export function cmp(a: string, b: string, depth = 3): number {
   for (let i = 0; i < Math.min(depth, x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! < y[i]! ? -1 : 1;
   return 0;
 }
-const maxFloor = (vals: PinValue[]): string | null => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => cmp(b, a))[0] ?? null;
+const maxFloor = (vals: PinValue[]): string | null => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => fcmp(b, a))[0] ?? null;
 
 const parts = (v: string): number => v.split(".").length;
 /** The version a pin stands for: the highest floor in floor mode, else the most specific source's (first on a tie). */
@@ -193,7 +218,7 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
 /** The floor a local version is under, if any: a pinned source never waives an engines floor. */
 export const belowFloor = (local: string, vals: PinValue[]): string | null => {
   const fl = maxFloor(vals);
-  return fl !== null && cmp(local, fl) < 0 ? fl : null;
+  return fl !== null && fcmp(local, fl) < 0 ? fl : null;
 };
 
 export const localOk = (local: string, pin: string, mode: Compare): boolean =>
