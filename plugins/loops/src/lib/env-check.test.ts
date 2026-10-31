@@ -199,6 +199,12 @@ describe("compose", () => {
     const renamed = worktree(root, "app-prod");
     put(renamed, "compose.yml", COMPOSE.replace("app-prod", "app-other"));
     expect(check(renamed).out).toContain("FAIL e.project  worktree would use the main checkout's project name app-prod");
+    // With no compose file in the main checkout, the worktree's own name: still counts as prod.
+    const bare = setup(test(), { "compose.yml": COMPOSE });
+    commit(bare);
+    const wt = worktree(bare, "app-prod");
+    rmSync(join(bare, "compose.yml"));
+    expect(check(wt).out).toContain("FAIL e.project  worktree would use the main checkout's project name app-prod");
   });
 
   it("COMPOSE_PROJECT_NAME wins, unless it is the prod name", () => {

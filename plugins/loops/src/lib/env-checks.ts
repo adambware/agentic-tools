@@ -5,7 +5,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
-import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { belowFloor, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, isExecutable, which, type Runner } from "./proc.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
@@ -73,6 +73,7 @@ export function pinChecks(c: Ctx): Result[] {
     const fix = `install ${pin.tool} ${want} (asdf install, mise install, or your package manager)`;
     if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
+    else if (belowFloor(have, vals)) out.push(res(level, lid, `local ${pin.tool} ${have} is below the floor ${belowFloor(have, vals)}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
   return out;
@@ -151,7 +152,7 @@ export function composeProject(c: Ctx): { name: string | null; result: Result } 
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
   // A worktree may declare its own name:; the prod name is the main checkout's.
   const main = c.worktrees[0] ?? c.root;
-  const prod = (c.isWorktree ? nameIn(main) : declared) ?? derive(c, main);
+  const prod = (c.isWorktree ? nameIn(main) ?? declared : declared) ?? derive(c, main);
   const envName = c.env.COMPOSE_PROJECT_NAME || null;
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : (declared ?? derive(c, c.root)));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";

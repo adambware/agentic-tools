@@ -190,5 +190,11 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
 }
 
 /** Does a local toolchain version satisfy the pin? */
+/** The floor a local version is under, if any: a pinned source never waives an engines floor. */
+export const belowFloor = (local: string, vals: PinValue[]): string | null => {
+  const fl = maxFloor(vals);
+  return fl !== null && cmp(local, fl) < 0 ? fl : null;
+};
+
 export const localOk = (local: string, pin: string, mode: Compare): boolean =>
   mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;

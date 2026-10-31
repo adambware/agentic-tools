@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cmp, disagreement, localOk, PinError, pinOf, readSource, type PinValue } from "./pins.js";
+import { belowFloor, cmp, disagreement, localOk, PinError, pinOf, readSource, type PinValue } from "./pins.js";
 import { put, tmp } from "./testkit.js";
 
 const WF = (setup: string) => `name: ci
@@ -123,6 +123,7 @@ describe("compare modes", () => {
     expect([pinOf([v("a", "1.26"), v("b", "1.26.1")], "exact"), pinOf([v("a", "1.26.1"), v("b", "1.26.2")], "exact"), pinOf([v("a", "1"), v("b", "1.25")], "minor")]).toEqual(["1.26.1", "1.26.1", "1.25"]);
     expect(pinOf([v("e", "18", true), v("f", "20", true), v("n", "22")], "floor")).toBe("20");
     expect(pinOf([v("n", "20"), v("e", "20.11.0", true)], "exact")).toBe("20"); // a floor is never promoted to the exact pin
+    expect([belowFloor("20.5.0", [v("n", "20"), v("e", "20.11.0", true)]), belowFloor("20.12.0", [v("n", "20"), v("e", "20.11.0", true)])]).toEqual(["20.11.0", null]); // ...but still binds the local toolchain
     expect([localOk("1.26.9", "1.26.1", "minor"), localOk("1.26.9", "1.26.1", "exact"), localOk("22.0.0", "20", "floor"), localOk("18.0.0", "20", "floor")]).toEqual([true, false, true, false]);
   });
 });

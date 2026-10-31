@@ -1062,6 +1062,10 @@ function disagreement(vals, mode) {
   const bad = vals.some((x, i) => vals.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
   return bad ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
+var belowFloor = (local, vals) => {
+  const fl = maxFloor(vals);
+  return fl !== null && cmp(local, fl) < 0 ? fl : null;
+};
 var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
@@ -1208,6 +1212,7 @@ function pinChecks(c) {
     const fix = `install ${pin.tool} ${want} (asdf install, mise install, or your package manager)`;
     if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
+    else if (belowFloor(have, vals)) out.push(res(level, lid, `local ${pin.tool} ${have} is below the floor ${belowFloor(have, vals)}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
   return out;
@@ -1273,7 +1278,7 @@ function composeProject(c) {
   const declared = nameIn(c.root);
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
   const main2 = c.worktrees[0] ?? c.root;
-  const prod = (c.isWorktree ? nameIn(main2) : declared) ?? derive(c, main2);
+  const prod = (c.isWorktree ? nameIn(main2) ?? declared : declared) ?? derive(c, main2);
   const envName = c.env.COMPOSE_PROJECT_NAME || null;
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : declared ?? derive(c, c.root));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";
