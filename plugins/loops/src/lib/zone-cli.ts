@@ -85,14 +85,20 @@ export function zoneMain(argv: string[], d: Deps): number {
   const filePath = typeof f.file === "string" ? resolve(d.cwd, f.file) : join(root, "risk-zones.md");
   if (!existsSync(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
-  const rz = parseRiskZones(readFileSync(filePath, "utf8"), shown);
+  let text: string;
+  try {
+    text = readFileSync(filePath, "utf8");
+  } catch (e) {
+    throw new UsageError(`cannot read ${filePath}: ${(e as Error).message}`);
+  }
+  const rz = parseRiskZones(text, shown);
 
   let raw: string[];
   if (Array.isArray(f.paths)) raw = f.paths;
-  else if (f.stdin) raw = d.readStdin().split(f.z ? "\0" : "\n");
+  else if (f.stdin) raw = d.readStdin().split(f.z ? "\0" : "\n").map((p) => (f.z ? p : p.replace(/\r$/, "")));
   else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
   else raw = gitPaths(d, root, typeof f.base === "string" ? f.base : undefined, f.committed === true);
-  const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "").trim()).filter(Boolean))].sort();
+  const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "")).filter(Boolean))].sort();
 
   const infos = paths.map((p) => classifyPath(rz, p));
   const s = summarize(infos);

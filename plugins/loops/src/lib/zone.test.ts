@@ -77,11 +77,30 @@ describe("parseRiskZones", () => {
     ["wrong columns", doc(["| `a` | red | no | none |"]), /^rz\.md:8: expected 5 columns, found 4/],
     ["no backticks", doc(["| a | red | no | none | x |"]), /^rz\.md:8: Glob cell has no backticked glob/],
     ["bad glob", doc(["| `[a]*` | red | no | none | x |"]), /^rz\.md:8: unsupported glob/],
+    ["pipe-less row in the table", doc([ROWS[0]!, "`Makefile` | green | no | none | x |"]), /^rz\.md:9: table row must start with `\|`/],
     ["no rows", doc([]), /^rz\.md:5: `## Zones` table has no rows/],
     ["no section", "> Schema version 1\n", /^rz\.md:1: no `## Zones`/],
   ];
   it.each(bad)("%s is an error with file:line", (_n, text, re) => {
     expect(() => parseRiskZones(text, "rz.md")).toThrow(re);
+  });
+
+  it("rejects a pipe-less table anywhere in the Zones section, before or after the piped one", () => {
+    const pipeless = "Glob | Zone | Prod | Evidence class | Why\n--- | --- | --- | --- | ---\n`Makefile` | red | yes | orchestration | ci";
+    const after = doc(ROWS).replace("\n\n## Ship", `\n\n${pipeless}\n\n## Ship`);
+    const before = doc(ROWS).replace("## Zones\n", `## Zones\n${pipeless}\n\n`);
+    expect(() => parseRiskZones(after, "rz.md")).toThrow(/^rz\.md:15: table must use leading pipes/);
+    expect(() => parseRiskZones(before, "rz.md")).toThrow(/^rz\.md:7: table must use leading pipes/);
+    // GFM: a piped delimiter under a pipe-less header still renders as a table
+    for (const delim of ["|---|---|---|---|---|", "| --- | --- | --- | --- | --- |"]) {
+      const mixed = doc(ROWS).replace("\n\n## Ship", `\n\n${pipeless.replace(/^--- .*$/m, delim)}\n\n## Ship`);
+      expect(() => parseRiskZones(mixed, "rz.md")).toThrow(/^rz\.md:15: table must use leading pipes/);
+    }
+  });
+
+  it("does not mistake prose around the table for rows", () => {
+    const text = doc(ROWS).replace("## Zones\n", "## Zones\nintro a | b prose\n\n").replace("\n\n## Ship", "\n\ntrailing a | b prose\n\n## Ship");
+    expect(parseRiskZones(text, "rz.md").rows).toHaveLength(7);
   });
 
   it("maps columns by name, not position", () => {
@@ -159,6 +178,20 @@ judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / tr
   it("reads --stdin newline- and NUL-separated", () => {
     expect(JSON.parse(zone(tmp(), ["--file", withDoc(), "--json", "--stdin"], "Makefile\nREADME.md\n").out).counts.red).toBe(1);
     expect(JSON.parse(zone(tmp(), ["--file", withDoc(), "--json", "--stdin", "-z"], "a b.md\0Makefile\0").out).paths.map((p: { path: string }) => p.path)).toEqual(["Makefile", "a b.md"]);
+  });
+
+  it("preserves filename bytes: no trimming, CR stripped only for newline stdin", () => {
+    const glob = (args: string[], stdin: string) => JSON.parse(zone(tmp(), ["--file", withDoc(), "--json", ...args], stdin).out).paths.map((p: { path: string; zone: string }) => [p.path, p.zone]);
+    expect(glob(["--paths", " docs/a.md", " "], "")).toEqual([[" ", "yellow"], [" docs/a.md", "yellow"]]);
+    expect(glob(["--stdin", "-z"], " Makefile\0  \0README.md \0")).toEqual([["  ", "yellow"], [" Makefile", "yellow"], ["README.md ", "yellow"]]);
+    expect(glob(["--stdin"], "Makefile\r\ndocs/a.md\r\n")).toEqual([["Makefile", "red"], ["docs/a.md", "green"]]);
+    expect(glob(["--stdin", "-z"], "Makefile\r\0")).toEqual([["Makefile\r", "yellow"]]);
+  });
+
+  it("exits 2 naming the file when the policy path is unreadable", () => {
+    const dir = tmp();
+    const r = zone(tmp(), ["--file", dir, "--paths", "a"]);
+    expect([r.code, r.err]).toEqual([2, expect.stringContaining(`cannot read ${dir}`)]);
   });
 
   it("exits 2 with file:line on a bad file, a missing ship bullet, bad flags, or both inputs", () => {

@@ -61,8 +61,19 @@ export function parseRiskZones(text: string, file: string): RiskZones {
   const rows: Row[] = [];
   let cols: number[] | null = null;
   let width = 0;
+  let inTable = false;
   for (let i = zonesAt + 1; i < sectionEnd(zonesAt); i++) {
     const line = lines[i]!.trim();
+    if (!line) inTable = false;
+    // markdown allows omitting the outer pipes; a pipe-less table (even one before or after the piped table) must fail closed
+    if (/^[\s:|-]+$/.test(line) && line.includes("|") && line.includes("-")) {
+      // GFM lets each row choose its outer pipes, so a piped delimiter under a pipe-less header is still a table
+      const prev = lines[i - 1]?.trim() ?? "";
+      if (!line.startsWith("|") || (prev && !prev.startsWith("|"))) fail(i + 1, "table must use leading pipes");
+      inTable = true;
+    }
+    // a pipe-less row inside the table must not read as prose
+    if (inTable && !line.startsWith("|") && /(?<!\\)\|/.test(line) && !/^[\s:|-]+$/.test(line)) fail(i + 1, "table row must start with `|`");
     if (!line.startsWith("|") || /^\|[\s:|-]+$/.test(line)) continue;
     const cells = splitCells(line);
     if (!cols) {
@@ -70,8 +81,10 @@ export function parseRiskZones(text: string, file: string): RiskZones {
       cols = COLUMNS.map((name) => cells.findIndex((c) => c.toLowerCase().startsWith(name)));
       const missing = COLUMNS.filter((_, k) => cols![k] === -1);
       if (missing.length) fail(i + 1, `table header lacks column(s): ${missing.join(", ")}`);
+      inTable = true;
       continue;
     }
+    inTable = true;
     if (cells.length !== width) fail(i + 1, `expected ${width} columns, found ${cells.length}`);
     const cell = (k: number): string => cells[cols![k]!]!;
     const zone = cell(1).toLowerCase();
