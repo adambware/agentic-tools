@@ -140,24 +140,98 @@ function derive(c: Ctx, root: string): string {
   return `${norm(basename(main))}-${norm(basename(root)).slice(0, 24)}-${hash}`;
 }
 
+/** Simple KEY=VALUE lines of a `.env` file (optional `export `, quotes, `#` comments); a missing or unreadable file is {}. */
+function parseDotEnv(file: string): Record<string, string> {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const v = m[2]!;
+    out[m[1]!] = /^(["'])(.*?)\1/.exec(v)?.[2] ?? v.replace(/(^|\s)#.*$/, "").trim();
+  }
+  return out;
+}
+
+/** Compose-style interpolation of a `name:` value against `env`; null when it cannot be resolved. */
+function interpolate(raw: string, env: NodeJS.ProcessEnv): string | null {
+  let bad = false;
+  const out = raw.replace(/\$(?:\$|\{(\w+)(?:(:?[-?])([^}]*))?\}|(\w+))/g, (m, braced?: string, op?: string, arg = "", bare?: string) => {
+    if (m === "$$") return "$";
+    const v = env[braced ?? bare!];
+    const set = op?.startsWith(":") ? !!v : v !== undefined;
+    if (op?.endsWith("?") ? !set : !op && v === undefined) bad = true;
+    return set ? v! : (op?.endsWith("-") ? arg : "");
+  });
+  return bad || out.includes("$") ? null : out;
+}
+
+/** Compose normalizes a file-declared project name: lowercase, characters outside [a-z0-9_-] dropped, leading `_` and `-` trimmed. */
+const normProject = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+
+/** A YAML scalar: quoted, or plain with any trailing comment removed. */
+const scalar = (s: string): string => /^(["'])(.*?)\1/.exec(s.trim())?.[2] ?? s.replace(/(^|\s)#.*$/, "").trim();
+
+/**
+ * The last non-empty top-level `name:` across the checkout's ordered compose files, interpolated against its
+ * `.env` (the shell env wins) and normalized: `undefined` when none declares one (an empty `name:` counts as
+ * none), `{ bad }` when it cannot be resolved.
+ */
+function declaredName(c: Ctx, dir: string): string | { bad: string } | undefined {
+  const env = { ...parseDotEnv(join(dir, ".env")), ...c.env };
+  let last: string | { bad: string } | undefined;
+  for (const f of c.cfg.compose!.files) {
+    if (!existsSync(join(dir, f))) continue;
+    const lines = readFileSync(join(dir, f), "utf8").split(/\r?\n/);
+    lines.forEach((line, i) => {
+      const m = /^name:[ \t]*(.*)$/.exec(line);
+      if (!m) return;
+      let raw = scalar(m[1]!);
+      // `name:` with the value on the next, indented line.
+      if (!raw) {
+        const next = lines.slice(i + 1).find((l) => l.trim() && !/^\s*#/.test(l));
+        if (next && /^[ \t]+\S/.test(next) && !/:(\s|$)/.test(scalar(next))) raw = scalar(next);
+      }
+      if (!raw) return;
+      const v = interpolate(raw, env);
+      if (v === null) last = { bad: raw };
+      else if (v !== "") last = normProject(v) || { bad: raw };
+    });
+  }
+  return last;
+}
+
 /** The Compose project name for this checkout (null in --static or on error) and its e.project result. */
 export function composeProject(c: Ctx): { name: string | null; result: Result } {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose!;
   const present = files.filter((f) => existsSync(join(c.root, f)));
   if (!present.length) return { name: null, result: res("FAIL", id, `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`) };
-  const nameIn = (dir: string): string | null =>
-    existsSync(join(dir, present[0]!)) ? (/^name:\s*["']?([\w.-]+)/m.exec(readFileSync(join(dir, present[0]!), "utf8"))?.[1] ?? null) : null;
-  const declared = nameIn(c.root);
+  const missing = files.filter((f) => !present.includes(f));
+  if (missing.length) return { name: null, result: res("FAIL", id, `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`) };
+  const mine = declaredName(c, c.root);
+  const declared = typeof mine === "string" ? mine : null;
   if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
-  // A worktree may declare its own name:; the prod name is the main checkout's.
+  const unresolved = (d: { bad: string }, whose = ""): { name: null; result: Result } => ({ name: null, result: res("FAIL", id, `${whose}compose name: ${d.bad} cannot be resolved`, "set the variable it uses, or declare a literal name: in the compose file") });
+  // The shell's COMPOSE_PROJECT_NAME beats this checkout's own .env, which beats the file.
+  const envName = c.env.COMPOSE_PROJECT_NAME || parseDotEnv(join(c.root, ".env")).COMPOSE_PROJECT_NAME || null;
+  // This checkout's own name: decides the project only in the main checkout with no COMPOSE_PROJECT_NAME.
+  if (typeof mine === "object" && !c.isWorktree && !envName) return unresolved(mine);
+  // A worktree may declare its own name:; the prod name is the main checkout's, and a COMPOSE_PROJECT_NAME in its .env beats the file.
   const main = c.worktrees[0] ?? c.root;
-  const prod = (c.isWorktree ? nameIn(main) ?? declared : declared) ?? derive(c, main);
-  const envName = c.env.COMPOSE_PROJECT_NAME || null;
+  const theirs = c.isWorktree ? declaredName(c, main) : mine;
+  const mainEnvName = normProject(parseDotEnv(join(main, ".env")).COMPOSE_PROJECT_NAME ?? "");
+  if (c.isWorktree && typeof theirs === "object" && !mainEnvName) return unresolved(theirs, "the main checkout's ");
+  const prod = mainEnvName || ((c.isWorktree ? (typeof theirs === "string" ? theirs : undefined) ?? declared : declared) ?? derive(c, main));
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : (declared ?? derive(c, c.root)));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree || !declared ? `derived: ${how}` : "name: in compose file";
   const clash = c.worktrees.filter((w) => rp(w) !== rp(c.root) && derive(c, w) === name);
-  if (c.isWorktree && name === prod) {
+  if (c.isWorktree && normProject(name) === prod) {
     return { name, result: res("FAIL", id, `worktree would use the main checkout's project name ${name}`, "set COMPOSE_PROJECT_NAME, or use derive = \"slug-hash\"") };
   }
   if (clash.length) return { name, result: res("FAIL", id, `project name ${name} also derives for worktree ${clash[0]}`, "rename a worktree, or use derive = \"slug-hash\"") };

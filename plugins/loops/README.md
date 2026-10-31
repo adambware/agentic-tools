@@ -464,10 +464,7 @@ A configured source that is missing or has no version for the tool is a FAIL, ne
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
 `python3 --version`, otherwise `<tool> --version`), so nothing downloads. The local version must
 match the pin and also be at or above any `engines` floor: a pinned source never waives the floor. The Compose project
-(`mode = "test"`) is `COMPOSE_PROJECT_NAME`, else the file's `name:` in the main checkout, else
-the derived name in a worktree. `e.project` FAILs if a worktree would reuse the main checkout's
-name (read from the main checkout's compose file, so editing a worktree's own `name:` does not
-change it) or two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
+(`mode = "test"`) is `COMPOSE_PROJECT_NAME` (the shell's, else the checkout's own `.env`), else in the main checkout the last non-empty `name:` across the compose files, else the derived name (always the derived name in a worktree). A `name:` is interpolated against the checkout's `.env` and the shell (the shell wins) and normalized as Compose does (lowercase, characters outside `a-z0-9_-` dropped, leading `_` and `-` trimmed), and an empty `name:` counts as absent. `e.project` FAILs if the `name:` that sets a project cannot be resolved (not under `--static`, which reports the files only), if a worktree would reuse the main checkout's name (a `COMPOSE_PROJECT_NAME` in the main checkout's `.env`, else its compose `name:`, so editing a worktree's own `name:` does not change it), or if two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
 unless allowlisted.
 
 `b.containers` (compose `mode = "test"` with `inputs`, not under `--static`) lists this

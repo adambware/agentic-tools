@@ -215,6 +215,143 @@ describe("compose", () => {
     expect(check(wt, ["--compose-project"], { COMPOSE_PROJECT_NAME: "app-prod" }).code).toBe(1);
   });
 
+  it("fails when a configured compose file is missing, naming it", () => {
+    const two = `${HEAD}[compose]\nmode = "test"\nfiles = ["compose.yml", "compose.test.yml"]\n`;
+    const r = check(setup(two, { "compose.yml": COMPOSE }));
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL e.project  compose file missing: compose.test.yml")]);
+    expect(check(setup(two, { "compose.yml": COMPOSE, "compose.test.yml": "services: {}\n" })).out).toContain("PASS e.project  app-prod");
+  });
+
+  it("resolves interpolation in name: against the check's env, failing closed when it cannot", () => {
+    const withName = (n: string) => setup(test(), { "compose.yml": `name: ${n}\nservices: {}\n` });
+    const name = (n: string, env: Record<string, string> = {}) => check(withName(n), ["--compose-project"], env).out;
+    expect(name("${STACK_NAME:-app-prod}")).toBe("app-prod");
+    expect(name("${STACK_NAME:-app-prod}", { STACK_NAME: "other" })).toBe("other");
+    // A set-but-empty value resolves to an empty name, which Compose treats as absent.
+    expect(check(withName("${STACK_NAME-app-prod}"), [], { STACK_NAME: "" }).out).not.toContain("cannot be resolved");
+    expect(name("${STACK_NAME-app-prod}")).toBe("app-prod");
+    expect(name("$STACK_NAME", { STACK_NAME: "bare" })).toBe("bare");
+    expect(name('"${STACK_NAME:-quoted}" # c')).toBe("quoted");
+    for (const bad of ["${STACK_NAME}", "${STACK_NAME:?must set}", "$STACK_NAME"]) {
+      const r = check(withName(bad));
+      expect([r.code, r.out]).toEqual([1, expect.stringContaining(`FAIL e.project  compose name: ${bad} cannot be resolved`)]);
+    }
+    // A worktree on the main stack's interpolated default is the prod name.
+    const root = withName("${STACK_NAME:-app-prod}");
+    commit(root);
+    const wt = worktree(root, "feat-z");
+    const clash = check(wt, [], { COMPOSE_PROJECT_NAME: "app-prod" });
+    expect([clash.code, clash.out]).toEqual([1, expect.stringContaining("FAIL e.project  worktree would use the main checkout's project name app-prod")]);
+    // An unresolvable declaration in the main checkout means the prod name is unknown: fail.
+    const mainBad = withName("${STACK_NAME}");
+    commit(mainBad);
+    expect(check(worktree(mainBad, "feat-w"), [], { STACK_NAME: "x" }).code).toBe(0);
+    put(mainBad, "compose.yml", "name: ${OTHER}\nservices: {}\n");
+    expect(check(worktree(mainBad, "feat-v"), [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  the main checkout's compose name: ${OTHER} cannot be resolved");
+  });
+
+  it("interpolates name: against the checkout's .env too, and a COMPOSE_PROJECT_NAME there beats the file", () => {
+    const root = setup(test(), { "compose.yml": "name: ${STACK_NAME:-dev}\nservices: {}\n" });
+    commit(root);
+    const wt = worktree(root, "feat-e");
+    put(root, ".env", "# c\nexport STACK_NAME='live' # trailing\n");
+    const clash = check(wt, [], { COMPOSE_PROJECT_NAME: "live" });
+    expect([clash.code, clash.out]).toEqual([1, expect.stringContaining("FAIL e.project  worktree would use the main checkout's project name live")]);
+    expect(check(wt, [], { COMPOSE_PROJECT_NAME: "dev" }).code).toBe(0);
+    // The shell env beats .env.
+    expect(check(root, ["--compose-project"], { STACK_NAME: "shell" }).out).toBe("shell");
+    expect(check(root, ["--compose-project"]).out).toBe("live");
+    // A name with no default resolves from .env alone.
+    const only = setup(test(), { "compose.yml": "name: ${STACK_NAME}\nservices: {}\n" });
+    expect(check(only).code).toBe(1);
+    put(only, ".env", "STACK_NAME=fromenv\n");
+    expect(check(only, ["--compose-project"]).out).toBe("fromenv");
+    // COMPOSE_PROJECT_NAME in main's .env is the real prod name, whatever the file declares.
+    const pinned = setup(test(), { "compose.yml": COMPOSE });
+    commit(pinned);
+    const pwt = worktree(pinned, "feat-p");
+    put(pinned, ".env", "COMPOSE_PROJECT_NAME=envprod\n");
+    expect(check(pwt, [], { COMPOSE_PROJECT_NAME: "envprod" }).code).toBe(1);
+    expect(check(pwt, [], { COMPOSE_PROJECT_NAME: "app-prod" }).code).toBe(0);
+    // The checkout's own .env names its project too; the shell still wins.
+    expect(check(pinned, ["--compose-project"]).out).toBe("envprod");
+    expect(check(pinned, ["--compose-project"], { COMPOSE_PROJECT_NAME: "shell" }).out).toBe("shell");
+  });
+
+  it("passes an unresolvable name: under --static", () => {
+    const root = setup(test(), { "compose.yml": "name: ${STACK_NAME}\nservices: {}\n" });
+    expect(check(root, ["--static"]).out).toContain("PASS e.project  compose files present (project name not resolved in --static)");
+    expect(check(root, ["--static"], { CI: "true" }).code).toBe(0);
+    expect(check(setup(test(), {}), ["--static"]).out).toContain("FAIL e.project  no compose file found");
+  });
+
+  it("treats an empty name: as absent and reads a next-line scalar", () => {
+    for (const empty of ["name:", 'name: ""', "name: ${STACK_NAME:-}", "name: # nothing"]) {
+      const r = check(setup(test(), { "compose.yml": `${empty}\nservices: {}\n` }));
+      expect([empty, r.code, r.out]).toEqual([empty, 0, expect.stringContaining("PASS e.project")]);
+      expect(r.out).not.toContain("cannot be resolved");
+    }
+    // A bare reference set to "" resolves to empty (absent), from the shell or the .env.
+    for (const bare of ["${STACK_NAME}", "$STACK_NAME"]) {
+      const viaShell = check(setup(test(), { "compose.yml": `name: ${bare}\nservices: {}\n` }), [], { STACK_NAME: "" });
+      expect([bare, viaShell.code, viaShell.out]).toEqual([bare, 0, expect.stringContaining("PASS e.project")]);
+      const viaEnv = setup(test(), { "compose.yml": `name: ${bare}\nservices: {}\n` });
+      put(viaEnv, ".env", "STACK_NAME=\n");
+      const r = check(viaEnv);
+      expect([bare, r.code, r.out]).toEqual([bare, 0, expect.stringContaining("PASS e.project")]);
+    }
+    expect(check(setup(test(), { "compose.yml": "name:\n  nextline\nservices: {}\n" }), ["--compose-project"]).out).toBe("nextline");
+  });
+
+  it("normalizes declared names like Compose before comparing", () => {
+    const root = setup(test(), { "compose.yml": "name: My_App!\nservices: {}\n" });
+    commit(root);
+    expect(check(root, ["--compose-project"]).out).toBe("my_app");
+    const wt = worktree(root, "feat-n");
+    const r = check(wt, [], { COMPOSE_PROJECT_NAME: "my_app" });
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining("worktree would use the main checkout's project name")]);
+    expect(check(wt, [], { COMPOSE_PROJECT_NAME: "My_App" }).code).toBe(1);
+    expect(check(wt, [], { COMPOSE_PROJECT_NAME: "other" }).code).toBe(0);
+  });
+
+  it("trims leading _ and - from a declared name like Compose", () => {
+    const root = setup(test(), { "compose.yml": "name: _MyApp\nservices: {}\n" });
+    commit(root);
+    expect(check(root, ["--compose-project"]).out).toBe("myapp");
+    expect(check(worktree(root, "feat-t"), [], { COMPOSE_PROJECT_NAME: "myapp" }).code).toBe(1);
+  });
+
+  it("reports the checkout's own unresolvable name: only when it decides the project", () => {
+    const root = setup(test(), { "compose.yml": "name: ${STACK_NAME}\nservices: {}\n" });
+    commit(root);
+    const wt = worktree(root, "feat-r");
+    put(root, ".env", "STACK_NAME=live\n");
+    // The worktree has no .env: its own name: is irrelevant, and the prod name is main's resolved one.
+    const ok = check(wt);
+    expect([ok.code, ok.out]).toEqual([0, expect.stringContaining("PASS e.project  feat-r (derived: dirname)")]);
+    const clash = check(wt, [], { COMPOSE_PROJECT_NAME: "live" });
+    expect([clash.code, clash.out]).toEqual([1, expect.stringContaining("FAIL e.project  worktree would use the main checkout's project name live")]);
+    // A main checkout whose COMPOSE_PROJECT_NAME overrides the file does not need the file's name to resolve.
+    const bare = setup(test(), { "compose.yml": "name: ${STACK_NAME}\nservices: {}\n" });
+    const viaShell = check(bare, ["--compose-project"], { COMPOSE_PROJECT_NAME: "chosen" });
+    expect([viaShell.code, viaShell.out]).toEqual([0, "chosen"]);
+    put(bare, ".env", "COMPOSE_PROJECT_NAME=fromenv\n");
+    expect(check(bare).out).toContain("PASS e.project  fromenv (COMPOSE_PROJECT_NAME)");
+  });
+
+  it("uses the last name: across the ordered compose files, in the worktree and the main checkout", () => {
+    const two = `${HEAD}[compose]\nmode = "test"\nfiles = ["compose.yml", "compose.override.yml"]\n`;
+    const root = setup(two, { "compose.yml": "name: app-base\n", "compose.override.yml": "name: app-prod\nservices: {}\n" });
+    commit(root);
+    expect(check(root, ["--compose-project"]).out).toBe("app-prod");
+    // The worktree's own override declares the prod name: clash, though its first file says app-base.
+    const wt = worktree(root, "feat-o");
+    const both = check(wt, [], { COMPOSE_PROJECT_NAME: "app-prod" });
+    expect([both.code, both.out]).toEqual([1, expect.stringContaining("worktree would use the main checkout's project name app-prod")]);
+    // The main checkout's reserved name is its last declaration, not the first (app-base).
+    expect(check(wt, [], { COMPOSE_PROJECT_NAME: "app-base" }).code).toBe(0);
+  });
+
   it("warns on a fixed container_name unless allowlisted, and reads files only under --static", () => {
     const files = { "compose.yml": `${COMPOSE}    container_name: web-1\n` };
     const warn = check(setup(test(), files));
