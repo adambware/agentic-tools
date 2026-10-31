@@ -22,7 +22,7 @@ export interface Config {
   pins: Pin[];
   harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean };
   /** null when the config has no [compose] table: no e.* checks run. */
-  compose: { mode: "none" | "test"; files: string[]; derive: "slug-hash" | "dirname"; allowContainerName: string[] } | null;
+  compose: { mode: "none" | "test"; files: string[]; inputs: string[]; containers: "fail" | "warn"; derive: "slug-hash" | "dirname"; allowContainerName: string[] } | null;
   locals: LocalCheck[];
 }
 
@@ -108,10 +108,12 @@ export function parseConfig(text: string, file: string): Config {
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn",
   };
 
-  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "derive", "allow_container_name"]);
+  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name"]);
   const compose = top.compose === undefined ? null : {
     mode: pick(c, "mode", "[compose]", oneOf<"none" | "test">("none", "test"), "none|test", "none"),
     files: pick(c, "files", "[compose]", isStrs, "a list of strings", []),
+    inputs: pick(c, "inputs", "[compose]", isStrs, "a list of globs", []),
+    containers: pick(c, "containers", "[compose]", oneOf<"fail" | "warn">("fail", "warn"), "fail|warn", "fail"),
     derive: pick(c, "derive", "[compose]", oneOf<"slug-hash" | "dirname">("slug-hash", "dirname"), "slug-hash|dirname", "dirname"),
     allowContainerName: pick(c, "allow_container_name", "[compose]", isStrs, "a list of strings", []),
   };

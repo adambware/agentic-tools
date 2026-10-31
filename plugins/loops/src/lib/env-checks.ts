@@ -157,6 +157,35 @@ export function composeProject(c: Ctx): { name: string | null; result: Result } 
   return { name, result: res("PASS", id, `${name} (${source})`) };
 }
 
+/**
+ * b.containers: a running container of this checkout's Compose project that was created before the
+ * newest commit touching a `[compose] inputs` glob is running stale code. Docker (via the injected
+ * Runner) being absent or down, or the stack not running, is a SKIP, never a WARN.
+ */
+export function containersCheck(c: Ctx, project: string | null): Result[] {
+  const cfg = c.cfg.compose!;
+  const id = "b.containers";
+  if (!cfg.inputs.length || !project) return [];
+  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root });
+  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, or the daemon is down)")];
+  const running = ids.stdout.split("\n").filter(Boolean);
+  if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
+  const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
+  const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
+  const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
+  if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
+  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root });
+  if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
+  const stale = info.stdout
+    .split("\n")
+    .map((l) => l.trim().split(" "))
+    .filter(([name, created]) => name && Date.parse(created ?? "") < ct * 1000)
+    .map(([name]) => name!.replace(/^\//, ""));
+  const fix = `docker compose -p ${project} up -d --build`;
+  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
+  return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+}
+
 export function composeChecks(c: Ctx): Result[] {
   if (!c.cfg.compose) return [];
   const { mode, files, allowContainerName } = c.cfg.compose;
@@ -168,8 +197,10 @@ export function composeChecks(c: Ctx): Result[] {
     .filter((f) => existsSync(join(c.root, f)))
     .flatMap((f) => [...readFileSync(join(c.root, f), "utf8").matchAll(/^\s*container_name:\s*["']?([^\s"'#]+)/gm)].map((m) => m[1]!))
     .filter((n) => !allowContainerName.includes(n));
+  const project = composeProject(c);
   return [
-    composeProject(c).result,
+    project.result,
+    ...(c.static ? [] : containersCheck(c, project.name)),
     names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name"),
   ];
 }

@@ -62,15 +62,22 @@ function byName(file: string): Parser {
   return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : plain;
 }
 
-const SETUP = { "setup-go": ["go", "go-version"], "setup-node": ["node", "node-version"], "setup-python": ["python", "python-version"] } as const;
-function setup(action: keyof typeof SETUP): Parser {
-  const [forTool, key] = SETUP[action];
+/** Workflow actions whose `with:` input pins a tool: kind -> [action, tool, input key]. */
+const ACTIONS = {
+  "setup-go": ["actions/setup-go", "go", "go-version"],
+  "setup-node": ["actions/setup-node", "node", "node-version"],
+  "setup-python": ["actions/setup-python", "python", "python-version"],
+  "golangci-action": ["golangci/golangci-lint-action", "golangci-lint", "version"],
+  "goreleaser-action": ["goreleaser/goreleaser-action", "goreleaser", "version"],
+} as const;
+function setup(kind: keyof typeof ACTIONS): Parser {
+  const [action, forTool, key] = ACTIONS[kind];
   return (text, tool, root) => {
     if (tool !== forTool) return [];
     const lines = text.split("\n");
     const out: Found = [];
     lines.forEach((line, i) => {
-      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*actions/${action}@`).exec(line);
+      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*${action}@`).exec(line);
       if (!m) return;
       const keyIndent = m[1]!.length + (m[2]?.length ?? 0);
       for (let j = i + 1; j < lines.length; j++) {
@@ -99,6 +106,8 @@ const KINDS: Record<string, { file: string; parse: Parser }> = {
   "setup-go": { file: ".github/workflows/*.yml", parse: setup("setup-go") },
   "setup-node": { file: ".github/workflows/*.yml", parse: setup("setup-node") },
   "setup-python": { file: ".github/workflows/*.yml", parse: setup("setup-python") },
+  "golangci-action": { file: ".github/workflows/*.yml", parse: setup("golangci-action") },
+  "goreleaser-action": { file: ".github/workflows/*.yml", parse: setup("goreleaser-action") },
 };
 
 export const splitSource = (spec: string): [string, string | undefined] => {

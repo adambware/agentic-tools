@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
+import { run, type Runner, type RunResult } from "./proc.js";
 import { deps, put, repo, sh, shim, tmp } from "./testkit.js";
 import { VERSION } from "./version.js";
 
@@ -29,8 +30,9 @@ function worktree(root: string, name: string, parent = tmp()): string {
 const withPath = (...dirs: string[]) => ({ PATH: [...dirs, process.env.PATH].join(":") });
 const goShim = (v = "1.26.1") => shim("go", `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] || exit 9\necho "go version go${v} darwin/arm64"`);
 
-function check(cwd: string, args: string[] = [], env: Record<string, string> = {}) {
+function check(cwd: string, args: string[] = [], env: Record<string, string> = {}, runner?: Runner) {
   const t = deps(cwd, env);
+  if (runner) t.d.run = runner;
   const code = main(["env-check", ...args], t.d);
   return { code, out: t.out.join("\n"), err: t.err.join("\n"), lines: t.out.join("\n").split("\n") };
 }
@@ -198,6 +200,66 @@ describe("compose", () => {
     expect(check(setup(test('allow_container_name = ["web-1"]\n'), files)).out).toContain("PASS e.container_name");
     expect(check(setup(test(), files), ["--static"]).out).toContain("PASS e.project  compose files present, name: app-prod (project name not resolved in --static)");
     expect(check(setup(test(), {})).out).toContain("FAIL e.project  no compose file found (compose.yml)");
+  });
+});
+
+describe("b.containers", () => {
+  const COMPOSE = "name: app-prod\nservices:\n  web:\n    image: x\n";
+  const cfg = (extra = "") => `${HEAD}[compose]\nmode = "test"\nfiles = ["compose.yml"]\ninputs = ["compose.yml", "docker/**"]\n${extra}`;
+  const files = { "compose.yml": COMPOSE, "docker/Dockerfile": "FROM x\n" };
+  const res = (code: number | null, stdout = ""): RunResult => ({ code, stdout, stderr: "", timedOut: false });
+  /** A fake docker: `ps` lists `ids`, `inspect` prints `created` for each; every other command runs for real. */
+  const fake = (ps: RunResult, created: string[] = [], calls: string[][] = []): Runner => (cmd, args, opts) => {
+    if (cmd !== "docker") return run(cmd, args, opts);
+    calls.push(args);
+    return args[0] === "ps" ? ps : res(0, created.join("\n"));
+  };
+  const b = (root: string, args: string[], runner: Runner) => check(root, args, {}, runner).lines.filter((l) => l.includes("b.containers")).join("\n");
+
+  it("fails (default) or warns on containers created before the newest input commit", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const old = ["/web-1 2000-01-01T00:00:00Z", "/db-1 2000-01-02T00:00:00Z"];
+    const calls: string[][] = [];
+    const r = check(root, [], {}, fake(res(0, "a1\nb2\n"), old, calls));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("FAIL b.containers  web-1, db-1 created before the newest change to the compose inputs — fix: docker compose -p app-prod up -d --build");
+    expect(calls[0]).toEqual(["ps", "-q", "--filter", "label=com.docker.compose.project=app-prod"]);
+    const w = check(setup(cfg('containers = "warn"\n'), files), [], {}, fake(res(0, "a1\n"), old));
+    expect([w.code, w.out]).toEqual([0, expect.stringContaining("WARN b.containers  web-1, db-1 created")]);
+  });
+
+  it("passes when every container is newer than the inputs", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    expect(b(root, [], fake(res(0, "a1\n"), ["/web-1 2999-01-01T00:00:00Z"]))).toBe("PASS b.containers  1 running container(s) are newer than the compose inputs");
+  });
+
+  it("skips (never warns) when docker is absent, the daemon is down, or the stack is not running", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    expect(b(root, [], fake(res(null)))).toContain("SKIP b.containers  docker is not available");
+    expect(b(root, [], fake(res(1)))).toContain("SKIP b.containers  docker is not available");
+    expect(b(root, [], fake(res(0, "\n")))).toBe("SKIP b.containers  stack down (no running container for project app-prod)");
+    expect(check(root, [], {}, fake(res(0, ""))).code).toBe(0);
+  });
+
+  it("is not run under --static, without inputs, or in compose mode none", () => {
+    const calls: string[][] = [];
+    const root = setup(cfg(), files);
+    commit(root);
+    expect(b(root, ["--static"], fake(res(0, "a1"), [], calls))).toBe("");
+    expect(b(setup(`${HEAD}[compose]\nmode = "test"\nfiles = ["compose.yml"]\n`, files), [], fake(res(0, "a1"), [], calls))).toBe("");
+    expect(b(setup(`${HEAD}[compose]\nmode = "none"\n`), [], fake(res(0, "a1"), [], calls))).toBe("");
+    expect(calls).toEqual([]);
+  });
+
+  it("uses the worktree's derived project name", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const calls: string[][] = [];
+    b(worktree(root, "feat-z"), [], fake(res(0, ""), [], calls));
+    expect(calls[0]![3]).toBe("label=com.docker.compose.project=feat-z");
   });
 });
 

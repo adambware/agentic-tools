@@ -17,9 +17,10 @@ The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.
   unless `--committed`. `--paths`, `--stdin [-z]`, `--file`, `--json` and `--explain` are supported.
 - `loops env-check` runs `.loops/env-check.toml`: version pins that must agree across
   `.tool-versions`, `.nvmrc`, `go.mod`, `package.json` engines, `setup-*` workflow steps, Dockerfile
-  tags and `.python-version` (exact, minor, major or floor), local toolchains checked offline,
+  tags, golangci-lint and goreleaser actions and `.python-version` (exact, minor, major or floor), local toolchains checked offline,
   shared-checkout, harness (tools, files, entrypoints, tracked files, sparse checkout) and Compose
-  (`none` or `test`) checks, and repo-owned `[[local]]` checks over a one-line-per-result protocol that
+  (`none` or `test`) checks, including `b.containers` (running containers older than the newest
+  commit to the Compose `inputs`; docker absent or the stack down is a SKIP), and repo-owned `[[local]]` checks over a one-line-per-result protocol that
   fails closed. Exit 0 ok, 1 FAIL, 2 usage or config error; `--static`, `--json`, `--quiet`,
   `--compose-project`; `$HOME` is redacted to `~`.
 - Results with the same level and message fold into one line that names the other ids, so one root
@@ -34,7 +35,7 @@ The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.
 
 ### Not in this release
 
-- Shim-aware `a.shadow.*` duplicate-binary checks, `b.containers`, Compose `dev` mode, a
+- Shim-aware `a.shadow.*` duplicate-binary checks, Compose `dev` mode, a
   `loops zone --lint`, and cross-result dedup keys.
 
 ## [loops 0.3.0] - 2026-10-13

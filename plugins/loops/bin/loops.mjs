@@ -951,15 +951,21 @@ function byName(file) {
   const b = basename(file);
   return b === "go.mod" ? goMod : b === ".tool-versions" ? toolVersions : plain;
 }
-var SETUP = { "setup-go": ["go", "go-version"], "setup-node": ["node", "node-version"], "setup-python": ["python", "python-version"] };
-function setup(action) {
-  const [forTool, key] = SETUP[action];
+var ACTIONS = {
+  "setup-go": ["actions/setup-go", "go", "go-version"],
+  "setup-node": ["actions/setup-node", "node", "node-version"],
+  "setup-python": ["actions/setup-python", "python", "python-version"],
+  "golangci-action": ["golangci/golangci-lint-action", "golangci-lint", "version"],
+  "goreleaser-action": ["goreleaser/goreleaser-action", "goreleaser", "version"]
+};
+function setup(kind) {
+  const [action, forTool, key] = ACTIONS[kind];
   return (text, tool, root) => {
     if (tool !== forTool) return [];
     const lines = text.split("\n");
     const out = [];
     lines.forEach((line, i) => {
-      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*actions/${action}@`).exec(line);
+      const m = new RegExp(`^(\\s*)(-\\s+)?uses:\\s*${action}@`).exec(line);
       if (!m) return;
       const keyIndent = m[1].length + (m[2]?.length ?? 0);
       for (let j = i + 1; j < lines.length; j++) {
@@ -986,7 +992,9 @@ var KINDS = {
   dockerfile: { file: "Dockerfile", parse: dockerfile },
   "setup-go": { file: ".github/workflows/*.yml", parse: setup("setup-go") },
   "setup-node": { file: ".github/workflows/*.yml", parse: setup("setup-node") },
-  "setup-python": { file: ".github/workflows/*.yml", parse: setup("setup-python") }
+  "setup-python": { file: ".github/workflows/*.yml", parse: setup("setup-python") },
+  "golangci-action": { file: ".github/workflows/*.yml", parse: setup("golangci-action") },
+  "goreleaser-action": { file: ".github/workflows/*.yml", parse: setup("goreleaser-action") }
 };
 var splitSource = (spec) => {
   const i = spec.indexOf(":");
@@ -1108,10 +1116,12 @@ function parseConfig(text, file) {
     tracked: pick(h, "tracked", "[harness]", isBool, "a boolean", false),
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn"
   };
-  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "derive", "allow_container_name"]);
+  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name"]);
   const compose = top.compose === void 0 ? null : {
     mode: pick(c, "mode", "[compose]", oneOf("none", "test"), "none|test", "none"),
     files: pick(c, "files", "[compose]", isStrs, "a list of strings", []),
+    inputs: pick(c, "inputs", "[compose]", isStrs, "a list of globs", []),
+    containers: pick(c, "containers", "[compose]", oneOf("fail", "warn"), "fail|warn", "fail"),
     derive: pick(c, "derive", "[compose]", oneOf("slug-hash", "dirname"), "slug-hash|dirname", "dirname"),
     allowContainerName: pick(c, "allow_container_name", "[compose]", isStrs, "a list of strings", [])
   };
@@ -1245,6 +1255,25 @@ function composeProject(c) {
   if (clash.length) return { name, result: res("FAIL", id, `project name ${name} also derives for worktree ${clash[0]}`, 'rename a worktree, or use derive = "slug-hash"') };
   return { name, result: res("PASS", id, `${name} (${source})`) };
 }
+function containersCheck(c, project) {
+  const cfg = c.cfg.compose;
+  const id = "b.containers";
+  if (!cfg.inputs.length || !project) return [];
+  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root });
+  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, or the daemon is down)")];
+  const running = ids.stdout.split("\n").filter(Boolean);
+  if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
+  const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
+  const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
+  const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
+  if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
+  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root });
+  if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
+  const stale = info.stdout.split("\n").map((l) => l.trim().split(" ")).filter(([name, created]) => name && Date.parse(created ?? "") < ct * 1e3).map(([name]) => name.replace(/^\//, ""));
+  const fix = `docker compose -p ${project} up -d --build`;
+  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
+  return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+}
 function composeChecks(c) {
   if (!c.cfg.compose) return [];
   const { mode, files, allowContainerName } = c.cfg.compose;
@@ -1253,8 +1282,10 @@ function composeChecks(c) {
     return [tracked.length ? res("FAIL", "e.none", `config says compose mode none but ${short(tracked)} is tracked`, `set [compose] mode = "test" and list the files in ${CFG}`) : res("PASS", "e.none", "no compose file tracked")];
   }
   const names = files.filter((f) => existsSync2(join3(c.root, f))).flatMap((f) => [...readFileSync2(join3(c.root, f), "utf8").matchAll(/^\s*container_name:\s*["']?([^\s"'#]+)/gm)].map((m) => m[1])).filter((n) => !allowContainerName.includes(n));
+  const project = composeProject(c);
   return [
-    composeProject(c).result,
+    project.result,
+    ...c.static ? [] : containersCheck(c, project.name),
     names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
   ];
 }

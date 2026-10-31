@@ -29,6 +29,8 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["setup-go:.github/workflows/*.yml", "go", { ".github/workflows/a.yml": WF(SETUP_GO("go-version: 1.25")), ".github/workflows/b.yml": WF("      - run: echo none") }, ["1.25"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: go.mod")), "go.mod": "go 1.24\n" }, ["1.24"]],
   ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n"), ".nvmrc": "20\n" }, ["20"]],
+  ["golangci-action", "golangci-lint", { ".github/workflows/ci.yml": WF("      - uses: golangci/golangci-lint-action@v6\n        with:\n          version: v1.62.2\n          args: --timeout=5m\n") }, ["1.62.2"]],
+  ["goreleaser-action", "goreleaser", { ".github/workflows/release.yml": WF("      - uses: goreleaser/goreleaser-action@v6\n        with:\n          distribution: goreleaser\n          version: \"~> v2\"\n") }, ["2"]],
   ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - name: py\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.12\"\n") }, ["3.12"]],
 ];
 
@@ -65,6 +67,8 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: ${{ matrix.go }}")) }, /no go version found/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: nope.mod")) }, /go-version-file nope\.mod not found/],
   ["setup-go:.github/workflows/*.yml", "go", {}, /no file matches/],
+  ["golangci-action", "golangci-lint", { ".github/workflows/ci.yml": WF("      - uses: golangci/golangci-lint-action@v6\n        with:\n          version: latest\n") }, /no golangci-lint version found/],
+  ["goreleaser-action", "goreleaser", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: 1.25")) }, /no goreleaser version found/],
 ];
 
 describe("readSource misses", () => {

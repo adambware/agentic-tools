@@ -386,7 +386,7 @@ LEVEL id  message — fix: what to do
 env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
 ```
 
-Order is groups `a` (pins), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
+Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
 are not counted. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
@@ -394,8 +394,8 @@ are not counted. Results with the same level and message fold into one line that
 resolved). `$HOME` is shown as `~` everywhere. `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
 
-`--static` reads repo files only: no toolchain, tool or worktree probes (`a.local.*`, `d.tools`,
-`d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
+`--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
+`b.containers`, `d.tools`, `d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
 `[[local]]` checks with `static = true` run.
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
@@ -430,6 +430,8 @@ sparse = "warn"                         # d.sparse: WARN when core.sparseCheckou
 [compose]                               # e.*; omit the table for no compose checks
 mode = "none"                           # none: FAIL if a compose file is tracked | test
 files = ["compose.yml"]                 # test only: e.project and e.container_name
+inputs = ["compose.yml", "docker/**"]   # test only: b.containers, globs over tracked files
+containers = "fail"                     # fail (default) | warn: b.containers severity
 derive = "dirname"                      # dirname (default) | slug-hash (<main>-<worktree slug>-<hash6>)
 allow_container_name = ["app"]
 
@@ -449,6 +451,7 @@ Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files
 | `go-mod` | `go.mod` | `toolchain` if present, else `go` |
 | `engines` | `package.json` | `engines.<tool>`, as a floor |
 | `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.yml` | `<tool>-version`, or the file named by `<tool>-version-file` |
+| `golangci-action`, `goreleaser-action` | `.github/workflows/*.yml` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) or `goreleaser/goreleaser-action` (tool `goreleaser`); `latest` is no version |
 | `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
 
 Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`.
@@ -459,6 +462,12 @@ A configured source that is missing or has no version for the tool is a FAIL, ne
 the derived name in a worktree. `e.project` FAILs if a worktree would reuse the main checkout's
 name or two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
 unless allowlisted.
+
+`b.containers` (compose `mode = "test"` with `inputs`, not under `--static`) lists this
+checkout's running containers (`docker ps` by the `com.docker.compose.project` label) and
+compares their `Created` time (`docker inspect`) with the newest commit touching an `inputs` glob.
+A container older than that commit is `containers` severity (FAIL by default). Docker missing or
+down, or no running container, is a SKIP ("stack down"), never a WARN.
 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. It prints one line per
