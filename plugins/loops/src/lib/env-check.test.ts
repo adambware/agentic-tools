@@ -362,6 +362,10 @@ describe("output and exit codes", () => {
     ["compose test without files", `${HEAD}[compose]\nmode = "test"\n`, /mode test needs files/],
     ["compose dev", `${HEAD}[compose]\nmode = "dev"\n`, /mode must be none\|test/],
     ["bad local id", `${HEAD}[[local]]\nid = "zz"\nrun = "a"\n`, /id "zz" must look like/],
+    // Value: protects=parseConfig rejects empty sources, duplicate local ids and a non-positive timeout_s; fails_when=one of those guards is removed; why_new=the bad-config table had no rows for them; seam=none; no_claim=none beyond protects
+    ["empty sources", `${HEAD}[[pins]]\ntool = "go"\nsources = []\n`, /\[\[pins\]\] #1: sources is empty/],
+    ["duplicate local id", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\n[[local]]\nid = "d.a"\nrun = "b"\n`, /\[\[local\]\] #2: duplicate id d\.a/],
+    ["zero timeout", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\ntimeout_s = 0\n`, /timeout_s must be a positive number/],
     ["missing local check", `${HEAD}[[local]]\nid = "d.a"\nrun = ".loops/checks/nope.sh"\n`, /local check d\.a: \.loops\/checks\/nope\.sh is missing or not executable/],
   ];
   it.each(bad)("exits 2 on %s", (_n, config, re) => {
@@ -378,6 +382,8 @@ describe("output and exit codes", () => {
     expect(check(tmp()).err).toContain("not a git repository");
     expect(check(setup(HEAD), ["--bogus"]).code).toBe(2);
     expect(check(setup(`engine = ">=0.4.0"\n${HEAD}`)).code).toBe(0);
+    // Value: protects=an engine floor below VERSION with a higher later component (>=0.3.9) is accepted; fails_when=checkEngine compares components independently instead of stopping at the first difference; why_new=only the equal floor was tested; seam=none; no_claim=none beyond protects
+    expect(check(setup(`engine = ">=0.3.9"\n${HEAD}`)).code).toBe(0);
   });
 
   it("--compose-project exits 2 when compose mode is not test", () => {
@@ -430,5 +436,9 @@ describe("versions", () => {
     const at = (f: string): string => (JSON.parse(readFileSync(join(HERE, "..", "..", f), "utf8")) as { version: string }).version;
     expect([at("package.json"), at(".claude-plugin/plugin.json")]).toEqual([VERSION, VERSION]);
     expect(main(["--version"], deps(tmp()).d)).toBe(0);
+    // Value: protects=an unknown or missing loops subcommand exits 2 with usage on stderr; fails_when=the dispatcher falls through to exit 0 or throws; why_new=only --version was exercised; seam=none; no_claim=none beyond protects
+    const t = deps(tmp());
+    expect([main(["frobnicate"], t.d), main([], t.d)]).toEqual([2, 2]);
+    expect(t.err.join("\n")).toMatch(/^frobnicate: unknown command frobnicate\nloops [0-9.]+\nusage: loops/);
   });
 });
