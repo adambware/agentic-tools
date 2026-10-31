@@ -79,7 +79,9 @@ transcript written to in the last hour is a session still being written and is s
 counting; in an older file, or one whose mtime is over a minute in the future, it counts in
 `bad_lines`. A Workflow run copied into another session's `workflows/` counts once (by `runId`,
 keeping the finished copy), with the copy in `dup_records`.
-`version` names the parser that wrote the row; it is bumped whenever a parser rule changes.
+`version` is the version of the plugin that wrote the row (a test keeps it equal to
+`package.json`). It changes with every release, so a parser rule change always comes with a new
+`version`, but a new `version` does not always mean a parser change.
 `schema` is bumped only when a field changes meaning or goes away; new fields are additive.
 
 Review logs have their own counters in `parse_lenses`, so drift can be traced to its source. A
@@ -399,7 +401,8 @@ results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, 
 `[[local]]` checks with `static = true` run.
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
-CLI, a missing or non-executable local check, and bad TOML are all exit 2.
+CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
+repo, and bad TOML are all exit 2.
 
 ```toml
 schema_version = 1
@@ -455,13 +458,16 @@ Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files
 | `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
 
 Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`;
-every pair of sources must agree, and the pin is the most specific version.
+every pair of sources must agree, and the pin is the most specific pinned version (an `engines`
+floor never becomes the pin).
 A configured source that is missing or has no version for the tool is a FAIL, never a PASS.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
-`python3 --version`, otherwise `<tool> --version`), so nothing downloads. The Compose project
+`python3 --version`, otherwise `<tool> --version`), so nothing downloads. The local version must
+match the pin and also be at or above any `engines` floor: a pinned source never waives the floor. The Compose project
 (`mode = "test"`) is `COMPOSE_PROJECT_NAME`, else the file's `name:` in the main checkout, else
 the derived name in a worktree. `e.project` FAILs if a worktree would reuse the main checkout's
-name or two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
+name (read from the main checkout's compose file, so editing a worktree's own `name:` does not
+change it) or two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
 unless allowlisted.
 
 `b.containers` (compose `mode = "test"` with `inputs`, not under `--static`) lists this
@@ -486,7 +492,7 @@ result on stdout:
 (the Compose project, or empty), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
 It fails closed: an unparseable line is `FAIL <id>.protocol`; no lines is a FAIL; a nonzero exit
 without a FAIL line adds one (with the first stderr line); a timeout adds a WARN, "not a pass",
-after any lines printed before it.
+after any lines printed before it (so a FAIL printed before the timeout still counts).
 
 **Wrapper.** `templates/env-check` is a 15-line POSIX `sh` wrapper to copy into a repo as
 `bin/env-check` (`chmod +x`). It runs `$LOOPS_BIN`, then `$HOME/bin/loops`, then `loops` on PATH,
