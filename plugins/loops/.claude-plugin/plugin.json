@@ -1,6 +1,6 @@
 {
   "name": "loops",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Engineering-loop tooling. The `loops` CLI classifies a change against a repo's risk-zones.md (`loops zone`) and runs a repo's environment checks from `.loops/env-check.toml` (`loops env-check`). `loop-metrics` reads Claude Code's local session transcripts and Workflow run records, plus gstack review logs (and, with a private repo config, merged PRs from GitHub via `gh`), and appends one baseline row per run to ~/.claude/metrics/loops.jsonl, so loop rules are kept or dropped against measured history.",
   "author": {
     "name": "adambware"

@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.4.1] - 2026-11-01
+
+### Fixed
+
+- `loops env-check` pins: exact pins are compared pairwise, and a pin below a range floor is now a FAIL.
+- `loops env-check` resolves the Compose project once per run instead of twice; the output is unchanged.
+
 ## [loops 0.4.0] - 2026-10-31
 
 The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.mjs`.
