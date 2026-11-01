@@ -342,8 +342,12 @@ git diff --name-only -z main... | loops zone --stdin -z --json
 
 Flags: `--base REF`, `--committed` (leave out uncommitted and untracked files), `--paths P...`,
 `--stdin [-z]` (newline or NUL separated), `--file F`, `--json`, `--explain` (one line per path
-with the rows that matched). Renames count both sides; deletions count. An empty change prints
-`zone: none`.
+with the rows that matched). Renames count both sides; deletions count. Submodule pointer moves and
+edits to tracked content inside a submodule count whatever `.gitmodules` or `diff.ignoreSubmodules` say (`ignore=all`
+included); untracked files inside a submodule do not. A path with a line break, CR or NUL is rejected with exit 2
+only when it comes from `--paths` or `--stdin`; filenames reported by git are classified as they are. `--stdin` exits 2 when `-z` does not match
+the input: NUL in the input without `-z`, or newlines but no NUL with `-z`. An empty change prints
+`zone: none`. In text and `--explain` output, a path that contains a control character (line break, escape, tab, DEL) is printed JSON-quoted, e.g. `"src/x\nzone: green"`, so a file name cannot add fake lines; plain names print unquoted, and `--json` is unchanged.
 
 ```
 zone: red
@@ -392,8 +396,9 @@ Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e`
 are not counted. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
-`--compose-project` (print the Compose project name for this checkout, exit 1 if it cannot be
-resolved). `$HOME` is shown as `~` everywhere. `--json` is `{schema, engine, mode, root,
+`--compose-project` (print the Compose project name for this checkout; exit 1 with the reason and fix on stderr if `e.project`
+FAILs, as when the name cannot be resolved, is invalid, reuses the main checkout's name or clashes with another
+worktree, and 2 without compose `mode = "test"`; when only plain `docker compose` without `-p` would misplace the stack, it still prints the name, which is safe for `-p`, exits 0 and warns on stderr; it always resolves the name in full, ignoring `--static` and `CI=true`). `$HOME` is shown as `~` everywhere. `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
 
 `--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
@@ -435,7 +440,7 @@ mode = "none"                           # none: FAIL if a compose file is tracke
 files = ["compose.yml"]                 # test only: e.project and e.container_name
 inputs = ["compose.yml", "docker/**"]   # test only: b.containers, globs over tracked files
 containers = "fail"                     # fail (default) | warn: b.containers severity
-derive = "dirname"                      # dirname (default) | slug-hash (<main>-<worktree slug>-<hash6>)
+derive = "dirname"                      # dirname (default) | slug-hash (<main, else wt>-<worktree slug>-<hash6>)
 allow_container_name = ["app"]
 
 [[local]]                               # a repo's own checks
@@ -449,34 +454,56 @@ Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files
 
 | kind | default file | reads |
 |---|---|---|
-| `tool-versions` | `.tool-versions` | the line for the tool (`node` also matches `nodejs`) |
-| `nvmrc`, `node-version`, `python-version` | `.nvmrc`, `.node-version`, `.python-version` | the whole file |
+| `tool-versions` | `.tool-versions` | every line for the tool (`node` also matches `nodejs`, `go` also matches `golang`; a file listing both at different versions is a disagreement) |
+| `nvmrc`, `node-version`, `python-version` | `.nvmrc`, `.node-version`, `.python-version` | the first non-blank, non-comment line (a trailing `# comment` is ignored, as nvm does); it must be one version or series, and a range is a FAIL (see below) |
 | `go-mod` | `go.mod` | `toolchain` if present, else `go` |
 | `engines` | `package.json` | `engines.<tool>`'s lowest lower bound, as a floor (`<20` alone is a FAIL) |
-| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.{yml,yaml}` | `<tool>-version`, or the file named by `<tool>-version-file` (`package.json`: `volta.node`, else `engines.node` as a floor) |
+| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.{yml,yaml}` | `<tool>-version`, or the file named by `<tool>-version-file` (see below) |
 | `golangci-action`, `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) or `goreleaser/goreleaser-action` (tool `goreleaser`); `latest` is no version |
 | `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
+
+Workflow sources (`setup-*`, `golangci-action`, `goreleaser-action`) parse each workflow as YAML 1.2, as Actions does, and read every `jobs.*.steps[]` step (or a composite action's `runs.steps[]`) that uses the action. Any YAML form works: flow mappings, block scalars, a value on the next line, anchors and aliases. Action refs (`Actions/Setup-Node@v4`) and input names match case-insensitively, and a multi-line input (`python-version: |`) is read line by line. A workflow that does not parse is a FAIL. These are also a FAIL, not a skipped step: an input that is not a literal version (an expression like `${{ matrix.go }}`, a list or mapping, or a keyword such as `stable`, `oldstable`, `lts/*`, `node` or `current`); an empty input with no non-empty `-file` or version input beside it; an unquoted number that YAML reads differently from its text (`go-version: 1.20` reaches the action as 1.2, so quote it); a merge key (`<<:`) in `with:`; an alias with no anchor; and a `uses:` of the action outside a steps list. A literal `latest` is still ignored.
+A version (an input, or the first line of a version file) must be one version or one series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2`. A range (`>=1.20`, `<2`, `20 || 22`, `^1.20`, `~1.20.3`, `1.20 - 1.22`) or a version followed by other text is a FAIL (`is a range, not a pinned version`). For node sources a single semver `=` is an exact pin (`=20.11.1`, `= v20.11.1`); `==` and, in `.python-version`, `=` are still ranges. A value must start with a version (optionally `v`): implementation or keyword values that merely contain digits are not versions, so setup-python `pypy3.9`, `pypy-3.10`, `graalpy-24.0` and setup-node `lts/-1` FAIL as "is not a version", `.python-version` `pypy3.9-7.3.11` and `.nvmrc` `lts/-1` FAIL as "no version in", a `.tool-versions` `python pypy3.9` line is not read, and a Dockerfile tag such as `node:lts-alpine3.20` is not read.
+`<tool>-version-file` files are read in their own format for `go.mod`, `go.work`, `.tool-versions`, `package.json` (`volta.<tool>`, else `engines.<tool>` as a floor), `pyproject.toml` and `Pipfile`. Any other file (`.nvmrc`, `.node-version`, `.python-version`, `.go-version` or a custom name) is read as a plain version file, as the actions read it: its first non-blank, non-comment line must be a pinned version, else FAIL. `pyproject.toml` is parsed as TOML and read as setup-python reads it: `[project] requires-python` when the file has a `project` table (dotted keys and inline tables count), else `[tool.poetry.dependencies] python`. Poetry's `^X`, `~X`, bare `X` and `X.*` floor at X, and with `||` the lowest alternative is used; the PEP 440 lower bound is a floor. Invalid TOML, a non-string value, neither key, or no lower bound is a FAIL. `python-version-file: Pipfile` reads `[requires] python_full_version`, else `python_version`. A named file that holds no version for the tool (a go.mod with no `go` line, a .tool-versions without the tool) is a FAIL. When a step sets both `<tool>-version` and `<tool>-version-file`, only the direct input is read and the file is ignored (it may even be missing), as the setup actions do; a direct `latest` therefore also ignores the file.
+An inclusive engines or PEP 440 prerelease bound keeps its prerelease (`>=20.0.0-rc.1` floors at 20.0.0-rc.1, `>=20.0.0-0` at 20.0.0-0, `>=3.13.0rc1` at 3.13.0rc1). An exclusive prerelease bound floors at its immediate successor (`>20.0.0-rc.1` at 20.0.0-rc.1.0, `>3.13.0rc1` at 3.13.0rc1.0), so the next prerelease (rc.2) passes and the bound itself does not.
+Prereleases keep their identity: `22.0.0-rc.1`, `3.13.0rc1` and `1.26rc1` do not equal their release under `exact` (nor does `22` under `exact`), and they rank below it under `floor`. Under `minor`/`major` a prerelease is ignored only when it follows more components than the compare depth. So `22.0.0-rc.1` and `3.13.0rc1` match their line under `minor`, but a two-component prerelease such as `1.26rc1` or `3.13-dev` stays distinct from `1.26` and `1.26.x` under `minor`, as does `22-rc.1` under `major`. Only known prerelease shapes count: `-alpha`, `-beta`, `-rc`, `-pre`, `-preview`, `-dev`, `-next`, `-nightly`, `-canary`, `-snapshot`, `-ea`, and the attached PEP 440/Go forms `rc1`, `a2`, `b1`, `.dev0`. Any other suffix ends the version, both in Dockerfile `FROM` tags and `ARG <TOOL>_VERSION=` values and in local `--version` output: image variants (`-alpine`, `-slim-bookworm`, and a bare `-dev` straight after the version, the Chainguard/Wolfi dev image, so `node:20-dev` reads as 20; `-dev` followed by a number still counts as a prerelease), patchlevels (`3.1.4p223`), build ids, vendor suffixes (`-desktop.1`) and package revisions (`-1`).
 
 Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`;
 every pair of sources must agree, and the pin is the most specific pinned version (an `engines`
 floor never becomes the pin).
 A configured source that is missing or has no version for the tool is a FAIL, never a PASS.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
-`python3 --version`, otherwise `<tool> --version`), so nothing downloads. The local version must
+`python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain; a probe that does
+not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
 match the pin and also be at or above any `engines` floor: a pinned source never waives the floor. The Compose project
-(`mode = "test"`) is `COMPOSE_PROJECT_NAME` (the shell's, else the checkout's own `.env`), else in the main checkout the last non-empty `name:` across the compose files, else the derived name (always the derived name in a worktree). A `name:` is interpolated against the checkout's `.env` and the shell (the shell wins) and normalized as Compose does (lowercase, characters outside `a-z0-9_-` dropped, leading `_` and `-` trimmed), and an empty `name:` counts as absent. `e.project` FAILs if the `name:` that sets a project cannot be resolved (not under `--static`, which reports the files only), if a worktree would reuse the main checkout's name (a `COMPOSE_PROJECT_NAME` in the main checkout's `.env`, else its compose `name:`, so editing a worktree's own `name:` does not change it), or if two worktrees derive the same one; `e.container_name` WARNs on a fixed `container_name`
-unless allowlisted.
+(`mode = "test"`) is resolved as Compose resolves it: `COMPOSE_PROJECT_NAME` (the shell's, else the checkout's `.env`; a shell value set to empty hides the `.env` one, as in Compose), else in the main checkout the last non-empty `name:` across the stack's files, else the derived name (always the derived name in a worktree). Those files are `COMPOSE_FILE`'s (the shell's, else the `.env`'s, split on `COMPOSE_PATH_SEPARATOR`, default `:`), else the configured files plus, beside a lone default-named file, the implicit `compose.override.*` (when Compose's own discovery loads other files, its name only counts as prod, below); an empty `COMPOSE_FILE`, or one naming a missing file, FAILs `e.project`. Compose's project directory is the first compose file's: its `.env` is the one read (with `COMPOSE_FILE`, the first file's directory becomes the project directory and its `.env` fills keys the first `.env` left unset), and its basename is the main checkout's default name (the `dirname` name in every checkout; `slug-hash` names worktrees only). Each compose file is parsed as YAML, so anchors, aliases, tags, `<<` merge keys, explicit keys and flow mappings resolve as in Compose, with YAML 1.2 core scalars even under a `%YAML 1.1` directive (`name: on` is the string `on`), and the documents of a multi-document file merge in order, as in Compose (a later `name:` wins, but a later null or `""` one does not replace one already set; an alias to an anchor in an earlier document, which Compose accepts, FAILs); the root mapping's `name:` is interpolated against that `.env` and the shell (the shell wins) and normalized as Compose does (lowercase, characters outside `a-z0-9_-` dropped, leading `_` and `-` trimmed), and `name: ""` counts as absent; a derived name is normalized the same way. `.env` lines are `KEY=value` or `KEY: value`, as in Compose, and a value is interpolated against the shell and the keys above it, except in single quotes. `COMPOSE_PROJECT_NAME` is not normalized: like Compose, `e.project` rejects one that is not already lowercase `a-z0-9_-` starting with a letter or digit. `e.project` FAILs if the `name:` or `COMPOSE_PROJECT_NAME` that sets a project cannot be resolved or is invalid, or a compose file is not valid YAML, has a document that is not a mapping, has a `%YAML` directive other than 1.1 or a `name:` that is null or not a string (in the checkout's own files whatever `COMPOSE_PROJECT_NAME` says, since Compose rejects them; in the main checkout's only where they set the prod name; not under `--static`, which reports the files only); if a worktree would reuse the main checkout's name (a `COMPOSE_PROJECT_NAME` in the main checkout's `.env`, else its compose `name:`, else its derived name, so editing a worktree's own `name:` does not change it; only when the main checkout has no compose file does the worktree's own `name:` stand in), or the name plain `docker compose` gives the main checkout when Compose's own discovery loads other files than those (it takes the first of `compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml` in the project directory, else in the nearest parent inside the checkout, whose `.env` fills keys the project directory's left unset, plus the first `compose.override.*` beside it; for example several configured files and an uncommitted `compose.override.yml` declaring `name:`), so both names count as prod and a discovered file Compose rejects FAILs; if another worktree uses the same name (its `.env`'s `COMPOSE_PROJECT_NAME`, else its derived name, and, checked from a worktree, the names plain `docker compose` gives it); or if, in a worktree with no `COMPOSE_PROJECT_NAME`, plain `docker compose` (the worktree's own `name:`, else its project directory's name, and the name Compose's discovery gives it when that loads other files) would use the main checkout's name, a `name:` other than the reported one, or another worktree's name, with the fix naming the `COMPOSE_PROJECT_NAME` to add to the worktree's `.env` (a `name:` therefore needs one in every worktree, and an unresolvable one fails there too). A failing `e.project` gives no project: `b.containers` does not run and `ENV_CHECK_PROJECT` is empty. `e.container_name` WARNs on a fixed `container_name`
+unless allowlisted, reading each service's key from the parsed files (flow mappings, quoted keys and merge keys count;
+a block scalar's text does not), and WARNs when a configured compose file cannot be parsed. Under `mode = "none"`, `e.none` counts any tracked `compose` or `docker-compose` file
+in any directory and any letter case, bare or with a `.` suffix (`ops/compose.prod.yaml`). A `-` suffixed name
+(`docker-compose-dev.yml`) counts only when the file, its documents merged as Compose merges them, has a top-level Compose key (`services`,
+`include`, `networks`, `volumes`, `configs`, `secrets` or `models`, also through a `<<` merge key), holds only keys
+Compose allows (`name`, `version` and `x-*`, as in a `name:`-only overlay; `version` alone is an empty file to
+Compose), or cannot be read or parsed as YAML, so a workflow such as
+`.github/workflows/compose-lint.yml` does not.
 
 `b.containers` (compose `mode = "test"` with `inputs`, not under `--static`) lists this
 checkout's running containers (`docker ps` by the `com.docker.compose.project` label) and
-compares their `Created` time (`docker inspect`) with the newest commit touching an `inputs` glob.
-A container older than that commit is `containers` severity (FAIL by default). Docker missing or
-down, or no running container, is a SKIP ("stack down"), never a WARN.
+compares their `Created` time (`docker inspect`) with the newest change to an `inputs` glob: the
+later of the newest commit touching the inputs and the inputs' modification times on disk, so a pull,
+merge or checkout that brings in an older-dated commit, or an uncommitted edit, still counts (a
+checkout that rewrites an unchanged input can flag a fresh container; recreate the containers to clear it,
+since a rebuild that hits the build cache leaves them running).
+A container older than that change is `containers` severity (FAIL by default), and the fix names
+every configured file and recreates the containers (`docker compose -p <project> -f <file>... up -d --build --force-recreate`).
+When `files` is a single default-named file (`compose.yaml`, `compose.yml`, `docker-compose.yml` or `docker-compose.yaml`)
+and `COMPOSE_FILE` is not set in the shell or `.env`, the fix also names the `compose.override.*` beside it, which plain
+`docker compose` loads and `-f` would drop. Docker missing or
+down, no running container, no commit touching the inputs, or a failed `docker inspect` is a SKIP, never a WARN.
 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
-`timeout_s` stops the check itself; a child it leaves running can hold the run open, so `exec`
+`timeout_s` stops the check itself with SIGKILL (a trapped SIGTERM cannot outlive it); a child it leaves running can hold the run open, so `exec`
 long commands. It prints one line per
 result on stdout:
 
