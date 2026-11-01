@@ -1,0 +1,15 @@
+#!/bin/sh
+# env-check: thin wrapper around the shared `loops env-check` engine (agentic-tools plugins/loops).
+# Config: .loops/env-check.toml. Exit 3 means the engine is not installed here: contributors can
+# ignore it, the repo's own CI gate stays the merge gate. Install the engine with:
+#   ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops
+if command -v node >/dev/null 2>&1; then
+  for c in "${LOOPS_BIN:-}" "$HOME/bin/loops" "$(command -v loops 2>/dev/null)"; do
+    [ -n "$c" ] || continue
+    if [ -x "$c" ]; then exec "$c" env-check "$@"; fi
+    if [ -f "$c" ]; then exec node "$c" env-check "$@"; fi
+  done
+fi
+echo "env-check: engine not installed (optional for contributors; see CONTRIBUTING.md)" >&2
+echo "env-check: not run"
+exit 3

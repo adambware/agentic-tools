@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.4.0] - 2026-10-31
+
+The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.mjs`.
+
+### Added
+
+- `loops zone` classifies a change's paths against a repo's `risk-zones.md`: a strict parser
+  (exit 2 with `file:line` for a bad row, glob or schema version), bash-style brace globs, zone =
+  highest matching row with an unmatched path rounding up to yellow, and the file's own
+  `## Ship prefix` bullet copied verbatim. The diff is the merge base against `origin/HEAD`,
+  `origin/main` or `main` (renames count both sides); uncommitted and untracked files are included
+  unless `--committed`; staged paths count even when the working copy matches `HEAD`. `--paths`,
+  `--stdin [-z]`, `--file`, `--json` and `--explain` are supported; a missing ship bullet is exit 2
+  in `--json` mode too.
+- `loops env-check` runs `.loops/env-check.toml`: version pins that must agree across
+  `.tool-versions`, `.nvmrc`, `go.mod`, `package.json` engines, `setup-*` workflow steps, Dockerfile
+  tags, golangci-lint and goreleaser actions and `.python-version` (exact, minor, major or floor), local toolchains checked offline,
+  shared-checkout, harness (tools, files, entrypoints, tracked files, sparse checkout) and Compose
+  (`none` or `test`) checks, including `b.containers` (running containers older than the newest
+  commit to the Compose `inputs`; docker absent or the stack down is a SKIP), and repo-owned `[[local]]` checks over a one-line-per-result protocol that
+  fails closed. Exit 0 ok, 1 FAIL, 2 usage or config error; `--static`, `--json`, `--quiet`,
+  `--compose-project`; `$HOME` is redacted to `~`.
+- Every pair of pin sources must agree on the parts both state, the
+  pin is the most specific pinned version, and an `engines` floor still binds the local toolchain.
+  `engines` ranges are read for their lower bound (`>=`, `^`, `~`, `X.x`, `||`), so `<20` is an
+  error rather than a floor of 20. `setup-*` and action sources read `.yml` and `.yaml` workflows,
+  and `node-version-file: package.json` reads `volta` or `engines`, not the app's own version.
+- A `[[local]]` check's `run` must be a repo-relative path. Its result ids are the configured id or
+  `<id>.<name>`, and a check that prints a FAIL and then times out keeps the FAIL.
+- In a worktree, `e.project` takes the reserved project name from the main checkout's compose file,
+  so a worktree cannot claim the main stack's project by editing its own `name:`.
+  `ENV_CHECK_ALLOW_MAIN` only allows the shared checkout when it is `1`.
+- Results with the same level and message fold into one line that names the other ids, so one root
+  cause is one FAIL.
+- `templates/env-check`: a 15-line POSIX wrapper that runs `$LOOPS_BIN`, `~/bin/loops` or `loops`
+  on PATH, and exits 3 with `env-check: not run` when the engine or `node` is missing.
+- `smol-toml` is a dev dependency, bundled into `bin/loops.mjs` (still zero runtime install).
+
+### Changed
+
+- The `loop-metrics` row `version` is now `0.4.0` (it follows the plugin version).
+
+### Not in this release
+
+- Shim-aware `a.shadow.*` duplicate-binary checks, Compose `dev` mode, a
+  `loops zone --lint`, and cross-result dedup keys.
+
 ## [loops 0.3.0] - 2026-10-13
 
 Per-repo metrics, the second half of Wave 0 slice 2.

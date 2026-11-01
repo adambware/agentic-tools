@@ -38,6 +38,13 @@ jobs:
         run: npm test
       - name: build
         run: npm run build
+      - name: loops bundle and wrapper smoke
+        run: |
+          set -euo pipefail
+          test -x bin/loops.mjs
+          bin/loops.mjs --version
+          sh -n templates/env-check
+          test -x templates/env-check
       - name: committed artifacts are in sync with src
         run: |
           set -euo pipefail

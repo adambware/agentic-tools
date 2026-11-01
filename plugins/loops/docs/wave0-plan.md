@@ -107,7 +107,9 @@ no-decision).
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0}}
 ```
 
-`version` names the parser and is bumped when a parser rule changes (found in review).
+`version` names the parser and is bumped when a parser rule changes (found in review). Since
+0.4.0 it follows the plugin version (a test keeps it equal to `package.json`), so it also changes
+on releases with no parser change.
 
 `<window>` (medians of an empty set are `null`, never 0):
 - `workflows`: `runs`, `completed`, `killed`, `failed`, `other` (running or unknown status),
