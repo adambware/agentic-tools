@@ -82,7 +82,7 @@ describe("isFixPr", () => {
     ['Revert "feat: x"', true],
     ["hotfix: prod", true],
     ["v0.2.1 fix(loops): parser", true],
-    ["0.4.1 Fix it", true],
+    ["0.3.0 Fix it", true],
     ["Fixture refresh", false],
     ["feat: fix-ups later", false],
     ["docs: how to fix", false],

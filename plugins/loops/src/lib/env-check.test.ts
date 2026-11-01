@@ -394,7 +394,7 @@ describe("compose", () => {
     const renamed = worktree(root, "app-prod");
     put(renamed, "compose.yml", COMPOSE.replace("app-prod", "app-other"));
     expect(checkC(renamed, { [root]: "app-prod", [renamed]: "app-other" }).out).toContain("FAIL e.project  worktree would use the main checkout's project name app-prod");
-    // With no compose file in the main checkout there is no prod stack, so the worktree's own name: is its own (0.4.1 counted it as prod).
+    // With no compose file in the main checkout there is no prod stack, so the worktree's own name: is its own (before 0.5.0 it counted as prod).
     const bare = setup(test(), { "compose.yml": COMPOSE });
     commit(bare);
     const w = worktree(bare, "app-prod");
@@ -475,7 +475,7 @@ describe("compose", () => {
     const fw = worktree(mainBad, "feat-w");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  plain docker compose in this worktree would use the main checkout's project name x");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "feat-w" }, [], { STACK_NAME: "x", COMPOSE_PROJECT_NAME: "feat-w" }).code).toBe(0);
-    // The main checkout's name: cannot resolve: Compose's error is the FAIL (0.4.1 said "cannot be resolved").
+    // The main checkout's name: cannot resolve: Compose's error is the FAIL (before 0.5.0 it said "cannot be resolved").
     put(mainBad, "compose.yml", "name: ${OTHER}\nservices: {}\n");
     const fv = worktree(mainBad, "feat-v");
     expect(checkC(fv, { [mainBad]: EMPTY, [fv]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  the main checkout's compose config: project name must not be empty");
@@ -659,7 +659,7 @@ describe("compose", () => {
     put(nested, ".env", 'BASE=app\nSTACK_NAME="${BASE}-live"\n');
     expect(checkC(nested, { [nested]: "app-live" }, ["--compose-project"]).out).toBe("app-live");
     // Compose: an unset variable in .env interpolates to empty, so this COMPOSE_PROJECT_NAME is as if unset and name: applies
-    // (0.4.1 failed closed on it).
+    // (before 0.5.0 it failed closed on it).
     const nope = setup(test(), { "compose.yml": COMPOSE });
     put(nope, ".env", "COMPOSE_PROJECT_NAME=${NOPE}\n");
     const own = checkC(nope, { [nope]: "app-prod" });
@@ -700,7 +700,7 @@ describe("compose", () => {
       "x-b: &b {name: app-prod}\n<<: *b\nservices: {}\n",
       "x-a: &a\n  name: app-other\nname: app-prod\n<<: *a\nservices: {}\n",
       "name: !reset app-prod\nservices: {}\n",
-      // An anchor shared across documents resolves too (0.4.1 failed closed on it).
+      // An anchor shared across documents resolves too (before 0.5.0 it failed closed on it).
       "x-n: &n app-prod\nservices: {}\n---\nname: *n\n",
     ];
     for (const doc of docs) namedProd(doc, "feat-y");
@@ -1148,7 +1148,7 @@ describe("b.containers", () => {
     );
   });
 
-  // Title kept from 0.4.1 (regression contract). Since 0.5.0 the command names no override: it omits -f for a lone
+  // Title kept from before 0.5.0 (regression contract). Since 0.5.0 the command names no override: it omits -f for a lone
   // default-named file, so plain Compose loads the override itself, whatever override files or COMPOSE_FILE say.
   it("keeps the compose.override file Compose loads beside a lone default-named file", () => {
     const root = setup(cfg(), { ...files, ".gitignore": "compose.override.yml\ndocker-compose.override.yaml\n" });
@@ -1163,7 +1163,7 @@ describe("b.containers", () => {
     expect(check(root, [], {}, stale(root)).out).not.toContain("override");
   });
 
-  // Title kept from 0.4.1. Since 0.5.0 a default-named file in a subdirectory, a non-default name or a multi-file set
+  // Title kept from before 0.5.0. Since 0.5.0 a default-named file in a subdirectory, a non-default name or a multi-file set
   // gets the configured -f list, under which Compose loads no override, so none is named.
   it("finds the override beside a default-named file in a subdirectory, and adds none to a non-default or multi-file set", () => {
     const sub = setup(cfg().replace(/"compose\.yml"/g, '"deploy/docker-compose.yml"'), { "deploy/docker-compose.yml": COMPOSE });
