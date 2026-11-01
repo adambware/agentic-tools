@@ -52,3 +52,29 @@ jobs:
             echo "::error::bin/ artifacts are stale — run 'npm run build' and commit the result"
             exit 1
           fi
+
+  # The compose-config differential corpus: the same wrapper against the real
+  # `docker compose config`. The loops-engine job also runs this file but skips
+  # the corpus when compose is absent; this job asserts it actually ran
+  # (LOOPS_REQUIRE_COMPOSE=1 turns a missing plugin into a failure).
+  compose-differential:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/loops
+    env:
+      LOOPS_REQUIRE_COMPOSE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: compose version
+        run: |
+          set -euo pipefail
+          docker compose version
+          docker compose config --help | grep -- --no-env-resolution
+      - name: install
+        run: npm ci --no-audit --no-fund
+      - name: differential corpus
+        run: npx vitest run src/lib/compose-config.test.ts

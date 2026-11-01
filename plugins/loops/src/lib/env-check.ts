@@ -65,9 +65,11 @@ export function envCheckMain(argv: string[], d: Deps): number {
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
     // A FAIL that keeps the name is one only plain `docker compose` hits: `-p <name>` is safe, so print it and warn.
+    // Without Compose the name is what loops can vouch for (the shell's, or a worktree's derived one); the main checkout has none.
     const { name, result } = composeProject(ctx);
     if (name) d.out(redact(name));
     if (result.level === "FAIL") d.err(redact(`env-check: ${name ? "warning: " : ""}${result.message}${name ? "; fix: " : " — fix: "}${result.fix}`));
+    else if (!name) d.err(redact(`env-check: ${result.message}`));
     return name ? 0 : 1;
   }
 
