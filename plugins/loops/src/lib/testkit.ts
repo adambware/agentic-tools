@@ -80,6 +80,6 @@ export function composeStub(answers: ComposeAnswers, calls: ComposeCall[] = [], 
     if (a === undefined) throw new Error(`composeStub: no answer for ${files.length ? `docker compose -f ${files.join(" -f ")}` : "plain docker compose"} config in ${cwd}`);
     if (typeof a === "string") return res(0, JSON.stringify({ name: a, services: {} }));
     if ("error" in a) return res(1, "", `${a.error.split("<root>").join(cwd)}\n`);
-    return a.unavailable === "docker" ? res(null) : res(1, "", "docker: unknown command: docker compose\n\nRun 'docker --help' for more information\n");
+    return a.unavailable === "docker" ? { ...res(null), notFound: true } : res(1, "", "docker: unknown command: docker compose\n\nRun 'docker --help' for more information\n");
   };
 }

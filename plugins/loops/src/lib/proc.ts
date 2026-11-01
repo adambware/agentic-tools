@@ -18,6 +18,10 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** True when the command itself was not found (spawn failed with ENOENT); false or absent otherwise. */
+  notFound?: boolean;
+  /** What left code null when the process did not just exit: the signal that killed it or the spawn error code (ENOBUFS, EACCES…). */
+  abend?: string;
 }
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => RunResult;
 
@@ -31,8 +35,10 @@ export const run: Runner = (cmd, args, opts = {}) => {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
-  const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
-  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut };
+  const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
+  const timedOut = errCode === "ETIMEDOUT";
+  const abend = r.status === null ? (errCode ?? r.signal ?? undefined) : undefined;
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
 };
 
 /** Everything a subcommand touches outside its own logic, injected so tests need no real process state. */

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { composeName, isComposeConfigCall, isNoFile, type ComposeName } from "./compose-config.js";
+import { composeName, isComposeConfigCall, isNoFile, isTooOld, type ComposeName } from "./compose-config.js";
 import { run, type RunResult, type Runner } from "./proc.js";
 
 type Call = { cmd: string; args: string[]; opts: Parameters<Runner>[2] };
@@ -17,6 +17,15 @@ function stub(r: RunResult) {
   return { run, calls };
 }
 const json = (v: unknown) => res({ stdout: JSON.stringify(v) });
+
+describe("the real runner's null exit codes", () => {
+  // composeName reads "unavailable" only from notFound: a docker killed by a signal must not pass for one that is absent.
+  it("marks a command that is not there as notFound, and a killed one with its signal", () => {
+    expect(run("loops-no-such-command-xyz", [])).toMatchObject({ code: null, notFound: true, timedOut: false });
+    expect(run("sh", ["-c", "kill -9 $$"])).toMatchObject({ code: null, notFound: false, abend: "SIGKILL", timedOut: false });
+    expect(run("sh", ["-c", "exit 3"])).toMatchObject({ code: 3, notFound: false, abend: undefined });
+  });
+});
 
 describe("composeName with a stubbed runner", () => {
   it("asks plain `docker compose config` when no files are configured", () => {
@@ -87,10 +96,14 @@ describe("composeName with a stubbed runner", () => {
     expect(out).toEqual({ error: "docker compose config timed out after 10s" });
   });
 
-  it("reports a failed spawn as docker not installed", () => {
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null })).run })).toEqual({
+  it("reports docker not found as not installed, and any other run without an exit code as killed", () => {
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, notFound: true })).run })).toEqual({
       unavailable: "docker is not installed",
     });
+    for (const abend of ["SIGKILL", "ENOBUFS"]) {
+      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, abend })).run })).toEqual({ error: `docker compose config was killed (${abend})` });
+    }
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null })).run })).toEqual({ error: "docker compose config was killed (no exit code)" });
   });
 
   it("reports a missing compose plugin as unavailable", () => {
@@ -101,10 +114,28 @@ describe("composeName with a stubbed runner", () => {
     }
   });
 
-  it("reports a Compose too old for --no-env-resolution as unavailable, not as the file's error", () => {
+  it("reports only Docker's own plugin-missing line as unavailable, not Compose echoing that text", () => {
+    for (const stderr of ["services.web Additional property 'compose' is not a docker command is not allowed\n", "invalid image \"docker: unknown command: docker compose\"\n"]) {
+      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({ error: stderr.trim() });
+    }
+  });
+
+  it("reports a Compose too old for --no-env-resolution as an error to upgrade, not as unavailable", () => {
     const stderr = "unknown flag: --no-env-resolution\nSee 'docker compose config --help'.\n";
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
-      unavailable: "docker compose is too old (needs config --no-env-resolution)",
+    const out = composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run });
+    expect(out).toEqual({ error: "docker compose is too old (needs config --no-env-resolution)" });
+    expect(isTooOld(out)).toBe(true);
+    expect(isTooOld({ error: "unknown flag: --no-env-resolution in a file" })).toBe(false);
+    // Compose naming the flag inside its own message is the file's error.
+    const echoed = 'invalid image "unknown flag: --no-env-resolution"\n';
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: echoed })).run })).toEqual({ error: echoed.trim() });
+  });
+
+  it("shows env values of 8+ characters in Compose's error line as ${NAME}, longest first, and leaves short, path and COMPOSE_* values", () => {
+    const env = { DB_PASSWORD: "hunter2hunter2", DB_PASSWORD_PREFIX: "hunter2hunter2-x", SHORT: "abc1234", HOME: "/home/someone", COMPOSE_PROJECT_NAME: "Bad.Name.Here" };
+    const stderr = "services.db.ports: invalid port hunter2hunter2-x:hunter2hunter2 abc1234 in /home/someone/compose.yml (Bad.Name.Here)\n";
+    expect(composeName({ root: "/r", env, run: stub(res({ code: 1, stderr })).run })).toEqual({
+      error: "services.db.ports: invalid port ${DB_PASSWORD_PREFIX}:${DB_PASSWORD} abc1234 in /home/someone/compose.yml (Bad.Name.Here)",
     });
   });
 

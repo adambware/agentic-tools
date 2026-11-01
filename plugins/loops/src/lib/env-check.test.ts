@@ -286,8 +286,8 @@ describe("compose", () => {
     const env = { DOCKER_CONFIG: "/opt/docker-cfg", COMPOSE_PROJECT_NAME: "mine", COMPOSE_FILE: "compose.yml" };
     const r = checkC(wt, { [wt]: "mine", [root]: "app-prod", [peer]: "app-prod" }, [], env);
     expect(r.out).toContain("PASS e.project  mine (COMPOSE_PROJECT_NAME)");
-    // Own configured, main configured, main plain, peer plain; no own plain under a shell COMPOSE_PROJECT_NAME.
-    expect(r.calls.map((c) => [rp(c.cwd), c.files])).toEqual([[wt, ["compose.yml"]], [root, ["compose.yml"]], [root, []], [peer, []]]);
+    // Own configured, main configured, main plain, peer configured, peer plain; no own plain under a shell COMPOSE_PROJECT_NAME.
+    expect(r.calls.map((c) => [rp(c.cwd), c.files])).toEqual([[wt, ["compose.yml"]], [root, ["compose.yml"]], [root, []], [peer, ["compose.yml"]], [peer, []]]);
     for (const c of r.calls) expect([c.env.DOCKER_CONFIG, c.env.HOME, typeof c.env.PATH]).toEqual(["/opt/docker-cfg", "/nonexistent-home", "string"]);
     expect(r.calls[0]!.env).toMatchObject(env);
     for (const c of r.calls.slice(1)) expect(Object.keys(c.env).filter((k) => k.startsWith("COMPOSE_"))).toEqual([]);
@@ -321,6 +321,64 @@ describe("compose", () => {
     expect(checkC(wt, { [wt]: "feat-u", [root]: "app-prod", [peer]: plugin }).out).toContain("SKIP e.project  compose unavailable (compose plugin is not installed); nothing to collide with");
   });
 
+  it("fails e.project on a Compose too old for --no-env-resolution, asking for an upgrade, and --compose-project exits 1", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-o");
+    // It still runs stacks, so it is no "nothing to collide with" SKIP; a shell COMPOSE_PROJECT_NAME does not change the fix.
+    const old = { error: "unknown flag: --no-env-resolution" };
+    const why = "compose config: docker compose is too old (needs config --no-env-resolution) — fix: upgrade Docker Compose to one whose config takes --no-env-resolution";
+    for (const cwd of [root, wt]) {
+      const r = checkC(cwd, { [cwd]: old }, [], { COMPOSE_PROJECT_NAME: "mine" });
+      expect([cwd, r.code, r.out]).toEqual([cwd, 1, expect.stringContaining(`FAIL e.project  ${why}`)]);
+      const p = checkC(cwd, { [cwd]: old }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "mine" });
+      expect([cwd, p.code, p.out, p.err]).toEqual([cwd, 1, "", `env-check: ${why}`]);
+    }
+  });
+
+  it("names a peer worktree by its configured files' answer, and its plain name never frees that one", () => {
+    const root = setup(test(), { "compose.yml": "services: {}\n" });
+    commit(root);
+    const a = worktree(root, "feat-a");
+    const b = worktree(root, "feat-b");
+    const env = (n: string) => ({ COMPOSE_PROJECT_NAME: n });
+    // Only b's .env explains its configured answer shared: b runs as shared under -p too, whatever its plain run picks.
+    const fromEnv = checkC(a, { [root]: "app-node", [a]: "shared", [b]: { cfg: "shared", plain: "other" } }, [], env("shared"));
+    expect([fromEnv.code, fromEnv.out]).toEqual([1, expect.stringContaining(`FAIL e.project  project name shared is also used by worktree ${b}`)]);
+    // An override's name: moves only b's plain run; b's -p name is still its derived feat-b.
+    const ovr = checkC(a, { [root]: "app-node", [a]: "feat-b", [b]: { cfg: "feat-b", plain: "ovr" } }, [], env("feat-b"));
+    expect([ovr.code, ovr.out]).toEqual([1, expect.stringContaining(`FAIL e.project  project name feat-b is also used by worktree ${b}`)]);
+    expect(checkC(a, { [root]: "app-node", [a]: "ovr", [b]: { cfg: "feat-b", plain: "ovr" } }, [], env("ovr")).code).toBe(1);
+    // A peer without every configured file has no configured run to ask: it holds its derived name (and plain, from a worktree).
+    rmSync(join(b, "compose.yml"));
+    const gone = checkC(a, { [root]: "app-node", [a]: "feat-b" }, [], env("feat-b"));
+    expect([gone.code, gone.calls.some((c) => rp(c.cwd) === rp(b))]).toEqual([1, false]);
+    // A peer on a branch missing one of several configured files is not failed for it: only its plain run is asked.
+    const two = setup(`${HEAD}[compose]\nmode = "test"\nfiles = ["compose.yml", "compose.dev.yml"]\n`, { "compose.yml": "services: {}\n", "compose.dev.yml": "services: {}\n" });
+    commit(two);
+    const c2 = worktree(two, "feat-c");
+    const d2 = worktree(two, "feat-d");
+    rmSync(join(d2, "compose.dev.yml"));
+    const part = checkC(c2, { [two]: "app-node", [c2]: "mine", [d2]: { cfg: { error: "open compose.dev.yml: no such file or directory" }, plain: "feat-d" } }, [], env("mine"));
+    expect([part.code, part.out]).toEqual([0, expect.stringContaining("PASS e.project  mine (COMPOSE_PROJECT_NAME)")]);
+  });
+
+  it("probes the main checkout's plain run even when it lacks this branch's configured files", () => {
+    const sub = `${HEAD}[compose]\nmode = "test"\nfiles = ["deploy/compose.yml"]\n`;
+    const root = setup(sub, { "deploy/compose.yml": "services: {}\n" });
+    commit(root);
+    const wt = worktree(root, "feat-m");
+    // The main checkout's branch keeps its stack in compose.yml at the root: plain Compose starts as near deploy/ as it can.
+    rmSync(join(root, "deploy"), { recursive: true });
+    put(root, "compose.yml", COMPOSE);
+    const r = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" }, [], { COMPOSE_PROJECT_NAME: "app-prod" });
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL e.project  worktree would use the main checkout's project name app-prod")]);
+    expect(r.calls.map((c) => [rp(c.cwd), c.files])).toEqual([[wt, ["deploy/compose.yml"]], [root, []]]);
+    // Finding no file there at all, the main checkout runs nothing: no prod name to take.
+    rmSync(join(root, "compose.yml"));
+    expect(checkC(wt, { [root]: NO_FILE, [wt]: "app-prod" }, [], { COMPOSE_PROJECT_NAME: "app-prod" }).code).toBe(0);
+  });
+
   it("derives the name from the first compose file's directory, as Compose does", () => {
     const sub = `${HEAD}[compose]\nmode = "test"\nfiles = ["deploy/compose.yml"]\n`;
     const root = setup(sub, { "deploy/compose.yml": "services: {}\n" });
@@ -350,10 +408,10 @@ describe("compose", () => {
     commit(root);
     const peer = worktree(root, "feat-p");
     const wt = worktree(root, "feat-s");
-    const A = { [root]: "deploy", [join(root, "deploy")]: NO_FILE, [join(peer, "deploy")]: NO_FILE, [wt]: "deploy", [join(wt, "deploy")]: NO_FILE };
+    const A = { [root]: "deploy", [join(root, "deploy")]: NO_FILE, [peer]: "deploy", [join(peer, "deploy")]: NO_FILE, [wt]: "deploy", [join(wt, "deploy")]: NO_FILE };
     const r = checkC(wt, A);
     expect([r.code, r.out]).toEqual([0, expect.stringMatching(/PASS e\.project {2}app-node-feat-s-[0-9a-f]{6} \(derived: slug-hash\)/)]);
-    expect(r.calls.map((c) => [rp(c.cwd), c.files])).toEqual([[wt, ["deploy/stack.yml"]], [root, ["deploy/stack.yml"]], [join(root, "deploy"), []], [join(peer, "deploy"), []], [join(wt, "deploy"), []]]);
+    expect(r.calls.map((c) => [rp(c.cwd), c.files])).toEqual([[wt, ["deploy/stack.yml"]], [root, ["deploy/stack.yml"]], [join(root, "deploy"), []], [peer, ["deploy/stack.yml"]], [join(peer, "deploy"), []], [join(wt, "deploy"), []]]);
     expect(checkC(wt, A, ["--compose-project"]).out).toMatch(/^app-node-feat-s-[0-9a-f]{6}$/);
     // A default-named file in deploy/ gives plain docker compose there the main checkout's name: the plain-run FAIL names the .env that run reads.
     const sub = setup(only.replace("stack.yml", "compose.yml"), { "deploy/compose.yml": "services: {}\n" });
@@ -400,7 +458,7 @@ describe("compose", () => {
     commit(bare);
     const w = worktree(bare, "app-prod");
     rmSync(join(bare, "compose.yml"));
-    const own = checkC(w, { [w]: "app-prod" });
+    const own = checkC(w, { [w]: "app-prod", [bare]: NO_FILE });
     expect([own.code, own.out]).toEqual([0, expect.stringContaining("PASS e.project  app-prod (derived: dirname)")]);
   });
 
@@ -901,7 +959,7 @@ describe("compose", () => {
   });
 
   it("fails in worktrees that share a committed name: when the main checkout's .env overrides it", () => {
-    for (const [doc, env, literal] of [["name: app-x", "COMPOSE_PROJECT_NAME=prod", true], ["name: ${STACK:-app-x}", "STACK=prod", false]] as const) {
+    for (const [doc, env] of [["name: app-x", "COMPOSE_PROJECT_NAME=prod"], ["name: ${STACK:-app-x}", "STACK=prod"]] as const) {
       const root = setup(test(), { "compose.yml": `${doc}\nservices:\n  web:\n    image: x\n`, ".gitignore": ".env\n" });
       commit(root);
       put(root, ".env", `${env}\n`);
@@ -909,8 +967,8 @@ describe("compose", () => {
       const b = worktree(root, "feat-b");
       expect([doc, checkC(root, { [root]: "prod", [a]: "app-x", [b]: "app-x" }).out]).toEqual([doc, expect.stringContaining("PASS e.project  prod")]);
       const r = checkC(a, { [root]: "prod", [a]: "app-x", [b]: "app-x" });
-      // Only a literal name: is "its compose name:"; an interpolated one is reported as the name the peer also runs under.
-      const why = literal ? "plain docker compose in this worktree would use its compose name: app-x, not feat-a" : `plain docker compose in this worktree would use project app-x, which worktree ${b} also uses`;
+      // A literal or interpolated name: alike is "its compose name:" (as before 0.5.0), ahead of the peer that shares it.
+      const why = "plain docker compose in this worktree would use its compose name: app-x, not feat-a";
       expect([doc, r.code, r.out]).toEqual([doc, 1, expect.stringContaining(`FAIL e.project  ${why} — fix: add COMPOSE_PROJECT_NAME=feat-a to .env`)]);
       put(a, ".env", "COMPOSE_PROJECT_NAME=feat-a\n");
       expect([doc, checkC(a, { [root]: "prod", [a]: "feat-a", [b]: "app-x" }).out]).toEqual([doc, expect.stringContaining("PASS e.project  feat-a (COMPOSE_PROJECT_NAME)")]);
@@ -999,7 +1057,7 @@ describe("compose", () => {
     expect([r.code, r.out]).toEqual([0, expect.stringContaining("PASS e.project  deploy (derived: dirname)")]);
     // A second worktree really does collide on deploy: the peer's plain run is probed from its deploy/ too.
     const we = worktree(root, "feat-e");
-    expect(checkC(we, { ...M, [join(wd, "deploy")]: "deploy", [we]: "deploy" }).out).toMatch(/FAIL e\.project {2}project name deploy is also used by worktree .*feat-d/);
+    expect(checkC(we, { ...M, [wd]: "deploy", [join(wd, "deploy")]: "deploy", [we]: "deploy" }).out).toMatch(/FAIL e\.project {2}project name deploy is also used by worktree .*feat-d/);
     // A COMPOSE_PROJECT_NAME equal to the main checkout's directory name, while it runs under its name:, is no clash.
     const app = setup(test(), { "compose.yml": COMPOSE });
     commit(app);
@@ -1165,17 +1223,23 @@ describe("b.containers", () => {
   });
 
   // Since 0.5.0 the command names no override: it omits -f for a lone default-named file, so plain Compose loads the
-  // override itself, whatever override files or COMPOSE_FILE say.
+  // override itself, whatever override files say. A shell COMPOSE_FILE, or a default file Compose prefers beside the
+  // configured one, would make plain Compose load another stack, so then the configured -f is passed.
   it("omits -f for a lone default-named file, so plain Compose loads its override itself", () => {
-    const root = setup(cfg(), { ...files, ".gitignore": "compose.override.yml\ndocker-compose.override.yaml\n" });
+    const root = setup(cfg(), { ...files, ".gitignore": "compose.override.yml\ndocker-compose.override.yaml\ncompose.yaml\n" });
     commit(root);
     put(root, "compose.override.yml", "services:\n  web:\n    ports: [\"8080:80\"]\n");
     put(root, "docker-compose.override.yaml", "services: {}\n");
+    put(root, "docker-compose.yml", "services: {}\n");
     const fix = "— fix: docker compose -p app-prod up -d --build --force-recreate";
+    const withF = "— fix: docker compose -p app-prod -f compose.yml up -d --build --force-recreate";
     expect(b(root, [], stale(root))).toContain(fix);
-    expect(check(root, [], { COMPOSE_FILE: "compose.yml" }, stale(root)).out).toContain(fix);
+    expect(check(root, [], { COMPOSE_FILE: "other.yml" }, stale(root)).out).toContain(withF);
+    // Compose reads COMPOSE_FILE from the .env too; loops reads no .env, so that one is the developer's own run.
     put(root, ".env", "COMPOSE_FILE=compose.yml\n");
     expect(b(root, [], stale(root))).toContain(fix);
+    put(root, "compose.yaml", "services: {}\n");
+    expect(b(root, [], stale(root))).toContain(withF);
   });
 
   // Since 0.5.0 a default-named file in a subdirectory, a non-default name or a multi-file set gets the configured -f
