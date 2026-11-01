@@ -8578,13 +8578,17 @@ var pinOf = (vals, mode) => mode === "floor" ? maxFloor(vals) ?? vals[0].v : pin
 var pinned = (vals) => vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals;
 function disagreement(vals, mode) {
   if (mode === "floor") {
-    const fl = maxFloor(vals);
-    if (fl === null) return "compare = floor needs a floor source (engines)";
-    const bad2 = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
-    return bad2.length ? bad2.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
+    const fl2 = maxFloor(vals);
+    if (fl2 === null) return "compare = floor needs a floor source (engines)";
+    const bad2 = vals.filter((x) => !x.floor && cmp(x.v, fl2) < 0);
+    return bad2.length ? bad2.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl2}` : null;
   }
-  const bad = vals.some((x, i) => vals.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
-  return bad ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+  const pins = pinned(vals);
+  const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
+  if (bad) return pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})`;
+  const fl = maxFloor(vals);
+  const under = fl === null ? [] : pins.filter((x) => !x.floor && cmp(x.v, fl) < 0);
+  return under.length ? under.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
 }
 var belowFloor = (local, vals) => {
   const fl = maxFloor(vals);
@@ -8593,7 +8597,7 @@ var belowFloor = (local, vals) => {
 var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.4.0";
+var VERSION = "0.4.1";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -9037,7 +9041,7 @@ function containersCheck(c, project) {
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
   return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
-function composeChecks(c) {
+function composeChecks(c, project) {
   if (!c.cfg.compose) return [];
   const { mode, files, allowContainerName } = c.cfg.compose;
   if (mode === "none") {
@@ -9050,7 +9054,7 @@ function composeChecks(c) {
     const n = table3(s)?.container_name;
     return n == null || n === "" ? [] : [String(n)];
   }).filter((n) => !allowContainerName.includes(n));
-  const project = composeProject(c);
+  if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
     project.result,
     ...c.static || project.result.level === "FAIL" ? [] : containersCheck(c, project.name),
@@ -9147,7 +9151,7 @@ function envCheckMain(argv, d) {
     ...pinChecks(ctx),
     ...sharedCheck(ctx),
     ...harnessChecks(ctx),
-    ...composeChecks(ctx),
+    ...composeChecks(ctx, compose),
     ...cfg.locals.flatMap((l) => runLocal(ctx, l, project))
   ].map((r, i) => ({ r, i })).sort((a, b) => group(a.r) - group(b.r) || a.i - b.i).map(({ r }) => r);
   const shown = collapse(results).map((r) => ({

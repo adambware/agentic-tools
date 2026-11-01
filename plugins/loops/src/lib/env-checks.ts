@@ -347,11 +347,13 @@ function envProject(v: string | undefined): string | { bad: string } | undefined
   return { bad: `COMPOSE_PROJECT_NAME ${v} ${v.includes("$") ? "cannot be resolved" : "is not a valid Compose project name"}` };
 }
 
+export type ComposeProject = { name: string | null; result: Result };
+
 /**
  * The Compose project name for this checkout and its e.project result. The name is null in --static and on a FAIL,
  * except when only plain `docker compose` (no -p) would misplace the stack: then `-p <name>` is still safe.
  */
-export function composeProject(c: Ctx): { name: string | null; result: Result } {
+export function composeProject(c: Ctx): ComposeProject {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose!;
   const fail = (message: string, fix: string): { name: null; result: Result } => ({ name: null, result: res("FAIL", id, message, fix) });
@@ -495,7 +497,8 @@ export function containersCheck(c: Ctx, project: string | null): Result[] {
   return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
 
-export function composeChecks(c: Ctx): Result[] {
+/** The compose checks. `project` is the one composeProject result for this run (null only when compose is not in test mode). */
+export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] {
   if (!c.cfg.compose) return [];
   const { mode, files, allowContainerName } = c.cfg.compose;
   if (mode === "none") {
@@ -512,7 +515,7 @@ export function composeChecks(c: Ctx): Result[] {
       return n == null || n === "" ? [] : [String(n)];
     })
     .filter((n) => !allowContainerName.includes(n));
-  const project = composeProject(c);
+  if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
     project.result,
     ...(c.static || project.result.level === "FAIL" ? [] : containersCheck(c, project.name)),

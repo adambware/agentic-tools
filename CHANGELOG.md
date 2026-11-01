@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.4.1] - 2026-11-01
+
+### Fixed
+
+- `loops env-check` pins: in exact, minor and major modes a range floor no longer counts as a pin, so `.nvmrc` 22.1.0 next to `engines.node` >=20.11.0 passes; an exact pin below the highest floor FAILs as `<src>=<v> below the floor <fl>`.
+- `loops env-check` resolves the Compose project once per run instead of twice; the output is unchanged.
+
 ## [loops 0.4.0] - 2026-10-31
 
 The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.mjs`.

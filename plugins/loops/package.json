@@ -1,6 +1,6 @@
 {
   "name": "loops-engine",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "Deterministic tooling for engineering loops: loop-metrics, loops zone, loops env-check. Author TS, ship bundled node-runnable bin/*.mjs (zero runtime install).",
