@@ -64,13 +64,15 @@ export function envCheckMain(argv: string[], d: Deps): number {
 
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
+    // A FAIL that keeps the name is one only plain `docker compose` hits: `-p <name>` is safe, so print it and warn.
     const { name, result } = composeProject(ctx);
-    if (name && result.level !== "FAIL") d.out(redact(name));
-    else d.err(redact(`env-check: ${result.message}`));
-    return name && result.level !== "FAIL" ? 0 : 1;
+    if (name) d.out(redact(name));
+    if (result.level === "FAIL") d.err(redact(`env-check: ${name ? "warning: " : ""}${result.message}${name ? "; fix: " : " — fix: "}${result.fix}`));
+    return name ? 0 : 1;
   }
 
-  const project = cfg.compose?.mode === "test" ? composeProject(ctx).name : null;
+  const compose = cfg.compose?.mode === "test" ? composeProject(ctx) : null;
+  const project = compose?.result.level === "FAIL" ? null : (compose?.name ?? null);
   const results = [
     ...pinChecks(ctx),
     ...sharedCheck(ctx),

@@ -18,9 +18,9 @@ export function put(root: string, rel: string, content: string, exec = false): v
   if (exec) chmodSync(join(root, rel), 0o755);
 }
 
-/** A git repo on branch `main` with `files` committed (a name ending in `*` is executable). */
-export function repo(files: Record<string, string> = { "README.md": "x\n" }): string {
-  const root = join(tmp(), "app-node");
+/** A git repo on branch `main` in a directory named `dir`, with `files` committed (a name ending in `*` is executable). */
+export function repo(files: Record<string, string> = { "README.md": "x\n" }, dir = "app-node"): string {
+  const root = join(tmp(), dir);
   mkdirSync(root);
   sh(root, "init", "-q", "-b", "main");
   for (const [f, c] of Object.entries(files)) put(root, f.replace(/\*$/, ""), c, f.endsWith("*"));

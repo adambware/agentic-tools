@@ -26,6 +26,8 @@ export const run: Runner = (cmd, args, opts = {}) => {
     cwd: opts.cwd,
     env: opts.env,
     timeout: opts.timeoutMs,
+    // SIGTERM can be trapped or ignored; a deadline has to hold.
+    killSignal: "SIGKILL",
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
