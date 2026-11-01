@@ -20,6 +20,8 @@ export const COMPOSE_CONFIG_TIMEOUT_MS = 10_000;
 
 // Docker prints one of these when the compose plugin is missing (the binary exists, exit 1).
 const PLUGIN_MISSING = /unknown command: docker compose|'compose' is not a docker command|is not a docker command/i;
+// A Compose older than --no-env-resolution rejects the flag: it cannot answer, which is not the file's fault.
+const TOO_OLD = /unknown flag:? --no-env-resolution/;
 // Compose's own warnings come first on stderr and are not the failure.
 const WARNING_LINE = /^time=.* level=warning/;
 // Plain `docker compose` (no -f) found no compose file in the cwd or above it. The corpus pins this wording.
@@ -46,6 +48,7 @@ export function composeName(o: ComposeNameOpts): ComposeName {
   if (r.code === null) return { unavailable: "docker is not installed" };
   if (r.code !== 0) {
     if (PLUGIN_MISSING.test(r.stderr)) return { unavailable: "compose plugin is not installed" };
+    if (TOO_OLD.test(r.stderr)) return { unavailable: "docker compose is too old (needs config --no-env-resolution)" };
     const line = r.stderr
       .split("\n")
       .map((l) => l.trim())

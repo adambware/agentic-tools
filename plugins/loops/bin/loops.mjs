@@ -8707,6 +8707,7 @@ import { basename as basename2, dirname, join as join3, relative, resolve } from
 // src/lib/compose-config.ts
 var COMPOSE_CONFIG_TIMEOUT_MS = 1e4;
 var PLUGIN_MISSING = /unknown command: docker compose|'compose' is not a docker command|is not a docker command/i;
+var TOO_OLD = /unknown flag:? --no-env-resolution/;
 var WARNING_LINE = /^time=.* level=warning/;
 var NO_FILE = /^no configuration file provided\b/;
 function isNoFile(r) {
@@ -8720,6 +8721,7 @@ function composeName(o) {
   if (r.code === null) return { unavailable: "docker is not installed" };
   if (r.code !== 0) {
     if (PLUGIN_MISSING.test(r.stderr)) return { unavailable: "compose plugin is not installed" };
+    if (TOO_OLD.test(r.stderr)) return { unavailable: "docker compose is too old (needs config --no-env-resolution)" };
     const line = r.stderr.split("\n").map((l) => l.trim()).filter((l) => l && !WARNING_LINE.test(l)).pop();
     return { error: line ?? `docker compose config exited ${r.code}` };
   }
@@ -8884,6 +8886,7 @@ function declaredName(root, files) {
 }
 var literal = (declared) => declared && !declared.includes("$") ? declared : void 0;
 var PROBE_FIX = "fix the file until docker compose config accepts it, or set COMPOSE_PROJECT_NAME";
+var PROBE_FIX_SET = "fix the file, or the shell's COMPOSE_PROJECT_NAME, until docker compose config accepts them";
 function composeProject(c) {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose;
@@ -8902,7 +8905,7 @@ function composeProject(c) {
     const r = composeName({ root: fs ? root : projectDir(c, root), files: fs, env, run: c.run });
     if ("name" in r) return r.name;
     if ("unavailable" in r) return skip(r.unavailable);
-    return !fs && isNoFile(r) ? null : fail(`${whose}compose config: ${r.error}`, PROBE_FIX);
+    return !fs && isNoFile(r) ? null : fail(`${whose}compose config: ${r.error}`, !whose && envName ? PROBE_FIX_SET : PROBE_FIX);
   };
   const isResult = (x) => typeof x === "object" && x !== null;
   const own = probe(c.root, files, c.env, "");

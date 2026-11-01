@@ -101,6 +101,13 @@ describe("composeName with a stubbed runner", () => {
     }
   });
 
+  it("reports a Compose too old for --no-env-resolution as unavailable, not as the file's error", () => {
+    const stderr = "unknown flag: --no-env-resolution\nSee 'docker compose config --help'.\n";
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
+      unavailable: "docker compose is too old (needs config --no-env-resolution)",
+    });
+  });
+
   it("uses the last non-warning stderr line as the error", () => {
     const stderr =
       'time=2026-01-01T00:00:00Z level=warning msg="The \\"X\\" variable is not set."\n' +

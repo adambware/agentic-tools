@@ -203,7 +203,7 @@ const projectDir = (c: Ctx, root: string): string => dirname(resolve(root, c.cfg
  * The `-p` name loops gives checkout `root`: this is loops' own policy, not Compose's. The main checkout (and any
  * checkout under "dirname") gets what plain Compose would derive from its project directory, else the slug-hash.
  */
-export function derive(c: Ctx, root: string): string {
+function derive(c: Ctx, root: string): string {
   const main = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main)) return normProject(basename(projectDir(c, root)));
   const hash = createHash("sha1").update(rp(root)).digest("hex").slice(0, 6);
@@ -229,6 +229,8 @@ const literal = (declared: string | undefined): string | undefined => (declared 
 export type ComposeProject = { name: string | null; result: Result };
 
 const PROBE_FIX = "fix the file until docker compose config accepts it, or set COMPOSE_PROJECT_NAME";
+// When this shell already sets COMPOSE_PROJECT_NAME, setting it is no advice: the file or that value is what Compose rejects.
+const PROBE_FIX_SET = "fix the file, or the shell's COMPOSE_PROJECT_NAME, until docker compose config accepts them";
 
 /**
  * The Compose project name for this checkout and its e.project result. Compose says what each checkout is named;
@@ -260,7 +262,7 @@ export function composeProject(c: Ctx): ComposeProject {
     const r = composeName({ root: fs ? root : projectDir(c, root), files: fs, env, run: c.run });
     if ("name" in r) return r.name;
     if ("unavailable" in r) return skip(r.unavailable);
-    return !fs && isNoFile(r) ? null : fail(`${whose}compose config: ${r.error}`, PROBE_FIX);
+    return !fs && isNoFile(r) ? null : fail(`${whose}compose config: ${r.error}`, !whose && envName ? PROBE_FIX_SET : PROBE_FIX);
   };
   const isResult = (x: string | null | ComposeProject): x is ComposeProject => typeof x === "object" && x !== null;
   // This checkout's probes run with the shell as is: they are the developer's own invocations.

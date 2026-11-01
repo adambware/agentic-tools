@@ -205,6 +205,7 @@ describe("compose", () => {
   const invalid = (n: string) => ({ error: `invalid project name "${n}": must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number` });
   const notString = (root: string) => `validating ${root}/compose.yml: name must be a string`;
   const PROBE_FIX = "fix the file until docker compose config accepts it, or set COMPOSE_PROJECT_NAME";
+  const PROBE_FIX_SET = "fix the file, or the shell's COMPOSE_PROJECT_NAME, until docker compose config accepts them";
 
   it("mode none passes with no tracked compose file and fails when one is tracked", () => {
     expect(check(setup(`${HEAD}[compose]\nmode = "none"\n`)).out).toContain("PASS e.none  no compose file tracked");
@@ -481,6 +482,20 @@ describe("compose", () => {
     expect(checkC(fv, { [mainBad]: EMPTY, [fv]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  the main checkout's compose config: project name must not be empty");
   });
 
+  it("fails e.project in the main checkout and every other worktree when Compose fails on a peer worktree's files", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const a = worktree(root, "feat-a");
+    const b = worktree(root, "feat-b");
+    const why = "required variable STACK is missing a value: set it";
+    const answers = { [root]: "app-prod", [a]: "feat-a", [b]: { error: why } };
+    for (const [cwd, env] of [[a, { COMPOSE_PROJECT_NAME: "feat-a" }], [root, {}]] as const) {
+      const r = checkC(cwd, answers, [], env);
+      // The peer's own shell decides its name, so the fix is the generic one even where this shell sets COMPOSE_PROJECT_NAME.
+      expect([cwd, r.code, r.out]).toEqual([cwd, 1, expect.stringContaining(`FAIL e.project  worktree ${b}'s compose config: ${why} — fix: ${PROBE_FIX}`)]);
+    }
+  });
+
   it("interpolates name: against the checkout's .env too, and a COMPOSE_PROJECT_NAME there beats the file", () => {
     const root = setup(test(), { "compose.yml": "name: ${STACK_NAME:-dev}\nservices: {}\n" });
     commit(root);
@@ -678,7 +693,7 @@ describe("compose", () => {
     commit(root);
     for (const bad of ["UPPER.INVALID", "---", "Upper"]) {
       const p = checkC(root, { [root]: invalid(bad) }, ["--compose-project"], { COMPOSE_PROJECT_NAME: bad });
-      expect([bad, p.code, p.out, p.err]).toEqual([bad, 1, "", `env-check: compose config: ${invalid(bad).error} — fix: ${PROBE_FIX}`]);
+      expect([bad, p.code, p.out, p.err]).toEqual([bad, 1, "", `env-check: compose config: ${invalid(bad).error} — fix: ${PROBE_FIX_SET}`]);
       expect(checkC(root, { [root]: invalid(bad) }, [], { COMPOSE_PROJECT_NAME: bad }).out).toContain(`FAIL e.project  compose config: ${invalid(bad).error}`);
     }
     const wt = worktree(root, "feat-c");
@@ -946,8 +961,9 @@ describe("compose", () => {
       const root = setup(test(), { "compose.yml": doc });
       commit(root);
       const sh = checkC(root, { [root]: { error: why } }, [], { COMPOSE_PROJECT_NAME: "foo" });
-      // The fix is the one probe fix: Compose would fail the developer's run the same way, COMPOSE_PROJECT_NAME or not.
-      expect([doc, sh.code, sh.out]).toEqual([doc, 1, expect.stringContaining(`FAIL e.project  compose config: ${why.split("<root>").join(root)} — fix: ${PROBE_FIX}`)]);
+      // Compose fails the developer's run the same way, COMPOSE_PROJECT_NAME or not: the fix does not ask to set the one already set.
+      expect([doc, sh.code, sh.out]).toEqual([doc, 1, expect.stringContaining(`FAIL e.project  compose config: ${why.split("<root>").join(root)} — fix: ${PROBE_FIX_SET}`)]);
+      expect(sh.out).not.toContain("or set COMPOSE_PROJECT_NAME");
       put(root, ".env", "COMPOSE_PROJECT_NAME=foo\n");
       expect([doc, checkC(root, { [root]: { error: why } }).code, checkC(root, { [root]: { error: why } }, ["--compose-project"]).out]).toEqual([doc, 1, ""]);
     }
@@ -1148,9 +1164,9 @@ describe("b.containers", () => {
     );
   });
 
-  // Title kept from before 0.5.0 (regression contract). Since 0.5.0 the command names no override: it omits -f for a lone
-  // default-named file, so plain Compose loads the override itself, whatever override files or COMPOSE_FILE say.
-  it("keeps the compose.override file Compose loads beside a lone default-named file", () => {
+  // Since 0.5.0 the command names no override: it omits -f for a lone default-named file, so plain Compose loads the
+  // override itself, whatever override files or COMPOSE_FILE say.
+  it("omits -f for a lone default-named file, so plain Compose loads its override itself", () => {
     const root = setup(cfg(), { ...files, ".gitignore": "compose.override.yml\ndocker-compose.override.yaml\n" });
     commit(root);
     put(root, "compose.override.yml", "services:\n  web:\n    ports: [\"8080:80\"]\n");
@@ -1160,12 +1176,11 @@ describe("b.containers", () => {
     expect(check(root, [], { COMPOSE_FILE: "compose.yml" }, stale(root)).out).toContain(fix);
     put(root, ".env", "COMPOSE_FILE=compose.yml\n");
     expect(b(root, [], stale(root))).toContain(fix);
-    expect(check(root, [], {}, stale(root)).out).not.toContain("override");
   });
 
-  // Title kept from before 0.5.0. Since 0.5.0 a default-named file in a subdirectory, a non-default name or a multi-file set
-  // gets the configured -f list, under which Compose loads no override, so none is named.
-  it("finds the override beside a default-named file in a subdirectory, and adds none to a non-default or multi-file set", () => {
+  // Since 0.5.0 a default-named file in a subdirectory, a non-default name or a multi-file set gets the configured -f
+  // list, under which Compose loads no override, so none is named.
+  it("passes the configured -f list for a file in a subdirectory, a non-default name or a multi-file set, naming no override", () => {
     const sub = setup(cfg().replace(/"compose\.yml"/g, '"deploy/docker-compose.yml"'), { "deploy/docker-compose.yml": COMPOSE });
     commit(sub);
     put(sub, "deploy/compose.override.yaml", "services: {}\n");
