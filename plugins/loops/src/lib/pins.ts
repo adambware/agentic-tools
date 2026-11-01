@@ -380,8 +380,12 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
     const bad = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
     return bad.length ? bad.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
   }
-  const bad = vals.some((x, i) => vals.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
-  return bad ? vals.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+  // Exact pins are compared pairwise; a range floor is a lower bound, not a pin, so it only bounds them from below.
+  const pins = pinned(vals);
+  const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
+  if (bad) return pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})`;
+  const under = pins.filter((x) => !x.floor).flatMap((x) => { const fl = belowFloor(x.v, vals); return fl === null ? [] : [`${x.src}=${x.v} below the floor ${fl}`]; });
+  return under.length ? under.join(", ") : null;
 }
 
 /** Does a local toolchain version satisfy the pin? */

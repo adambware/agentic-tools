@@ -66,6 +66,17 @@ describe("pins and local toolchains", () => {
   });
 
   it.each([
+    ["nvmrc 22.1.0 above the engines floor", "22.1.0", ">=20.11.0", 0, "PASS a.pins.node"],
+    ["nvmrc 18.2.0 below the engines floor", "18.2.0", ">=20.0.0", 1, "FAIL a.pins.node  nvmrc:.nvmrc=18.2.0 below the floor 20.0.0"],
+  ])("exact compare treats an engines range as a floor: %s", (_n, nvmrc, range, code, line) => {
+    const cfg = `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "exact"\n`;
+    const r = check(setup(cfg, { ".nvmrc": `${nvmrc}\n`, "package.json": JSON.stringify({ engines: { node: range } }) }));
+    expect(r.code).toBe(code);
+    expect(r.out).toContain(line);
+    expect(r.out).not.toContain("disagree");
+  });
+
+  it.each([
     ["warn", "1.25.0", 0, "WARN a.local.go  local go 1.25.0 does not match pin 1.26.1"],
     ["fail", "1.25.0", 1, "FAIL a.local.go  local go 1.25.0 does not match pin 1.26.1"],
     ["warn", "1.26.7", 0, "PASS a.local.go"], // minor compare ignores the patch
