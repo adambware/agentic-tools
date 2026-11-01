@@ -147,7 +147,12 @@ export function summarize(infos: PathInfo[]): Summary {
   for (const p of infos) {
     if (p.zone !== zone) continue;
     if (p.unmatched) loose.push(p.path);
-    for (const r of p.rows) if (r.zone === zone) byRow.set(r, [...(byRow.get(r) ?? []), p.path]);
+    for (const r of p.rows) {
+      if (r.zone !== zone) continue;
+      let a = byRow.get(r);
+      if (!a) byRow.set(r, (a = []));
+      a.push(p.path);
+    }
   }
   for (const [row, paths] of byRow) drivers.push({ row, paths });
   if (loose.length) drivers.push({ row: null, paths: loose });

@@ -11,7 +11,7 @@ export function parseNameStatus(z: string): string[] {
   const paths: string[] = [];
   for (let i = 0; i < t.length && t[i]; ) {
     const n = t[i]!.startsWith("R") || t[i]!.startsWith("C") ? 2 : 1;
-    paths.push(...t.slice(i + 1, i + 1 + n).filter(Boolean));
+    for (const p of t.slice(i + 1, i + 1 + n)) if (p) paths.push(p);
     i += 1 + n;
   }
   return paths;
@@ -27,18 +27,29 @@ function gitPaths(d: Deps, root: string, base: string | undefined, committed: bo
   const ref = tried.find((x) => git(d.run, root, ["rev-parse", "--verify", "--quiet", `${x}^{commit}`]) !== null);
   if (!ref) throw new UsageError(`no base ref found (tried ${tried.join(", ")}); pass --base`);
   const mergeBase = g(["merge-base", ref, "HEAD"]).trim();
-  const paths = parseNameStatus(g(["diff", "--name-status", "-M", "-z", mergeBase, "HEAD"]));
+  // a repo or user setting (ignore = all, diff.ignoreSubmodules) must not hide a submodule pointer bump;
+  // untracked junk inside a submodule is not a change
+  const diff = (...a: string[]): string[] => parseNameStatus(g(["diff", "--ignore-submodules=untracked", "--no-ext-diff", "--name-status", "-M", "-z", ...a]));
+  // not push(...list): a spread of 100k+ entries overflows the call stack
+  const paths: string[] = [];
+  const add = (list: string[]): void => {
+    for (const p of list) paths.push(p);
+  };
+  add(diff(mergeBase, "HEAD"));
   if (!committed) {
-    paths.push(...parseNameStatus(g(["diff", "--name-status", "-M", "-z", "HEAD"])));
+    add(diff("HEAD"));
     // staged paths count even when the working copy was restored to HEAD (index != HEAD == worktree)
-    paths.push(...parseNameStatus(g(["diff", "--cached", "--name-status", "-M", "-z"])));
-    paths.push(...g(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"));
+    add(diff("--cached"));
+    add(g(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0"));
   }
   return paths;
 }
 
 const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 const LIST_CAP = 8;
+// git reports names verbatim, so a control character (a line break forging a `zone:` line, an escape
+// sequence) must not reach a text consumer raw; JSON quoting shows exactly what the name holds
+const showPath = (p: string): string => (/[\u0000-\u001f\u007f]/.test(p) ? JSON.stringify(p) : p);
 
 function renderText(rz: RiskZones, ship: string, infos: PathInfo[], s: Summary, explain: boolean): string[] {
   if (s.zone === "none") return ["zone: none"];
@@ -50,7 +61,7 @@ function renderText(rz: RiskZones, ship: string, infos: PathInfo[], s: Summary, 
     "driving rows:",
   );
   for (const { row, paths } of s.drivers) {
-    const shown = paths.slice(0, LIST_CAP).join(", ") + (paths.length > LIST_CAP ? `, (+${paths.length - LIST_CAP} more)` : "");
+    const shown = paths.slice(0, LIST_CAP).map(showPath).join(", ") + (paths.length > LIST_CAP ? `, (+${paths.length - LIST_CAP} more)` : "");
     lines.push(`  ${s.zone}  ${row ? `\`${row.glob}\`` : "(no row: default yellow)"}  ${plural(paths.length, "path")}: ${shown}`);
   }
   const inc = s.unmatched ? ` incl. ${s.unmatched} unmatched` : "";
@@ -68,7 +79,7 @@ function renderText(rz: RiskZones, ship: string, infos: PathInfo[], s: Summary, 
     lines.push("explain:");
     for (const p of infos) {
       const rows = p.unmatched ? "(no row: default yellow)" : p.rows.map((r) => `\`${r.glob}\``).join(" ");
-      lines.push(`  ${p.zone.padEnd(6)} ${p.prod ? "prod" : "-   "}  ${p.path}  <- ${rows}`);
+      lines.push(`  ${p.zone.padEnd(6)} ${p.prod ? "prod" : "-   "}  ${showPath(p.path)}  <- ${rows}`);
     }
   }
   return lines;
@@ -93,10 +104,21 @@ export function zoneMain(argv: string[], d: Deps): number {
   }
   const rz = parseRiskZones(text, shown);
 
+  // A joined path list (a separator mix-up) reads as one name that `**` matches across the break, so a
+  // green row could swallow a red path. Git's own -z output holds real names and is classified as is.
+  const oneEach = (list: string[]): string[] => {
+    for (const p of list) if (/[\n\r\0]/.test(p)) throw new UsageError(`path ${JSON.stringify(p)} contains a line break or NUL; pass one path per entry`);
+    return list;
+  };
   let raw: string[];
-  if (Array.isArray(f.paths)) raw = f.paths;
-  else if (f.stdin) raw = d.readStdin().split(f.z ? "\0" : "\n").map((p) => (f.z ? p : p.replace(/\r$/, "")));
-  else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
+  if (Array.isArray(f.paths)) raw = oneEach(f.paths);
+  else if (f.stdin) {
+    const input = d.readStdin();
+    // a mismatched pair reads the whole list as one name, which `**` then matches across the separators
+    if (!f.z && input.includes("\0")) throw new UsageError("--stdin input contains NUL; pass -z for NUL-separated paths");
+    if (f.z && !input.includes("\0") && input.includes("\n")) throw new UsageError("--stdin -z input has newlines but no NUL; drop -z for newline-separated paths");
+    raw = oneEach(input.split(f.z ? "\0" : "\n").map((p) => (f.z ? p : p.replace(/\r$/, ""))));
+  } else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
   else raw = gitPaths(d, root, typeof f.base === "string" ? f.base : undefined, f.committed === true);
   const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "")).filter(Boolean))].sort();
 

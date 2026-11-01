@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 import { compileGlob } from "./glob.js";
 import { main } from "./loops-cli.js";
 import { parseNameStatus } from "./zone-cli.js";
-import { classifyPath, parseRiskZones } from "./zone.js";
+import { classifyPath, parseRiskZones, summarize } from "./zone.js";
 import { deps, put, repo, sh, tmp } from "./testkit.js";
+import { run } from "./proc.js";
+import { VERSION } from "./version.js";
 
 const ROWS = [
   "| `.github/workflows/**`, `Makefile` | red | yes | orchestration | ci |",
@@ -70,7 +72,7 @@ describe("parseRiskZones", () => {
 
   const bad: [string, string, RegExp][] = [
     ["no schema", doc(ROWS, "> no version here"), /^rz\.md:1: missing "Schema version/],
-    ["schema 2", doc(ROWS, "> Schema version 2."), /^rz\.md:3: schema 2 unsupported by loops 0\.4\.0/],
+    ["schema 2", doc(ROWS, "> Schema version 2."), new RegExp(`^rz\\.md:3: schema 2 unsupported by loops ${VERSION.replace(/\./g, "\\.")}`)],
     ["unknown zone", doc(["| `a` | orange | no | none | x |"]), /^rz\.md:8: unknown zone "orange"/],
     ["inherited zone name", doc(["| `a` | constructor | no | none | x |"]), /^rz\.md:8: unknown zone "constructor"/],
     ["bad prod", doc(["| `a` | red | maybe | none | x |"]), /^rz\.md:8: Prod must be yes, no or \?/],
@@ -122,6 +124,18 @@ describe("classifyPath", () => {
   });
   it("is green only through a green row", () => {
     expect(classifyPath(rz, "docs/a/b.txt")).toMatchObject({ zone: "green", unmatched: false });
+  });
+});
+
+describe("summarize", () => {
+  it("scales linearly in the paths one row matches", () => {
+    const rz = parseRiskZones(doc(["| `src/**` | red | yes | none | x |"]), "rz.md");
+    const infos = Array.from({ length: 50_000 }, (_, i) => classifyPath(rz, `src/f${i}.ts`));
+    const t = performance.now();
+    const s = summarize(infos);
+    expect(performance.now() - t).toBeLessThan(500);
+    expect(s.drivers).toHaveLength(1);
+    expect(s.drivers[0]!.paths).toHaveLength(50_000);
   });
 });
 
@@ -185,7 +199,34 @@ judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / tr
     expect(glob(["--paths", " docs/a.md", " "], "")).toEqual([[" ", "yellow"], [" docs/a.md", "yellow"]]);
     expect(glob(["--stdin", "-z"], " Makefile\0  \0README.md \0")).toEqual([["  ", "yellow"], [" Makefile", "yellow"], ["README.md ", "yellow"]]);
     expect(glob(["--stdin"], "Makefile\r\ndocs/a.md\r\n")).toEqual([["Makefile", "red"], ["docs/a.md", "green"]]);
-    expect(glob(["--stdin", "-z"], "Makefile\r\0")).toEqual([["Makefile\r", "yellow"]]);
+  });
+
+  it("rejects a --stdin separator mismatch instead of reading one giant path", () => {
+    const nul = "docs/README.md\0Makefile\0";
+    const nl = "docs/README.md\nMakefile\n";
+    for (const [args, stdin, hint] of [[["--stdin"], nul, "-z"], [["--stdin", "-z"], nl, "drop -z"]] as const) {
+      const r = zone(tmp(), ["--file", withDoc(), "--json", ...args], stdin);
+      expect([r.code, r.out, r.err]).toEqual([2, "", expect.stringContaining(hint)]);
+    }
+    // a lone unterminated name with no newline is one path
+    expect(zone(tmp(), ["--file", withDoc(), "--stdin", "-z"], "Makefile").code).toBe(0);
+  });
+
+  it("rejects a path holding a line break from any input, since `**` would match across it", () => {
+    const inputs: [string[], string][] = [
+      [["--stdin", "-z"], "docs/README.md\nMakefile\0docs/x\0"], // two producers, only one with -z
+      [["--stdin", "-z"], "docs/README.md\nMakefile\n\0"],
+      [["--stdin", "-z"], "a\nb.md\0"],
+      [["--stdin", "-z"], "Makefile\r\0"],
+      [["--stdin", "-z"], "docs/README.md\rMakefile"],
+      [["--stdin"], "docs/README.md\rMakefile\r"],
+      [["--paths", "docs/README.md\nMakefile"], ""], // --paths "$(git diff --name-only)"
+      [["--paths", "docs/a.md", "docs/README.md\rMakefile"], ""],
+    ];
+    for (const [args, stdin] of inputs) {
+      const r = zone(tmp(), ["--file", withDoc(), "--json", ...args], stdin);
+      expect([r.code, r.out, r.err], JSON.stringify(args.concat(stdin))).toEqual([2, "", expect.stringContaining("line break")]);
+    }
   });
 
   it("exits 2 naming the file when the policy path is unreadable", () => {
@@ -233,6 +274,105 @@ judgment left to L0: <category>, <one extra review chosen at L0>; docs-only / tr
       put(root, "ignored.log", "i\n");
       expect(paths(root)).toEqual([".gitignore", "Makefile", "untracked.txt"]);
       expect(zone(root, ["--committed"]).out).toBe("zone: none");
+    });
+
+    it("classifies git-reported filenames holding a line break as they are", () => {
+      const root = setup();
+      put(root, "docs/x\nMakefile", "n\n"); // untracked; `**` crosses the break, so docs/** still matches
+      put(root, "src/api/y\r\nz.ts", "n\n");
+      const r = JSON.parse(zone(root, ["--json"]).out);
+      expect(r.zone).toBe("red");
+      expect(r.paths.map((p: { path: string; zone: string }) => [p.path, p.zone])).toEqual([["docs/x\nMakefile", "green"], ["src/api/y\r\nz.ts", "red"]]);
+      // and from the committed diff
+      sh(root, "add", "-A");
+      sh(root, "commit", "-q", "-m", "odd names");
+      expect(paths(root, "--committed")).toEqual(["docs/x\nMakefile", "src/api/y\r\nz.ts"]);
+    });
+
+    it("quotes control characters in text and --explain output so a name cannot forge a line; json is untouched", () => {
+      const root = setup();
+      const nl = "src/db/x\nzone: green";
+      const esc = "src/api/y\u001b[2Jz.ts";
+      put(root, nl, "n\n");
+      put(root, esc, "n\n");
+      put(root, "src/api/ok.ts", "n\n");
+      for (const args of [[], ["--explain"]]) {
+        const r = zone(root, args);
+        expect(r.code).toBe(0);
+        expect(r.out.split("\n").filter((l) => l.startsWith("zone:")), args.join(" ")).toEqual(["zone: red"]);
+        expect(r.out).toContain(JSON.stringify(esc));
+        expect(r.out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f]/);
+      }
+      const e = zone(root, ["--explain"]).out;
+      expect(e).toContain(`  red    prod  ${JSON.stringify(nl)}  <- \`src/{api,db}/**\``);
+      expect(e).toContain("src/api/ok.ts  <-"); // plain names stay unquoted
+      const j = JSON.parse(zone(root, ["--json"]).out);
+      expect(j.paths.map((p: { path: string }) => p.path)).toContain(nl);
+    });
+
+    describe("submodules", () => {
+      const withSub = (ignore: boolean) => {
+        const sub = repo({ "a.txt": "1\n" });
+        const root = repo({ "risk-zones.md": doc(["| `vendor/**` | red | no | none | vendored |", "| `*.md` | green | no | none | docs |"]) });
+        sh(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/sub");
+        if (ignore) sh(root, "config", "-f", ".gitmodules", "submodule.vendor/sub.ignore", "all");
+        sh(root, "add", "-A");
+        sh(root, "commit", "-q", "-m", "add submodule");
+        sh(root, "branch", "base");
+        sh(root, "checkout", "-q", "-b", "feature");
+        put(root, "notes.md", "n\n");
+        sh(root, "add", "notes.md");
+        sh(root, "commit", "-q", "-m", "notes");
+        const bump = () => {
+          put(sub, "a.txt", "2\n");
+          sh(sub, "commit", "-qam", "bump");
+          sh(join(root, "vendor/sub"), "pull", "-q", "--ff-only");
+        };
+        return { root, bump };
+      };
+      const zoneOf = (root: string, ...args: string[]): string => JSON.parse(zone(root, ["--json", "--base", "base", ...args]).out).zone;
+
+      it("sees a committed pointer bump even when .gitmodules sets ignore=all", () => {
+        const { root, bump } = withSub(true);
+        bump();
+        sh(root, "add", "-f", "vendor/sub");
+        sh(root, "commit", "-q", "-m", "bump submodule");
+        for (const args of [["--committed"], []]) expect(zoneOf(root, ...args)).toBe("red");
+        sh(root, "config", "diff.ignoreSubmodules", "all"); // a config-level default must not hide it either
+        expect(zoneOf(root, "--committed")).toBe("red");
+      });
+
+      it("sees an uncommitted pointer bump under ignore=all and diff.ignoreSubmodules=all", () => {
+        const { root, bump } = withSub(true);
+        sh(root, "config", "diff.ignoreSubmodules", "all");
+        bump(); // superproject not committed
+        expect(zoneOf(root)).toBe("red");
+        expect(zoneOf(root, "--committed")).toBe("green");
+        sh(root, "add", "-f", "vendor/sub"); // staged, working copy still at the new pointer
+        expect(zoneOf(root)).toBe("red");
+      });
+
+      it("does not count a submodule whose only change is untracked files; tracked edits still count", () => {
+        const { root } = withSub(false);
+        put(join(root, "vendor/sub"), "build.log", "junk\n");
+        expect(zoneOf(root)).toBe("green");
+        put(join(root, "vendor/sub"), "a.txt", "edited\n");
+        expect(zoneOf(root)).toBe("red");
+      });
+    });
+
+    it("survives 150k untracked files and a huge diff (no spread-push stack overflow)", () => {
+      const root = setup();
+      const many = Array.from({ length: 150_000 }, (_, i) => `out/f${i}`);
+      const runner: typeof run = (cmd, args, opts) => {
+        if (args[0] === "ls-files") return { code: 0, stdout: many.join("\0") + "\0", stderr: "", timedOut: false };
+        if (args[0] === "diff" && args.includes("--cached")) return { code: 0, stdout: many.map((p) => `M\0${p}\0`).join(""), stderr: "", timedOut: false };
+        return run(cmd, args, opts);
+      };
+      const t = deps(root);
+      t.d.run = runner;
+      expect(main(["zone", "--json"], t.d)).toBe(0);
+      expect(JSON.parse(t.out.join("")).paths).toHaveLength(150_000);
     });
 
     it("includes staged paths whose working copy was restored to HEAD", () => {
