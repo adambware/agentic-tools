@@ -245,6 +245,22 @@ describe("compose", () => {
     expect(check(wt).out).toContain("PASS e.project  feat_x1 (derived: dirname)");
   });
 
+  it("resolves the compose project once per run", () => {
+    // composeProject only reads files and env, so count its reads of COMPOSE_PROJECT_NAME through the injected env.
+    const reads = (args: string[]): number => {
+      const root = setup(test(), { "compose.yml": COMPOSE });
+      commit(root);
+      let n = 0;
+      const t = deps(root);
+      t.d.env = new Proxy(t.d.env, { get: (o, k, r) => (k === "COMPOSE_PROJECT_NAME" && n++, Reflect.get(o, k, r)) });
+      main(["env-check", ...args], t.d);
+      return n;
+    };
+    const once = reads(["--compose-project"]);
+    expect(once).toBeGreaterThan(0);
+    expect(reads([])).toBe(once);
+  });
+
   it("derives the name from the first compose file's directory, as Compose does", () => {
     const sub = `${HEAD}[compose]\nmode = "test"\nfiles = ["deploy/compose.yml"]\n`;
     const root = setup(sub, { "deploy/compose.yml": "services: {}\n" });

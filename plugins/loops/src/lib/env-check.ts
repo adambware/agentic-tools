@@ -77,7 +77,7 @@ export function envCheckMain(argv: string[], d: Deps): number {
     ...pinChecks(ctx),
     ...sharedCheck(ctx),
     ...harnessChecks(ctx),
-    ...composeChecks(ctx),
+    ...composeChecks(ctx, compose),
     ...cfg.locals.flatMap((l) => runLocal(ctx, l, project)),
   ]
     .map((r, i) => ({ r, i }))
