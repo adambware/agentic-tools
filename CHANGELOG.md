@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
-- `loops env-check` pins: exact pins are compared pairwise, and a pin below a range floor is now a FAIL.
+- `loops env-check` pins: in exact, minor and major modes a range floor no longer counts as a pin, so `.nvmrc` 22.1.0 next to `engines.node` >=20.11.0 passes; an exact pin below the highest floor FAILs as `<src>=<v> below the floor <fl>`.
 - `loops env-check` resolves the Compose project once per run instead of twice; the output is unchanged.
 
 ## [loops 0.4.0] - 2026-10-31
