@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.5.0] - 2026-11-01
+
+### Changed
+
+- `loops env-check` `e.project` asks Compose for every project name instead of re-implementing Compose's rules: each checkout is probed with `docker compose [-f <configured files>] config --no-env-resolution --format json` (cwd = the checkout, 10 s timeout, verified against Docker Compose v5.1.2). Own-checkout probes run with the shell environment as is; the main checkout and peer worktrees are probed with every `COMPOSE_*` variable removed, so a `direnv` export cannot fabricate a collision. Loops keeps only its own policy: the derived worktree name, the clash rules and the plain-run warnings.
+- Any Compose error is an `e.project` FAIL carrying Compose's own last error line (b.containers does not run); messages no longer name the file or loops' own diagnosis. Docker or the compose plugin missing is a SKIP `compose unavailable`, never PASS; downstream checks then get only an identity loops can vouch for without reading Compose's files: the shell's `COMPOSE_PROJECT_NAME`, else the derived name in a worktree, else unknown in the main checkout (`b.containers` SKIP `project unknown`, `ENV_CHECK_PROJECT` empty).
+- The `b.containers` repair command mirrors the configured invocation: `docker compose -p <project> [-f <files>] up -d --build --force-recreate`, with `-f` only when `[compose] files` is not a single default-named file, so plain Compose applies its own `compose.override.*` exactly as the developer's run does. Loops no longer discovers override files, parses `.env`, interpolates `name:` or reads `COMPOSE_FILE`.
+
+### Added
+
+- A differential test (`compose-config.test.ts`) runs an inline fixture corpus against the real `docker compose config` and is skipped when Compose is absent; CI runs it on `ubuntu-latest` with the runner's compose plugin.
+
 ## [loops 0.4.1] - 2026-11-01
 
 ### Fixed

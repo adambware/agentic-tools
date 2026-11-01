@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { run, type Deps } from "./proc.js";
+import { isComposeConfigCall } from "./compose-config.js";
+import { run, type Deps, type Runner, type RunResult } from "./proc.js";
 
 export const tmp = (): string => realpathSync(mkdtempSync(join(tmpdir(), "loops-test-")));
 
@@ -47,4 +48,38 @@ export function deps(cwd: string, env: Record<string, string> = {}, stdin = ""):
     err: (s) => err.push(s),
   };
   return { d, out, err };
+}
+
+/** What the stubbed `docker compose config` answers for one checkout: the project name, Compose's error line (`<root>` stands for the checkout path), or why Compose cannot run. */
+export type ComposeAnswer = string | { error: string } | { unavailable: "docker" | "plugin" };
+/** Answers keyed by checkout root; one answer serves both probe shapes unless the configured (`-f`) and plain probes differ. */
+export type ComposeAnswers = Record<string, ComposeAnswer | { cfg?: ComposeAnswer; plain?: ComposeAnswer }>;
+export interface ComposeCall {
+  cwd: string;
+  /** The `-f` files, in order; empty for a plain probe. */
+  files: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * A Runner that answers `docker compose config` from `answers` (what real Compose v5.1.2 returned for the fixture),
+ * records each probe in `calls`, and hands every other command to `inner`. A root without an answer throws, so a
+ * missing fixture is loud instead of a silent FAIL.
+ */
+export function composeStub(answers: ComposeAnswers, calls: ComposeCall[] = [], inner: Runner = run): Runner {
+  const byRoot = new Map(Object.entries(answers).map(([k, v]) => [realpathSync(k), v]));
+  const res = (code: number | null, stdout = "", stderr = ""): RunResult => ({ code, stdout, stderr, timedOut: false });
+  return (cmd, args, opts) => {
+    if (!isComposeConfigCall(cmd, args)) return inner(cmd, args, opts);
+    const cwd = opts?.cwd ?? process.cwd();
+    const files = args.flatMap((a, i) => (a === "-f" ? [args[i + 1]!] : []));
+    calls.push({ cwd, files, env: opts?.env ?? {} });
+    const entry = byRoot.get(realpathSync(cwd));
+    const shaped = typeof entry === "object" && !("error" in entry) && !("unavailable" in entry);
+    const a = shaped ? (files.length ? entry.cfg : entry.plain) : entry;
+    if (a === undefined) throw new Error(`composeStub: no answer for ${files.length ? `docker compose -f ${files.join(" -f ")}` : "plain docker compose"} config in ${cwd}`);
+    if (typeof a === "string") return res(0, JSON.stringify({ name: a, services: {} }));
+    if ("error" in a) return res(1, "", `${a.error.split("<root>").join(cwd)}\n`);
+    return a.unavailable === "docker" ? res(null) : res(1, "", "docker: unknown command: docker compose\n\nRun 'docker --help' for more information\n");
+  };
 }
