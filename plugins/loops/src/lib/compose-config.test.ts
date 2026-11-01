@@ -172,6 +172,8 @@ type Row = {
   composeFiles?: string[];
   env?: Record<string, string>;
   want: ComposeName;
+  /** The answer another Compose version gives for the same fixture (both recorded, either accepted). */
+  alt?: ComposeName;
 };
 
 const rows: Row[] = [
@@ -190,8 +192,8 @@ const rows: Row[] = [
   // Surprise: an unquoted integer name is NOT stringified; Compose's schema rejects it (quote it to get "123").
   { title: "name: 123 (non-string scalar) is rejected by the schema", files: { "compose.yaml": named("123") }, want: { error: "validating <root>/compose.yaml: name must be a string" } },
   { title: "name: 123 quoted is a valid name", files: { "compose.yaml": named('"123"') }, want: { name: "123" } },
-  // A mapping fails at YAML decode, before validation, so the line has no file path (Compose-version-specific wording).
-  { title: "name: as a mapping fails to decode", files: { "compose.yaml": `name:\n  a: b\n${SVC}` }, want: { error: "line 2: cannot construct !!map into string" } },
+  // A mapping fails at YAML decode, before validation, so the line has no file path; the verb is the YAML library's (v5.1.2 "construct", v2.38.2 "unmarshal").
+  { title: "name: as a mapping fails to decode", files: { "compose.yaml": `name:\n  a: b\n${SVC}` }, want: { error: "line 2: cannot construct !!map into string" }, alt: { error: "line 2: cannot unmarshal !!map into string" } },
 
   // --- .env forms for COMPOSE_PROJECT_NAME ---
   { title: ".env quoted value", files: { "compose.yaml": SVC, ".env": 'COMPOSE_PROJECT_NAME="quoted-name"\n' }, want: { name: "quoted-name" } },
@@ -234,7 +236,8 @@ const rows: Row[] = [
   { title: "-f beats COMPOSE_FILE", files: { "a.yml": named("first"), "b.yml": named("second") }, composeFiles: ["a.yml"], env: { COMPOSE_FILE: "b.yml" }, want: { name: "first" } },
 
   // --- failures that are, and are not, about the name ---
-  { title: "missing env_file passes with --no-env-resolution", files: { "compose.yaml": named("app-env") .replace("image: nginx\n", "image: nginx\n    env_file: .env.local\n") }, want: { name: "app-env" } },
+  // v5.1.2 skips the missing env_file under --no-env-resolution; v2.38.2 (the ubuntu-latest runner) still fails on it, so there e.project FAILs as `docker compose up` would.
+  { title: "missing env_file passes with --no-env-resolution on v5; v2.38 still fails", files: { "compose.yaml": named("app-env") .replace("image: nginx\n", "image: nginx\n    env_file: .env.local\n") }, want: { name: "app-env" }, alt: { error: "env file <root>/.env.local not found: stat <root>/.env.local: no such file or directory" } },
   { title: "service image ${X:?} with X unset is Compose's error", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n" }, want: { error: "error while interpolating services.web.image: required variable X is missing a value" } },
 ];
 
@@ -261,6 +264,7 @@ describe.skipIf(!composeAvailable)("composeName against real docker compose conf
     const got = composeName({ root, files: row.composeFiles, env: { ...baseEnv(), ...row.env }, run });
     // Compose prints absolute paths in some errors; keep the expectations machine-independent.
     const shown = "error" in got ? { error: got.error.split(checkout).join("<root>") } : got;
-    expect(shown).toEqual(row.want);
+    // `alt` is the answer another Compose version gives for the same fixture; both are recorded, either is the oracle.
+    expect([row.want, ...(row.alt ? [row.alt] : [])]).toContainEqual(shown);
   });
 });
