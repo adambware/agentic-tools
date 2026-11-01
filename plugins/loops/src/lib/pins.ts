@@ -380,12 +380,14 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
     const bad = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
     return bad.length ? bad.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
   }
-  // Exact pins are compared pairwise; a range floor is a lower bound, not a pin, so it only bounds them from below.
+  // Exact pins are compared pairwise (floors only when no exact pin exists); a range floor next to exact pins only
+  // bounds them from below, judged like floor mode so a partial pin (`20`) meets a floor in the series it names.
   const pins = pinned(vals);
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
   if (bad) return pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})`;
-  const under = pins.filter((x) => !x.floor).flatMap((x) => { const fl = belowFloor(x.v, vals); return fl === null ? [] : [`${x.src}=${x.v} below the floor ${fl}`]; });
-  return under.length ? under.join(", ") : null;
+  const fl = maxFloor(vals);
+  const under = fl === null ? [] : pins.filter((x) => !x.floor && cmp(x.v, fl) < 0);
+  return under.length ? under.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
 }
 
 /** Does a local toolchain version satisfy the pin? */
