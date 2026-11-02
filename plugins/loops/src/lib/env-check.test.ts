@@ -128,6 +128,9 @@ describe("pins and local toolchains", () => {
       [true, "setup-node:.github/workflows/ci.yml", '">=20"'], // the same value from another source is its own row
       [true, "setup-node:.github/workflows/ci.yml", '"^20.11.0"'], // the repeated ">=20" step is not
     ]);
+    // Value: protects=the PASS row names only the compared pin sources, never a range source; fails_when=the PASS label
+    // lists every source (srcs(vals)); why_new=other PASS asserts stop at the version; seam=none; no_claim=none beyond protects
+    expect(r.lines[0]).toBe("PASS a.pins.node  node 20.11.0 (nvmrc:.nvmrc)");
     expect(r.lines[4]).toBe("PASS a.local.node  local node 20.11.0 matches pin 20.11.0");
     expect(r.lines.at(-1)).toBe("env-check: 0 FAIL, 0 WARN, 2 PASS, 0 SKIP"); // INFO is not counted
   });
@@ -1743,6 +1746,11 @@ describe("b.containers", () => {
     expect(garbled.out).not.toContain("db-1");
     expect(b(root, [], fake(listing(raw("web-1", "")), [], prod(root)))).toContain("FAIL b.containers  web-1");
     expect(b(root, [], fake(listing(raw("web-1", "not a time")), [], prod(root)))).toContain("loops cannot read its creation time");
+    // Value: protects=with several stale containers the message names which creation time is unreadable; fails_when=the
+    // plural branch is dropped or says "its"; why_new=the cases above have one stale container; seam=none; no_claim=none beyond protects
+    const mixed = b(root, [], fake(listing(ctr(root, "db-1", "2000-01-01T00:00:00Z"), raw("web-1", "not a time")), [], prod(root)));
+    expect(mixed).toContain("(loops cannot read the creation time of web-1)");
+    expect(mixed).toMatch(/db-1.*web-1|web-1.*db-1/);
     // At the warn level it is a WARN.
     const warn = setup(cfg('containers = "warn"\n'), files);
     commit(warn);

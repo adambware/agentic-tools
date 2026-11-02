@@ -272,6 +272,9 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=lts\nFROM node:${NODE_VERSION}\n" }, unsupported("lts", "Dockerfile", 1)],
   ["dockerfile", "node", { Dockerfile: "FROM node:${NODE_VERSION}-alpine\n" }, /no node version found/], // a ${VAR} tag is skipped (its ARG is the pin), not unsupported
   ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{"volta":{"node":"lts"}}' }, unsupported("lts", "package.json", 1)],
+  // Value: protects=an unsupported volta.node names its own line in a multi-line package.json; fails_when=the line search
+  // starts before "volta" (finding the earlier "lts"); why_new=the row above is one-line JSON; seam=none; no_claim=none beyond protects
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{\n  "name": "lts",\n  "engines": { "node": ">=20" },\n  "volta": {\n    "node": "lts"\n  }\n}\n' }, unsupported("lts", "package.json", 5)],
   ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-python@v5\n        with:\n          python-version-file: Pipfile\n"), Pipfile: '[requires]\npython_version = "latest"\n' }, unsupported("latest", "Pipfile", 2)],
   ["setup-go", "go", { ".github/workflows/ci.yml": "x: &w { go-version: '1.1' }\njobs:\n  a:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          <<: *w\n          cache: true\n" }, /merge key/],
 ];
