@@ -1,8 +1,9 @@
 // Version pins for `loops env-check`: read one tool's version out of the files that pin it, then
-// compare them. A configured source that cannot be read or parsed throws PinError (reported as a
-// FAIL by the caller), never a pass.
+// compare them. Every value a source yields is a pin (compared), a range (reported, never compared)
+// or an unsupported form. A configured source that cannot be read or parsed, or holds an unsupported
+// form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, normalize } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -10,12 +11,14 @@ import { compileGlob, isGlob } from "./glob.js";
 export class PinError extends Error {}
 export interface PinValue {
   src: string;
+  /** The pinned version, or a range's value as written. */
   v: string;
-  /** A lower bound (package.json engines), not a pinned version. */
-  floor: boolean;
+  /** A range (engines, requires-python, a range input): reported, never compared. */
+  range: boolean;
 }
-type Found = { v: string; floor?: boolean }[];
-type Parser = (text: string, tool: string, root: string) => Found;
+type Found = { v: string; range?: boolean }[];
+/** `file` is the repo-relative file `text` came from, for messages. */
+type Parser = (text: string, tool: string, root: string, file: string) => Found;
 
 /** The first version in `s`, keeping a prerelease suffix (`22.0.0-rc.1`, `-beta-30`, `3.13.0rc1`, `1.26rc1`, `3.14.0.dev0`).
  * Only known prerelease shapes count, so an image variant (`-alpine`, `-slim-bookworm`), a patchlevel (`3.1.4p223`), a
@@ -30,45 +33,70 @@ const split = (v: string): [number[], string] => {
 /** A prerelease sorts below its release; two prereleases compare by their numeric-aware identifiers. */
 const preCmp = (p: string, q: string): number =>
   p === q ? 0 : !p ? 1 : !q ? -1 : Math.sign(p.localeCompare(q, "en", { numeric: true })) || (p < q ? -1 : 1);
-/** A value that starts with a version; one that starts with a word (`pypy3.9`, `lts/-1`, `alpine3.20`) names no version. */
-const hit = (s: string | undefined | null): Found => {
-  const v = s && /^v?\d/i.test(s) ? ver(s) : null;
-  return v ? [{ v }] : [];
+const unsupported = (v: string, file: string, line: number): PinError =>
+  new PinError(`unsupported form "${v}" in ${file}:${line}; pin an exact version`);
+/** The 1-based line of `text` at `index` (line 1 when the value was not found). */
+const lineAt = (text: string, index: number): number => text.slice(0, Math.max(index, 0)).split("\n").length;
+/** The whole of `s` as one version or series (`20`, `v1.26.1`, `1.26.x`, `3.13.0rc1`); null for an alias, a word or a
+ * version followed by other text (`lts/*`, `pypy3.9`, `20.11.0-custom`). */
+const exact = (s: string): string | null => {
+  const v = /^v?\d/i.test(s) ? ver(s) : null;
+  return v !== null && s.replace(/^v/i, "").replace(/(?:\.[xX*])+$/, "") === v ? v : null;
+};
+const OP = /^(?:~>|===?|!=|<=|>=|~=|[<>=~^])/;
+/** A range is made only of versions: every comparator (split on `||`, `,`, ` - ` and whitespace, an operator joined to
+ * its version) is an optional operator and a whole version or series. A word or other text anywhere (`20 latest`,
+ * `3.10, pypy`, `^lts20`, `3.11 # old`) makes it no range. */
+const isRange = (s: string): boolean => {
+  const toks = s.replace(/(~>|===?|!=|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1").split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/);
+  return (toks.length > 1 || OP.test(s)) && toks.every((t) => exact(t.replace(OP, "")) !== null);
+};
+/** A version spec as a pin, the series it installs (`1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`, node's `=20.11.1`);
+ * as a range when it is wider than its stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`), kept as written;
+ * null for anything else. */
+const classify = (raw: string, tool: string): Found[number] | null => {
+  const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw;
+  const t = /^(~>?|\^)\s*v?(\d+(?:\.\d+)?)(?:\.[xX*])?$/.exec(s);
+  if (t && !(t[1] === "^" && t[2]!.includes("."))) return { v: t[2]! };
+  if (isRange(s)) return { v: raw, range: true };
+  const v = exact(s);
+  return v === null ? null : { v };
+};
+/** A pin-only reader's value: a pin by `classify`, else (a range, a word, other text) unsupported at file:line. */
+const pinAt = (raw: string, tool: string, file: string, line: number): Found => {
+  const f = classify(raw, tool);
+  if (!f || f.range) throw unsupported(raw, file, line);
+  return [{ v: f.v }];
 };
 const ALIAS: Record<string, string[]> = { node: ["node", "nodejs"], go: ["go", "golang"] };
 const IMAGE: Record<string, string> = { go: "golang" };
 
-/** Every line naming the tool or an alias, so `golang` and `go` lines that conflict are both seen. */
-const toolVersions: Parser = (text, tool) => {
-  const out: Found = [];
-  for (const line of text.split("\n")) {
+/** Every line naming the tool or an alias, so `golang` and `go` lines that conflict are both seen; its first version
+ * field is a pin. */
+const toolVersions: Parser = (text, tool, _root, file) => {
+  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool];
+  return text.split("\n").flatMap((line, i) => {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    if (m && (Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool]).includes(m[1]!)) out.push(...hit(m[2]));
-  }
-  return out;
-};
-/** A version spec as the series it installs: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`. A range wider than its
- * stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`) installs some newer version, so it is no pin. */
-const spec = (raw: string, tool: string, label = ""): Found => {
-  const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw; // node-semver's `=20.11.1` is `20.11.1`
-  const t = /^(~>?|\^)\s*v?(\d+(?:\.\d+)?)(?:\.[xX*])?$/.exec(s);
-  if (t && !(t[1] === "^" && t[2]!.includes("."))) return hit(t[2]);
-  const range = () => new PinError(`${label}"${raw}" is a range, not a pinned version`);
-  if (/^[<>=~^!]/.test(s) && ver(s)) throw range();
-  const h = hit(s);
-  if (h.length && /[<>=~^!|,*\s]/.test(s.replace(/(?:\.[xX*])+$/, ""))) throw range();
-  return h;
+    return m && names.includes(m[1]!) ? pinAt(m[2]!, tool, file, i + 1) : [];
+  });
 };
 /** The first line that is not blank or a comment, with a trailing `# comment` dropped as nvm does (`.python-version` may
- * list several versions). */
-const plain: Parser = (text, tool) => {
-  const line = text.split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).find((l) => l) ?? "";
-  const found = spec(line, tool);
-  if (!found.length) throw new PinError(`no version in "${line.slice(0, 30)}"`);
-  return found;
+ * list several versions). A plain version file holds a pin: a range there is a FAIL of its own, and so is a file with no
+ * version line (even one of several glob matches). */
+const plain: Parser = (text, tool, _root, file) => {
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim());
+  const i = lines.findIndex((l) => l);
+  if (i < 0) throw new PinError(`no version in ${file}`);
+  const f = classify(lines[i]!, tool);
+  if (f?.range) throw new PinError(`"${lines[i]}" is a range, not a pinned version`);
+  if (!f) throw unsupported(lines[i]!, file, i + 1);
+  return [f];
 };
-const goMod: Parser = (text, tool) =>
-  tool !== "go" ? [] : hit(/^toolchain\s+go(\S+)/m.exec(text)?.[1] ?? /^go\s+(\S+)/m.exec(text)?.[1]);
+/** The `toolchain` directive, else `go`: its whole value up to a `//` comment is the pin. */
+const goMod: Parser = (text, tool, _root, file) => {
+  const m = tool === "go" ? (/^toolchain[ \t]+go([^\r\n]*)/m.exec(text) ?? /^go[ \t]+([^\r\n]*)/m.exec(text)) : null;
+  return m ? pinAt(m[1]!.replace(/\/\/.*/, "").trim(), tool, file, lineAt(text, m.index)) : [];
+};
 type Pkg = { engines?: Record<string, unknown>; volta?: Record<string, unknown> };
 const pkg = (text: string): Pkg => {
   try {
@@ -77,61 +105,26 @@ const pkg = (text: string): Pkg => {
     throw new PinError("not valid JSON");
   }
 };
-/** Zero-padded total order for floors: `20` is `20.0.0`, below `20.11.0` (unlike `cmp`, which treats them as equal). */
-const fcmp = (a: string, b: string): number => {
-  const [x, p] = split(a);
-  const [y, q] = split(b);
-  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
-  return preCmp(p, q);
+/** `engines.<tool>` is always a range, kept as written: even an exact-looking value only constrains. */
+const engines: Parser = (text, tool) => {
+  const e = pkg(text).engines?.[tool];
+  if (e === undefined) return [];
+  if (typeof e !== "string") throw new PinError(`engines.${tool} is not a string`);
+  return [{ v: e.trim(), range: true }];
 };
-/** The lowest version satisfying `>v` (semver x-ranges): bump the last stated component, zero the rest (`20.11.0` -> `20.11.1`, `20.11` -> `20.12.0`, `20` -> `21.0.0`). */
-const above = (v: string): string => {
-  const p = v.split(".").map(Number);
-  p[p.length - 1]!++;
-  while (p.length < 3) p.push(0);
-  return p.join(".");
-};
-/** The immediate successor of a prerelease (`20.0.0-rc.1` -> `20.0.0-rc.1.0`, `3.13.0rc1` -> `3.13.0rc1.0`): the floor
- * of an exclusive prerelease bound, which admits the next prerelease (`rc.2`) but not the bound itself. */
-const after = (v: string): string => `${v}.0`;
-/** The lowest lower bound of an npm range (`>=18 <21`, `^18 || ^20`): the strongest bound within each `||` alternative, the weakest across them; `<20` alone has none. */
-function lowerBound(expr: string, tool: string): string {
-  const lows = expr.split("||").map((alt) => {
-    const bounds: string[] = [];
-    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+(?:[-+][\w.-]+)?/g, "").matchAll(/(<=?|>=?|\^|~>?|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)([-+][\w.-]+)?/g)) {
-      const v = m[1]?.startsWith("<") ? null : ver(m[2]!);
-      const pre = m[3]?.startsWith("-") ? m[3] : ""; // ver() would drop `-0`; build metadata is not a prerelease
-      if (v) bounds.push(m[1] !== ">" ? v + pre : pre ? after(v + pre) : above(v));
-    }
-    if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
-    return bounds.sort(fcmp).at(-1)!;
-  });
-  return lows.sort(fcmp)[0]!;
-}
-/** The lower bound of a PEP 440 specifier set (`>=3.10, !=3.11.*, <4`): the strongest of its clauses. */
-function pyLowerBound(expr: string): string | null {
-  const bounds: string[] = [];
-  for (const clause of expr.split(",")) {
-    const m = /^\s*(===?|~=|>=?)\s*v?(\d\S*)/.exec(clause);
-    const v = m ? ver(m[2]!) : null;
-    if (!v) continue;
-    const [core, pre] = split(v);
-    // PEP 440 has no x-ranges: >3.9 admits 3.9.1, and >3.13.0rc1 admits 3.13.0rc2.
-    bounds.push(m![1] !== ">" ? v : pre ? after(v) : above(core.concat(0, 0).slice(0, 3).join(".")));
+/** `node-version-file: package.json` reads `volta.node` (a pin), else `engines.node` (a range) only when volta has no
+ * `node` key: a volta value that is not a string is a FAIL, never skipped. */
+const pkgVersion: Parser = (text, tool, root, file) => {
+  const p = pkg(text);
+  const volta = p.volta && typeof p.volta === "object" && Object.hasOwn(p.volta, tool) ? p.volta[tool] : undefined;
+  if (volta !== undefined && typeof volta !== "string") throw new PinError(`volta.${tool} is not a string`);
+  if (volta === undefined) {
+    const out = engines(text, tool, root, file);
+    if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
+    return out;
   }
-  return bounds.sort(fcmp).at(-1) ?? null;
-}
-/** A Poetry constraint's lower bound: the lowest across `||`; within one, clauses split on `,` or a space, and `^X`,
- * `~X` and a bare `X` (or `X.*`) all start at X. */
-function poetryLowerBound(expr: string): string {
-  const lows = expr.split("||").map((alt) => {
-    const clauses = alt.trim().split(/\s*,\s*|(?<![<>=!~^])\s+/).map((c) => c.replace(/^[\^~](?!=)\s*/, ">=").replace(/^(?=v?\d)/, "=="));
-    const v = pyLowerBound(clauses.join(","));
-    if (!v) throw new PinError(`tool.poetry.dependencies.python "${expr}" has no lower bound`);
-    return v;
-  });
-  return lows.sort(fcmp)[0]!;
-}
+  return pinAt(volta.trim(), tool, file, lineAt(text, text.indexOf(JSON.stringify(volta), text.indexOf('"volta"'))));
+};
 const toml = (text: string): Record<string, unknown> => {
   try {
     return parseToml(text) as Record<string, unknown>;
@@ -142,58 +135,130 @@ const toml = (text: string): Record<string, unknown> => {
 const table = (v: unknown): Record<string, unknown> | undefined =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 /** `python-version-file: pyproject.toml`, read as setup-python reads it: `[project] requires-python` when there is a
- * `[project]` table, else `[tool.poetry.dependencies] python`; its lower bound is a floor. */
+ * `[project]` table, else `[tool.poetry.dependencies] python`. Either is a range, kept as written. */
 const pyproject: Parser = (text) => {
   const doc = toml(text);
   if ("project" in doc) {
     const rp = table(doc.project)?.["requires-python"];
     if (rp === undefined) throw new PinError("no project.requires-python");
     if (typeof rp !== "string") throw new PinError("requires-python is not a string");
-    const v = pyLowerBound(rp);
-    if (!v) throw new PinError(`requires-python "${rp}" has no lower bound`);
-    return [{ v, floor: true }];
+    return [{ v: rp.trim(), range: true }];
   }
   const py = table(table(table(doc.tool)?.poetry)?.dependencies)?.python;
   if (py === undefined) throw new PinError("no project.requires-python or tool.poetry.dependencies.python");
   if (typeof py !== "string") throw new PinError("tool.poetry.dependencies.python is not a string");
-  return [{ v: poetryLowerBound(py), floor: true }];
+  return [{ v: py.trim(), range: true }];
 };
 /** `python-version-file: Pipfile` reads `[requires] python_full_version`, else `python_version`, as setup-python does. */
-const pipfile: Parser = (text, tool) => {
+const pipfile: Parser = (text, tool, _root, file) => {
   const req = table(toml(text).requires);
   const key = req && "python_full_version" in req ? "python_full_version" : "python_version";
   const v = req?.[key];
   if (v === undefined) throw new PinError("no requires.python_version");
   if (typeof v !== "string") throw new PinError(`requires.${key} is not a string`);
-  return spec(v.trim(), tool, `requires.${key} `);
-};
-const engines: Parser = (text, tool) => {
-  const e = pkg(text).engines?.[tool];
-  return typeof e === "string" ? [{ v: lowerBound(e, tool), floor: true }] : [];
-};
-/** `node-version-file: package.json` reads `volta.node`, else `engines.node` as a floor. */
-const pkgVersion: Parser = (text, tool, root) => {
-  const volta = pkg(text).volta?.[tool];
-  const out = typeof volta === "string" ? hit(volta) : engines(text, tool, root);
-  if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
-  return out;
+  const f = classify(v.trim(), tool);
+  if (!f) throw unsupported(v.trim(), file, lineAt(text, text.search(new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m"))));
+  return [f];
 };
 /** In an image tag a bare `-dev` right after the version is the Chainguard/Wolfi dev variant (`20-dev`, `3.12-dev-slim`),
  * not a prerelease; `-dev.1` still is one. */
 const imageTag = (t: string): string => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
-const dockerfile: Parser = (text, tool) => {
-  const out: Found = [];
-  for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)?(\S+)/gim)) {
-    const [name = "", tag = ""] = m[1]!.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
-    if (name === (IMAGE[tool] ?? tool)) out.push(...hit(imageTag(tag))); // ver() ends the version at "-alpine", "-slim"
+/** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. Before a `$`
+ * the version must be complete, ended by a variant separator (`18-${DISTRO}`, `20-alpine${X}`): a `$` that may continue
+ * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`) leaves it unknown. */
+const tagVer = (t: string): string | null => {
+  const lit = imageTag(t.split("$")[0]!);
+  const v = /^v?\d/i.test(lit) ? ver(lit) : null;
+  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+};
+/** A Dockerfile instruction as Docker reads it: its text and, for each character, the 1-based physical line it is on. */
+type Logical = { text: string; lines: number[] };
+/** Docker's logical lines: a line ending in `\` continues; a full-line comment is dropped and never continued (inside a
+ * continuation it is dropped without ending it), as is an empty line inside a continuation; the body of a RUN, COPY or
+ * ADD heredoc (`<<EOF`, `<<-"EOF"`, `<<\EOF`, `<<E"OF"`; not a `<<` inside quotes) is skipped up to its delimiter line.
+ * An unterminated heredoc, also on an instruction still open at EOF, is a FAIL, and so is an `escape` parser directive
+ * other than `\` (only the default escape is read). */
+const logicalLines = (text: string, file: string): Logical[] => {
+  const phys = text.replace(/^\uFEFF/, "").split("\n").map((l) => l.replace(/\r$/, ""));
+  // Parser directives are the leading `# name=value` lines, before any blank line, other comment or instruction.
+  for (let i = 0; i < phys.length; i++) {
+    const d = /^\s*#\s*([a-z]+)\s*=\s*(.*?)\s*$/i.exec(phys[i]!);
+    if (!d) break;
+    if (d[1]!.toLowerCase() === "escape" && d[2] !== "\\") throw unsupported(`escape=${d[2]}`, file, i + 1);
   }
-  const arg = new RegExp(`^ARG\\s+${tool.toUpperCase().replace(/\W/g, "_")}_VERSION=(\\S+)`, "gim");
-  for (const m of text.matchAll(arg)) out.push(...hit(imageTag(m[1]!.replace(/^(["'])(.*)\1$/, "$2")))); // `"20.11.0"` is `20.11.0`
+  const out: Logical[] = [];
+  /** Add a finished instruction that ends on physical line index `i`; returns the index reading resumes after. */
+  const close = (ins: Logical, i: number): number => {
+    if (!ins.text.trim()) return i;
+    out.push(ins);
+    // Docker's heredoc word, matched on shell words (quotes kept, so a `<<` inside quotes is not one): `<<` or `<<-`
+    // and a name, whose quotes and backslashes are removed as the shell removes them; only RUN, COPY and ADD take one.
+    if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) return i;
+    for (const w of ins.text.match(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/g) ?? []) {
+      const h = /^\d*<<(-?)([^<]+)$/.exec(w);
+      const name = h?.[2]!.replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'|\\(.)/g, (_q, dq?: string, sq?: string, esc?: string) => dq?.replace(/\\(.)/g, "$1") ?? sq ?? esc ?? "");
+      if (!h || !name) continue;
+      const start = i;
+      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== name);
+      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${name} in ${file}:${start + 1}`);
+    }
+    return i;
+  };
+  let cur: Logical | null = null;
+  let end = 0; // the last physical line `cur` took text from
+  for (let i = 0; i < phys.length; i++) {
+    const line = phys[i]!;
+    if (/^\s*#/.test(line) || (cur && !line.trim())) continue;
+    const cont = /\\[ \t]*$/.exec(line);
+    const body = cont ? line.slice(0, cont.index) : line;
+    cur ??= { text: "", lines: [] };
+    cur.text += body;
+    for (let k = 0; k < body.length; k++) cur.lines.push(i + 1); // per UTF-16 unit, as the text is indexed
+    end = i;
+    if (cont) continue;
+    i = close(cur, i);
+    cur = null;
+  }
+  if (cur) close(cur, end);
+  return out;
+};
+/** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
+ * with `$` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its `$`
+ * (`18-${DISTRO}`) is that version; no tag, a digest only or any other tag is unsupported. An ARG value is its whole shell
+ * word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not `"20"${SUFFIX}`). */
+const dockerfile: Parser = (text, tool, _root, file) => {
+  const logical = logicalLines(text, file);
+  const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
+  const out: Found = [];
+  const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
+  for (const l of logical) {
+    const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
+    if (!m) continue;
+    const image = m[2]!;
+    const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
+    const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
+    if (m[3]) stages.add(m[3].toLowerCase());
+    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    const v = tag ? tagVer(tag) : null;
+    if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
+    out.push({ v });
+  }
+  // `ARG A=1 B=2` declares each pair: the tool's may be any of them.
+  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
+  for (const l of logical) {
+    const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
+    if (!m) continue;
+    for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
+      if (p[1]!.toUpperCase() !== key) continue;
+      const v = p[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
+      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + p[0].length - p[2]!.length)));
+    }
+  }
   return out;
 };
 
-/** `-file` inputs of the setup-* actions with a format of their own; any other file is read as a plain version file, as
- * the actions read it, so its first line must be a pinned version. */
+/** The `-file` inputs of the setup-* actions loops reads, by basename: the actions' own formats and the plain version
+ * files. Any other name is an unsupported form, never read as a plain file. */
 const BY_NAME: Record<string, Parser> = {
   "go.mod": goMod,
   "go.work": goMod,
@@ -201,8 +266,13 @@ const BY_NAME: Record<string, Parser> = {
   "package.json": pkgVersion,
   "pyproject.toml": pyproject,
   Pipfile: pipfile,
+  ".nvmrc": plain,
+  ".node-version": plain,
+  ".python-version": plain,
+  ".go-version": plain,
 };
-const byName = (file: string): Parser => (Object.hasOwn(BY_NAME, basename(file)) ? BY_NAME[basename(file)]! : plain);
+/** The supported `<tool>-version-file` basenames (the README matrix lists exactly these). */
+export const VERSION_FILES: string[] = Object.keys(BY_NAME);
 
 /** Workflow actions whose `with:` input pins a tool: kind -> [action, tool, input key]. */
 const ACTIONS = {
@@ -217,7 +287,7 @@ const ACTIONS = {
 function setup(kind: keyof typeof ACTIONS): Parser {
   const [action, forTool, key] = ACTIONS[kind];
   const named = new RegExp(`^${action}@`, "i"); // GitHub resolves action repos case-insensitively
-  return (text, tool, root) => {
+  return (text, tool, root, file) => {
     if (tool !== forTool) return [];
     const lc = new LineCounter();
     const doc = parseDocument(text, { lineCounter: lc });
@@ -251,29 +321,31 @@ function setup(kind: keyof typeof ACTIONS): Parser {
       const w = deref(step.get("with", true));
       if (w === undefined || (isScalar(w) && w.value === null)) return [];
       if (!isMap(w)) throw new PinError(`with: of ${action} at ${line(w as Node)} is not a mapping`);
-      const ins: [string, string][] = [];
+      const ins: [string, string, number][] = [];
       for (const p of w.items) {
         const k = keyOf(p.key)?.toLowerCase(); // action inputs are case-insensitive
         if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
-        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value)]);
+        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos((deref(p.value) as Node | null)?.range?.[0] ?? 0).line]);
       }
       // An empty input is fine only beside a non-empty one: the action then reads that one.
       if (ins.length && !ins.some(([, v]) => v)) throw new PinError(`${ins[0]![0]} has no value`);
       // The actions use the direct input and ignore `-file` when both are set.
       const used = ins.some(([k, v]) => k === key && v) ? ins.filter(([k]) => k === key) : ins;
       const out: Found = [];
-      for (const [k, val] of used) {
+      for (const [k, val, at] of used) {
         if (!val) continue;
         if (k === key) {
-          if (val === "latest") continue;
-          for (const l of val.split(/\r?\n/).filter((x) => x.trim())) {
-            const h = spec(l.trim(), tool, `${k} `);
-            if (!h.length) throw new PinError(`${k} "${l.trim()}" is not a version`);
-            out.push(...h);
+          // Each line is a pin or a range on its own; `latest` and every other word is unsupported.
+          for (const l of val.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)) {
+            const f = classify(l, tool);
+            if (!f) throw unsupported(l, file, at);
+            out.push(f);
           }
         } else if (!existsSync(join(root, val))) throw new PinError(`${key}-file ${val} not found`);
+        else if (!Object.hasOwn(BY_NAME, basename(val)))
+          throw new PinError(`unsupported form: ${k} ${val} in ${file}:${at} is not a supported version file (${VERSION_FILES.join(", ")}); pin an exact version`);
         else {
-          const found = byName(val)(readFileSync(join(root, val), "utf8"), tool, root);
+          const found = BY_NAME[basename(val)]!(readFileSync(join(root, val), "utf8"), tool, root, normalize(val));
           if (!found.length) throw new PinError(`${key}-file ${val} has no ${tool} version`);
           out.push(...found);
         }
@@ -324,6 +396,8 @@ const KINDS: Record<string, { file: string; parse: Parser }> = {
   "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
   "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") },
 };
+/** Source kind -> its default file (the README matrix lists exactly these). */
+export const SOURCE_KINDS: Record<string, string> = Object.fromEntries(Object.entries(KINDS).map(([k, { file }]) => [k, file]));
 
 export const splitSource = (spec: string): [string, string | undefined] => {
   const i = spec.indexOf(":");
@@ -343,7 +417,7 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
   for (const f of files) {
     if (!existsSync(join(root, f))) throw new PinError(`${spec}: ${f} not found`);
     try {
-      for (const x of k.parse(readFileSync(join(root, f), "utf8"), tool, root)) out.push({ src: `${kind}:${f}`, v: x.v, floor: x.floor ?? false });
+      for (const x of k.parse(readFileSync(join(root, f), "utf8"), tool, root, f)) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
@@ -352,8 +426,8 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
   return out;
 }
 
-export type Compare = "exact" | "minor" | "major" | "floor";
-const DEPTH = { exact: 3, minor: 2, major: 1, floor: 3 };
+export type Compare = "exact" | "minor" | "major";
+const DEPTH = { exact: 3, minor: 2, major: 1 };
 
 /** Compare on the components both versions state (so `1.26` equals `1.26.1` under exact), up to `depth`. A prerelease
  * counts once `depth` reaches its last component: `22.0.0-rc.1` differs from `22.0.0` and `22` under exact, not minor. */
@@ -363,39 +437,19 @@ export function cmp(a: string, b: string, depth = 3): number {
   for (let i = 0; i < Math.min(depth, x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! < y[i]! ? -1 : 1;
   return (p && depth >= x.length) || (q && depth >= y.length) ? preCmp(p, q) : 0;
 }
-const maxFloor = (vals: PinValue[]): string | null => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => fcmp(b, a))[0] ?? null;
 
 const parts = (v: string): number => split(v)[0].length;
-/** The version a pin stands for: the highest floor in floor mode, else the most specific source's (first on a tie). */
-export const pinOf = (vals: PinValue[], mode: Compare): string =>
-  mode === "floor" ? maxFloor(vals) ?? vals[0]!.v : pinned(vals).reduce((a, b) => (parts(b.v) > parts(a.v) ? b : a)).v;
-/** Pinned versions win over floors: a lower bound never becomes the exact pin. */
-const pinned = (vals: PinValue[]): PinValue[] => (vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals);
+/** Only pins are compared: a range is reported, never a bound. */
+const pinsOf = (vals: PinValue[]): PinValue[] => vals.filter((x) => !x.range);
+/** The version a pin stands for: the most specific pin (first on a tie). `vals` must hold a pin. */
+export const pinOf = (vals: PinValue[], _mode?: Compare): string => pinsOf(vals).reduce((a, b) => (parts(b.v) > parts(a.v) ? b : a)).v;
 
-/** Why the sources disagree, or null when they agree. */
+/** Why the pins disagree at the compare depth, or null when they agree. */
 export function disagreement(vals: PinValue[], mode: Compare): string | null {
-  if (mode === "floor") {
-    const fl = maxFloor(vals);
-    if (fl === null) return "compare = floor needs a floor source (engines)";
-    const bad = vals.filter((x) => !x.floor && cmp(x.v, fl) < 0);
-    return bad.length ? bad.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
-  }
-  // Exact pins are compared pairwise (floors only when no exact pin exists); a range floor next to exact pins only
-  // bounds them from below, judged like floor mode so a partial pin (`20`) meets a floor in the series it names.
-  const pins = pinned(vals);
+  const pins = pinsOf(vals);
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
-  if (bad) return pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})`;
-  const fl = maxFloor(vals);
-  const under = fl === null ? [] : pins.filter((x) => !x.floor && cmp(x.v, fl) < 0);
-  return under.length ? under.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
+  return bad ? pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
 
-/** Does a local toolchain version satisfy the pin? */
-/** The floor a local version is under, if any: a pinned source never waives an engines floor. */
-export const belowFloor = (local: string, vals: PinValue[]): string | null => {
-  const fl = maxFloor(vals);
-  return fl !== null && fcmp(local, fl) < 0 ? fl : null;
-};
-
-export const localOk = (local: string, pin: string, mode: Compare): boolean =>
-  mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
+/** Does a local toolchain version match the pin at the compare depth? */
+export const localOk = (local: string, pin: string, mode: Compare): boolean => cmp(local, pin, DEPTH[mode]) === 0;

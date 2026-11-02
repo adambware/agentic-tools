@@ -54,6 +54,18 @@ describe("composeVersion with a stubbed runner", () => {
     expect(v({ code: null, abend: "SIGKILL" })).toEqual({ error: "docker compose version was killed (SIGKILL)" });
     expect(v({ code: null, abend: "EACCES" })).toEqual({ error: "docker compose version could not run (EACCES)" });
   });
+
+  it("reads a non-zero exit as unavailable only when stderr shows the compose plugin is absent", () => {
+    const v = (o: Partial<RunResult>) => composeVersion(stub(res(o)).run, "/r");
+    // Newer Docker CLI wording for an absent plugin.
+    expect(v({ code: 1, stderr: "docker: unknown command: docker compose\n" })).toEqual({ unavailable: "docker compose version exited 1" });
+    // Warnings before the real message are dropped, as composeName drops them.
+    expect(v({ code: 125, stderr: 'time=2026-01-01T00:00:00Z level=warning msg="x"\nWARNING: Error parsing config file\nunknown flag: --short\n' })).toEqual({ unavailable: "docker compose version exited 125" });
+    // Anything else is a docker that failed, not a docker without the plugin: an error, never a SKIP.
+    expect(v({ code: 1, stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n" })).toEqual({ error: "docker compose version exited 1" });
+    expect(v({ code: 125, stderr: "" })).toEqual({ error: "docker compose version exited 125" });
+    expect(v({ code: 2, stderr: 'time=2026-01-01T00:00:00Z level=warning msg="unknown flag: --short"\n' })).toEqual({ error: "docker compose version exited 2" });
+  });
 });
 
 describe("composeName with a stubbed runner", () => {

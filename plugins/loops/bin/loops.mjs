@@ -7372,7 +7372,7 @@ import { homedir } from "node:os";
 import { join as join4, resolve as resolve2 } from "node:path";
 
 // src/lib/env-config.ts
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute, normalize as normalize2 } from "node:path";
 
 // node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
@@ -8183,19 +8183,19 @@ function which(name, pathVar) {
   }
   return null;
 }
-function parseFlags(argv, spec2) {
+function parseFlags(argv, spec) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const m = /^--?([A-Za-z][\w-]*)(?:=(.*))?$/.exec(arg);
     if (!m) throw new UsageError(`unexpected argument ${arg}`);
     const [, name = "", inline] = m;
-    if (spec2.bool?.includes(name) && inline === void 0) out[name] = true;
-    else if (spec2.value?.includes(name)) {
+    if (spec.bool?.includes(name) && inline === void 0) out[name] = true;
+    else if (spec.value?.includes(name)) {
       const v = inline ?? argv[++i];
       if (v === void 0) throw new UsageError(`--${name} needs a value`);
       out[name] = v;
-    } else if (spec2.list?.includes(name) && inline === void 0) {
+    } else if (spec.list?.includes(name) && inline === void 0) {
       const items = [];
       while (i + 1 < argv.length) {
         const next = argv[i + 1];
@@ -8216,7 +8216,7 @@ function parseFlags(argv, spec2) {
 
 // src/lib/pins.ts
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join as join2 } from "node:path";
+import { basename, join as join2, normalize } from "node:path";
 var import_yaml = __toESM(require_dist(), 1);
 
 // src/lib/glob.ts
@@ -8293,37 +8293,52 @@ var split = (v) => {
   return m ? [m[1].split(".").map(Number), m[2]] : [[NaN], v];
 };
 var preCmp = (p, q) => p === q ? 0 : !p ? 1 : !q ? -1 : Math.sign(p.localeCompare(q, "en", { numeric: true })) || (p < q ? -1 : 1);
-var hit = (s) => {
-  const v = s && /^v?\d/i.test(s) ? ver(s) : null;
-  return v ? [{ v }] : [];
+var unsupported = (v, file, line) => new PinError(`unsupported form "${v}" in ${file}:${line}; pin an exact version`);
+var lineAt = (text, index) => text.slice(0, Math.max(index, 0)).split("\n").length;
+var exact = (s) => {
+  const v = /^v?\d/i.test(s) ? ver(s) : null;
+  return v !== null && s.replace(/^v/i, "").replace(/(?:\.[xX*])+$/, "") === v ? v : null;
+};
+var OP = /^(?:~>|===?|!=|<=|>=|~=|[<>=~^])/;
+var isRange = (s) => {
+  const toks = s.replace(/(~>|===?|!=|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1").split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/);
+  return (toks.length > 1 || OP.test(s)) && toks.every((t) => exact(t.replace(OP, "")) !== null);
+};
+var classify = (raw, tool) => {
+  const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw;
+  const t = /^(~>?|\^)\s*v?(\d+(?:\.\d+)?)(?:\.[xX*])?$/.exec(s);
+  if (t && !(t[1] === "^" && t[2].includes("."))) return { v: t[2] };
+  if (isRange(s)) return { v: raw, range: true };
+  const v = exact(s);
+  return v === null ? null : { v };
+};
+var pinAt = (raw, tool, file, line) => {
+  const f = classify(raw, tool);
+  if (!f || f.range) throw unsupported(raw, file, line);
+  return [{ v: f.v }];
 };
 var ALIAS = { node: ["node", "nodejs"], go: ["go", "golang"] };
 var IMAGE = { go: "golang" };
-var toolVersions = (text, tool) => {
-  const out = [];
-  for (const line of text.split("\n")) {
+var toolVersions = (text, tool, _root, file) => {
+  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
+  return text.split("\n").flatMap((line, i) => {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    if (m && (Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool]).includes(m[1])) out.push(...hit(m[2]));
-  }
-  return out;
+    return m && names.includes(m[1]) ? pinAt(m[2], tool, file, i + 1) : [];
+  });
 };
-var spec = (raw, tool, label = "") => {
-  const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw;
-  const t = /^(~>?|\^)\s*v?(\d+(?:\.\d+)?)(?:\.[xX*])?$/.exec(s);
-  if (t && !(t[1] === "^" && t[2].includes("."))) return hit(t[2]);
-  const range = () => new PinError(`${label}"${raw}" is a range, not a pinned version`);
-  if (/^[<>=~^!]/.test(s) && ver(s)) throw range();
-  const h = hit(s);
-  if (h.length && /[<>=~^!|,*\s]/.test(s.replace(/(?:\.[xX*])+$/, ""))) throw range();
-  return h;
+var plain = (text, tool, _root, file) => {
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim());
+  const i = lines.findIndex((l) => l);
+  if (i < 0) throw new PinError(`no version in ${file}`);
+  const f = classify(lines[i], tool);
+  if (f?.range) throw new PinError(`"${lines[i]}" is a range, not a pinned version`);
+  if (!f) throw unsupported(lines[i], file, i + 1);
+  return [f];
 };
-var plain = (text, tool) => {
-  const line = text.split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).find((l) => l) ?? "";
-  const found = spec(line, tool);
-  if (!found.length) throw new PinError(`no version in "${line.slice(0, 30)}"`);
-  return found;
+var goMod = (text, tool, _root, file) => {
+  const m = tool === "go" ? /^toolchain[ \t]+go([^\r\n]*)/m.exec(text) ?? /^go[ \t]+([^\r\n]*)/m.exec(text) : null;
+  return m ? pinAt(m[1].replace(/\/\/.*/, "").trim(), tool, file, lineAt(text, m.index)) : [];
 };
-var goMod = (text, tool) => tool !== "go" ? [] : hit(/^toolchain\s+go(\S+)/m.exec(text)?.[1] ?? /^go\s+(\S+)/m.exec(text)?.[1]);
 var pkg = (text) => {
   try {
     return JSON.parse(text);
@@ -8331,52 +8346,23 @@ var pkg = (text) => {
     throw new PinError("not valid JSON");
   }
 };
-var fcmp = (a, b) => {
-  const [x, p] = split(a);
-  const [y, q] = split(b);
-  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
-  return preCmp(p, q);
+var engines = (text, tool) => {
+  const e = pkg(text).engines?.[tool];
+  if (e === void 0) return [];
+  if (typeof e !== "string") throw new PinError(`engines.${tool} is not a string`);
+  return [{ v: e.trim(), range: true }];
 };
-var above = (v) => {
-  const p = v.split(".").map(Number);
-  p[p.length - 1]++;
-  while (p.length < 3) p.push(0);
-  return p.join(".");
-};
-var after = (v) => `${v}.0`;
-function lowerBound(expr, tool) {
-  const lows = expr.split("||").map((alt) => {
-    const bounds = [];
-    for (const m of alt.replace(/\s-\s+v?[\d.xX*]+(?:[-+][\w.-]+)?/g, "").matchAll(/(<=?|>=?|\^|~>?|=)?\s*v?(\d+(?:\.(?:\d+|[xX*]))*)([-+][\w.-]+)?/g)) {
-      const v = m[1]?.startsWith("<") ? null : ver(m[2]);
-      const pre = m[3]?.startsWith("-") ? m[3] : "";
-      if (v) bounds.push(m[1] !== ">" ? v + pre : pre ? after(v + pre) : above(v));
-    }
-    if (!bounds.length) throw new PinError(`engines.${tool} "${expr}" has no lower bound`);
-    return bounds.sort(fcmp).at(-1);
-  });
-  return lows.sort(fcmp)[0];
-}
-function pyLowerBound(expr) {
-  const bounds = [];
-  for (const clause of expr.split(",")) {
-    const m = /^\s*(===?|~=|>=?)\s*v?(\d\S*)/.exec(clause);
-    const v = m ? ver(m[2]) : null;
-    if (!v) continue;
-    const [core, pre] = split(v);
-    bounds.push(m[1] !== ">" ? v : pre ? after(v) : above(core.concat(0, 0).slice(0, 3).join(".")));
+var pkgVersion = (text, tool, root, file) => {
+  const p = pkg(text);
+  const volta = p.volta && typeof p.volta === "object" && Object.hasOwn(p.volta, tool) ? p.volta[tool] : void 0;
+  if (volta !== void 0 && typeof volta !== "string") throw new PinError(`volta.${tool} is not a string`);
+  if (volta === void 0) {
+    const out = engines(text, tool, root, file);
+    if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
+    return out;
   }
-  return bounds.sort(fcmp).at(-1) ?? null;
-}
-function poetryLowerBound(expr) {
-  const lows = expr.split("||").map((alt) => {
-    const clauses = alt.trim().split(/\s*,\s*|(?<![<>=!~^])\s+/).map((c) => c.replace(/^[\^~](?!=)\s*/, ">=").replace(/^(?=v?\d)/, "=="));
-    const v = pyLowerBound(clauses.join(","));
-    if (!v) throw new PinError(`tool.poetry.dependencies.python "${expr}" has no lower bound`);
-    return v;
-  });
-  return lows.sort(fcmp)[0];
-}
+  return pinAt(volta.trim(), tool, file, lineAt(text, text.indexOf(JSON.stringify(volta), text.indexOf('"volta"'))));
+};
 var toml = (text) => {
   try {
     return parse(text);
@@ -8391,42 +8377,96 @@ var pyproject = (text) => {
     const rp2 = table(doc.project)?.["requires-python"];
     if (rp2 === void 0) throw new PinError("no project.requires-python");
     if (typeof rp2 !== "string") throw new PinError("requires-python is not a string");
-    const v = pyLowerBound(rp2);
-    if (!v) throw new PinError(`requires-python "${rp2}" has no lower bound`);
-    return [{ v, floor: true }];
+    return [{ v: rp2.trim(), range: true }];
   }
   const py = table(table(table(doc.tool)?.poetry)?.dependencies)?.python;
   if (py === void 0) throw new PinError("no project.requires-python or tool.poetry.dependencies.python");
   if (typeof py !== "string") throw new PinError("tool.poetry.dependencies.python is not a string");
-  return [{ v: poetryLowerBound(py), floor: true }];
+  return [{ v: py.trim(), range: true }];
 };
-var pipfile = (text, tool) => {
+var pipfile = (text, tool, _root, file) => {
   const req = table(toml(text).requires);
   const key = req && "python_full_version" in req ? "python_full_version" : "python_version";
   const v = req?.[key];
   if (v === void 0) throw new PinError("no requires.python_version");
   if (typeof v !== "string") throw new PinError(`requires.${key} is not a string`);
-  return spec(v.trim(), tool, `requires.${key} `);
-};
-var engines = (text, tool) => {
-  const e = pkg(text).engines?.[tool];
-  return typeof e === "string" ? [{ v: lowerBound(e, tool), floor: true }] : [];
-};
-var pkgVersion = (text, tool, root) => {
-  const volta = pkg(text).volta?.[tool];
-  const out = typeof volta === "string" ? hit(volta) : engines(text, tool, root);
-  if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
-  return out;
+  const f = classify(v.trim(), tool);
+  if (!f) throw unsupported(v.trim(), file, lineAt(text, text.search(new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m"))));
+  return [f];
 };
 var imageTag = (t) => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
-var dockerfile = (text, tool) => {
-  const out = [];
-  for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)?(\S+)/gim)) {
-    const [name = "", tag = ""] = m[1].split("@")[0].split("/").pop().split(":");
-    if (name === (IMAGE[tool] ?? tool)) out.push(...hit(imageTag(tag)));
+var tagVer = (t) => {
+  const lit = imageTag(t.split("$")[0]);
+  const v = /^v?\d/i.test(lit) ? ver(lit) : null;
+  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+};
+var logicalLines = (text, file) => {
+  const phys = text.replace(/^\uFEFF/, "").split("\n").map((l) => l.replace(/\r$/, ""));
+  for (let i = 0; i < phys.length; i++) {
+    const d = /^\s*#\s*([a-z]+)\s*=\s*(.*?)\s*$/i.exec(phys[i]);
+    if (!d) break;
+    if (d[1].toLowerCase() === "escape" && d[2] !== "\\") throw unsupported(`escape=${d[2]}`, file, i + 1);
   }
-  const arg = new RegExp(`^ARG\\s+${tool.toUpperCase().replace(/\W/g, "_")}_VERSION=(\\S+)`, "gim");
-  for (const m of text.matchAll(arg)) out.push(...hit(imageTag(m[1].replace(/^(["'])(.*)\1$/, "$2"))));
+  const out = [];
+  const close = (ins, i) => {
+    if (!ins.text.trim()) return i;
+    out.push(ins);
+    if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) return i;
+    for (const w of ins.text.match(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/g) ?? []) {
+      const h = /^\d*<<(-?)([^<]+)$/.exec(w);
+      const name = h?.[2].replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'|\\(.)/g, (_q, dq, sq, esc) => dq?.replace(/\\(.)/g, "$1") ?? sq ?? esc ?? "");
+      if (!h || !name) continue;
+      const start = i;
+      while (++i < phys.length && (h[1] ? phys[i].replace(/^\t+/, "") : phys[i]) !== name) ;
+      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${name} in ${file}:${start + 1}`);
+    }
+    return i;
+  };
+  let cur = null;
+  let end = 0;
+  for (let i = 0; i < phys.length; i++) {
+    const line = phys[i];
+    if (/^\s*#/.test(line) || cur && !line.trim()) continue;
+    const cont = /\\[ \t]*$/.exec(line);
+    const body = cont ? line.slice(0, cont.index) : line;
+    cur ??= { text: "", lines: [] };
+    cur.text += body;
+    for (let k = 0; k < body.length; k++) cur.lines.push(i + 1);
+    end = i;
+    if (cont) continue;
+    i = close(cur, i);
+    cur = null;
+  }
+  if (cur) close(cur, end);
+  return out;
+};
+var dockerfile = (text, tool, _root, file) => {
+  const logical = logicalLines(text, file);
+  const at = (l, index) => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
+  const out = [];
+  const stages = /* @__PURE__ */ new Set();
+  for (const l of logical) {
+    const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
+    if (!m) continue;
+    const image = m[2];
+    const [name = "", tag = ""] = image.split("@")[0].split("/").pop().split(":");
+    const stageRef = image === name && stages.has(name.toLowerCase());
+    if (m[3]) stages.add(m[3].toLowerCase());
+    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    const v = tag ? tagVer(tag) : null;
+    if (v === null) throw unsupported(image, file, at(l, m[1].length));
+    out.push({ v });
+  }
+  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
+  for (const l of logical) {
+    const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
+    if (!m) continue;
+    for (const p of m[2].matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
+      if (p[1].toUpperCase() !== key) continue;
+      const v = p[2].replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2");
+      out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + p[0].length - p[2].length)));
+    }
+  }
   return out;
 };
 var BY_NAME = {
@@ -8435,9 +8475,13 @@ var BY_NAME = {
   ".tool-versions": toolVersions,
   "package.json": pkgVersion,
   "pyproject.toml": pyproject,
-  Pipfile: pipfile
+  Pipfile: pipfile,
+  ".nvmrc": plain,
+  ".node-version": plain,
+  ".python-version": plain,
+  ".go-version": plain
 };
-var byName = (file) => Object.hasOwn(BY_NAME, basename(file)) ? BY_NAME[basename(file)] : plain;
+var VERSION_FILES = Object.keys(BY_NAME);
 var ACTIONS = {
   "setup-go": ["actions/setup-go", "go", "go-version"],
   "setup-node": ["actions/setup-node", "node", "node-version"],
@@ -8448,7 +8492,7 @@ var ACTIONS = {
 function setup(kind) {
   const [action, forTool, key] = ACTIONS[kind];
   const named = new RegExp(`^${action}@`, "i");
-  return (text, tool, root) => {
+  return (text, tool, root, file) => {
     if (tool !== forTool) return [];
     const lc = new import_yaml.LineCounter();
     const doc = (0, import_yaml.parseDocument)(text, { lineCounter: lc });
@@ -8485,23 +8529,24 @@ function setup(kind) {
       for (const p of w.items) {
         const k = keyOf(p.key)?.toLowerCase();
         if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
-        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value)]);
+        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos(deref(p.value)?.range?.[0] ?? 0).line]);
       }
       if (ins.length && !ins.some(([, v]) => v)) throw new PinError(`${ins[0][0]} has no value`);
       const used = ins.some(([k, v]) => k === key && v) ? ins.filter(([k]) => k === key) : ins;
       const out2 = [];
-      for (const [k, val] of used) {
+      for (const [k, val, at] of used) {
         if (!val) continue;
         if (k === key) {
-          if (val === "latest") continue;
-          for (const l of val.split(/\r?\n/).filter((x) => x.trim())) {
-            const h = spec(l.trim(), tool, `${k} `);
-            if (!h.length) throw new PinError(`${k} "${l.trim()}" is not a version`);
-            out2.push(...h);
+          for (const l of val.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)) {
+            const f = classify(l, tool);
+            if (!f) throw unsupported(l, file, at);
+            out2.push(f);
           }
         } else if (!existsSync(join2(root, val))) throw new PinError(`${key}-file ${val} not found`);
+        else if (!Object.hasOwn(BY_NAME, basename(val)))
+          throw new PinError(`unsupported form: ${k} ${val} in ${file}:${at} is not a supported version file (${VERSION_FILES.join(", ")}); pin an exact version`);
         else {
-          const found = byName(val)(readFileSync(join2(root, val), "utf8"), tool, root);
+          const found = BY_NAME[basename(val)](readFileSync(join2(root, val), "utf8"), tool, root, normalize(val));
           if (!found.length) throw new PinError(`${key}-file ${val} has no ${tool} version`);
           out2.push(...found);
         }
@@ -8551,63 +8596,50 @@ var KINDS = {
   "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
   "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") }
 };
-var splitSource = (spec2) => {
-  const i = spec2.indexOf(":");
-  return i < 0 ? [spec2, void 0] : [spec2.slice(0, i), spec2.slice(i + 1)];
+var SOURCE_KINDS = Object.fromEntries(Object.entries(KINDS).map(([k, { file }]) => [k, file]));
+var splitSource = (spec) => {
+  const i = spec.indexOf(":");
+  return i < 0 ? [spec, void 0] : [spec.slice(0, i), spec.slice(i + 1)];
 };
-var isSourceKind = (spec2) => Object.hasOwn(KINDS, splitSource(spec2)[0]);
-function readSource(root, tracked, tool, spec2) {
-  const [kind, path] = splitSource(spec2);
+var isSourceKind = (spec) => Object.hasOwn(KINDS, splitSource(spec)[0]);
+function readSource(root, tracked, tool, spec) {
+  const [kind, path] = splitSource(spec);
   const k = KINDS[kind];
   const target = path ?? k.file;
   const res2 = isGlob(target) ? compileGlob(target) : null;
   const files = res2 ? tracked.filter((f) => res2.some((re) => re.test(f))) : [target];
-  if (!files.length) throw new PinError(`${spec2}: no file matches ${target}`);
+  if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out = [];
   for (const f of files) {
-    if (!existsSync(join2(root, f))) throw new PinError(`${spec2}: ${f} not found`);
+    if (!existsSync(join2(root, f))) throw new PinError(`${spec}: ${f} not found`);
     try {
-      for (const x of k.parse(readFileSync(join2(root, f), "utf8"), tool, root)) out.push({ src: `${kind}:${f}`, v: x.v, floor: x.floor ?? false });
+      for (const x of k.parse(readFileSync(join2(root, f), "utf8"), tool, root, f)) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
     } catch (e) {
-      throw new PinError(`${spec2}: ${f}: ${e.message}`);
+      throw new PinError(`${spec}: ${f}: ${e.message}`);
     }
   }
-  if (!out.length) throw new PinError(`${spec2}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files`}`);
+  if (!out.length) throw new PinError(`${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files`}`);
   return out;
 }
-var DEPTH = { exact: 3, minor: 2, major: 1, floor: 3 };
+var DEPTH = { exact: 3, minor: 2, major: 1 };
 function cmp(a, b, depth = 3) {
   const [x, p] = split(a);
   const [y, q] = split(b);
   for (let i = 0; i < Math.min(depth, x.length, y.length); i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
   return p && depth >= x.length || q && depth >= y.length ? preCmp(p, q) : 0;
 }
-var maxFloor = (vals) => vals.filter((x) => x.floor).map((x) => x.v).sort((a, b) => fcmp(b, a))[0] ?? null;
 var parts = (v) => split(v)[0].length;
-var pinOf = (vals, mode) => mode === "floor" ? maxFloor(vals) ?? vals[0].v : pinned(vals).reduce((a, b) => parts(b.v) > parts(a.v) ? b : a).v;
-var pinned = (vals) => vals.some((x) => !x.floor) ? vals.filter((x) => !x.floor) : vals;
+var pinsOf = (vals) => vals.filter((x) => !x.range);
+var pinOf = (vals, _mode) => pinsOf(vals).reduce((a, b) => parts(b.v) > parts(a.v) ? b : a).v;
 function disagreement(vals, mode) {
-  if (mode === "floor") {
-    const fl2 = maxFloor(vals);
-    if (fl2 === null) return "compare = floor needs a floor source (engines)";
-    const bad2 = vals.filter((x) => !x.floor && cmp(x.v, fl2) < 0);
-    return bad2.length ? bad2.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl2}` : null;
-  }
-  const pins = pinned(vals);
+  const pins = pinsOf(vals);
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
-  if (bad) return pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})`;
-  const fl = maxFloor(vals);
-  const under = fl === null ? [] : pins.filter((x) => !x.floor && cmp(x.v, fl) < 0);
-  return under.length ? under.map((x) => `${x.src}=${x.v}`).join(", ") + ` below the floor ${fl}` : null;
+  return bad ? pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
-var belowFloor = (local, vals) => {
-  const fl = maxFloor(vals);
-  return fl !== null && fcmp(local, fl) < 0 ? fl : null;
-};
-var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
+var localOk = (local, pin, mode) => cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.5.0";
+var VERSION = "0.6.0";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -8665,10 +8697,12 @@ function parseConfig(text, file) {
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
+    if (t.compare === "floor")
+      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: ranges are no longer compared (a later a.range check will cover a pin inside a range); use exact, minor or major`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
-      compare: pick(t, "compare", where, oneOf("exact", "minor", "major", "floor"), "exact|minor|major|floor", "exact"),
+      compare: pick(t, "compare", where, oneOf("exact", "minor", "major"), "exact|minor|major", "exact"),
       local: pick(t, "local", where, oneOf("fail", "warn", "off"), "fail|warn|off", "warn")
     };
   });
@@ -8702,7 +8736,7 @@ function parseConfig(text, file) {
     const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v >= 1e-3 && Number.isSafeInteger(Math.round(v * 1e3)), "a positive number of seconds (at least 0.001)", 15);
     const timeoutMs = Math.round(timeoutS * 1e3);
     const run2 = pick(t, "run", where, isStr, "a path");
-    if (isAbsolute(run2) || /^\.\.(\/|$)/.test(normalize(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
+    if (isAbsolute(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
     return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
@@ -8712,7 +8746,7 @@ function parseConfig(text, file) {
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync, statSync as statSync2 } from "node:fs";
-import { basename as basename2, dirname, isAbsolute as isAbsolute2, join as join3, normalize as normalize2, resolve } from "node:path";
+import { basename as basename2, dirname, isAbsolute as isAbsolute2, join as join3, normalize as normalize3, resolve } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -8720,6 +8754,7 @@ var isSwitch = (k) => Object.hasOwn(REMOTE_OFF, k);
 var COMPOSE_CONFIG_TIMEOUT_MS = 1e4;
 var TOO_OLD = /^(?:docker: )?unknown flag:? --no-env-resolution\b/m;
 var WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
+var NO_PLUGIN = /^(?:docker: )?(?:unknown flag:? --short\b|'compose' is not a docker command|unknown command: docker compose)/m;
 var NO_FILE = "no configuration file provided: not found";
 function rerun(e) {
   const unset = (e.scrubbed ?? []).map((n) => `-u ${shQuote(n)}`);
@@ -8733,7 +8768,10 @@ function composeVersion(run2, cwd, env) {
   if (r.timedOut) return { error: `docker compose version timed out after ${seconds}` };
   if (r.notFound) return { unavailable: "docker is not installed" };
   if (r.code === null) return { error: `docker compose version ${abended(r)}` };
-  if (r.code !== 0) return { unavailable: `docker compose version exited ${r.code}` };
+  if (r.code !== 0) {
+    const why = r.stderr.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n");
+    return NO_PLUGIN.test(why) ? { unavailable: `docker compose version exited ${r.code}` } : { error: `docker compose version exited ${r.code}` };
+  }
   return { version: r.stdout.trim() };
 }
 function composeName(o) {
@@ -8794,13 +8832,21 @@ function pinChecks(c) {
       out.push(res("FAIL", id, e.message, `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    const bad = disagreement(vals, pin.compare);
-    if (bad) {
-      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`));
+    const pins = vals.filter((v) => !v.range);
+    const srcs = (xs) => [...new Set(xs.map((v) => v.src))].join(", ");
+    const seen = /* @__PURE__ */ new Set();
+    const info = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`)).map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`));
+    if (!pins.length) {
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
     }
-    const want = pinOf(vals, pin.compare);
-    out.push(res("PASS", id, `${pin.tool} ${want} (${[...new Set(vals.map((v) => v.src))].join(", ")})`));
+    const bad = disagreement(vals, pin.compare);
+    if (bad) {
+      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`), ...info);
+      continue;
+    }
+    const want = pinOf(vals);
+    out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
     if (c.static || pin.local === "off") continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool] : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" }, timeoutMs: PROBE_TIMEOUT_MS });
@@ -8811,7 +8857,6 @@ function pinChecks(c) {
     if (r.timedOut) out.push(res(level, lid, `${[bin, ...args].join(" ")} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, fix));
     else if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
-    else if (belowFloor(have, vals)) out.push(res(level, lid, `local ${pin.tool} ${have} is below the floor ${belowFloor(have, vals)}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
   return out;
@@ -9044,17 +9089,24 @@ function containersCheck(c, { name: project, results, ps }) {
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
-  const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
+  if (!files.length) return [res("SKIP", id, "no commit touches the [compose] inputs")];
+  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
+  const ct = logged === void 0 || !/^\d*$/.test(logged) ? NaN : Number(logged);
+  if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
-  const mtime = (f) => {
+  const mtimes = files.map((f) => {
     try {
-      return statSync2(join3(c.root, f)).mtimeMs;
+      return [f, statSync2(join3(c.root, f)).mtimeMs];
     } catch {
-      return 0;
+      return [f, NaN];
     }
-  };
-  const newest = files.reduce((n, f) => Math.max(n, mtime(f)), ct * 1e3);
-  const stale = running.filter((k) => k.created < newest);
+  });
+  const unstat = mtimes.filter(([, t]) => Number.isNaN(t)).map(([f]) => f);
+  if (unstat.length) return [res(level, id, `loops cannot read the modification time of ${short(unstat)}, so it cannot tell whether the running containers are older`, `restore ${short(unstat)} or make it readable, then re-run`)];
+  const newest = mtimes.reduce((n, [, t]) => Math.max(n, t), ct * 1e3);
+  const stale = running.filter((k) => !(k.created >= newest));
+  const unreadable = stale.filter((k) => Number.isNaN(k.created)).map((k) => k.name);
   const quote = (s) => /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
   const rel = (p) => p === c.root ? "." : p.startsWith(`${c.root}/`) ? p.slice(c.root.length + 1) : p;
   const split2 = (v) => v.split(/,(?=\/)/);
@@ -9063,11 +9115,11 @@ function containersCheck(c, { name: project, results, ps }) {
   const own = split2(started);
   const fs = own.every((f) => isAbsolute2(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
   const args = fs.map((f) => ` -f ${quote(f)}`);
-  if (wd && rel(wd) !== normalize2(dirname(fs[0]))) args.push(` --project-directory ${quote(rel(wd))}`);
+  if (wd && rel(wd) !== normalize3(dirname(fs[0]))) args.push(` --project-directory ${quote(rel(wd))}`);
   if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
-  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate`;
-  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
-  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
+  const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
+  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs${why}`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
 function composeChecks(c, project) {
   if (!c.cfg.compose) return [];

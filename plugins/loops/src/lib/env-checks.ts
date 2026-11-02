@@ -7,7 +7,7 @@ import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
-import { belowFloor, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
@@ -61,13 +61,24 @@ export function pinChecks(c: Ctx): Result[] {
       out.push(res("FAIL", id, e.message, `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    const bad = disagreement(vals, pin.compare);
-    if (bad) {
-      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`));
+    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict.
+    const pins = vals.filter((v) => !v.range);
+    const srcs = (xs: PinValue[]) => [...new Set(xs.map((v) => v.src))].join(", ");
+    const seen = new Set<string>();
+    const info = vals
+      .filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`))
+      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`));
+    if (!pins.length) {
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
     }
-    const want = pinOf(vals, pin.compare);
-    out.push(res("PASS", id, `${pin.tool} ${want} (${[...new Set(vals.map((v) => v.src))].join(", ")})`));
+    const bad = disagreement(vals, pin.compare);
+    if (bad) {
+      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`), ...info);
+      continue;
+    }
+    const want = pinOf(vals);
+    out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
     if (c.static || pin.local === "off") continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" }, timeoutMs: PROBE_TIMEOUT_MS });
@@ -78,7 +89,6 @@ export function pinChecks(c: Ctx): Result[] {
     if (r.timedOut) out.push(res(level, lid, `${[bin, ...args].join(" ")} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
     else if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
-    else if (belowFloor(have, vals)) out.push(res(level, lid, `local ${pin.tool} ${have} is below the floor ${belowFloor(have, vals)}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
   return out;
@@ -433,17 +443,28 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
-  const ct = files.length ? Number(git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim()) : NaN;
+  if (!files.length) return [res("SKIP", id, "no commit touches the [compose] inputs")];
+  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
+  // Empty output is a log with no commit over the inputs; a failed git or text that is no time is not that.
+  // --no-show-signature: a user's log.showSignature would print the signature check before the time.
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
+  const ct = logged === undefined || !/^\d*$/.test(logged) ? NaN : Number(logged);
+  if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
-  const mtime = (f: string): number => {
+  // A tracked input whose modification time cannot be read (deleted from the working tree, EACCES) is not time 0.
+  const mtimes = files.map((f): [string, number] => {
     try {
-      return statSync(join(c.root, f)).mtimeMs;
+      return [f, statSync(join(c.root, f)).mtimeMs];
     } catch {
-      return 0;
+      return [f, NaN];
     }
-  };
-  const newest = files.reduce((n, f) => Math.max(n, mtime(f)), ct * 1000);
-  const stale = running.filter((k) => k.created < newest);
+  });
+  const unstat = mtimes.filter(([, t]) => Number.isNaN(t)).map(([f]) => f);
+  if (unstat.length) return [res(level, id, `loops cannot read the modification time of ${short(unstat)}, so it cannot tell whether the running containers are older`, `restore ${short(unstat)} or make it readable, then re-run`)];
+  const newest = mtimes.reduce((n, [, t]) => Math.max(n, t), ct * 1000);
+  // A creation time loops cannot read (NaN) is never "newer": that container counts as stale.
+  const stale = running.filter((k) => !(k.created >= newest));
+  const unreadable = stale.filter((k) => Number.isNaN(k.created)).map((k) => k.name);
   const quote = (s: string): string => (/^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
   // A label path relative to the root when spelled under it, else as Compose recorded it: Compose resolves a file's
   // relative paths (../data) against its directory as spelled, so neither a symlinked directory nor another spelling
@@ -461,9 +482,10 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   if (wd && rel(wd) !== normalize(dirname(fs[0]!))) args.push(` --project-directory ${quote(rel(wd))}`);
   if (envFile) args.push(...split(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
   // A cache-hit `--build` leaves a container whose inputs were only rewritten Running, still stale by mtime.
-  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate`;
-  const level = cfg.containers === "fail" ? "FAIL" : "WARN";
-  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+  // A recreated container prints the same unreadable time, so recreating cannot clear that case: name the escape too.
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
+  const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
+  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs${why}`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
 
 /** The compose checks. `project` is the one composeProject result for this run (null only when compose is not in test mode). */

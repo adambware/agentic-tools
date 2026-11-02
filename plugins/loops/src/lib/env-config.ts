@@ -93,10 +93,12 @@ export function parseConfig(text: string, file: string): Config {
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
+    if (t.compare === "floor")
+      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: ranges are no longer compared (a later a.range check will cover a pin inside a range); use exact, minor or major`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
-      compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major", "floor"), "exact|minor|major|floor", "exact"),
+      compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major"), "exact|minor|major", "exact"),
       local: pick(t, "local", where, oneOf<Pin["local"]>("fail", "warn", "off"), "fail|warn|off", "warn"),
     };
   });
