@@ -721,7 +721,7 @@ describe("compose", () => {
     const renamed = worktree(root, "app-prod");
     put(renamed, "compose.yml", COMPOSE.replace("app-prod", "app-other"));
     expect(checkC(renamed, { [root]: "app-prod", [renamed]: "app-other", [wt]: "app-prod" }).out).toContain("FAIL e.project  this worktree would use project app-prod, which the main checkout uses");
-    // With no compose file in the main checkout there is no prod stack, so the worktree's own name: is its own (before 0.5.0 it counted as prod).
+    // With no compose file in the main checkout there is no prod stack, so the worktree's own name: is its own (earlier releases counted it as prod).
     const bare = setup(test(), { "compose.yml": COMPOSE });
     commit(bare);
     const w = worktree(bare, "app-prod");
@@ -805,7 +805,7 @@ describe("compose", () => {
     const fw = worktree(mainBad, "feat-w");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  configured run would use project x, which the main checkout uses");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "feat-w" }, [], { STACK_NAME: "x", COMPOSE_PROJECT_NAME: "feat-w" }).code).toBe(0);
-    // The main checkout's name: cannot resolve: that probe's failure is the FAIL (before 0.5.0 it said "cannot be resolved").
+    // The main checkout's name: cannot resolve: that probe's failure is the FAIL (earlier releases said "cannot be resolved").
     put(mainBad, "compose.yml", "name: ${OTHER}\nservices: {}\n");
     const fv = worktree(mainBad, "feat-v");
     expect(checkC(fv, { [mainBad]: EMPTY, [fv]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  the main checkout's configured run: docker compose config exited 1");
@@ -1004,7 +1004,7 @@ describe("compose", () => {
     put(nested, ".env", 'BASE=app\nSTACK_NAME="${BASE}-live"\n');
     expect(checkC(nested, { [nested]: "app-live" }, ["--compose-project"]).out).toBe("app-live");
     // Compose: an unset variable in .env interpolates to empty, so this COMPOSE_PROJECT_NAME is as if unset and name: applies
-    // (before 0.5.0 it failed closed on it).
+    // (earlier releases failed closed on it).
     const nope = setup(test(), { "compose.yml": COMPOSE });
     put(nope, ".env", "COMPOSE_PROJECT_NAME=${NOPE}\n");
     const own = checkC(nope, { [nope]: "app-prod" });
@@ -1048,7 +1048,7 @@ describe("compose", () => {
       "x-b: &b {name: app-prod}\n<<: *b\nservices: {}\n",
       "x-a: &a\n  name: app-other\nname: app-prod\n<<: *a\nservices: {}\n",
       "name: !reset app-prod\nservices: {}\n",
-      // An anchor shared across documents resolves too (before 0.5.0 it failed closed on it).
+      // An anchor shared across documents resolves too (earlier releases failed closed on it).
       "x-n: &n app-prod\nservices: {}\n---\nname: *n\n",
     ];
     for (const doc of docs) namedProd(doc, "feat-y");
@@ -1637,7 +1637,7 @@ describe("b.containers", () => {
     );
   });
 
-  // Since 0.5.0 the fix replays the stale containers' own Compose labels: the files they were started with (an
+  // Since the Compose rewrite the fix replays the stale containers' own Compose labels: the files they were started with (an
   // implicit override included), their project directory and env files. Paths inside the root print relative to it.
   const labelled = (root: string, files: string, wd = root, envFile = "", ...more: string[]) =>
     fake(listing(ctr(wd, "web-1", "2000-01-01T00:00:00Z", "app-prod", "running", files, envFile), ...more), [], prod(root));
