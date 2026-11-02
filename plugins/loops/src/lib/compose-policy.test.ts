@@ -7,11 +7,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { composeName, isComposeConfigCall } from "./compose-config.js";
 import { envCheckMain } from "./env-check.js";
 import { run, shQuote, type Runner } from "./proc.js";
-import { put, sh } from "./testkit.js";
+import { canary, put, sh } from "./testkit.js";
 
 const composeAvailable = spawnSync("docker", ["compose", "version"], { stdio: "ignore" }).status === 0;
 const requireCompose = process.env.LOOPS_REQUIRE_COMPOSE === "1";
@@ -153,6 +153,8 @@ const not = (a: string, n: string) => `would use project ${a}, not ${n}`;
 const SCRUBBED = "without your shell's COMPOSE_*";
 /** A probe failure says how it failed. */
 const EXITED = /exit(ed)? \d+/;
+/** What every rerun fix sets: Compose's remote loaders off. */
+const OFF_ENV = "COMPOSE_EXPERIMENTAL_GIT_REMOTE=0 COMPOSE_EXPERIMENTAL_OCI_REMOTE=0 GIT_ALLOW_PROTOCOL=file";
 const derivedPass = (n: string) => `${n} (derived: slug-hash)`;
 /** The fix names `<W root>/.env` (check 4), not a subdirectory's. */
 const rootEnv = (w: string) => new RegExp(`to ${re(w)}/\\.env\\b`);
@@ -272,19 +274,30 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     expect(probes.filter((c) => c.startsWith(p))).toEqual([]);
   });
 
-  it("row 13: shell COMPOSE_PROJECT_NAME=\"Bad Name\", configured file present: FAIL, the fix is the config command, no Compose text", () => {
+  it("row 13: shell COMPOSE_PROJECT_NAME=\"Bad Name\", configured file present: FAIL withheld, loops names the rule, no Compose text", () => {
     const f = fixture(["compose.yml"], { "compose.yml": SVC });
     const w = f.wt(`${NEST}w1`);
     expect(answer(w, ["compose.yml"], { COMPOSE_PROJECT_NAME: "Bad Name" })).toEqual({ kind: "exit" });
     check(w, { COMPOSE_PROJECT_NAME: "Bad Name" }, {
       level: "FAIL",
-      has: [EXITED],
-      fix: [`cd ${shQuote(w)} && docker compose -f compose.yml config --no-env-resolution --format json`],
+      has: ['COMPOSE_PROJECT_NAME "Bad Name" is not a Compose project name'],
+      fix: ["unset it"],
       // Compose's line: `invalid project name "Bad Name": must consist only of lowercase alphanumeric characters, …`.
       never: ["must consist only", "invalid project name"],
-      // Only this worktree's own runs failed and its name is the shell's, not a probe's: kept (check 2).
-      name: "Bad Name",
+      // Every run here fails on the name itself, so no -p name is safe: withheld.
+      name: null,
     });
+  });
+
+  it("row 13b: Compose rejects exactly the shell names loops withholds (lowercase letters, digits, - and _; a letter or digit first)", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const valid = (s: string) => dirProject(s) === s;
+    const names = ["Bad Name", "UPPER", "Upper", "_x", "-x", "_", "a.b", "a/b", "é", " a", "x_", "x-", "9", "1abc", "a_b-c9"];
+    for (const n of names) {
+      expect([n, answer(f.main, ["compose.yml"], { COMPOSE_PROJECT_NAME: n })]).toEqual([n, valid(n) ? { name: n } : { kind: "exit" }]);
+      const p = envCheckMain(["--compose-project"], { run: quiet(), cwd: f.main, env: { ...baseEnv(), COMPOSE_PROJECT_NAME: n }, readStdin: () => "", out: () => {}, err: () => {} });
+      expect([n, p]).toEqual([n, valid(n) ? 0 : 1]);
+    }
   });
 
   it("row 14: W .env COMPOSE_FILE=other.yml (name: app) and APP=<derived>: FAIL, the plain run answers app, held by the main checkout", () => {
@@ -487,7 +500,7 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     check(w, {}, {
       level: "FAIL",
       has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/],
-      fix: [`cd ${shQuote(p)} && docker compose -f compose.yml config --no-env-resolution --format json`],
+      fix: [`cd ${shQuote(p)} && env ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`],
       // A peer probe feeds a held name, so its failure withholds (check 2).
       name: null,
     });
@@ -500,7 +513,7 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     check(w, { COMPOSE_FILE: "missing.yml" }, {
       level: "FAIL",
       has: [EXITED],
-      fix: [`cd ${shQuote(w)} && docker compose config --no-env-resolution --format json`],
+      fix: [`cd ${shQuote(w)} && env ${OFF_ENV} docker compose config --no-env-resolution -q`],
       name: f.derived(w),
     });
   });
@@ -523,5 +536,53 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     put(w, "docker/.env", "COMPOSE_PROJECT_NAME=w1\n");
     expect([answer(w, ["docker/dev.yml"]), answer(join(w, "docker")), answer(w)]).toEqual([{ name: "w1" }, { noFile: true }, { noFile: true }]);
     check(w, {}, { level: "FAIL", has: [`configured run ${not("w1", n)}`], fix: [`to ${w}/docker/.env`], name: n });
+  });
+
+  // S1: a branch's compose file can pull a git URL whose path carries a shell variable; no probe may fetch it.
+  describe("remote includes and extends", () => {
+    let srv: Awaited<ReturnType<typeof canary>>;
+    beforeEach(async () => {
+      srv = await canary();
+    });
+    afterEach(() => srv.close());
+    const SECRET = "loops-canary-9b2c";
+    const vars = { LOOPS_CANARY: SECRET };
+    const include = () => `include:\n  - http://127.0.0.1:${srv.port}/x-\${LOOPS_CANARY}.git\n${SVC}`;
+    const extend = () => `services:\n  web:\n    extends:\n      file: http://127.0.0.1:${srv.port}/ext-\${LOOPS_CANARY}.git\n      service: web\n`;
+    const remote = { include, "extends.file": extend };
+
+    for (const [what, body] of Object.entries(remote)) {
+      it(`row 32 (S1): a peer's compose file has a remote ${what}: nothing is fetched, FAIL check 2 for the peer's runs, withheld`, () => {
+        const f = fixture(["compose.yml"], { "compose.yml": SVC });
+        const w = f.wt(`${NEST}w1`);
+        const p = f.wt(`${NEST}p1`, { "compose.yml": body() });
+        expect(answer(p, ["compose.yml"], vars)).toEqual({ kind: "exit" });
+        check(w, vars, { level: "FAIL", has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/], fix: [`cd ${shQuote(p)} && env ${OFF_ENV} docker compose`], never: [SECRET], name: null });
+        expect(srv.hits()).toBe(0);
+      });
+
+      it(`row 33 (S1): the main checkout's compose file has a remote ${what}: nothing is fetched, FAIL check 2 for its runs, withheld`, () => {
+        const f = fixture(["compose.yml"], { "compose.yml": body() });
+        const w = f.wt(`${NEST}w1`, { "compose.yml": SVC });
+        check(w, vars, { level: "FAIL", has: [/the main checkout's configured run: docker compose config exited \d+/], never: [SECRET], name: null });
+        expect(srv.hits()).toBe(0);
+      });
+    }
+
+    it("row 34 (S1): a peer's .env turns the remote loaders on and the shell sets COMPOSE_EXPERIMENTAL_GIT_REMOTE=1: nothing is fetched, withheld", () => {
+      const f = fixture(["compose.yml"], { "compose.yml": SVC });
+      const w = f.wt(`${NEST}w1`);
+      const p = f.wt(`${NEST}p1`, { "compose.yml": include() });
+      put(p, ".env", "COMPOSE_EXPERIMENTAL_GIT_REMOTE=1\nCOMPOSE_EXPERIMENTAL_OCI_REMOTE=1\nGIT_ALLOW_PROTOCOL=http\n");
+      check(w, { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, { level: "FAIL", has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/], never: [SECRET], name: null });
+      expect(srv.hits()).toBe(0);
+    });
+
+    it("row 35 (S1): this worktree's own file has a remote include and the shell sets COMPOSE_EXPERIMENTAL_GIT_REMOTE=1: nothing is fetched, FAIL check 2, the derived name kept", () => {
+      const f = fixture(["compose.yml"], { "compose.yml": SVC });
+      const w = f.wt(`${NEST}w1`, { "compose.yml": include() });
+      check(w, { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, { level: "FAIL", has: [/this worktree's configured run: docker compose config exited \d+/], never: [SECRET], name: f.derived(w) });
+      expect(srv.hits()).toBe(0);
+    });
   });
 });

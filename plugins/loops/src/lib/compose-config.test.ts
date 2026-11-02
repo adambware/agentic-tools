@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { composeName, composeVersion, isComposeConfigCall, isComposeVersionCall, rerun, type ComposeError, type ComposeErrorKind } from "./compose-config.js";
 import { run, type RunResult, type Runner } from "./proc.js";
+import { canary } from "./testkit.js";
 
 type Call = { cmd: string; args: string[]; opts: Parameters<Runner>[2] };
 const res = (o: Partial<RunResult>): RunResult => ({ code: 0, stdout: "", stderr: "", timedOut: false, ...o });
@@ -27,7 +28,10 @@ describe("the real runner's null exit codes", () => {
   });
 });
 
-const ERR = { cmd: "docker compose config --no-env-resolution --format json", cwd: "/r" };
+const ERR = { cmd: "docker compose config --no-env-resolution -q", cwd: "/r" };
+// Set on every probe: Compose's git and OCI loaders off, and git limited to local repos.
+const OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
+const OFF_ENV = "COMPOSE_EXPERIMENTAL_GIT_REMOTE=0 COMPOSE_EXPERIMENTAL_OCI_REMOTE=0 GIT_ALLOW_PROTOCOL=file";
 const failed = (kind: string, error: string) => ({ error, kind, ...ERR });
 
 describe("composeVersion with a stubbed runner", () => {
@@ -83,24 +87,38 @@ describe("composeName with a stubbed runner", () => {
     for (const bad of ["-p", "--project-name", "--no-interpolate", "-q", "--quiet"]) expect(calls[0]!.args).not.toContain(bad);
   });
 
-  it("passes cwd, env and the 10s timeout through as given", () => {
+  it("passes cwd, env and the 10s timeout through as given, plus the remote loaders off", () => {
     const env = { PATH: "/bin", COMPOSE_FILE: "x.yml" };
     const { run, calls } = stub(json({ name: "app" }));
     composeName({ root: "/some/root", env, run });
-    expect(calls[0]!.opts).toEqual({ cwd: "/some/root", env, timeoutMs: 10_000 });
-    expect(calls[0]!.opts!.env).toBe(env);
+    expect(calls[0]!.opts).toEqual({ cwd: "/some/root", env: { ...env, ...OFF }, timeoutMs: 10_000 });
+    expect(env).toEqual({ PATH: "/bin", COMPOSE_FILE: "x.yml" });
+  });
+
+  it("turns the remote loaders off on every probe, as is and scrubbed, over the shell's own values, and never lists them as scrubbed", () => {
+    const env = { PATH: "/bin", COMPOSE_FILE: "x.yml", COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "true", GIT_ALLOW_PROTOCOL: "file:https:ssh" };
+    for (const scrub of [false, true]) {
+      const { run, calls } = stub(res({ code: 1 }));
+      const out = composeName({ root: "/r", env, scrub, run }) as ComposeError;
+      expect(calls[0]!.opts!.env).toEqual({ PATH: "/bin", ...(scrub ? {} : { COMPOSE_FILE: "x.yml" }), ...OFF });
+      expect(out.scrubbed).toEqual(scrub ? ["COMPOSE_FILE"] : undefined);
+    }
+    // A shell whose only COMPOSE_* is a switch has nothing scrubbed.
+    const { run, calls } = stub(res({ code: 1 }));
+    expect(composeName({ root: "/r", env: { PATH: "/bin", COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, scrub: true, run })).toEqual(failed("exit", "docker compose config exited 1"));
+    expect(calls[0]!.opts!.env).toEqual({ PATH: "/bin", ...OFF });
   });
 
   it("with scrub, runs without every COMPOSE_* (empty ones too) and names them on an error", () => {
     const env = { PATH: "/bin", COMPOSE_PROJECT_NAME: "", COMPOSE_FILE: "x.yml", DOCKER_HOST: "unix:///d" };
     const { run, calls } = stub(res({ code: 1 }));
     expect(composeName({ root: "/r", env, scrub: true, run })).toEqual({ ...failed("exit", "docker compose config exited 1"), scrubbed: ["COMPOSE_FILE", "COMPOSE_PROJECT_NAME"] });
-    expect(calls[0]!.opts!.env).toEqual({ PATH: "/bin", DOCKER_HOST: "unix:///d" });
-    // Nothing to remove: no scrubbed list, and the env goes through untouched.
+    expect(calls[0]!.opts!.env).toEqual({ PATH: "/bin", DOCKER_HOST: "unix:///d", ...OFF });
+    // Nothing to remove: no scrubbed list, and the env goes through with only the switches added.
     const plain = { PATH: "/bin" };
     const s = stub(res({ code: 1 }));
     expect(composeName({ root: "/r", env: plain, scrub: true, run: s.run })).toEqual(failed("exit", "docker compose config exited 1"));
-    expect(s.calls[0]!.opts!.env).toBe(plain);
+    expect(s.calls[0]!.opts!.env).toEqual({ ...plain, ...OFF });
   });
 
   it("returns the name on exit 0", () => {
@@ -180,13 +198,15 @@ describe("composeName with a stubbed runner", () => {
     expect(at(17, "")).toEqual(failed("exit", "docker compose config exited 17"));
   });
 
-  it("carries the shell-quoted command and its cwd, which rerun turns into the fix", () => {
+  // The rerun is `-q` (Compose's error, never the model with its .env values) with the remote loaders off.
+  it("carries the shell-quoted rerun command and its cwd, which rerun turns into the fix", () => {
     const out = composeName({ root: "/a dir/it's", files: ["x y.yml"], env: { COMPOSE_FILE: "z" }, scrub: true, run: stub(res({ code: 1 })).run });
-    expect(out).toMatchObject({ cmd: "docker compose -f 'x y.yml' config --no-env-resolution --format json", cwd: "/a dir/it's", scrubbed: ["COMPOSE_FILE"] });
-    expect(rerun(out as ComposeError)).toBe("cd '/a dir/it'\\''s' && env -u COMPOSE_FILE docker compose -f 'x y.yml' config --no-env-resolution --format json");
-    expect(rerun(failed("exit", "x") as ComposeError)).toBe("cd /r && docker compose config --no-env-resolution --format json");
+    expect(out).toMatchObject({ cmd: "docker compose -f 'x y.yml' config --no-env-resolution -q", cwd: "/a dir/it's", scrubbed: ["COMPOSE_FILE"] });
+    expect(rerun(out as ComposeError)).toBe(`cd '/a dir/it'\\''s' && env -u COMPOSE_FILE ${OFF_ENV} docker compose -f 'x y.yml' config --no-env-resolution -q`);
+    expect(rerun(failed("exit", "x") as ComposeError)).toBe(`cd /r && env ${OFF_ENV} docker compose config --no-env-resolution -q`);
+    expect(rerun(out as ComposeError)).not.toContain("--format");
     // A name env(1) can set but `export` cannot is still one word.
-    expect(rerun({ ...(out as ComposeError), scrubbed: ["COMPOSE_A B"] })).toContain("&& env -u 'COMPOSE_A B' docker compose");
+    expect(rerun({ ...(out as ComposeError), scrubbed: ["COMPOSE_A B"] })).toContain(`&& env -u 'COMPOSE_A B' ${OFF_ENV} docker compose`);
   });
 
   it("isComposeConfigCall rejects other docker and non-docker calls", () => {
@@ -333,5 +353,72 @@ describe.skipIf(!composeAvailable)("composeName against real docker compose conf
     const shown = "error" in got ? { kind: got.kind } : got;
     // `alt` is the answer another Compose version gives for the same fixture; both are recorded, either is the oracle.
     expect([row.want, ...(row.alt ? [row.alt] : [])]).toContainEqual(shown);
+  });
+
+  /** A checkout under `base` with `files` written; returns its path. */
+  const at = (dir: string, files: Record<string, string>): string => {
+    const checkout = join(base, dir, "app-node");
+    for (const [rel, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(checkout, rel)), { recursive: true });
+      writeFileSync(join(checkout, rel), body);
+    }
+    return checkout;
+  };
+  const sh = (cmd: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", cmd], { env, encoding: "utf8", timeout: 20_000 });
+  const notWarning = (s: string) => s.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n").trim();
+  const WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
+
+  it("the rerun fix shows Compose's error and never prints the resolved model or a .env secret", () => {
+    const root = at("rerun-secret", { "compose.yaml": "services:\n  web:\n    image: nginx\n    environment:\n      SECRET: ${SECRET}\n", ".env": "SECRET=loops-canary-7f3a\n" });
+    // A timeout is transient: rerun, the probe succeeds.
+    const e = composeName({ root, env: baseEnv(), run: () => res({ code: null, timedOut: true }) }) as ComposeError;
+    const r = sh(rerun(e), baseEnv());
+    expect([r.status, r.stdout]).toEqual([0, ""]);
+    expect(r.stdout + r.stderr).not.toContain("loops-canary-7f3a");
+  });
+
+  let m = 0;
+  it.each(rows.filter((r) => "kind" in r.want && !r.alt))("$title: the rerun exits non-zero with Compose's error on stderr and nothing on stdout", (row) => {
+    const root = at(`rerun${m++}`, row.files);
+    const env = { ...baseEnv(), ...row.env };
+    const got = composeName({ root, files: row.composeFiles, env, run });
+    expect(got).toMatchObject({ kind: "exit" });
+    const r = sh(rerun(got as ComposeError), env);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toBe("");
+    expect(notWarning(r.stderr)).not.toBe("");
+  });
+
+  describe("remote includes and extends", () => {
+    // A git URL whose path carries a shell variable: a fetch would send its value to the server.
+    let srv: Awaited<ReturnType<typeof canary>>;
+    beforeEach(async () => {
+      srv = await canary();
+    });
+    afterEach(() => srv.close());
+    const SECRET = "loops-canary-5e1d";
+    const remotes = (): [string, Record<string, string>][] => [
+      ["include", { "compose.yaml": `include:\n  - http://127.0.0.1:${srv.port}/x-\${LOOPS_CANARY}.git\n${SVC}` }],
+      ["extends.file", { "compose.yaml": `services:\n  web:\n    extends:\n      file: http://127.0.0.1:${srv.port}/ext-\${LOOPS_CANARY}.git\n      service: web\n` }],
+    ];
+    let k = 0;
+    it("a probe, as is or scrubbed, fetches nothing, even with COMPOSE_EXPERIMENTAL_GIT_REMOTE=1 in the shell or the checkout's .env: exit", () => {
+      for (const [what, files] of remotes()) {
+        const shell = at(`remote${k++}`, files);
+        const dotenv = at(`remote${k++}`, { ...files, ".env": "COMPOSE_EXPERIMENTAL_GIT_REMOTE=1\nCOMPOSE_EXPERIMENTAL_OCI_REMOTE=1\nGIT_ALLOW_PROTOCOL=http\n" });
+        const env = { ...baseEnv(), LOOPS_CANARY: SECRET };
+        const got = [
+          composeName({ root: shell, env: { ...env, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, run }),
+          composeName({ root: shell, env: { ...env, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, scrub: true, run }),
+          composeName({ root: dotenv, env, scrub: true, run }),
+        ];
+        expect([what, ...got.map((g) => ("error" in g ? g.kind : g))]).toEqual([what, "exit", "exit", "exit"]);
+        expect(JSON.stringify(got)).not.toContain(SECRET);
+        expect([what, srv.hits()]).toEqual([what, 0]);
+        // The fix's rerun fetches nothing either.
+        const r = sh(rerun(got[2] as ComposeError), env);
+        expect([what, r.status === 0, srv.hits()]).toEqual([what, false, 0]);
+      }
+    });
   });
 });

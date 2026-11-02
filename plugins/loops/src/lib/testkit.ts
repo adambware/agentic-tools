@@ -3,13 +3,31 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { isComposeConfigCall, isComposeVersionCall } from "./compose-config.js";
+import { Worker } from "node:worker_threads";
+import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
 import { run, type Deps, type Runner, type RunResult } from "./proc.js";
 
 export const tmp = (): string => realpathSync(mkdtempSync(join(tmpdir(), "loops-test-")));
 
 export function sh(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+}
+
+/**
+ * An HTTP server on 127.0.0.1 that counts connections (a git fetch, a TLS hello) and answers 404. It runs in a worker
+ * thread, so it answers while the test blocks in spawnSync. `close()` it in afterEach or finally.
+ */
+export async function canary(): Promise<{ port: number; hits: () => number; close: () => Promise<number> }> {
+  const hits = new Int32Array(new SharedArrayBuffer(4));
+  const w = new Worker(
+    `const { parentPort, workerData } = require("node:worker_threads");
+     const s = require("node:http").createServer((_, r) => r.writeHead(404).end());
+     s.on("connection", () => Atomics.add(workerData, 0, 1));
+     s.listen(0, "127.0.0.1", () => parentPort.postMessage(s.address().port));`,
+    { eval: true, workerData: hits },
+  );
+  const port = await new Promise<number>((ok, ko) => w.once("message", ok).once("error", ko));
+  return { port, hits: () => Atomics.load(hits, 0), close: () => w.terminate() };
 }
 
 /** Write a file (creating dirs); `exec` sets the 0755 bit. */
@@ -57,7 +75,7 @@ export function deps(cwd: string, env: Record<string, string> = {}, stdin = ""):
 export type ComposeAnswer = string | { error: string } | { unavailable: "docker" | "plugin" };
 /**
  * Answers keyed by checkout root; one answer serves both probe shapes unless the configured (`-f`) and plain probes differ.
- * `scrubbed`, when given, answers every probe whose env carries no COMPOSE_* (this checkout's runs without the shell's).
+ * `scrubbed`, when given, answers every probe whose env carries no COMPOSE_* but REMOTE_OFF's (this checkout's runs without the shell's).
  */
 export type ComposeAnswers = Record<string, ComposeAnswer | { cfg?: ComposeAnswer; plain?: ComposeAnswer; scrubbed?: ComposeAnswer }>;
 export interface ComposeCall {
@@ -89,7 +107,7 @@ export function composeStub(answers: ComposeAnswers, calls: ComposeCall[] = [], 
     calls.push({ cwd, files, env: opts?.env ?? {} });
     if (down) throw new Error(`composeStub: ${cwd} answers docker compose version only (unavailable)`);
     const shaped = typeof entry === "object" && !("error" in entry) && !("unavailable" in entry);
-    const bare = !Object.keys(opts?.env ?? {}).some((k) => k.startsWith("COMPOSE_"));
+    const bare = !Object.keys(opts?.env ?? {}).some((k) => k.startsWith("COMPOSE_") && !Object.hasOwn(REMOTE_OFF, k));
     const a = shaped ? ((bare ? entry.scrubbed : undefined) ?? (files.length ? entry.cfg : entry.plain)) : entry;
     if (a === undefined) throw new Error(`composeStub: no answer for ${files.length ? `docker compose -f ${files.join(" -f ")}` : "plain docker compose"} config in ${cwd}`);
     if (typeof a === "string") return res(0, JSON.stringify({ name: a, services: {} }));

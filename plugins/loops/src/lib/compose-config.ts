@@ -1,6 +1,7 @@
 // The one place loops talks to Compose: `docker compose version` says whether Compose is there at all, and
 // `docker compose config` says what one run's project name is. No result carries Compose's own text (it can echo an
-// interpolated secret); a failed probe carries the command to rerun instead. The policy lives in env-checks.ts.
+// interpolated secret); a failed probe carries the command to rerun instead, as `config -q`, which never prints the
+// model. Every probe, and every rerun, runs with Compose's remote loaders off. The policy lives in env-checks.ts.
 import { shQuote, type RunResult, type Runner } from "./proc.js";
 
 /** Whether Compose can be asked at all: `unavailable` is a SKIP upstream, `error` a FAIL. */
@@ -11,7 +12,7 @@ export type ComposeErrorKind = "timeout" | "abend" | "gone" | "tooOld" | "exit" 
 export interface ComposeError {
   error: string;
   kind: ComposeErrorKind;
-  /** The probe's command line, shell-quoted (no cd, no env). */
+  /** The probe with `-q` in place of `--format json` (Compose's error, never the model), shell-quoted (no cd, no env). */
   cmd: string;
   /** The directory it ran from. */
   cwd: string;
@@ -32,6 +33,14 @@ export interface ComposeNameOpts {
   scrub?: boolean;
   run: Runner;
 }
+
+/**
+ * Set on every probe, over the shell's value and after any scrub: Compose then loads no git or OCI `include` or
+ * `extends.file`, whose URL can carry an interpolated secret, and an explicit value beats the checkout's .env.
+ * A blocked load is an ordinary exit 1.
+ */
+export const REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
+export const isSwitch = (k: string): boolean => Object.hasOwn(REMOTE_OFF, k);
 
 // Same value as PROBE_TIMEOUT_MS in env-checks.ts.
 export const COMPOSE_CONFIG_TIMEOUT_MS = 10_000;
@@ -55,10 +64,11 @@ export function isComposeVersionCall(cmd: string, args: string[]): boolean {
   return cmd === "docker" && args[0] === "compose" && args[1] === "version";
 }
 
-/** The rerun command for a failed probe: `cd <dir> && [env -u NAME …] docker compose … config …`. */
+/** The rerun command for a failed probe: `cd <dir> && env [-u NAME …] <REMOTE_OFF> docker compose … config … -q`. */
 export function rerun(e: ComposeError): string {
-  const unset = e.scrubbed?.length ? `env ${e.scrubbed.map((n) => `-u ${shQuote(n)}`).join(" ")} ` : "";
-  return `cd ${shQuote(e.cwd)} && ${unset}${e.cmd}`;
+  const unset = (e.scrubbed ?? []).map((n) => `-u ${shQuote(n)}`);
+  const off = Object.entries(REMOTE_OFF).map(([k, v]) => `${k}=${v}`);
+  return `cd ${shQuote(e.cwd)} && env ${[...unset, ...off].join(" ")} ${e.cmd}`;
 }
 
 const seconds = `${COMPOSE_CONFIG_TIMEOUT_MS / 1000}s`;
@@ -78,17 +88,19 @@ export function composeVersion(run: Runner, cwd: string, env?: NodeJS.ProcessEnv
 }
 
 export function composeName(o: ComposeNameOpts): ComposeName {
-  const scrubbed = o.scrub ? Object.keys(o.env).filter((k) => k.startsWith("COMPOSE_")).sort() : [];
-  const env = scrubbed.length ? Object.fromEntries(Object.entries(o.env).filter(([k]) => !k.startsWith("COMPOSE_"))) : o.env;
+  // The switches are overridden, not removed, so they are never named as scrubbed.
+  const scrubbed = o.scrub ? Object.keys(o.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort() : [];
+  const kept = o.scrub ? Object.fromEntries(Object.entries(o.env).filter(([k]) => !k.startsWith("COMPOSE_"))) : o.env;
+  const env = { ...kept, ...REMOTE_OFF };
   // --no-env-resolution drops only the missing-env_file failure, which is not about the name. No -p, no
-  // --no-interpolate (it changes the name), no -q (it prints nothing).
+  // --no-interpolate (it changes the name), no -q (it prints nothing; the rerun uses it: same error and exit).
   const fileArgs = (o.files ?? []).flatMap((f) => ["-f", f]);
   const args = ["compose", ...fileArgs, "config", "--no-env-resolution", "--format", "json"];
   const r = o.run("docker", args, { cwd: o.root, env, timeoutMs: COMPOSE_CONFIG_TIMEOUT_MS });
   const fail = (kind: ComposeErrorKind, how: string): ComposeError => ({
     error: `docker compose config ${how}`,
     kind,
-    cmd: ["docker", ...args].map(shQuote).join(" "),
+    cmd: ["docker", "compose", ...fileArgs, "config", "--no-env-resolution", "-q"].map(shQuote).join(" "),
     cwd: o.root,
     ...(scrubbed.length ? { scrubbed } : {}),
   });

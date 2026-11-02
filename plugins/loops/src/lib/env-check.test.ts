@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
 import { redactHome, run, type Runner, type RunResult } from "./proc.js";
-import { isComposeConfigCall, isComposeVersionCall } from "./compose-config.js";
+import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
 import { composeStub, deps, put, repo, sh, shim, tmp, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
 import { VERSION } from "./version.js";
 
@@ -41,19 +41,22 @@ function check(cwd: string, args: string[] = [], env: Record<string, string> = {
   return { code, out: t.out.join("\n"), err: t.err.join("\n"), lines: t.out.join("\n").split("\n") };
 }
 const rp = (p: string): string => realpathSync(p);
+/** What every rerun fix sets: Compose's remote loaders off. */
+const OFF_ENV = "COMPOSE_EXPERIMENTAL_GIT_REMOTE=0 COMPOSE_EXPERIMENTAL_OCI_REMOTE=0 GIT_ALLOW_PROTOCOL=file";
 /**
  * `check` with `docker compose config` stubbed from `answers` (see composeStub). Every probe's env is asserted: this
  * checkout's probes (cwd the checkout or a directory under it) get the shell's COMPOSE_* as passed, or none (its runs
- * without them), the main checkout's and peers' get none, and all keep the rest.
+ * without them), the main checkout's and peers' get none, and all keep the rest and run with REMOTE_OFF over the shell's.
  */
 function checkC(cwd: string, answers: ComposeAnswers, args: string[] = [], env: Record<string, string> = {}) {
   const calls: ComposeCall[] = [];
   const r = check(cwd, args, env, composeStub(answers, calls));
   const own = rp(cwd);
-  const composeOf = (e: NodeJS.ProcessEnv) => Object.fromEntries(Object.entries(e).filter(([k]) => k.startsWith("COMPOSE_")));
+  const composeOf = (e: NodeJS.ProcessEnv) => Object.fromEntries(Object.entries(e).filter(([k]) => k.startsWith("COMPOSE_") && !Object.hasOwn(REMOTE_OFF, k)));
   for (const c of calls) {
     expect([typeof c.env.PATH, c.env.HOME]).toEqual(["string", env.HOME ?? "/nonexistent-home"]);
-    for (const [k, v] of Object.entries(env)) if (!k.startsWith("COMPOSE_")) expect(c.env[k]).toBe(v);
+    expect(c.env).toMatchObject(REMOTE_OFF);
+    for (const [k, v] of Object.entries(env)) if (!k.startsWith("COMPOSE_") && !Object.hasOwn(REMOTE_OFF, k)) expect(c.env[k]).toBe(v);
     const mine = `${rp(c.cwd)}/`.startsWith(`${own}/`) && Object.keys(composeOf(c.env)).length > 0;
     expect(composeOf(c.env)).toEqual(mine ? composeOf(env) : {});
   }
@@ -214,7 +217,7 @@ describe("compose", () => {
   const invalid = (n: string) => ({ error: `invalid project name "${n}": must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number` });
   const notString = (root: string) => `validating ${root}/compose.yml: name must be a string`;
   // A failed probe's fix: the command that shows Compose's own error (which loops never copies).
-  const RERUN = (dir: string, files = ["compose.yml"]) => `rerun to see Compose's error: cd ${dir} && docker compose ${files.map((f) => `-f ${f} `).join("")}config --no-env-resolution --format json`;
+  const RERUN = (dir: string, files = ["compose.yml"]) => `rerun to see Compose's error: cd ${dir} && env ${OFF_ENV} docker compose ${files.map((f) => `-f ${f} `).join("")}config --no-env-resolution -q`;
 
   it("mode none passes with no tracked compose file and fails when one is tracked", () => {
     expect(check(setup(`${HEAD}[compose]\nmode = "none"\n`)).out).toContain("PASS e.none  no compose file tracked");
@@ -297,13 +300,26 @@ describe("compose", () => {
     const r = checkC(wt, { [wt]: { cfg: "mine", plain: "mine", scrubbed: "feat-b" }, [root]: "app-prod", [peer]: "app-prod" }, [], env);
     expect(r.out).toContain("PASS e.project  mine (COMPOSE_PROJECT_NAME)");
     // Own configured and root plain, each as is then without COMPOSE_*; then the main checkout's and the peer's, without.
-    const has = (c: ComposeCall): boolean => Object.keys(c.env).some((k) => k.startsWith("COMPOSE_"));
+    const has = (c: ComposeCall): boolean => Object.keys(c.env).some((k) => k.startsWith("COMPOSE_") && !Object.hasOwn(REMOTE_OFF, k));
     expect(r.calls.map((c) => [rp(c.cwd), c.files, has(c)])).toEqual([
       [wt, ["compose.yml"], true], [wt, ["compose.yml"], false], [wt, [], true], [wt, [], false],
       [root, ["compose.yml"], false], [root, [], false], [peer, ["compose.yml"], false], [peer, [], false],
     ]);
     for (const c of r.calls) expect([c.env.DOCKER_CONFIG, c.env.HOME, typeof c.env.PATH]).toEqual(["/opt/docker-cfg", "/nonexistent-home", "string"]);
     expect(r.calls[0]!.env).toMatchObject(env);
+  });
+
+  it("turns Compose's remote loaders off for this checkout's probes, as is and scrubbed, and the main checkout's and peers', over a shell that turns them on", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const peer = worktree(root, "feat-a");
+    const wt = worktree(root, "feat-b");
+    const env = { COMPOSE_PROJECT_NAME: "mine", COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "1", GIT_ALLOW_PROTOCOL: "https" };
+    const r = checkC(wt, { [wt]: { cfg: "mine", plain: "mine", scrubbed: "feat-b" }, [root]: "app-prod", [peer]: "app-prod" }, [], env);
+    expect(r.out).toContain("PASS e.project  mine (COMPOSE_PROJECT_NAME)");
+    expect(r.calls.map((c) => [rp(c.cwd), c.env.COMPOSE_PROJECT_NAME, c.env.COMPOSE_EXPERIMENTAL_GIT_REMOTE, c.env.COMPOSE_EXPERIMENTAL_OCI_REMOTE, c.env.GIT_ALLOW_PROTOCOL])).toEqual([
+      ...[wt, wt, wt, wt, root, root, peer, peer].map((d, i) => [d, i === 0 || i === 2 ? "mine" : undefined, "0", "0", "file"]),
+    ]);
   });
 
   it("skips e.project when Compose is unavailable, handing down only a name loops can vouch for", () => {
@@ -331,6 +347,29 @@ describe("compose", () => {
     const s = check(wt, [], {}, lost);
     expect([s.code, s.out]).toEqual([1, expect.stringContaining("FAIL e.project  the main checkout's configured run: docker compose config could not start (its directory is gone) — fix: rerun to see Compose's error: cd ")]);
     expect(check(wt, ["--compose-project"], {}, lost)).toMatchObject({ code: 1, out: "" });
+  });
+
+  it("does not count the remote-loader switches as the shell's COMPOSE_*: no scrubbed own probe, no label", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-k");
+    const r = checkC(wt, { [root]: "app-prod", [wt]: { cfg: { error: "boom" }, plain: "feat-k" } }, [], { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" });
+    expect(r.out).not.toContain("without your shell's");
+    expect(r.out.split("\n").filter((l) => l.startsWith("FAIL e.project")).map((l) => l.split(" — ")[0])).toEqual(["FAIL e.project  this worktree's configured run: docker compose config exited 1"]);
+    expect(r.calls.filter((c) => rp(c.cwd) === wt).length).toBe(2);
+  });
+
+  it("does not claim Compose prints an error when its probe exited 0 with invalid JSON or no project name", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const stub = composeStub({ [root]: "app-prod" });
+    const exit0 = (stdout: string): Runner => (cmd, args, opts) => (isComposeConfigCall(cmd, args) ? { code: 0, stdout, stderr: "", timedOut: false } : stub(cmd, args, opts));
+    const fix = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
+    for (const [stdout, why] of [["not json", "printed invalid JSON"], ["{}", "printed no project name"]]) {
+      const r = check(root, [], {}, exit0(stdout!));
+      expect([why, r.code, r.out]).toEqual([why, 1, expect.stringContaining(`FAIL e.project  this checkout's configured run: docker compose config ${why} — fix: ${fix}`)]);
+      expect(r.out).not.toContain("rerun to see Compose's error");
+    }
   });
 
   it("fails e.project on a Compose too old for --no-env-resolution, asking for an upgrade; --compose-project withholds the name when that run names the checkout", () => {
@@ -413,6 +452,9 @@ describe("compose", () => {
     const ps = (project: string): Runner => composeStub(ok, [], (cmd, args, opts) => (cmd === "docker" && args[0] === "ps" ? listing(ctr(away, `${project}-web-1`, "2026-01-01T00:00:00Z", project)) : run(cmd, args, opts)));
     const stub = composeStub(ok);
     const slow: Runner = (cmd, args, opts) => (isComposeVersionCall(cmd, args) ? { code: null, stdout: "", stderr: "", timedOut: true } : stub(cmd, args, opts));
+    const unlisted: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 128, stdout: "", stderr: "fatal: worktree list broke", timedOut: false } : stub(cmd, args, opts));
+    const entry = (dir: string): string => `worktree ${dir}\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/x\n\n`;
+    const listed = (stdout: string): Runner => (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 0, stdout, stderr: "", timedOut: false } : stub(cmd, args, opts));
     // [source, cwd, answers or a runner, shell env, e.project FAILs, the name kept (null: withheld or unknown)]
     const rows: [string, string, ComposeAnswers | Runner, Record<string, string>, boolean, string | null][] = [
       ["PASS", wt, ok, {}, false, n],
@@ -428,6 +470,15 @@ describe("compose", () => {
       ["check 5: a stack of the name runs elsewhere", wt, ps(n), {}, true, null],
       ["check 5: a stack of another answer runs elsewhere", wt, ps("feat-t"), {}, true, n],
       ["check 6: the main checkout's name is a worktree's derived name", root, { ...ok, [root]: n }, {}, true, null],
+      ["check 0b: the shell's COMPOSE_PROJECT_NAME is no Compose name, in a worktree", wt, ok, { COMPOSE_PROJECT_NAME: "Bad Name" }, true, null],
+      ["check 0b: the shell's COMPOSE_PROJECT_NAME is no Compose name, in the main checkout", root, ok, { COMPOSE_PROJECT_NAME: "_x" }, true, null],
+      ["check 0b: an invalid shell name, Compose unavailable", wt, { [wt]: { unavailable: "plugin" } }, { COMPOSE_PROJECT_NAME: "UPPER" }, true, null],
+      ["check 0c: git worktree list failed, in a worktree", wt, unlisted, {}, true, null],
+      ["check 0c: git worktree list failed, Compose unavailable", wt, (cmd, args, opts) => (isComposeVersionCall(cmd, args) ? { code: null, stdout: "", stderr: "", timedOut: false, notFound: true } : unlisted(cmd, args, opts)), {}, true, null],
+      ["check 0c: git worktree list failed, in the main checkout", root, unlisted, {}, true, null],
+      ["check 0c: git worktree list lacks the main checkout", wt, (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 0, stdout: `worktree ${wt}\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/feat-t\n\n`, stderr: "", timedOut: false } : stub(cmd, args, opts)), {}, true, null],
+      ["check 0c: git worktree list leads with this worktree", wt, listed(`${entry(wt)}${entry(root)}`), {}, true, null],
+      ["check 0c: git worktree list holds only the main checkout, in a worktree", wt, listed(entry(root)), {}, true, null],
     ];
     for (const [source, cwd, how, env, fails, name] of rows) {
       const go = (args: string[]) => (typeof how === "function" ? check(cwd, args, env, how) : checkC(cwd, how, args, env));
@@ -684,7 +735,7 @@ describe("compose", () => {
     const answers = { [root]: "app-prod", [a]: "feat-a", [b]: { error: "required variable STACK is missing a value: set it" } };
     // The peer's own shell decides its name, so the rerun command drops this shell's COMPOSE_*; the name is withheld.
     const r = checkC(a, answers, ["--compose-project"], { COMPOSE_PROJECT_NAME: "feat-a" });
-    expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: worktree ${b}'s configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${b} && env -u COMPOSE_PROJECT_NAME docker compose -f compose.yml config --no-env-resolution --format json`)]);
+    expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: worktree ${b}'s configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${b} && env -u COMPOSE_PROJECT_NAME ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`)]);
     // The main checkout does not probe peers: their derived names are all it holds against (each peer reports the rest).
     const m = checkC(root, answers);
     expect([m.code, m.out, m.calls.every((c) => rp(c.cwd) === root)]).toEqual([0, expect.stringContaining("PASS e.project  app-prod (compose)"), true]);
@@ -756,7 +807,8 @@ describe("compose", () => {
     expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL e.project  this worktree would use project my_app, which the main checkout uses")]);
     // Compose validates a COMPOSE_PROJECT_NAME instead of normalizing it.
     const upper = checkC(wt, { [root]: "my_app", [wt]: invalid("My_App") }, [], { COMPOSE_PROJECT_NAME: "My_App" });
-    expect([upper.code, upper.out]).toEqual([1, expect.stringContaining("FAIL e.project  this worktree's configured run: docker compose config exited 1")]);
+    expect([upper.code, upper.out]).toEqual([1, expect.stringContaining('FAIL e.project  your shell\'s COMPOSE_PROJECT_NAME "My_App" is not a Compose project name')]);
+    expect(upper.calls).toEqual([]);
     expect(checkC(wt, { [root]: "my_app", [wt]: "other" }, [], { COMPOSE_PROJECT_NAME: "other" }).code).toBe(0);
   });
 
@@ -886,11 +938,12 @@ describe("compose", () => {
     const root = setup(test(), { "compose.yml": COMPOSE });
     commit(root);
     for (const bad of ["UPPER.INVALID", "---", "Upper"]) {
-      // The main checkout's configured run fails: the name is withheld, and Compose's line (which echoes the value) is not shown.
+      // loops withholds the name before any probe, naming Compose's rule; Compose's own line is not shown.
       const p = checkC(root, { [root]: invalid(bad) }, ["--compose-project"], { COMPOSE_PROJECT_NAME: bad });
-      expect([bad, p.code, p.out, p.err]).toEqual([bad, 1, "", expect.stringContaining(`env-check: this checkout's configured run: docker compose config exited 1 — fix: ${RERUN(root)}`)]);
+      const why = `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(bad)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`;
+      expect([bad, p.code, p.out, p.err, p.calls]).toEqual([bad, 1, "", `env-check: ${why} — fix: export a COMPOSE_PROJECT_NAME of that form, or unset it`, []]);
       expect(p.err).not.toContain("invalid project name");
-      expect(checkC(root, { [root]: invalid(bad) }, [], { COMPOSE_PROJECT_NAME: bad }).out).toContain("FAIL e.project  this checkout's configured run: docker compose config exited 1");
+      expect(checkC(root, { [root]: invalid(bad) }, [], { COMPOSE_PROJECT_NAME: bad }).out).toContain(`FAIL e.project  ${why}`);
     }
     const wt = worktree(root, "feat-c");
     put(wt, ".env", "COMPOSE_PROJECT_NAME=My.App\n");
@@ -1171,7 +1224,7 @@ describe("compose", () => {
       const sh = checkC(root, { [root]: { error: why } }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "foo" });
       expect([doc, sh.code, sh.out, sh.err]).toEqual([doc, 1, "", expect.stringContaining(`env-check: this checkout's configured run: docker compose config exited 1 — fix: ${RERUN(root)}`)]);
       // Its run without the shell's COMPOSE_* is rerun without them.
-      expect(sh.err).toContain(`without your shell's COMPOSE_* (COMPOSE_PROJECT_NAME), this checkout's configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${root} && env -u COMPOSE_PROJECT_NAME docker compose -f compose.yml config`);
+      expect(sh.err).toContain(`without your shell's COMPOSE_* (COMPOSE_PROJECT_NAME), this checkout's configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${root} && env -u COMPOSE_PROJECT_NAME ${OFF_ENV} docker compose -f compose.yml config`);
       put(root, ".env", "COMPOSE_PROJECT_NAME=foo\n");
       expect([doc, checkC(root, { [root]: { error: why } }).code, checkC(root, { [root]: { error: why } }, ["--compose-project"]).out]).toEqual([doc, 1, ""]);
     }
@@ -1296,7 +1349,7 @@ describe("e.project running stacks", () => {
     mkdirSync(old);
     const sib = stacks(root, answers, listing(at(old, "app-node")));
     expect(sib).toMatchObject({ exit: 1, name: "" });
-    expect(sib.text).toBe(`FAIL e.project  project app-node was started from project directory ${old} (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME, or stop that stack: cd ${old} && docker compose -p app-node down`);
+    expect(sib.text).toBe(`FAIL e.project  project app-node was started from project directory ${old} (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME; leave that stack to whoever runs it from ${old}`);
     // The longest containing root owns a directory: a nested worktree's stack is not the main checkout's.
     expect(stacks(root, answers, listing(at(join(wt, "sub"), "app-node"))).text).toContain(`FAIL e.project  project app-node was started from project directory ${wt}/sub (worktree ${wt})`);
     expect(stacks(wt, answers, listing(at(join(wt, "sub"), "w1"))).text).toBe("PASS e.project  w1 (derived: dirname)");
@@ -1314,7 +1367,7 @@ describe("e.project running stacks", () => {
     // feat-a is this worktree's own directory name, so only the stack makes it a FAIL; -p <name> stays safe.
     const ans = stacks(wt, answers, listing(at(away, "feat-a")));
     expect(ans).toMatchObject({ exit: 0, name: n });
-    expect(ans.text).toBe(`FAIL e.project  project feat-a was started from project directory ${away} (outside every checkout) — fix: always pass -p ${n}, or stop that stack: cd ${away} && docker compose -p feat-a down`);
+    expect(ans.text).toBe(`FAIL e.project  project feat-a was started from project directory ${away} (outside every checkout) — fix: always pass -p ${n}; leave that stack to whoever runs it from ${away}`);
     expect(ans.err).toContain("env-check: warning: project feat-a was started from project directory");
     expect(stacks(wt, answers, listing(at(away, n)))).toMatchObject({ exit: 1, name: "" });
     // A held name (check 3) and a stack of it: both withhold, the running stack first.
@@ -1354,6 +1407,43 @@ describe("e.project running stacks", () => {
     expect(stacks(root, answers, listing(at("", "app-node"))).text).toBe("FAIL e.project  project app-node was started from project directory (no working_dir label) (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME, or stop that stack: docker compose -p app-node down");
   });
 
+  it.skipIf(process.getuid?.() === 0)("offers no down for a project directory it cannot stat: only ENOENT and ENOTDIR mean gone", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const locked = join(tmp(), "locked");
+    const dir = join(locked, "proj");
+    mkdirSync(dir, { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const text = stacks(root, { [root]: "app-node" }, listing(at(dir, "app-node"))).text;
+      expect(text).toBe(`FAIL e.project  project app-node was started from project directory ${dir} (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME; leave that stack to whoever runs it from ${dir}`);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+    // A path through a file is ENOTDIR: gone.
+    const file = join(tmp(), "afile");
+    put(dirname(file), "afile", "x\n");
+    expect(stacks(root, { [root]: "app-node" }, listing(at(join(file, "sub"), "app-node"))).text).toContain("docker compose -p app-node down");
+  });
+
+  it("offers no down for a stack whose project directory exists: a committed name: run by the main checkout or a live worktree", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const wt = worktree(root, "w1");
+    const r = stacks(wt, { [root]: "app-node", [wt]: "app-node" }, listing(at(root, "app-node")));
+    expect(r.text.split("\n").find((l) => l.includes("was started from"))).toBe(`FAIL e.project  project app-node was started from project directory ${root} (the main checkout) — fix: always pass -p w1; leave that stack to whoever runs it from ${root}`);
+    expect(r).toMatchObject({ exit: 0, name: "w1" });
+    expect(r.err).toContain("env-check: warning: project app-node was started from project directory");
+    const s = stacks(root, { [root]: "app-node", [wt]: "w1" }, listing(at(wt, "app-node")));
+    expect(s.text).toBe(`FAIL e.project  project app-node was started from project directory ${wt} (worktree ${wt}) — fix: export another COMPOSE_PROJECT_NAME; leave that stack to whoever runs it from ${wt}`);
+    expect(s).toMatchObject({ exit: 1, name: "" });
+    expect(r.text + r.err + s.text + s.err).not.toContain(" down");
+    // A worktree git still lists whose directory is gone: nothing runs it from there, so the stop fix stays.
+    const gone = worktree(root, "w2");
+    rmSync(gone, { recursive: true, force: true });
+    expect(stacks(root, { [root]: "app-node" }, listing(at(gone, "app-node"))).text).toBe(`FAIL e.project  project app-node was started from project directory ${gone} (worktree ${gone}) — fix: export another COMPOSE_PROJECT_NAME, or stop that stack: docker compose -p app-node down`);
+  });
+
   it("prints a home path that needs quoting as ~/'rest', which the shell expands, in text, --json and --compose-project", () => {
     const root = setup(cfg(), files);
     commit(root);
@@ -1361,9 +1451,9 @@ describe("e.project running stacks", () => {
     const home = tmp();
     const away = join(home, "my proj");
     mkdirSync(away);
-    const fix = "stop that stack: cd ~/'my proj' && docker compose -p app-node down";
+    const fix = "leave that stack to whoever runs it from ~/'my proj'";
     const r = stacks(root, answers, listing(at(away, "app-node")), { HOME: home });
-    expect(r.text).toBe(`FAIL e.project  project app-node was started from project directory ~/my proj (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME, or ${fix}`);
+    expect(r.text).toBe(`FAIL e.project  project app-node was started from project directory ~/my proj (outside every checkout) — fix: export another COMPOSE_PROJECT_NAME; ${fix}`);
     expect(r.err).toContain(fix);
     const runner = composeStub(answers, [], (cmd, args, opts) => (cmd === "docker" && args[0] === "ps" ? listing(at(away, "app-node")) : run(cmd, args, opts)));
     const j = JSON.parse(check(root, ["--json"], { HOME: home }, runner).out) as { results: { id: string; fix: string }[] };
@@ -1505,6 +1595,25 @@ describe("b.containers", () => {
     expect(fixOf(b(root, [], labelled(root, `${root}/docker/dev.yml`)))).toBe("-f docker/dev.yml --project-directory .");
     // A project directory outside this checkout never gets here: e.project's running-stack check withholds the name.
     expect(fixOf(b(root, [], labelled(root, `${root}/docker/dev.yml`, `${root}/docker`, `${root}/docker/x.env,${root}/docker/y.env`)))).toBe("-f docker/dev.yml --env-file docker/x.env --env-file docker/y.env");
+  });
+
+  it("keeps each label's spelling: a symlinked directory is not its target", () => {
+    // Compose resolves a file's relative paths (../data) against the directory as spelled: through alias/ that is
+    // <root>/data, through deep/deploy/ it is <root>/deep/data. So the fix replays the spelling Compose recorded.
+    const root = setup(cfg(), { ...files, "deep/deploy/compose.yml": "services: {}\n", "deep/deploy/x.env": "A=1\n" });
+    symlinkSync("deep/deploy", join(root, "alias"));
+    symlinkSync(".", join(root, "up"));
+    commit(root);
+    expect(fixOf(b(root, [], labelled(root, `${root}/alias/compose.yml`, `${root}/alias`, `${root}/alias/x.env`)))).toBe("-f alias/compose.yml --env-file alias/x.env");
+    // The project directory through the alias, the file through its target: Compose would not default to it.
+    expect(fixOf(b(root, [], labelled(root, `${root}/deep/deploy/compose.yml`, `${root}/alias`)))).toBe("-f deep/deploy/compose.yml --project-directory alias");
+    // A link back to the root keeps its name too: ../data from up/ is <root>/data, from the root its parent's.
+    expect(fixOf(b(root, [], labelled(root, `${root}/up/compose.yml`, `${root}/up`)))).toBe("-f up/compose.yml");
+    // Through another spelling of the root, ../ above it would climb elsewhere: the label prints as recorded.
+    const link = join(tmp(), "rootlink");
+    symlinkSync(root, link);
+    expect(fixOf(b(root, [], labelled(root, `${link}/alias/compose.yml`, `${link}/alias`)))).toBe(`-f ${link}/alias/compose.yml`);
+    expect(fixOf(b(root, [], labelled(root, `${link}/alias/compose.yml`, `${root}/alias`)))).toBe(`-f ${link}/alias/compose.yml --project-directory alias`);
   });
 
   it("skips (never warns) when docker is absent, the daemon is down, or the stack is not running", () => {
