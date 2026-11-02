@@ -446,7 +446,8 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   if (!files.length) return [res("SKIP", id, "no commit touches the [compose] inputs")];
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
   // Empty output is a log with no commit over the inputs; a failed git or text that is no time is not that.
-  const logged = git(c.run, c.root, ["log", "-1", "--format=%ct", "--", ...files])?.trim();
+  // --no-show-signature: a user's log.showSignature would print the signature check before the time.
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
   const ct = logged === undefined || !/^\d*$/.test(logged) ? NaN : Number(logged);
   if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];

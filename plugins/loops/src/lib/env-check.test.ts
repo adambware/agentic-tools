@@ -1776,6 +1776,14 @@ describe("b.containers", () => {
     }
     // The genuine "no commit" (empty output) stays a SKIP.
     expect(b(root, [], gitLog(res(0, "")))).toBe("SKIP b.containers  no commit touches the [compose] inputs");
+    // Value: protects=a user's log.showSignature=true does not turn a signed commit's time into "cannot read"; fails_when=the
+    // git log call drops --no-show-signature, so git prints the signature line before the time; why_new=the stubs above
+    // ignore git's flags; seam=none; no_claim=real gpg/ssh signing (the stub prints what git does when the flag is missing)
+    const signed: Runner = (cmd, args, opts) =>
+      cmd === "git" && args[0] === "log" && args.includes("--format=%ct")
+        ? res(0, args.includes("--no-show-signature") ? "1\n" : 'Good "git" signature for dev@example.com\n1\n')
+        : fake(listing(ctr(root, "web-1", "2999-01-01T00:00:00Z")), [], prod(root))(cmd, args, opts);
+    expect(b(root, [], signed)).toMatch(/^PASS b\.containers/);
   });
 
   // Value: protects=a tracked input whose modification time cannot be read is not time 0 (fresh); fails_when=a statSync
