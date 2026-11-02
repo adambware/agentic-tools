@@ -551,6 +551,18 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     const extend = () => `services:\n  web:\n    extends:\n      file: http://127.0.0.1:${srv.port}/ext-\${LOOPS_CANARY}.git\n      service: web\n`;
     const remote = { include, "extends.file": extend };
 
+    it("rows 32-35 control (M16): Compose run directly with the remote loaders on fetches each form, so their 0 hits mean the switches held", () => {
+      const ON = { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "1" };
+      let seen = 0;
+      for (const [what, body] of Object.entries(remote)) {
+        const f = fixture(["compose.yml"], { "compose.yml": body() });
+        // Not through loops or composeName: no REMOTE_OFF, and baseEnv sets no GIT_ALLOW_PROTOCOL, so git may use http.
+        run("docker", ["compose", "-f", "compose.yml", "config", "--no-env-resolution", "-q"], { cwd: f.main, env: { ...baseEnv(), ...ON } });
+        expect(srv.hits(), what).toBeGreaterThan(seen);
+        seen = srv.hits();
+      }
+    });
+
     for (const [what, body] of Object.entries(remote)) {
       it(`row 32 (S1): a peer's compose file has a remote ${what}: nothing is fetched, FAIL check 2 for the peer's runs, withheld`, () => {
         const f = fixture(["compose.yml"], { "compose.yml": SVC });
@@ -584,5 +596,12 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
       check(w, { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, { level: "FAIL", has: [/this worktree's configured run: docker compose config exited \d+/], never: [SECRET], name: f.derived(w) });
       expect(srv.hits()).toBe(0);
     });
+  });
+
+  it("row 36 (M13): the main checkout, committed name: app, shell COMPOSE_PROJECT_NAME=feat: PASS feat (check 4 is a worktree's)", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": named("app") });
+    // The scrubbed run answers app, neither feat nor an own name; only a worktree's runs are held to its own names (row 7b).
+    expect([answer(f.main, ["compose.yml"], { COMPOSE_PROJECT_NAME: "feat" }), answer(f.main, ["compose.yml"])]).toEqual([{ name: "feat" }, { name: "app" }]);
+    check(f.main, { COMPOSE_PROJECT_NAME: "feat" }, { level: "PASS", has: ["feat (COMPOSE_PROJECT_NAME"], name: "feat" });
   });
 });
