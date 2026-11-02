@@ -298,6 +298,9 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["dockerfile", "python", { Dockerfile: "ARG PYTHON_VERSION=3.12.4-slim-bookworm\nFROM python:${PYTHON_VERSION}\n" }, unsupported("3.12.4-slim-bookworm", "Dockerfile", 1)],
   // A `$` tag that does not start with a literal version is unsupported.
   ["dockerfile", "node", { Dockerfile: "FROM node:lts-${X}\n" }, unsupported("node:lts-${X}", "Dockerfile", 1)],
+  // A `$` that continues the version (no variant separator before it) leaves the version unknown, as an ARG value does.
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_MINOR=11\nFROM node:20.${NODE_MINOR}.0\n" }, unsupported("node:20.${NODE_MINOR}.0", "Dockerfile", 2)],
+  ["dockerfile", "node", { Dockerfile: "FROM node:20${SUFFIX}\n" }, unsupported("node:20${SUFFIX}", "Dockerfile", 1)],
   // A range in a pin-only reader is unsupported, at its file and line.
   ["tool-versions", "node", { ".tool-versions": "# node\nnodejs >=20\n" }, unsupported(">=20", ".tool-versions", 2)],
   ["go-mod", "go", { "go.mod": "module x\n\ngo >=1.20\n" }, unsupported(">=1.20", "go.mod", 3)],
@@ -618,6 +621,11 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["a tagless FROM with AS on a continuation line", "FROM node \\\n    AS x\n", /unsupported form "node" in Dockerfile:1; pin an exact version/],
     ["an unterminated heredoc (Docker rejects it too)", "FROM node:20\nRUN <<EOF\nFROM node:latest\n", /unterminated heredoc <<EOF in Dockerfile:2/],
     ["a heredoc that ends before a FROM", "FROM node:20\nRUN <<EOF\necho hi\nEOF\nFROM node:latest\n", /unsupported form "node:latest" in Dockerfile:5; pin an exact version/],
+    // `<<` inside quotes is not a heredoc word (Docker splits the line into shell words first), so nothing is skipped.
+    ["a FROM after a double-quoted <<EOF", 'FROM node:20\nRUN echo "use <<EOF for docs"\nFROM node:latest\nRUN <<EOF\necho\nEOF\n', /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
+    ["a FROM after a single-quoted <<EOF", "FROM node:20\nRUN echo 'use <<EOF for docs'\nFROM node:latest\nRUN <<EOF\necho\nEOF\n", /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
+    // The line is counted in UTF-16 units, as the instruction text is indexed: a character outside the BMP shifts nothing.
+    ["an ARG value after an emoji on a continued line", 'ARG A="🙂🙂🙂🙂" NODE_VERSION=lts \\\n  B=1\n', unsupported("lts", "Dockerfile", 1)],
   ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
   it("reads every NAME=value pair on an ARG line for the tool", () =>
     fails("dockerfile", "python", { Dockerfile: "ARG NODE_VERSION=20 PYTHON_VERSION=latest\n" }, unsupported("latest", "Dockerfile", 1)));
@@ -632,6 +640,8 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     // A heredoc body is not instructions.
     ["a FROM in a RUN heredoc body", "FROM node:20\nRUN <<EOF\nFROM node:latest\nEOF\n", ["20"]],
     ["a FROM in a quoted <<- heredoc body", "FROM node:20\nRUN cat <<-\"EOT\" > /x\n\tFROM node:latest\n\tEOT\nFROM node:18\n", ["20", "18"]],
+    ["a FROM in a backslash-quoted heredoc body", "FROM node:20\nRUN <<\\EOF\nFROM node:latest\nEOF\n", ["20"]],
+    ["a FROM in a heredoc whose name has a dash", "FROM node:20\nRUN <<END-OF-SCRIPT\nFROM node:latest\nEND-OF-SCRIPT\n", ["20"]],
   ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });
 

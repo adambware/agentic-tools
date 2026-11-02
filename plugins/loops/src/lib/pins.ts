@@ -168,7 +168,7 @@ const tagVer = (t: string): string | null => (/^v?\d/i.test(t) ? ver(imageTag(t)
 type Logical = { text: string; lines: number[] };
 /** Docker's logical lines: a line ending in `\` continues; a full-line comment is dropped and never continued (inside a
  * continuation it is dropped without ending it), as is an empty line inside a continuation; the body of a RUN, COPY or
- * ADD heredoc (`<<EOF`, `<<-"EOF"`) is skipped up to its delimiter line. An unterminated heredoc is a FAIL. */
+ * ADD heredoc (`<<EOF`, `<<-"EOF"`, `<<\EOF`; not a `<<` inside quotes) is skipped up to its delimiter line. An unterminated heredoc is a FAIL. */
 const logicalLines = (text: string, file: string): Logical[] => {
   const phys = text.split("\n").map((l) => l.replace(/\r$/, ""));
   const out: Logical[] = [];
@@ -180,25 +180,29 @@ const logicalLines = (text: string, file: string): Logical[] => {
     const body = cont ? line.slice(0, cont.index) : line;
     cur ??= { text: "", lines: [] };
     cur.text += body;
-    cur.lines.push(...Array.from(body, () => i + 1));
+    cur.lines.push(...new Array<number>(body.length).fill(i + 1)); // per UTF-16 unit, as the text is indexed
     if (cont) continue;
     const ins: Logical = cur;
     cur = null;
     if (!ins.text.trim()) continue;
     out.push(ins);
-    // Docker's heredoc word: `<<` or `<<-`, an optional matching quote, a name; only RUN, COPY and ADD take one.
+    // Docker's heredoc word, matched on shell words (quotes kept, so a `<<` inside quotes is not one): `<<` or `<<-`
+    // and a name, which may be quoted or backslash-escaped; only RUN, COPY and ADD take one.
     if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) continue;
-    for (const h of ins.text.matchAll(/(?:^|\s)\d*<<(-?)(["']?)([A-Za-z_]\w*)\2(?=\s|$)/g)) {
+    for (const w of ins.text.match(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/g) ?? []) {
+      const h = /^\d*<<(-?)([^<]+)$/.exec(w);
+      const name = h?.[2]!.replace(/^(["'])(.*)\1$/, "$2").replace(/\\/g, "");
+      if (!h || !name) continue;
       const start = i;
-      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== h[3]);
-      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${h[3]} in ${file}:${start + 1}`);
+      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== name);
+      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${name} in ${file}:${start + 1}`);
     }
   }
   if (cur?.text.trim()) out.push(cur);
   return out;
 };
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
- * with `$` is skipped (its ARG is the pin); a tag with a literal version before its `$` (`18-${DISTRO}`) is that version;
+ * with `$` is skipped (its ARG is the pin); a tag with a literal version and a variant separator before its `$` (`18-${DISTRO}`) is that version;
  * no tag, a digest only or any other tag is unsupported. An ARG value must be a pin as written (quotes stripped). */
 const dockerfile: Parser = (text, tool, _root, file) => {
   const logical = logicalLines(text, file);
@@ -213,7 +217,7 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
-    const v = tag ? tagVer(tag.split("$")[0]!) : null;
+    const v = tag && !/[\d.]\$/.test(tag) ? tagVer(tag.split("$")[0]!) : null; // a `$` that continues the version is unknown
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
   }

@@ -1786,6 +1786,11 @@ describe("b.containers", () => {
     commit(gone);
     rmSync(join(gone, "docker/Dockerfile"));
     expect(b(gone, [], fresh(gone))).toBe("FAIL b.containers  loops cannot read the modification time of docker/Dockerfile, so it cannot tell whether the running containers are older — fix: restore docker/Dockerfile or make it readable, then re-run");
+  });
+
+  // As root, stat still succeeds inside a 0o000 directory.
+  it.skipIf(process.getuid?.() === 0)("fails closed at the containers level when a tracked input cannot be stat'd", () => {
+    const fresh = (root: string) => fake(listing(ctr(root, "web-1", "2999-01-01T00:00:00Z")), [], prod(root));
     const locked = setup(cfg('containers = "warn"\n'), files);
     commit(locked);
     chmodSync(join(locked, "docker"), 0o000);
