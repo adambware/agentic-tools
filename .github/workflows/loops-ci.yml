@@ -53,10 +53,12 @@ jobs:
             exit 1
           fi
 
-  # The compose-config differential corpus: the same wrapper against the real
-  # `docker compose config`. The loops-engine job also runs this file but skips
-  # the corpus when compose is absent; this job asserts it actually ran
-  # (LOOPS_REQUIRE_COMPOSE=1 turns a missing plugin into a failure).
+  # The real-Compose corpora: compose-config.test.ts (the wrapper against the
+  # real `docker compose config`) and compose-policy.test.ts (e.project end to
+  # end over real checkouts). The loops-engine job also runs these files but
+  # skips them when compose is absent; this job asserts they actually ran
+  # (LOOPS_REQUIRE_COMPOSE=1 turns a missing plugin into a failure). The one
+  # daemon row of the policy corpus skips without `docker info`.
   compose-differential:
     runs-on: ubuntu-latest
     defaults:
@@ -76,5 +78,5 @@ jobs:
           docker compose config --help | grep -- --no-env-resolution
       - name: install
         run: npm ci --no-audit --no-fund
-      - name: differential corpus
-        run: npx vitest run src/lib/compose-config.test.ts
+      - name: differential and policy corpora
+        run: npx vitest run src/lib/compose-config.test.ts src/lib/compose-policy.test.ts

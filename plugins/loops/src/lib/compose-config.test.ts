@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { composeName, isComposeConfigCall, isNoFile, isTooOld, type ComposeName } from "./compose-config.js";
+import { composeName, composeVersion, isComposeConfigCall, isComposeVersionCall, rerun, type ComposeError, type ComposeErrorKind } from "./compose-config.js";
 import { run, type RunResult, type Runner } from "./proc.js";
 
 type Call = { cmd: string; args: string[]; opts: Parameters<Runner>[2] };
@@ -19,11 +19,36 @@ function stub(r: RunResult) {
 const json = (v: unknown) => res({ stdout: JSON.stringify(v) });
 
 describe("the real runner's null exit codes", () => {
-  // composeName reads "unavailable" only from notFound: a docker killed by a signal must not pass for one that is absent.
+  // composeVersion reads "unavailable" only from notFound: a docker killed by a signal must not pass for one that is absent.
   it("marks a command that is not there as notFound, and a killed one with its signal", () => {
     expect(run("loops-no-such-command-xyz", [])).toMatchObject({ code: null, notFound: true, timedOut: false });
     expect(run("sh", ["-c", "kill -9 $$"])).toMatchObject({ code: null, notFound: false, abend: "SIGKILL", timedOut: false });
     expect(run("sh", ["-c", "exit 3"])).toMatchObject({ code: 3, notFound: false, abend: undefined });
+  });
+});
+
+const ERR = { cmd: "docker compose config --no-env-resolution --format json", cwd: "/r" };
+const failed = (kind: string, error: string) => ({ error, kind, ...ERR });
+
+describe("composeVersion with a stubbed runner", () => {
+  it("asks `docker compose version --short` from the given cwd with the 10s timeout", () => {
+    const { run, calls } = stub(res({ stdout: "5.1.2\n" }));
+    const env = { PATH: "/bin" };
+    expect(composeVersion(run, "/some/root", env)).toEqual({ version: "5.1.2" });
+    expect(calls).toEqual([{ cmd: "docker", args: ["compose", "version", "--short"], opts: { cwd: "/some/root", env, timeoutMs: 10_000 } }]);
+    expect(isComposeVersionCall(calls[0]!.cmd, calls[0]!.args)).toBe(true);
+    expect(isComposeConfigCall(calls[0]!.cmd, calls[0]!.args)).toBe(false);
+  });
+
+  it("is unavailable when docker is not there or exits non-zero, and an error on a timeout, a signal or EACCES", () => {
+    const v = (o: Partial<RunResult>) => composeVersion(stub(res(o)).run, "/r");
+    expect(v({ code: null, notFound: true, abend: "ENOENT" })).toEqual({ unavailable: "docker is not installed" });
+    // A missing compose plugin: docker rejects the --short flag. Its stderr is not copied.
+    expect(v({ code: 125, stderr: "unknown flag: --short\n" })).toEqual({ unavailable: "docker compose version exited 125" });
+    expect(v({ code: 1, stderr: "docker: 'compose' is not a docker command.\n" })).toEqual({ unavailable: "docker compose version exited 1" });
+    expect(v({ code: null, timedOut: true, abend: "ETIMEDOUT" })).toEqual({ error: "docker compose version timed out after 10s" });
+    expect(v({ code: null, abend: "SIGKILL" })).toEqual({ error: "docker compose version was killed (SIGKILL)" });
+    expect(v({ code: null, abend: "EACCES" })).toEqual({ error: "docker compose version could not run (EACCES)" });
   });
 });
 
@@ -35,6 +60,7 @@ describe("composeName with a stubbed runner", () => {
     expect(calls[0]!.cmd).toBe("docker");
     expect(calls[0]!.args).toEqual(["compose", "config", "--no-env-resolution", "--format", "json"]);
     expect(isComposeConfigCall(calls[0]!.cmd, calls[0]!.args)).toBe(true);
+    expect(isComposeVersionCall(calls[0]!.cmd, calls[0]!.args)).toBe(false);
   });
 
   it("passes configured files as -f in order, before the subcommand", () => {
@@ -65,6 +91,18 @@ describe("composeName with a stubbed runner", () => {
     expect(calls[0]!.opts!.env).toBe(env);
   });
 
+  it("with scrub, runs without every COMPOSE_* (empty ones too) and names them on an error", () => {
+    const env = { PATH: "/bin", COMPOSE_PROJECT_NAME: "", COMPOSE_FILE: "x.yml", DOCKER_HOST: "unix:///d" };
+    const { run, calls } = stub(res({ code: 1 }));
+    expect(composeName({ root: "/r", env, scrub: true, run })).toEqual({ ...failed("exit", "docker compose config exited 1"), scrubbed: ["COMPOSE_FILE", "COMPOSE_PROJECT_NAME"] });
+    expect(calls[0]!.opts!.env).toEqual({ PATH: "/bin", DOCKER_HOST: "unix:///d" });
+    // Nothing to remove: no scrubbed list, and the env goes through untouched.
+    const plain = { PATH: "/bin" };
+    const s = stub(res({ code: 1 }));
+    expect(composeName({ root: "/r", env: plain, scrub: true, run: s.run })).toEqual(failed("exit", "docker compose config exited 1"));
+    expect(s.calls[0]!.opts!.env).toBe(plain);
+  });
+
   it("returns the name on exit 0", () => {
     expect(composeName({ root: "/r", env: {}, run: stub(json({ name: "app-node", services: {} })).run })).toEqual({ name: "app-node" });
   });
@@ -76,105 +114,79 @@ describe("composeName with a stubbed runner", () => {
 
   it("errors when the name is empty or not a string", () => {
     for (const v of [{ name: "" }, { name: 5 }, { name: null }, {}, [], null]) {
-      expect(composeName({ root: "/r", env: {}, run: stub(json(v)).run })).toEqual({
-        error: "docker compose config printed no project name",
-      });
+      expect(composeName({ root: "/r", env: {}, run: stub(json(v)).run })).toEqual(failed("noName", "docker compose config printed no project name"));
     }
   });
 
   it("errors on invalid JSON", () => {
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ stdout: "not json" })).run })).toEqual({
-      error: "docker compose config printed invalid JSON",
-    });
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ stdout: "" })).run })).toEqual({
-      error: "docker compose config printed invalid JSON",
-    });
+    for (const stdout of ["not json", ""]) {
+      expect(composeName({ root: "/r", env: {}, run: stub(res({ stdout })).run })).toEqual(failed("json", "docker compose config printed invalid JSON"));
+    }
   });
 
   it("reports a timeout as an error naming 10s", () => {
     const out = composeName({ root: "/r", env: {}, run: stub(res({ code: null, timedOut: true })).run });
-    expect(out).toEqual({ error: "docker compose config timed out after 10s" });
+    expect(out).toEqual(failed("timeout", "docker compose config timed out after 10s"));
   });
 
-  it("reports docker not found as not installed, and any other run without an exit code as killed", () => {
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, notFound: true })).run })).toEqual({
-      unavailable: "docker is not installed",
-    });
+  it("reports a run killed by a signal or by overflowing its output, or that could not run, as an abend", () => {
     for (const abend of ["SIGKILL", "ENOBUFS"]) {
-      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, abend })).run })).toEqual({ error: `docker compose config was killed (${abend})` });
+      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, abend })).run })).toEqual(failed("abend", `docker compose config was killed (${abend})`));
     }
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null })).run })).toEqual({ error: "docker compose config was killed (no exit code)" });
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null, abend: "EACCES" })).run })).toEqual(failed("abend", "docker compose config could not run (EACCES)"));
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: null })).run })).toEqual(failed("abend", "docker compose config could not run (no exit code)"));
   });
 
-  it("reports a missing compose plugin as unavailable", () => {
-    for (const stderr of ["docker: unknown command: docker compose\n", "docker: 'compose' is not a docker command.\nSee 'docker --help'\n"]) {
-      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
-        unavailable: "compose plugin is not installed",
-      });
-    }
+  // composeVersion already found docker, so ENOENT at spawn is the cwd: an error, never "unavailable".
+  it("reports a spawn ENOENT as the directory being gone", () => {
+    const out = composeName({ root: "/r", env: {}, run: stub(res({ code: null, notFound: true, abend: "ENOENT" })).run });
+    expect(out).toEqual(failed("gone", "docker compose config could not start (its directory is gone)"));
   });
 
-  it("reports only Docker's own plugin-missing line as unavailable, not Compose echoing that text", () => {
-    for (const stderr of ["services.web Additional property 'compose' is not a docker command is not allowed\n", "invalid image \"docker: unknown command: docker compose\"\n"]) {
-      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({ error: stderr.trim() });
-    }
+  it("reports a vanished cwd as gone with the real runner", () => {
+    const gone = join(realpathSync(tmpdir()), `loops-gone-${process.pid}-${Date.now()}`);
+    expect(composeName({ root: gone, env: { PATH: process.env.PATH }, run })).toMatchObject({ kind: "gone", cwd: gone });
   });
 
-  it("reports a Compose too old for --no-env-resolution as an error to upgrade, not as unavailable", () => {
-    const stderr = "unknown flag: --no-env-resolution\nSee 'docker compose config --help'.\n";
-    const out = composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run });
-    expect(out).toEqual({ error: "docker compose is too old (needs config --no-env-resolution)" });
-    expect(isTooOld(out)).toBe(true);
-    expect(isTooOld({ error: "unknown flag: --no-env-resolution in a file" })).toBe(false);
-    // Compose naming the flag inside its own message is the file's error.
+  it("reports a Compose too old for --no-env-resolution as tooOld, and a docker without the plugin the same way", () => {
+    for (const stderr of ["unknown flag: --no-env-resolution\nSee 'docker compose config --help'.\n", "WARNING: x\ndocker: unknown flag: --no-env-resolution\n"]) {
+      expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 125, stderr })).run })).toEqual(failed("tooOld", "docker compose config is too old (needs --no-env-resolution)"));
+    }
+    // Compose naming the flag inside its own message is the file's error, and its text is not copied.
     const echoed = 'invalid image "unknown flag: --no-env-resolution"\n';
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: echoed })).run })).toEqual({ error: echoed.trim() });
+    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: echoed })).run })).toEqual(failed("exit", "docker compose config exited 1"));
   });
 
-  it("shows env values of 8+ characters in Compose's error line as ${NAME}, longest first, and leaves short, path and COMPOSE_* values", () => {
-    const env = { DB_PASSWORD: "hunter2hunter2", DB_PASSWORD_PREFIX: "hunter2hunter2-x", SHORT: "abc1234", HOME: "/home/someone", COMPOSE_PROJECT_NAME: "Bad.Name.Here" };
-    const stderr = "services.db.ports: invalid port hunter2hunter2-x:hunter2hunter2 abc1234 in /home/someone/compose.yml (Bad.Name.Here)\n";
-    expect(composeName({ root: "/r", env, run: stub(res({ code: 1, stderr })).run })).toEqual({
-      error: "services.db.ports: invalid port ${DB_PASSWORD_PREFIX}:${DB_PASSWORD} abc1234 in /home/someone/compose.yml (Bad.Name.Here)",
-    });
+  it("never copies Compose's stderr, even a line holding an interpolated secret", () => {
+    const stderr = "services.db.ports: invalid port hunter2hunter2:5432\n";
+    const out = composeName({ root: "/r", env: { DB_PASSWORD: "hunter2hunter2" }, run: stub(res({ code: 1, stderr })).run });
+    expect(out).toEqual(failed("exit", "docker compose config exited 1"));
+    expect(JSON.stringify(out)).not.toContain("hunter2");
   });
 
-  it("uses the last non-warning stderr line as the error", () => {
-    const stderr =
-      'time=2026-01-01T00:00:00Z level=warning msg="The \\"X\\" variable is not set."\n' +
-      "required variable Y is missing a value: set it\n";
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
-      error: "required variable Y is missing a value: set it",
-    });
+  it("is noFile only when the whole stderr, warnings dropped, is Compose's not-found line", () => {
+    const at = (code: number, stderr: string) => composeName({ root: "/r", env: {}, run: stub(res({ code, stderr })).run });
+    expect(at(1, "no configuration file provided: not found\n")).toEqual({ noFile: true });
+    expect(at(1, 'time=2026-01-01T00:00:00Z level=warning msg="a"\nno configuration file provided: not found\n')).toEqual({ noFile: true });
+    // The Docker CLI's own warning (a bad DOCKER_CONFIG) comes before Compose's line.
+    expect(at(1, "WARNING: Error parsing config file (/x/config.json): invalid character\nno configuration file provided: not found\n")).toEqual({ noFile: true });
+    // A spoofed first line, more after it, or a different wording is a failure.
+    for (const stderr of [
+      "no configuration file provided: not found\nservices.web.image must be a string\n",
+      "invalid image \"x\"\nno configuration file provided: not found\n",
+      "no configuration file provided: not found in /x\n",
+      "  WARNING: indented is not a warning line\nno configuration file provided: not found\n",
+    ]) expect(at(1, stderr)).toEqual(failed("exit", "docker compose config exited 1"));
+    expect(at(17, "")).toEqual(failed("exit", "docker compose config exited 17"));
   });
 
-  it("skips a trailing warning and blank lines when picking the error line", () => {
-    const stderr = "project name must not be empty\ntime=2026-01-01T00:00:00Z level=warning msg=\"later\"\n\n";
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
-      error: "project name must not be empty",
-    });
-  });
-
-  it("names the exit code when stderr has only warnings", () => {
-    const stderr = 'time=2026-01-01T00:00:00Z level=warning msg="a"\ntime=2026-01-01T00:00:01Z level=warning msg="b"\n';
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr })).run })).toEqual({
-      error: "docker compose config exited 1",
-    });
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 17, stderr: "" })).run })).toEqual({
-      error: "docker compose config exited 17",
-    });
-  });
-
-  it("handles a trailing newline without yielding an empty error", () => {
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: "boom\n" })).run })).toEqual({ error: "boom" });
-    expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: "boom" })).run })).toEqual({ error: "boom" });
-  });
-
-  it("isNoFile recognises only Compose's not-found line", () => {
-    expect(isNoFile({ error: "no configuration file provided: not found" })).toBe(true);
-    expect(isNoFile({ error: "project name must not be empty" })).toBe(false);
-    expect(isNoFile({ name: "app" })).toBe(false);
-    expect(isNoFile({ unavailable: "docker is not installed" })).toBe(false);
+  it("carries the shell-quoted command and its cwd, which rerun turns into the fix", () => {
+    const out = composeName({ root: "/a dir/it's", files: ["x y.yml"], env: { COMPOSE_FILE: "z" }, scrub: true, run: stub(res({ code: 1 })).run });
+    expect(out).toMatchObject({ cmd: "docker compose -f 'x y.yml' config --no-env-resolution --format json", cwd: "/a dir/it's", scrubbed: ["COMPOSE_FILE"] });
+    expect(rerun(out as ComposeError)).toBe("cd '/a dir/it'\\''s' && env -u COMPOSE_FILE docker compose -f 'x y.yml' config --no-env-resolution --format json");
+    expect(rerun(failed("exit", "x") as ComposeError)).toBe("cd /r && docker compose config --no-env-resolution --format json");
+    // A name env(1) can set but `export` cannot is still one word.
+    expect(rerun({ ...(out as ComposeError), scrubbed: ["COMPOSE_A B"] })).toContain("&& env -u 'COMPOSE_A B' docker compose");
   });
 
   it("isComposeConfigCall rejects other docker and non-docker calls", () => {
@@ -209,10 +221,14 @@ type Row = {
   sub?: string;
   composeFiles?: string[];
   env?: Record<string, string>;
-  want: ComposeName;
+  /** Point DOCKER_CONFIG at a directory whose config.json does not parse (its cli-plugins still link to the real ones). */
+  badDockerConfig?: true;
+  want: Want;
   /** The answer another Compose version gives for the same fixture (both recorded, either accepted). */
-  alt?: ComposeName;
+  alt?: Want;
 };
+/** A failure is compared by its kind only: composeName never copies Compose's text. */
+type Want = { name: string } | { noFile: true } | { kind: ComposeErrorKind };
 
 const rows: Row[] = [
   // --- directory normalization (no name: anywhere) ---
@@ -228,10 +244,11 @@ const rows: Row[] = [
   // An empty name: is not an error: Compose falls back to the directory name.
   { title: "name: \"\" falls back to the directory name", files: { "compose.yaml": named('""') }, want: { name: "app-node" } },
   // Surprise: an unquoted integer name is NOT stringified; Compose's schema rejects it (quote it to get "123").
-  { title: "name: 123 (non-string scalar) is rejected by the schema", files: { "compose.yaml": named("123") }, want: { error: "validating <root>/compose.yaml: name must be a string" } },
+  // Recorded line: "validating <root>/compose.yaml: name must be a string".
+  { title: "name: 123 (non-string scalar) is rejected by the schema", files: { "compose.yaml": named("123") }, want: { kind: "exit" } },
   { title: "name: 123 quoted is a valid name", files: { "compose.yaml": named('"123"') }, want: { name: "123" } },
-  // A mapping fails at YAML decode, before validation, so the line has no file path; the verb is the YAML library's (v5.1.2 "construct", v2.38.2 "unmarshal").
-  { title: "name: as a mapping fails to decode", files: { "compose.yaml": `name:\n  a: b\n${SVC}` }, want: { error: "line 2: cannot construct !!map into string" }, alt: { error: "line 2: cannot unmarshal !!map into string" } },
+  // A mapping fails at YAML decode, before validation ("line 2: cannot construct !!map into string" on v5.1.2, "unmarshal" on v2.38.2).
+  { title: "name: as a mapping fails to decode", files: { "compose.yaml": `name:\n  a: b\n${SVC}` }, want: { kind: "exit" } },
 
   // --- .env forms for COMPOSE_PROJECT_NAME ---
   { title: ".env quoted value", files: { "compose.yaml": SVC, ".env": 'COMPOSE_PROJECT_NAME="quoted-name"\n' }, want: { name: "quoted-name" } },
@@ -258,9 +275,11 @@ const rows: Row[] = [
   { title: "parent directory discovery from a subdirectory", sub: "pkg/api", files: { "compose.yaml": named("from-parent") }, want: { name: "from-parent" } },
   // The project directory is the directory holding the discovered file, so the dir-name fallback is the parent's name, not the cwd's.
   { title: "parent directory discovery falls back to the parent's directory name", dir: "App-Parent", sub: "pkg/api", files: { "compose.yaml": SVC }, want: { name: "app-parent" } },
-  // No default file in the cwd or above it: plain Compose runs nothing. The policy keys on this exact line (isNoFile).
-  { title: "no compose file anywhere up from the cwd is 'no configuration file provided'", files: { "deploy/stack.yml": SVC }, want: { error: "no configuration file provided: not found" } },
-  { title: "no compose file anywhere up from a subdirectory either", sub: "deploy", files: { "deploy/stack.yml": SVC }, want: { error: "no configuration file provided: not found" } },
+  // No default file in the cwd or above it: plain Compose runs nothing. noFile keys on this exact line.
+  { title: "no compose file anywhere up from the cwd is 'no configuration file provided'", files: { "deploy/stack.yml": SVC }, want: { noFile: true } },
+  { title: "no compose file anywhere up from a subdirectory either", sub: "deploy", files: { "deploy/stack.yml": SVC }, want: { noFile: true } },
+  // An unparsable DOCKER_CONFIG makes the Docker CLI print `WARNING: Error parsing config file …` before Compose's line.
+  { title: "no compose file under a DOCKER_CONFIG that does not parse is still noFile", files: { "deploy/stack.yml": SVC }, badDockerConfig: true, want: { noFile: true } },
   // The policy probes plain runs from the first configured file's directory: a default file there names the project after it.
   { title: "plain run from the first file's directory finds the default file there", sub: "deploy", files: { "deploy/compose.yml": SVC }, want: { name: "deploy" } },
   // Walking up, Compose reads the cwd's .env first and then the one beside the file it found.
@@ -275,8 +294,9 @@ const rows: Row[] = [
 
   // --- failures that are, and are not, about the name ---
   // v5.1.2 skips the missing env_file under --no-env-resolution; v2.38.2 (the ubuntu-latest runner) still fails on it, so there e.project FAILs as `docker compose up` would.
-  { title: "missing env_file passes with --no-env-resolution on v5; v2.38 still fails", files: { "compose.yaml": named("app-env") .replace("image: nginx\n", "image: nginx\n    env_file: .env.local\n") }, want: { name: "app-env" }, alt: { error: "env file <root>/.env.local not found: stat <root>/.env.local: no such file or directory" } },
-  { title: "service image ${X:?} with X unset is Compose's error", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n" }, want: { error: "error while interpolating services.web.image: required variable X is missing a value" } },
+  { title: "missing env_file passes with --no-env-resolution on v5; v2.38 still fails", files: { "compose.yaml": named("app-env") .replace("image: nginx\n", "image: nginx\n    env_file: .env.local\n") }, want: { name: "app-env" }, alt: { kind: "exit" } },
+  // Recorded line: "error while interpolating services.web.image: required variable X is missing a value".
+  { title: "service image ${X:?} with X unset is Compose's error", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n" }, want: { kind: "exit" } },
 ];
 
 describe.skipIf(!composeAvailable)("composeName against real docker compose config", () => {
@@ -299,9 +319,18 @@ describe.skipIf(!composeAvailable)("composeName against real docker compose conf
     }
     const root = row.sub ? join(checkout, row.sub) : checkout;
     mkdirSync(root, { recursive: true });
-    const got = composeName({ root, files: row.composeFiles, env: { ...baseEnv(), ...row.env }, run });
-    // Compose prints absolute paths in some errors; keep the expectations machine-independent.
-    const shown = "error" in got ? { error: got.error.split(checkout).join("<root>") } : got;
+    const env = { ...baseEnv(), ...row.env };
+    if (row.badDockerConfig) {
+      const cfg = join(checkout, "..", "docker-config");
+      mkdirSync(cfg);
+      writeFileSync(join(cfg, "config.json"), "{bad");
+      // Docker finds a user-installed compose plugin under DOCKER_CONFIG; keep the real one reachable.
+      const plugins = join(process.env.DOCKER_CONFIG ?? join(homedir(), ".docker"), "cli-plugins");
+      if (existsSync(plugins)) symlinkSync(plugins, join(cfg, "cli-plugins"));
+      env.DOCKER_CONFIG = cfg;
+    }
+    const got = composeName({ root, files: row.composeFiles, env, run });
+    const shown = "error" in got ? { kind: got.kind } : got;
     // `alt` is the answer another Compose version gives for the same fixture; both are recorded, either is the oracle.
     expect([row.want, ...(row.alt ? [row.alt] : [])]).toContainEqual(shown);
   });

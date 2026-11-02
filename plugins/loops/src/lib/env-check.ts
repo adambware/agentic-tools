@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConfig } from "./env-config.js";
 import { composeChecks, composeProject, harnessChecks, pinChecks, runLocal, sharedCheck, type Ctx, type Result } from "./env-checks.js";
-import { git, isExecutable, parseFlags, repoRoot, UsageError, type Deps } from "./proc.js";
+import { git, isExecutable, parseFlags, redactHome, repoRoot, UsageError, type Deps } from "./proc.js";
 import { VERSION } from "./version.js";
 
 const GROUPS = "abcdex";
@@ -60,21 +60,24 @@ export function envCheckMain(argv: string[], d: Deps): number {
   const ctx: Ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees };
 
   const home = d.env.HOME || homedir();
-  const redact = (s: string): string => (home.length > 1 ? s.split(home).join("~") : s);
+  const redact = (s: string): string => redactHome(s, home);
 
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
-    // A FAIL that keeps the name is one only plain `docker compose` hits: `-p <name>` is safe, so print it and warn.
-    // Without Compose the name is what loops can vouch for (the shell's, or a worktree's derived one); the main checkout has none.
-    const { name, result } = composeProject(ctx);
+    // Exit 0 and the name when it is kept: a FAIL that keeps it (a run without -p is unsafe, a stack of another answer
+    // runs) leaves `-p <name>` safe, so print it and warn. Exit 1 when a FAIL withholds it or it is unknown. Without
+    // Compose the name is what loops can vouch for: the shell's, else a worktree's derived one, else none.
+    const { name, results } = composeProject(ctx);
     if (name) d.out(redact(name));
-    if (result.level === "FAIL") d.err(redact(`env-check: ${name ? "warning: " : ""}${result.message}${name ? "; fix: " : " — fix: "}${result.fix}`));
-    else if (!name) d.err(redact(`env-check: ${result.message}`));
+    const fails = results.filter((r) => r.level === "FAIL");
+    for (const r of fails) d.err(redact(`env-check: ${name ? "warning: " : ""}${r.message}${name ? "; fix: " : " — fix: "}${r.fix}`));
+    if (!fails.length && !name) d.err(redact(`env-check: ${results[0]!.message}`));
     return name ? 0 : 1;
   }
 
   const compose = cfg.compose?.mode === "test" ? composeProject(ctx) : null;
-  const project = compose?.result.level === "FAIL" ? null : (compose?.name ?? null);
+  // Local checks get the name --compose-project would print: kept, else empty.
+  const project = compose?.name ?? null;
   const results = [
     ...pinChecks(ctx),
     ...sharedCheck(ctx),
