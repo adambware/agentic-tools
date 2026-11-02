@@ -62,10 +62,11 @@ const classify = (raw: string, tool: string): Found[number] | null => {
   const v = exact(s);
   return v === null ? null : { v };
 };
-const pinAt = (raw: string, file: string, line: number): Found => {
-  const v = exact(raw);
-  if (v === null) throw unsupported(raw, file, line);
-  return [{ v }];
+/** A pin-only reader's value: a pin by `classify`, else (a range, a word, other text) unsupported at file:line. */
+const pinAt = (raw: string, tool: string, file: string, line: number): Found => {
+  const f = classify(raw, tool);
+  if (!f || f.range) throw unsupported(raw, file, line);
+  return [{ v: f.v }];
 };
 const ALIAS: Record<string, string[]> = { node: ["node", "nodejs"], go: ["go", "golang"] };
 const IMAGE: Record<string, string> = { go: "golang" };
@@ -76,15 +77,16 @@ const toolVersions: Parser = (text, tool, _root, file) => {
   const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool];
   return text.split("\n").flatMap((line, i) => {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    return m && names.includes(m[1]!) ? pinAt(m[2]!, file, i + 1) : [];
+    return m && names.includes(m[1]!) ? pinAt(m[2]!, tool, file, i + 1) : [];
   });
 };
 /** The first line that is not blank or a comment, with a trailing `# comment` dropped as nvm does (`.python-version` may
- * list several versions). A plain version file holds a pin: a range there is a FAIL of its own. */
+ * list several versions). A plain version file holds a pin: a range there is a FAIL of its own, and so is a file with no
+ * version line (even one of several glob matches). */
 const plain: Parser = (text, tool, _root, file) => {
   const lines = text.split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim());
   const i = lines.findIndex((l) => l);
-  if (i < 0) return [];
+  if (i < 0) throw new PinError(`no version in ${file}`);
   const f = classify(lines[i]!, tool);
   if (f?.range) throw new PinError(`"${lines[i]}" is a range, not a pinned version`);
   if (!f) throw unsupported(lines[i]!, file, i + 1);
@@ -92,7 +94,7 @@ const plain: Parser = (text, tool, _root, file) => {
 };
 const goMod: Parser = (text, tool, _root, file) => {
   const m = tool === "go" ? (/^toolchain\s+go(\S+)/m.exec(text) ?? /^go\s+(\S+)/m.exec(text)) : null;
-  return m ? pinAt(m[1]!, file, lineAt(text, m.index)) : [];
+  return m ? pinAt(m[1]!, tool, file, lineAt(text, m.index)) : [];
 };
 type Pkg = { engines?: Record<string, unknown>; volta?: Record<string, unknown> };
 const pkg = (text: string): Pkg => {
@@ -120,7 +122,7 @@ const pkgVersion: Parser = (text, tool, root, file) => {
     if (!out.length) throw new PinError(`no volta.${tool} or engines.${tool}`);
     return out;
   }
-  return pinAt(volta.trim(), file, lineAt(text, text.indexOf(JSON.stringify(volta), text.indexOf('"volta"'))));
+  return pinAt(volta.trim(), tool, file, lineAt(text, text.indexOf(JSON.stringify(volta), text.indexOf('"volta"'))));
 };
 const toml = (text: string): Record<string, unknown> => {
   try {
@@ -160,33 +162,70 @@ const pipfile: Parser = (text, tool, _root, file) => {
 /** In an image tag a bare `-dev` right after the version is the Chainguard/Wolfi dev variant (`20-dev`, `3.12-dev-slim`),
  * not a prerelease; `-dev.1` still is one. */
 const imageTag = (t: string): string => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
-/** A tag or ARG value that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. */
+/** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. */
 const tagVer = (t: string): string | null => (/^v?\d/i.test(t) ? ver(imageTag(t)) : null);
-/** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A `${VAR}` tag is
- * skipped (its ARG is the pin); no tag, a digest only or a non-version tag is unsupported. */
+/** A Dockerfile instruction as Docker reads it: its text and, for each character, the 1-based physical line it is on. */
+type Logical = { text: string; lines: number[] };
+/** Docker's logical lines: a line ending in `\` continues; a full-line comment is dropped and never continued (inside a
+ * continuation it is dropped without ending it), as is an empty line inside a continuation; the body of a RUN, COPY or
+ * ADD heredoc (`<<EOF`, `<<-"EOF"`) is skipped up to its delimiter line. An unterminated heredoc is a FAIL. */
+const logicalLines = (text: string, file: string): Logical[] => {
+  const phys = text.split("\n").map((l) => l.replace(/\r$/, ""));
+  const out: Logical[] = [];
+  let cur: Logical | null = null;
+  for (let i = 0; i < phys.length; i++) {
+    const line = phys[i]!;
+    if (/^\s*#/.test(line) || (cur && !line.trim())) continue;
+    const cont = /\\[ \t]*$/.exec(line);
+    const body = cont ? line.slice(0, cont.index) : line;
+    cur ??= { text: "", lines: [] };
+    cur.text += body;
+    cur.lines.push(...Array.from(body, () => i + 1));
+    if (cont) continue;
+    const ins: Logical = cur;
+    cur = null;
+    if (!ins.text.trim()) continue;
+    out.push(ins);
+    // Docker's heredoc word: `<<` or `<<-`, an optional matching quote, a name; only RUN, COPY and ADD take one.
+    if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) continue;
+    for (const h of ins.text.matchAll(/(?:^|\s)\d*<<(-?)(["']?)([A-Za-z_]\w*)\2(?=\s|$)/g)) {
+      const start = i;
+      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== h[3]);
+      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${h[3]} in ${file}:${start + 1}`);
+    }
+  }
+  if (cur?.text.trim()) out.push(cur);
+  return out;
+};
+/** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
+ * with `$` is skipped (its ARG is the pin); a tag with a literal version before its `$` (`18-${DISTRO}`) is that version;
+ * no tag, a digest only or any other tag is unsupported. An ARG value must be a pin as written (quotes stripped). */
 const dockerfile: Parser = (text, tool, _root, file) => {
+  const logical = logicalLines(text, file);
+  const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
-  const take = (v: string | null, raw: string, index = 0) => {
-    if (v === null) throw unsupported(raw, file, lineAt(text, index));
-    out.push({ v });
-  };
-  // Docker allows indentation before an instruction and joins a line ending in `\`; the join keeps every offset, so a
-  // match's index is still its place in `text`.
-  const joined = text.replace(/\\[ \t]*\r?\n/g, (s) => " ".repeat(s.length));
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
-  for (const m of joined.matchAll(/^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*(\S+)(?:[ \t]+AS[ \t]+(\S+))?/gim)) {
-    const [name = "", tag = ""] = m[1]!.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
-    const stageRef = m[1] === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
-    if (m[2]) stages.add(m[2].toLowerCase());
-    if (!stageRef && name === (IMAGE[tool] ?? tool) && !tag.includes("$")) take(tag ? tagVer(tag) : null, m[1]!, m.index + m[0].length - m[1]!.length);
+  for (const l of logical) {
+    const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
+    if (!m) continue;
+    const image = m[2]!;
+    const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
+    const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
+    if (m[3]) stages.add(m[3].toLowerCase());
+    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    const v = tag ? tagVer(tag.split("$")[0]!) : null;
+    if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
+    out.push({ v });
   }
   // `ARG A=1 B=2` declares each pair: the tool's may be any of them.
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
-  for (const m of joined.matchAll(/^([ \t]*ARG[ \t]+)(.*)$/gim)) {
+  for (const l of logical) {
+    const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
+    if (!m) continue;
     for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=("[^"]*"|'[^']*'|\S*)/g)) {
       if (p[1]!.toUpperCase() !== key) continue;
       const v = p[2]!.replace(/^(["'])(.*)\1$/, "$2"); // `"20.11.0"` is `20.11.0`
-      take(tagVer(v), v, m.index + m[1]!.length + p.index + p[0].length - p[2]!.length);
+      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + p[0].length - p[2]!.length)));
     }
   }
   return out;

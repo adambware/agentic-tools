@@ -450,14 +450,17 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   const ct = logged === undefined || !/^\d*$/.test(logged) ? NaN : Number(logged);
   if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
-  const mtime = (f: string): number => {
+  // A tracked input whose modification time cannot be read (deleted from the working tree, EACCES) is not time 0.
+  const mtimes = files.map((f): [string, number] => {
     try {
-      return statSync(join(c.root, f)).mtimeMs;
+      return [f, statSync(join(c.root, f)).mtimeMs];
     } catch {
-      return 0;
+      return [f, NaN];
     }
-  };
-  const newest = files.reduce((n, f) => Math.max(n, mtime(f)), ct * 1000);
+  });
+  const unstat = mtimes.filter(([, t]) => Number.isNaN(t)).map(([f]) => f);
+  if (unstat.length) return [res(level, id, `loops cannot read the modification time of ${short(unstat)}, so it cannot tell whether the running containers are older`, `restore ${short(unstat)} or make it readable, then re-run`)];
+  const newest = mtimes.reduce((n, [, t]) => Math.max(n, t), ct * 1000);
   // A creation time loops cannot read (NaN) is never "newer": that container counts as stale.
   const stale = running.filter((k) => !(k.created >= newest));
   const unreadable = stale.filter((k) => Number.isNaN(k.created)).map((k) => k.name);
@@ -479,7 +482,7 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   if (envFile) args.push(...split(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
   // A cache-hit `--build` leaves a container whose inputs were only rewritten Running, still stale by mtime.
   // A recreated container prints the same unreadable time, so recreating cannot clear that case: name the escape too.
-  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
   const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
   return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs${why}`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }

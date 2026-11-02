@@ -1760,7 +1760,10 @@ describe("b.containers", () => {
     // At the warn level it is a WARN.
     const warn = setup(cfg('containers = "warn"\n'), files);
     commit(warn);
-    expect(b(warn, [], fake(listing(raw("web-1", "garbage").replace(root, warn)), [], prod(warn)))).toMatch(/^WARN b\.containers {2}web-1 .*loops cannot read its creation time/);
+    const warned = b(warn, [], fake(listing(raw("web-1", "garbage").replace(root, warn)), [], prod(warn)));
+    expect(warned).toMatch(/^WARN b\.containers {2}web-1 .*loops cannot read its creation time/);
+    // The severity escape is only for a FAIL: at warn it is already the escape.
+    expect(warned).not.toContain("CreatedAt");
     // A git log that fails or prints garbage over tracked inputs is not "no commit touches the inputs".
     const gitLog = (out: RunResult): Runner => {
       const inner = fake(listing(ctr(root, "web-1", "2999-01-01T00:00:00Z")), [], prod(root));
@@ -1773,6 +1776,24 @@ describe("b.containers", () => {
     }
     // The genuine "no commit" (empty output) stays a SKIP.
     expect(b(root, [], gitLog(res(0, "")))).toBe("SKIP b.containers  no commit touches the [compose] inputs");
+  });
+
+  // Value: protects=a tracked input whose modification time cannot be read is not time 0 (fresh); fails_when=a statSync
+  // error reads as 0 and the newer container PASSes; why_new=no test removed or locked an input; seam=none; no_claim=none beyond protects
+  it("fails closed when a tracked input's modification time cannot be read (deleted or unreadable)", () => {
+    const fresh = (root: string) => fake(listing(ctr(root, "web-1", "2999-01-01T00:00:00Z")), [], prod(root));
+    const gone = setup(cfg(), files);
+    commit(gone);
+    rmSync(join(gone, "docker/Dockerfile"));
+    expect(b(gone, [], fresh(gone))).toBe("FAIL b.containers  loops cannot read the modification time of docker/Dockerfile, so it cannot tell whether the running containers are older — fix: restore docker/Dockerfile or make it readable, then re-run");
+    const locked = setup(cfg('containers = "warn"\n'), files);
+    commit(locked);
+    chmodSync(join(locked, "docker"), 0o000);
+    try {
+      expect(b(locked, [], fresh(locked))).toBe("WARN b.containers  loops cannot read the modification time of docker/Dockerfile, so it cannot tell whether the running containers are older — fix: restore docker/Dockerfile or make it readable, then re-run");
+    } finally {
+      chmodSync(join(locked, "docker"), 0o755);
+    }
   });
 
   it("skips when no commit touches the inputs or the listing cannot be read", () => {

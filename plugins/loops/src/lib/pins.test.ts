@@ -79,12 +79,10 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["dockerfile", "node", { Dockerfile: "FROM node:22.0.0-rc.1-alpine\nFROM node:22.0.0-rc.1\n" }, ["22.0.0-rc.1", "22.0.0-rc.1"]], // a prerelease survives variant stripping
   ["dockerfile", "terraform", { Dockerfile: "FROM hashicorp/terraform:1.10.0-rc1\n" }, ["1.10.0-rc1"]],
   ["dockerfile", "python", { Dockerfile: "FROM python:3.13.0rc1-slim\nFROM python:3.12-slim-bookworm\n" }, ["3.13.0rc1", "3.12"]],
-  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20-alpine\n" }, ["20"]], // an ARG variant is not a prerelease
-  ["dockerfile", "python", { Dockerfile: "ARG PYTHON_VERSION=3.12.4-slim-bookworm\nFROM python:${PYTHON_VERSION}\n" }, ["3.12.4"]],
   ["dockerfile", "node", { Dockerfile: 'ARG NODE_VERSION="20.11.0"\nFROM node:${NODE_VERSION}-alpine\n' }, ["20.11.0"]], // a quoted ARG value
   ["dockerfile", "go", { Dockerfile: "ARG GO_VERSION='1.26.1'\nFROM golang:${GO_VERSION}\n" }, ["1.26.1"]],
   ["dockerfile", "node", { Dockerfile: 'ARG NODE_VERSION="18"\nFROM node:20\n' }, ["20", "18"]], // a quoted ARG beside a FROM tag is still seen
-  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=\"20-dev\"\n" }, ["20"]],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=\"20-dev\"\n" }, ["20-dev"]], // an ARG value is classified as written: a bare -dev there is a prerelease
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - { uses: actions/setup-go@v5, with: { go-version: '1.25' } }\n") }, ["1.25"]], // a flow-mapped step is read
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: { go-version: '1.25',\n          cache: true }\n") }, ["1.25"]], // a multi-line flow map is read
   ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version:\n            18")) }, ["18"]], // value on the next line
@@ -114,6 +112,19 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["goreleaser-action", "goreleaser", { ".github/workflows/ci.yml": WF("      - uses: goreleaser/goreleaser-action@v6\n        with:\n          version: '~> v2.5'\n") }, ["2.5"]],
   ["python-version", "python", { ".python-version": "# pinned\n3.12.1\n3.11.7\n" }, ["3.12.1"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": "jobs:\n  a:\n    env:\n      x: &go { uses: actions/setup-go@v5, with: { go-version: '1.26.1' } }\n    steps:\n      - *go\n" }, ["1.26.1"]], // an aliased step
+  // An ARG value is a pin by the classifier every reader uses: as written, with no version taken out of other text.
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20.11.0\n" }, ["20.11.0"]],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20\n" }, ["20"]],
+  // A FROM tag with a literal version before the `$` reads that version, variants dropped as for other tags.
+  ["dockerfile", "node", { Dockerfile: "FROM node:18-${DISTRO}\n" }, ["18"]],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20.11.0\nFROM node:${NODE_VERSION}-alpine\n" }, ["20.11.0"]], // a tag starting with `$` is skipped, its ARG read
+  // The pin-only readers accept every pin form the classifier accepts.
+  ["tool-versions", "node", { ".tool-versions": "nodejs =20.11.1\n" }, ["20.11.1"]],
+  ["tool-versions", "node", { ".tool-versions": "nodejs ~20.11\n" }, ["20.11"]],
+  ["tool-versions", "node", { ".tool-versions": "nodejs ^20\n" }, ["20"]],
+  ["tool-versions", "go", { ".tool-versions": "go 1.26.x\n" }, ["1.26"]],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{"volta":{"node":"=20.11.1"}}' }, ["20.11.1"]],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{"volta":{"node":"^20"}}' }, ["20"]],
 ];
 
 describe("readSource hits", () => {
@@ -277,6 +288,25 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{\n  "name": "lts",\n  "engines": { "node": ">=20" },\n  "volta": {\n    "node": "lts"\n  }\n}\n' }, unsupported("lts", "package.json", 5)],
   ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-python@v5\n        with:\n          python-version-file: Pipfile\n"), Pipfile: '[requires]\npython_version = "latest"\n' }, unsupported("latest", "Pipfile", 2)],
   ["setup-go", "go", { ".github/workflows/ci.yml": "x: &w { go-version: '1.1' }\njobs:\n  a:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          <<: *w\n          cache: true\n" }, /merge key/],
+  // An ARG value that is not a pin by the classifier is unsupported: no version is taken out of a range, a variable or text.
+  ["dockerfile", "node", { Dockerfile: 'ARG NODE_VERSION="20 || 22"\n' }, unsupported("20 || 22", "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20${SUFFIX}\nFROM node:${NODE_VERSION}\n" }, unsupported("20${SUFFIX}", "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=${NODE_MAJOR}\n" }, unsupported("${NODE_MAJOR}", "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "FROM node:20\nARG NODE_VERSION=\n" }, unsupported("", "Dockerfile", 2)],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=latest\n" }, unsupported("latest", "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "ARG NODE_VERSION=20-alpine\n" }, unsupported("20-alpine", "Dockerfile", 1)], // a variant in an ARG is other text
+  ["dockerfile", "python", { Dockerfile: "ARG PYTHON_VERSION=3.12.4-slim-bookworm\nFROM python:${PYTHON_VERSION}\n" }, unsupported("3.12.4-slim-bookworm", "Dockerfile", 1)],
+  // A `$` tag that does not start with a literal version is unsupported.
+  ["dockerfile", "node", { Dockerfile: "FROM node:lts-${X}\n" }, unsupported("node:lts-${X}", "Dockerfile", 1)],
+  // A range in a pin-only reader is unsupported, at its file and line.
+  ["tool-versions", "node", { ".tool-versions": "# node\nnodejs >=20\n" }, unsupported(">=20", ".tool-versions", 2)],
+  ["go-mod", "go", { "go.mod": "module x\n\ngo >=1.20\n" }, unsupported(">=1.20", "go.mod", 3)],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{\n  "volta": {\n    "node": "^20.11"\n  }\n}\n' }, unsupported("^20.11", "package.json", 3)],
+  // An empty or comment-only plain version file holds no version: a FAIL, also as one of several glob matches.
+  ["nvmrc", "node", { ".nvmrc": "" }, /no version in \.nvmrc/],
+  ["python-version", "python", { ".python-version": "# none yet\n\n" }, /no version in \.python-version/],
+  ["nvmrc:**/.nvmrc", "node", { "a/.nvmrc": "20\n", "b/.nvmrc": "# none\n" }, /no version in b\/\.nvmrc/],
+  ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: .nvmrc")), ".nvmrc": "\n" }, /no version in \.nvmrc/],
 ];
 
 describe("readSource misses", () => {
@@ -339,7 +369,7 @@ describe("compare modes", () => {
 
   it("a Dockerfile image variant is no prerelease, but a hyphenated rc image is", () => {
     const root = tmp();
-    put(root, "Dockerfile", "ARG PYTHON_VERSION=3.12.4-slim-bookworm\nFROM node:22.0.0-rc.1-alpine\n");
+    put(root, "Dockerfile", "FROM python:3.12.4-slim-bookworm\nFROM node:22.0.0-rc.1-alpine\n");
     expect(disagreement([v("python-version:.python-version", "3.12.4"), ...readSource(root, ["Dockerfile"], "python", "dockerfile")], "exact")).toBeNull();
     expect(disagreement([v("nvmrc:.nvmrc", "22.0.0"), ...readSource(root, ["Dockerfile"], "node", "dockerfile")], "exact")).toBe("nvmrc:.nvmrc=22.0.0, dockerfile:Dockerfile=22.0.0-rc.1 disagree (exact)");
   });
@@ -476,7 +506,7 @@ describe("workflow step shapes", () => {
 
 describe("Dockerfile image variants", () => {
   it.each([
-    ["node", "FROM cgr.dev/chainguard/node:20-dev AS build\nFROM cgr.dev/chainguard/node:20\nARG NODE_VERSION=20.11-dev\n", ["20", "20", "20.11"]],
+    ["node", "FROM cgr.dev/chainguard/node:20-dev AS build\nFROM cgr.dev/chainguard/node:20\nFROM cgr.dev/chainguard/node:20.11-dev\n", ["20", "20", "20.11"]],
     ["python", "FROM cgr.dev/chainguard/python:3.12-dev\nFROM cgr.dev/chainguard/python:3.12.4-dev-slim\n", ["3.12", "3.12.4"]],
   ])("a bare -dev tag is the Chainguard dev variant, not a prerelease (%s)", (tool, dockerfile, want) => {
     expect(read("dockerfile", tool, { Dockerfile: dockerfile })).toEqual(want);
@@ -580,6 +610,14 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["an indented ARG", "FROM node:20.11.0\n  ARG NODE_VERSION=lts\n", unsupported("lts", "Dockerfile", 2)],
     ["the tool's ARG as a second key", "ARG BASE=x NODE_VERSION=lts\n", unsupported("lts", "Dockerfile", 1)],
     ["the tool's ARG on a continued line", "ARG BASE=x \\\n    NODE_VERSION=lts\n", unsupported("lts", "Dockerfile", 2)],
+    // A comment line is never continued: a FROM after `# note \\` is its own instruction.
+    ["a FROM after a comment ending in a backslash", "# note \\\nFROM node:latest\n", /unsupported form "node:latest" in Dockerfile:2; pin an exact version/],
+    // An empty line inside a continuation is dropped, so the continuation goes on to the image.
+    ["a continued FROM across an empty line", "FROM \\\n\n  node:latest\n", /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
+    // The line is the image's, not the line an AS clause on a continuation line ends on.
+    ["a tagless FROM with AS on a continuation line", "FROM node \\\n    AS x\n", /unsupported form "node" in Dockerfile:1; pin an exact version/],
+    ["an unterminated heredoc (Docker rejects it too)", "FROM node:20\nRUN <<EOF\nFROM node:latest\n", /unterminated heredoc <<EOF in Dockerfile:2/],
+    ["a heredoc that ends before a FROM", "FROM node:20\nRUN <<EOF\necho hi\nEOF\nFROM node:latest\n", /unsupported form "node:latest" in Dockerfile:5; pin an exact version/],
   ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
   it("reads every NAME=value pair on an ARG line for the tool", () =>
     fails("dockerfile", "python", { Dockerfile: "ARG NODE_VERSION=20 PYTHON_VERSION=latest\n" }, unsupported("latest", "Dockerfile", 1)));
@@ -588,6 +626,12 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["a continued FROM", "FROM \\\n  node:20.11.0 AS a\n", ["20.11.0"]],
     ["a second-key ARG", 'ARG BASE=x NODE_VERSION="20.11.0"\n', ["20.11.0"]],
     ["a FROM word inside a continued RUN is not an instruction", "FROM node:20\nRUN echo \\\n  FROM node\n", ["20"]],
+    // A comment line inside a continuation is dropped without ending it.
+    ["an instruction after a continuation with a comment in it", "RUN a \\\n# c\n    && b\nFROM node:18\n", ["18"]],
+    ["a FROM word after a comment inside a continued RUN", "FROM node:20\nRUN a \\\n# c\n    FROM node:latest\n", ["20"]],
+    // A heredoc body is not instructions.
+    ["a FROM in a RUN heredoc body", "FROM node:20\nRUN <<EOF\nFROM node:latest\nEOF\n", ["20"]],
+    ["a FROM in a quoted <<- heredoc body", "FROM node:20\nRUN cat <<-\"EOT\" > /x\n\tFROM node:latest\n\tEOT\nFROM node:18\n", ["20", "18"]],
   ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });
 
