@@ -92,9 +92,10 @@ const plain: Parser = (text, tool, _root, file) => {
   if (!f) throw unsupported(lines[i]!, file, i + 1);
   return [f];
 };
+/** The `toolchain` directive, else `go`: its whole value up to a `//` comment is the pin. */
 const goMod: Parser = (text, tool, _root, file) => {
-  const m = tool === "go" ? (/^toolchain\s+go(\S+)/m.exec(text) ?? /^go\s+(\S+)/m.exec(text)) : null;
-  return m ? pinAt(m[1]!, tool, file, lineAt(text, m.index)) : [];
+  const m = tool === "go" ? (/^toolchain[ \t]+go([^\r\n]*)/m.exec(text) ?? /^go[ \t]+([^\r\n]*)/m.exec(text)) : null;
+  return m ? pinAt(m[1]!.replace(/\/\/.*/, "").trim(), tool, file, lineAt(text, m.index)) : [];
 };
 type Pkg = { engines?: Record<string, unknown>; volta?: Record<string, unknown> };
 const pkg = (text: string): Pkg => {
@@ -162,17 +163,49 @@ const pipfile: Parser = (text, tool, _root, file) => {
 /** In an image tag a bare `-dev` right after the version is the Chainguard/Wolfi dev variant (`20-dev`, `3.12-dev-slim`),
  * not a prerelease; `-dev.1` still is one. */
 const imageTag = (t: string): string => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
-/** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. */
-const tagVer = (t: string): string | null => (/^v?\d/i.test(t) ? ver(imageTag(t)) : null);
+/** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. Before a `$`
+ * the version must be complete, ended by a variant separator (`18-${DISTRO}`, `20-alpine${X}`): a `$` that may continue
+ * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`) leaves it unknown. */
+const tagVer = (t: string): string | null => {
+  const lit = imageTag(t.split("$")[0]!);
+  const v = /^v?\d/i.test(lit) ? ver(lit) : null;
+  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+};
 /** A Dockerfile instruction as Docker reads it: its text and, for each character, the 1-based physical line it is on. */
 type Logical = { text: string; lines: number[] };
 /** Docker's logical lines: a line ending in `\` continues; a full-line comment is dropped and never continued (inside a
  * continuation it is dropped without ending it), as is an empty line inside a continuation; the body of a RUN, COPY or
- * ADD heredoc (`<<EOF`, `<<-"EOF"`, `<<\EOF`; not a `<<` inside quotes) is skipped up to its delimiter line. An unterminated heredoc is a FAIL. */
+ * ADD heredoc (`<<EOF`, `<<-"EOF"`, `<<\EOF`, `<<E"OF"`; not a `<<` inside quotes) is skipped up to its delimiter line.
+ * An unterminated heredoc, also on an instruction still open at EOF, is a FAIL, and so is an `escape` parser directive
+ * other than `\` (only the default escape is read). */
 const logicalLines = (text: string, file: string): Logical[] => {
-  const phys = text.split("\n").map((l) => l.replace(/\r$/, ""));
+  const phys = text.replace(/^\uFEFF/, "").split("\n").map((l) => l.replace(/\r$/, ""));
+  // Parser directives are the leading `# name=value` lines, before any blank line, other comment or instruction.
+  for (let i = 0; i < phys.length; i++) {
+    const d = /^\s*#\s*([a-z]+)\s*=\s*(.*?)\s*$/i.exec(phys[i]!);
+    if (!d) break;
+    if (d[1]!.toLowerCase() === "escape" && d[2] !== "\\") throw unsupported(`escape=${d[2]}`, file, i + 1);
+  }
   const out: Logical[] = [];
+  /** Add a finished instruction that ends on physical line index `i`; returns the index reading resumes after. */
+  const close = (ins: Logical, i: number): number => {
+    if (!ins.text.trim()) return i;
+    out.push(ins);
+    // Docker's heredoc word, matched on shell words (quotes kept, so a `<<` inside quotes is not one): `<<` or `<<-`
+    // and a name, whose quotes and backslashes are removed as the shell removes them; only RUN, COPY and ADD take one.
+    if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) return i;
+    for (const w of ins.text.match(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/g) ?? []) {
+      const h = /^\d*<<(-?)([^<]+)$/.exec(w);
+      const name = h?.[2]!.replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'|\\(.)/g, (_q, dq?: string, sq?: string, esc?: string) => dq?.replace(/\\(.)/g, "$1") ?? sq ?? esc ?? "");
+      if (!h || !name) continue;
+      const start = i;
+      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== name);
+      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${name} in ${file}:${start + 1}`);
+    }
+    return i;
+  };
   let cur: Logical | null = null;
+  let end = 0; // the last physical line `cur` took text from
   for (let i = 0; i < phys.length; i++) {
     const line = phys[i]!;
     if (/^\s*#/.test(line) || (cur && !line.trim())) continue;
@@ -180,30 +213,19 @@ const logicalLines = (text: string, file: string): Logical[] => {
     const body = cont ? line.slice(0, cont.index) : line;
     cur ??= { text: "", lines: [] };
     cur.text += body;
-    cur.lines.push(...new Array<number>(body.length).fill(i + 1)); // per UTF-16 unit, as the text is indexed
+    for (let k = 0; k < body.length; k++) cur.lines.push(i + 1); // per UTF-16 unit, as the text is indexed
+    end = i;
     if (cont) continue;
-    const ins: Logical = cur;
+    i = close(cur, i);
     cur = null;
-    if (!ins.text.trim()) continue;
-    out.push(ins);
-    // Docker's heredoc word, matched on shell words (quotes kept, so a `<<` inside quotes is not one): `<<` or `<<-`
-    // and a name, which may be quoted or backslash-escaped; only RUN, COPY and ADD take one.
-    if (!/^\s*(?:RUN|COPY|ADD)\s/i.test(ins.text)) continue;
-    for (const w of ins.text.match(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/g) ?? []) {
-      const h = /^\d*<<(-?)([^<]+)$/.exec(w);
-      const name = h?.[2]!.replace(/^(["'])(.*)\1$/, "$2").replace(/\\/g, "");
-      if (!h || !name) continue;
-      const start = i;
-      while (++i < phys.length && (h[1] ? phys[i]!.replace(/^\t+/, "") : phys[i]) !== name);
-      if (i >= phys.length) throw new PinError(`unterminated heredoc <<${name} in ${file}:${start + 1}`);
-    }
   }
-  if (cur?.text.trim()) out.push(cur);
+  if (cur) close(cur, end);
   return out;
 };
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
- * with `$` is skipped (its ARG is the pin); a tag with a literal version and a variant separator before its `$` (`18-${DISTRO}`) is that version;
- * no tag, a digest only or any other tag is unsupported. An ARG value must be a pin as written (quotes stripped). */
+ * with `$` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its `$`
+ * (`18-${DISTRO}`) is that version; no tag, a digest only or any other tag is unsupported. An ARG value is its whole shell
+ * word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not `"20"${SUFFIX}`). */
 const dockerfile: Parser = (text, tool, _root, file) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
@@ -217,7 +239,7 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
-    const v = tag && !/[\d.]\$/.test(tag) ? tagVer(tag.split("$")[0]!) : null; // a `$` that continues the version is unknown
+    const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
   }
@@ -226,9 +248,9 @@ const dockerfile: Parser = (text, tool, _root, file) => {
   for (const l of logical) {
     const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
     if (!m) continue;
-    for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=("[^"]*"|'[^']*'|\S*)/g)) {
+    for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
       if (p[1]!.toUpperCase() !== key) continue;
-      const v = p[2]!.replace(/^(["'])(.*)\1$/, "$2"); // `"20.11.0"` is `20.11.0`
+      const v = p[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
       out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + p[0].length - p[2]!.length)));
     }
   }

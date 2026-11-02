@@ -42,6 +42,8 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["dockerfile", "node", { Dockerfile: "FROM node:22.0.0-bookworm-slim\nFROM node:20-alpine3.20\n" }, ["22.0.0", "20"]], // an image variant is not a prerelease
   ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25\n" }, ["1.25"]],
   ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25\ntoolchain go1.25.4\n" }, ["1.25.4"]],
+  ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25 // the floor\ntoolchain go1.25.4 // pinned\r\n" }, ["1.25.4"]], // a `//` comment ends the value
+  ["go-mod", "go", { "go.mod": "module x\n\ngo ~> v1\n" }, ["1"]], // the whole value, operator and all, is classified
   // engines is always a range: its raw value is reported, never reduced to a bound (rows that tested bound math are retired).
   ["engines", "node", { "package.json": '{"engines":{"node":">=20.1 <23"}}' }, ["range >=20.1 <23"]],
   ["engines", "node", { "package.json": '{"engines":{"node":"^20 || ^18"}}' }, ["range ^20 || ^18"]],
@@ -301,6 +303,16 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   // A `$` that continues the version (no variant separator before it) leaves the version unknown, as an ARG value does.
   ["dockerfile", "node", { Dockerfile: "ARG NODE_MINOR=11\nFROM node:20.${NODE_MINOR}.0\n" }, unsupported("node:20.${NODE_MINOR}.0", "Dockerfile", 2)],
   ["dockerfile", "node", { Dockerfile: "FROM node:20${SUFFIX}\n" }, unsupported("node:20${SUFFIX}", "Dockerfile", 1)],
+  // So does a `$` after a prerelease word: the version is complete only once a variant separator ends it.
+  ["dockerfile", "python", { Dockerfile: "FROM python:3.13rc${BUILD}\n" }, unsupported("python:3.13rc${BUILD}", "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "FROM node:22-rc${N}\n" }, unsupported("node:22-rc${N}", "Dockerfile", 1)],
+  // An ARG value is its whole shell word: quotes may wrap the whole value only, so text joined to a quoted part is not a pin.
+  ["dockerfile", "node", { Dockerfile: 'ARG NODE_VERSION="20"${SUFFIX}\n' }, unsupported('"20"${SUFFIX}', "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: 'ARG NODE_VERSION="2""2"\n' }, unsupported('"2""2"', "Dockerfile", 1)],
+  ["dockerfile", "node", { Dockerfile: "ARG B=1 NODE_VERSION='20'.11.1\n" }, unsupported("'20'.11.1", "Dockerfile", 1)],
+  // A go or toolchain directive is its whole value up to a `//` comment: text after the version is not a pin.
+  ["go-mod", "go", { "go.mod": "module x\n\ngo 1.26 latest\n" }, unsupported("1.26 latest", "go.mod", 3)],
+  ["go-mod", "go", { "go.mod": "module x\n\ngo 1.25\ntoolchain go1.26.1 local\n" }, unsupported("1.26.1 local", "go.mod", 4)],
   // A range in a pin-only reader is unsupported, at its file and line.
   ["tool-versions", "node", { ".tool-versions": "# node\nnodejs >=20\n" }, unsupported(">=20", ".tool-versions", 2)],
   ["go-mod", "go", { "go.mod": "module x\n\ngo >=1.20\n" }, unsupported(">=1.20", "go.mod", 3)],
@@ -636,6 +648,14 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["a << word on a LABEL is no heredoc", "FROM node:20\nLABEL <<EOF\nFROM node:latest\n", /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
     // The line is counted in UTF-16 units, as the instruction text is indexed: a character outside the BMP shifts nothing.
     ["an ARG value after an emoji on a continued line", 'ARG A="🙂🙂🙂🙂" NODE_VERSION=lts \\\n  B=1\n', unsupported("lts", "Dockerfile", 1)],
+    // An instruction still open at EOF gets the same heredoc check as any other.
+    ["a heredoc opened on a continuation left open at EOF", "FROM node:20\nRUN <<EOF \\\n", /unterminated heredoc <<EOF in Dockerfile:2/],
+    // A line of any length is read: the line map grows without a spread.
+    ["a FROM after a 500,000-character RUN line", `FROM node:20\nRUN ${"a".repeat(500_000)}\nFROM node:latest\n`, /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
+    // Only the default `\` escape is read: a parser directive that changes it is unsupported, at its line.
+    ["a backtick escape directive", "# escape=`\nFROM node:20\n", unsupported("escape=`", "Dockerfile", 1)],
+    ["an escape directive after a byte-order mark", "\uFEFF# escape=`\nFROM node:20\n", unsupported("escape=`", "Dockerfile", 1)],
+    ["a spaced escape directive after a syntax directive", "# syntax=docker/dockerfile:1\n#  ESCAPE = `\nFROM node:20\n", unsupported("escape=`", "Dockerfile", 2)],
   ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
   it("reads every NAME=value pair on an ARG line for the tool", () =>
     fails("dockerfile", "python", { Dockerfile: "ARG NODE_VERSION=20 PYTHON_VERSION=latest\n" }, unsupported("latest", "Dockerfile", 1)));
@@ -660,6 +680,13 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["a FROM in a single-quoted heredoc body", "FROM node:20\nRUN cat <<'EOF'\nFROM node:latest\nEOF\n", ["20"]],
     ["a FROM in a heredoc body under CRLF endings", "FROM node:20\r\nRUN <<EOF\r\nFROM node:latest\r\nEOF\r\nFROM node:18\r\n", ["20", "18"]],
     ["a FROM in a heredoc whose name has a dash", "FROM node:20\nRUN <<END-OF-SCRIPT\nFROM node:latest\nEND-OF-SCRIPT\n", ["20"]],
+    ["a FROM in a heredoc whose name is partly quoted", 'FROM node:20\nRUN <<E"OF"\nFROM node:latest\nEOF\n', ["20"]],
+    // A version a variant separator ends is complete, wherever the `$` comes after it.
+    ["a FROM with a variable after a variant word", "FROM node:20-alpine${ALPINE}\n", ["20"]],
+    // An escape directive of `\`, one after a blank line and one after an instruction are not changes of escape.
+    ["a FROM after a backslash escape directive", "# escape=\\\nFROM node:20\n", ["20"]],
+    ["a FROM after an escape comment past a blank line", "\n# escape=`\nFROM node:20\n", ["20"]],
+    ["a FROM before an escape comment", "FROM node:20\n# escape=`\n", ["20"]],
   ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });
 
