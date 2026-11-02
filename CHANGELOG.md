@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.6.0] - 2026-11-02
+
+`loops env-check` `a.pins` compares exact pins only. Ranges are reported, not compared, and a value loops cannot read as a pin or a range is a FAIL that names its file and line. The README's pin source matrix is the only list of supported forms, and a test checks it against the code. Two fail-open paths from 0.5.0 now fail closed.
+
+### Changed
+
+- `a.pins.<tool>` compares only exact pins (one version or one series, such as `20.11.1`, `1.26`, `1.26.x`, `~1.26`, `^1`), pairwise at the `compare` depth. Range sources never enter the comparison: `engines.<tool>`, `requires-python`, Poetry's `python`, a range in a Pipfile, and a range in a `setup-*`, `golangci-lint-action` or `goreleaser-action` input. Each distinct range adds one INFO row, `<source>: "<value>" is a range, not compared`, after the verdict.
+- Behavior change: with no exact pin among a tool's sources (for example `engines` only, or `pyproject.toml` only), `a.pins.<tool>` FAILs `no exact pin among sources (…); pin an exact version in a supported source`, and no `a.local.<tool>` row is reported. 0.5.0 passed on the floor.
+- Behavior change: a pin below an `engines` range is no longer a FAIL (`.nvmrc` 18.2.0 with `engines.node` >=20.0.0 now PASSes, with an INFO row), and `a.local` no longer checks the local toolchain against an `engines` floor. A planned `a.range` check will cover a pin inside a range.
+- Behavior change: an unsupported form is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact version`. This covers aliases (`lts/*`, `latest`, `node`, `stable`, `system`), `ref:` and `path:`, words such as `pypy3.9`, a version followed by other text, and a Dockerfile `FROM` of the tool image with no tag, a digest only or a non-version tag. A `latest` input used to be skipped, and a tagless `FROM` used to be ignored. A `FROM` tag built from a build arg (`node:${NODE_VERSION}`) is still skipped, and its `ARG` is read instead. Dockerfile `FROM` and `ARG` lines may now be indented or continued with a backslash, and every `NAME=value` on an `ARG` line is read.
+- Behavior change: a `setup-*` direct input that is a range (`>=20`, `~=3.12`) is an INFO row. It was a FAIL `is a range`. Plain version files (`.nvmrc`, `.node-version`, `.python-version`, `.go-version`) still FAIL on a range.
+- Behavior change: a `<tool>-version-file` is read only when its file name is supported: `go.mod`, `go.work`, `.tool-versions`, `package.json`, `pyproject.toml`, `Pipfile`, `.nvmrc`, `.node-version`, `.python-version` or `.go-version`. Any other name is an unsupported FAIL. 0.5.0 read it as a plain version file. A `volta.<tool>` value that is not a string is a FAIL, and the reader no longer falls back to `engines`.
+- `compare = "floor"` is removed and is now a config error (exit 2). Use `exact`, `minor` or `major`.
+- Behavior change: a non-zero exit from `docker compose version` is a SKIP (`compose unavailable`) only when stderr shows the compose plugin is missing (`unknown flag: --short`, `'compose' is not a docker command`, `unknown command: docker compose`). Any other non-zero exit is an `e.project` FAIL that withholds the name. 0.5.0 read every non-zero exit as a SKIP.
+- Behavior change: `b.containers` counts a running container whose `CreatedAt` loops cannot read as stale, and says so. It used to count it as fresh. A failed or garbled `git log` over tracked `[compose] inputs` is now reported at the `containers` level, where it used to be a SKIP `no commit touches the [compose] inputs`. Empty `git log` output is still a SKIP.
+
+### Removed
+
+- The hand-written range math in `pins.ts` (engines, PEP 440 and Poetry lower bounds, exclusive and prerelease bounds) and the floor compare mode.
+
 ## [loops 0.5.0] - 2026-11-01
 
 `loops env-check` `e.project` asks Compose for every project name instead of re-implementing Compose's rules, and checks the configured run and the plain runs from the first file's directory and the checkout root. The outcome changes against 0.4.1 are listed under Changed; the README's Compose project contract is the whole rule.
