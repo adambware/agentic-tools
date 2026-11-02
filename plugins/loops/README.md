@@ -459,8 +459,9 @@ timeout_s = 15
 depth, and the pin is the most specific one. A range is never compared: after the verdict, each distinct
 (source, value) range adds one INFO row `range, not compared`. When every source yields only ranges,
 `a.pins.<tool>` is a FAIL (`no exact pin among sources (...); pin an exact version in a supported source`) and no
-`a.local.<tool>` row runs. A value in the "anything else" column, or a `<tool>-version-file` name missing from
-the second table, is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact version`. `compare =
+`a.local.<tool>` row runs. A value in the "anything else" column is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact
+version`; a `<tool>-version-file` name missing from the second table is a FAIL `unsupported form: <tool>-version-file
+<name> in <workflow>:<line> is not a supported version file (...); pin an exact version`. `compare =
 "floor"` was removed in 0.6.0 (exit 2); checking that a pin falls inside a range is a later `a.range` check.
 These two tables are the only list of supported forms.
 
@@ -475,7 +476,7 @@ series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2` (and node's `=20.11.
 | `python-version` | `.python-version` | as `nvmrc`, without node's `=` (`=3.12.1` is a range) | none (FAIL, as `nvmrc`) | FAIL unsupported: `system`, `pypy3.9-7.3.11` |
 | `go-mod` | `go.mod` | `toolchain goX`, else `go X` | none | FAIL unsupported (`go stable`) |
 | `engines` | `package.json` | none | `engines.<tool>`, always, even an exact-looking `20.11.0` | missing or not a string: FAIL |
-| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>`; a tag containing `$` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`) |
+| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>`; a tag containing `$` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`) |
 | `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable` |
 | `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current` |
 | `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table) | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0` |
@@ -604,7 +605,7 @@ later of the newest commit touching the inputs and the inputs' modification time
 merge or checkout that brings in an older-dated commit, or an uncommitted edit, still counts (a
 checkout that rewrites an unchanged input can flag a fresh container; recreate the containers to clear it,
 since a rebuild that hits the build cache leaves them running).
-A container older than that change, or whose creation time loops cannot read, is `containers` severity (FAIL by default); so is
+A container older than that change, or whose creation time loops cannot read, is `containers` severity (FAIL by default; when a stale container's time is unreadable the fix also says to set `[compose] containers = "warn"`, since recreating the stack prints the same unreadable time); so is
 a `git log` over the inputs that fails or prints no time (an empty log is the SKIP). The fix recreates the stack the
 way it was started, run from the checkout root:
 `docker compose -p <project> -f <file>... [--project-directory <dir>] [--env-file <file>]... up -d --build --force-recreate`.

@@ -478,7 +478,8 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   if (wd && rel(wd) !== normalize(dirname(fs[0]!))) args.push(` --project-directory ${quote(rel(wd))}`);
   if (envFile) args.push(...split(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
   // A cache-hit `--build` leaves a container whose inputs were only rewritten Running, still stale by mtime.
-  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate`;
+  // A recreated container prints the same unreadable time, so recreating cannot clear that case: name the escape too.
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
   const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
   return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs${why}`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }

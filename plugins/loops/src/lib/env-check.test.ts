@@ -1751,6 +1751,12 @@ describe("b.containers", () => {
     const mixed = b(root, [], fake(listing(ctr(root, "db-1", "2000-01-01T00:00:00Z"), raw("web-1", "not a time")), [], prod(root)));
     expect(mixed).toContain("(loops cannot read the creation time of web-1)");
     expect(mixed).toMatch(/db-1.*web-1|web-1.*db-1/);
+    // Recreating the stack cannot clear an unreadable time (it prints the same text), so the fix also names the severity escape.
+    const escape = '; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in .loops/env-check.toml';
+    expect(garbled.out).toContain(`--force-recreate${escape}`);
+    expect(mixed).toContain(escape);
+    // Every stale container readable: recreating clears it, so the fix is the recreate command alone.
+    expect(b(root, [], fake(listing(ctr(root, "db-1", "2000-01-01T00:00:00Z")), [], prod(root)))).not.toContain("CreatedAt");
     // At the warn level it is a WARN.
     const warn = setup(cfg('containers = "warn"\n'), files);
     commit(warn);

@@ -591,6 +591,19 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
   ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });
 
+describe("a tagless FROM naming an earlier stage alias is a stage reference", () => {
+  it("skips the reference and keeps the tool image's pin", () =>
+    expect(read("dockerfile", "node", { Dockerfile: "FROM node:20.11.0 AS node\nFROM node AS runtime\n" })).toEqual(["20.11.0"]));
+  it("matches the alias case-insensitively", () =>
+    expect(read("dockerfile", "node", { Dockerfile: "FROM node:20.11.0 AS Node\nFROM node AS runtime\n" })).toEqual(["20.11.0"]));
+  it("reads no node version from a stage that aliases another image", () =>
+    fails("dockerfile", "node", { Dockerfile: "FROM alpine AS node\nFROM node AS runtime\n" }, /no node version found/));
+  it("still fails a tagless tool image when no earlier stage has that alias", () =>
+    fails("dockerfile", "node", { Dockerfile: "FROM node AS build\n" }, /unsupported form "[^"]*node[^"]*" in Dockerfile:1; pin an exact version/));
+  it("does not take a later alias as a reference", () =>
+    fails("dockerfile", "node", { Dockerfile: "FROM node\nFROM alpine AS node\n" }, /unsupported form "[^"]*node[^"]*" in Dockerfile:1; pin an exact version/));
+});
+
 describe("package.json volta is a pin or unsupported, never skipped", () => {
   const CI = ".github/workflows/ci.yml";
   it.each([

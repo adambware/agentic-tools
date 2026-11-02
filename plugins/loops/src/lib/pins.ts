@@ -173,9 +173,12 @@ const dockerfile: Parser = (text, tool, _root, file) => {
   // Docker allows indentation before an instruction and joins a line ending in `\`; the join keeps every offset, so a
   // match's index is still its place in `text`.
   const joined = text.replace(/\\[ \t]*\r?\n/g, (s) => " ".repeat(s.length));
-  for (const m of joined.matchAll(/^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*(\S+)/gim)) {
+  const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
+  for (const m of joined.matchAll(/^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*(\S+)(?:[ \t]+AS[ \t]+(\S+))?/gim)) {
     const [name = "", tag = ""] = m[1]!.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
-    if (name === (IMAGE[tool] ?? tool) && !tag.includes("$")) take(tag ? tagVer(tag) : null, m[1]!, m.index + m[0].length - m[1]!.length);
+    const stageRef = m[1] === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
+    if (m[2]) stages.add(m[2].toLowerCase());
+    if (!stageRef && name === (IMAGE[tool] ?? tool) && !tag.includes("$")) take(tag ? tagVer(tag) : null, m[1]!, m.index + m[0].length - m[1]!.length);
   }
   // `ARG A=1 B=2` declares each pair: the tool's may be any of them.
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
