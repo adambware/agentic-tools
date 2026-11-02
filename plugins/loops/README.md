@@ -16,7 +16,7 @@ from GitHub via `gh`; without one, everything stays local.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.5.0","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.6.0","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
@@ -457,7 +457,7 @@ timeout_s = 15
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
 depth, and the pin is the most specific one. A range is never compared: after the verdict, each distinct
-(source, value) range adds one INFO row `range, not compared`. When every source yields only ranges,
+(source, value) range adds one INFO row `<source>: "<value>" is a range, not compared`. When every source yields only ranges,
 `a.pins.<tool>` is a FAIL (`no exact pin among sources (...); pin an exact version in a supported source`) and no
 `a.local.<tool>` row runs. A value in the "anything else" column is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact
 version`; a `<tool>-version-file` name missing from the second table is a FAIL `unsupported form: <tool>-version-file
