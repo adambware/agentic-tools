@@ -8148,9 +8148,19 @@ var run = (cmd, args, opts = {}) => {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024
   });
-  const timedOut = r.error?.code === "ETIMEDOUT";
-  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut };
+  const errCode = r.error?.code;
+  const timedOut = errCode === "ETIMEDOUT";
+  const abend = r.status === null ? errCode ?? r.signal ?? void 0 : void 0;
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
 };
+function shQuote(s) {
+  return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+function redactHome(s, home) {
+  if (home.length <= 1) return s;
+  const q = `'${home}`;
+  return s.split(`${q}/`).join("~/'").split(`${q}'`).join("~").split(home).join("~");
+}
 function git(r, cwd, args) {
   const res2 = r("git", args, { cwd });
   return res2.code === 0 ? res2.stdout : null;
@@ -8506,8 +8516,8 @@ function setup(kind) {
         const job = deref(p.value);
         if ((0, import_yaml.isMap)(job)) lists.push(job.get("steps", true));
       }
-      const runs = deref(top.get("runs", true));
-      if ((0, import_yaml.isMap)(runs)) lists.push(runs.get("steps", true));
+      const runs2 = deref(top.get("runs", true));
+      if ((0, import_yaml.isMap)(runs2)) lists.push(runs2.get("steps", true));
     }
     const steps = /* @__PURE__ */ new Set();
     const out = [];
@@ -8597,7 +8607,7 @@ var belowFloor = (local, vals) => {
 var localOk = (local, pin, mode) => mode === "floor" ? cmp(local, pin) >= 0 : cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.4.1";
+var VERSION = "0.5.0";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -8702,7 +8712,64 @@ function parseConfig(text, file) {
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync, statSync as statSync2 } from "node:fs";
-import { basename as basename2, dirname, join as join3, relative, resolve } from "node:path";
+import { basename as basename2, dirname, isAbsolute as isAbsolute2, join as join3, normalize as normalize2, resolve } from "node:path";
+
+// src/lib/compose-config.ts
+var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
+var isSwitch = (k) => Object.hasOwn(REMOTE_OFF, k);
+var COMPOSE_CONFIG_TIMEOUT_MS = 1e4;
+var TOO_OLD = /^(?:docker: )?unknown flag:? --no-env-resolution\b/m;
+var WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
+var NO_FILE = "no configuration file provided: not found";
+function rerun(e) {
+  const unset = (e.scrubbed ?? []).map((n) => `-u ${shQuote(n)}`);
+  const off = Object.entries(REMOTE_OFF).map(([k, v]) => `${k}=${v}`);
+  return `cd ${shQuote(e.cwd)} && env ${[...unset, ...off].join(" ")} ${e.cmd}`;
+}
+var seconds = `${COMPOSE_CONFIG_TIMEOUT_MS / 1e3}s`;
+var abended = (r) => r.abend?.startsWith("SIG") || r.abend === "ENOBUFS" ? `was killed (${r.abend})` : `could not run (${r.abend ?? "no exit code"})`;
+function composeVersion(run2, cwd, env) {
+  const r = run2("docker", ["compose", "version", "--short"], { cwd, env, timeoutMs: COMPOSE_CONFIG_TIMEOUT_MS });
+  if (r.timedOut) return { error: `docker compose version timed out after ${seconds}` };
+  if (r.notFound) return { unavailable: "docker is not installed" };
+  if (r.code === null) return { error: `docker compose version ${abended(r)}` };
+  if (r.code !== 0) return { unavailable: `docker compose version exited ${r.code}` };
+  return { version: r.stdout.trim() };
+}
+function composeName(o) {
+  const scrubbed = o.scrub ? Object.keys(o.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort() : [];
+  const kept = o.scrub ? Object.fromEntries(Object.entries(o.env).filter(([k]) => !k.startsWith("COMPOSE_"))) : o.env;
+  const env = { ...kept, ...REMOTE_OFF };
+  const fileArgs = (o.files ?? []).flatMap((f) => ["-f", f]);
+  const args = ["compose", ...fileArgs, "config", "--no-env-resolution", "--format", "json"];
+  const r = o.run("docker", args, { cwd: o.root, env, timeoutMs: COMPOSE_CONFIG_TIMEOUT_MS });
+  const fail = (kind, how) => ({
+    error: `docker compose config ${how}`,
+    kind,
+    cmd: ["docker", "compose", ...fileArgs, "config", "--no-env-resolution", "-q"].map(shQuote).join(" "),
+    cwd: o.root,
+    ...scrubbed.length ? { scrubbed } : {}
+  });
+  if (r.timedOut) return fail("timeout", `timed out after ${seconds}`);
+  if (r.notFound) return fail("gone", "could not start (its directory is gone)");
+  if (r.code === null) return fail("abend", abended(r));
+  if (r.code !== 0) {
+    if (TOO_OLD.test(r.stderr)) return fail("tooOld", "is too old (needs --no-env-resolution)");
+    const rest = r.stderr.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n").trim();
+    return rest === NO_FILE ? { noFile: true } : fail("exit", `exited ${r.code}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(r.stdout);
+  } catch {
+    return fail("json", "printed invalid JSON");
+  }
+  const name = parsed?.name;
+  if (typeof name !== "string" || name === "") return fail("noName", "printed no project name");
+  return { name };
+}
+
+// src/lib/env-checks.ts
 var res = (level, id, message, fix) => ({ level, id, message, fix, source: "builtin" });
 var CFG = ".loops/env-check.toml";
 var rp = (p) => {
@@ -8833,191 +8900,147 @@ function isComposeFile(c, f) {
   const keys = docs.flatMap((d) => d ? Object.keys(d) : []);
   return keys.some((k) => COMPOSE_KEYS.includes(k)) || keys.some((k) => k !== "version") && keys.every(isMetaKey);
 }
+var normProject = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+var isProject = (s) => s !== "" && normProject(s) === s;
 var projectDir = (c, root) => dirname(resolve(root, c.cfg.compose.files[0]));
-var dotEnv = (c, root) => join3(projectDir(c, root), ".env");
 function derive(c, root) {
   const main2 = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename2(projectDir(c, root)));
   const hash = createHash("sha1").update(rp(root)).digest("hex").slice(0, 6);
   return `${norm(basename2(main2)) || "wt"}-${norm(basename2(root)).slice(0, 24)}-${hash}`;
 }
-function parseDotEnv(file, shell) {
-  let text;
+function runs(c, root) {
+  const { files } = c.cfg.compose;
+  let dir = projectDir(c, root);
+  while (!existsSync2(dir) && dir !== root) dir = dirname(dir);
+  const atRoot = rp(dir) === rp(root);
+  return [
+    ...files.every((f) => existsSync2(join3(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
+    { dir, pdir: dir, label: atRoot ? "root plain run" : "project-dir plain run" },
+    ...atRoot ? [] : [{ dir: root, pdir: root, label: "root plain run" }]
+  ];
+}
+var LABELS = ["", ".working_dir", ".config_files", ".environment_file"].map((l) => `{{json (.Label "com.docker.compose.project${l}")}}`);
+var PS_FORMAT = `[{{json .Names}},{{json .State}},{{json .CreatedAt}},${LABELS.join(",")}]`;
+function listContainers(c) {
+  const r = c.run("docker", ["ps", "-a", "--format", PS_FORMAT], { cwd: c.root, env: c.env, timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.timedOut) return { failed: `docker ps timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, timedOut: true };
+  if (r.code !== 0) return { failed: r.notFound ? "docker not found" : `docker ps exit ${r.code ?? r.abend ?? "abnormal"}`, timedOut: false };
   try {
-    text = readFileSync2(file, "utf8");
+    return r.stdout.split("\n").filter(Boolean).map((l) => {
+      const [name, state, at, project, workingDir, configFiles, envFile] = JSON.parse(l);
+      const created = Date.parse(at.replace(/^(\S+) (\S+) ([+-]\d\d)(\d\d).*/, "$1T$2$3:$4"));
+      return { name, state, created, project, workingDir, configFiles, envFile };
+    });
   } catch {
-    return {};
+    return { failed: "docker ps printed a listing loops cannot read", timedOut: false };
   }
-  const out = {};
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(?:export\s+)?([\w.-]+)\s*[=:]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const q = /^(["'])(.*?)\1/.exec(m[2]);
-    const v = q?.[2] ?? m[2].replace(/(^|\s)#.*$/, "").trim();
-    out[m[1]] = q?.[1] === "'" ? v : interpolate(v, { ...out, ...shell }) ?? v;
-  }
-  return out;
 }
-function interpolate(raw, env) {
-  let bad = false;
-  const out = raw.replace(/\$(?:\$|\{(\w+)(?:(:?[-?])([^}]*))?\}|(\w+))/g, (m, braced, op, arg = "", bare) => {
-    if (m === "$$") return "$";
-    const v = env[braced ?? bare];
-    const set = op?.startsWith(":") ? !!v : v !== void 0;
-    if (op?.endsWith("?") ? !set : !op && v === void 0) bad = true;
-    return set ? v : op?.endsWith("-") ? arg : "";
-  });
-  return bad || out.includes("$") ? null : out;
-}
-var normProject = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
-var isFile = (f) => {
-  try {
-    return statSync2(f).isFile();
-  } catch {
-    return false;
-  }
-};
-function plainCompose(c, w, shell) {
-  const cwd = projectDir(c, w);
-  let dot = parseDotEnv(dotEnv(c, w), c.env);
-  const pick2 = (k) => shell && c.env[k] !== void 0 ? c.env[k] : dot[k];
-  const list2 = pick2("COMPOSE_FILE");
-  if (list2 === void 0) {
-    const override = overrideBeside(c, w);
-    const files2 = [...c.cfg.compose.files, ...override ? [override] : []];
-    const found = discover(w, cwd);
-    const same = found && found.files.length === files2.length && found.files.every((f, i) => resolve(w, f) === resolve(w, files2[i]));
-    const fill = found && found.dir !== cwd ? { ...parseDotEnv(join3(found.dir, ".env"), c.env), ...dot } : dot;
-    const discovered = found && !same ? { files: found.files, dir: found.dir, env: { ...fill, ...c.env }, project: shell && c.env.COMPOSE_PROJECT_NAME !== void 0 ? c.env.COMPOSE_PROJECT_NAME : fill.COMPOSE_PROJECT_NAME } : void 0;
-    return { files: files2, dir: cwd, env: { ...dot, ...c.env }, project: pick2("COMPOSE_PROJECT_NAME"), override, discovered };
-  }
-  if (!list2) return { bad: "COMPOSE_FILE is empty, which Compose rejects" };
-  const files = list2.split(pick2("COMPOSE_PATH_SEPARATOR") || ":").map((f) => resolve(cwd, f));
-  const gone = files.find((f) => !isFile(f));
-  if (gone !== void 0) return { bad: `COMPOSE_FILE names ${relative(w, gone) || "."}, which is not a file` };
-  const dir = dirname(files[0]);
-  if (dir !== cwd) dot = { ...parseDotEnv(join3(dir, ".env"), c.env), ...dot };
-  return { files: files.map((f) => relative(w, f)), dir, env: { ...dot, ...c.env }, project: pick2("COMPOSE_PROJECT_NAME") };
-}
-function declaredName(w, p) {
-  let last;
-  for (const f of p.files) {
-    if (!existsSync2(resolve(w, f))) continue;
-    const broken = (why) => ({ bad: `file ${f} ${why}`, structural: true });
-    const docs = readCompose(resolve(w, f));
-    if (typeof docs === "string") return broken(docs);
-    let raw;
-    let has = false;
-    for (const d of docs) {
-      if (!d) return broken("has no top-level mapping");
-      if (Object.hasOwn(d, "name") && (!has || d.name !== null && d.name !== "")) [raw, has] = [d.name, true];
-      if (has && typeof raw !== "string") return broken("has a name: that is not a string");
+function canon(p) {
+  if (!isAbsolute2(p)) return p;
+  for (let head = p, tail = ""; ; tail = `/${basename2(head)}${tail}`, head = dirname(head)) {
+    try {
+      return realpathSync.native(head) + tail;
+    } catch {
+      if (dirname(head) === head) return p;
     }
-    if (typeof raw !== "string") continue;
-    const v = interpolate(raw, p.env);
-    if (v === null || v !== "" && !normProject(v)) return { bad: `name: ${raw} cannot be resolved` };
-    if (v !== "") last = normProject(v);
   }
-  return last;
 }
-function plainRun(w, p) {
-  const e = envProject(p.project);
-  if (typeof e === "object") return { ...e, env: true };
-  const d = declaredName(w, p);
-  if (typeof d === "object" && (d.structural || !e)) return d;
-  return e ? { name: e, named: false } : typeof d === "string" ? { name: d, named: true } : { name: normProject(basename2(p.dir)), named: false };
+function strays(c, ps, projects) {
+  const roots = c.worktrees.map((w) => [canon(w), w]).sort((a, b) => b[0].length - a[0].length);
+  const out = /* @__PURE__ */ new Map();
+  for (const k of ps.filter((k2) => projects.includes(k2.project))) {
+    const wd = canon(k.workingDir);
+    const owner = roots.find(([r]) => wd === r || wd.startsWith(`${r}/`));
+    if (owner?.[0] === canon(c.root)) continue;
+    const whose = !owner ? "outside every checkout" : owner[0] === canon(c.worktrees[0]) ? "the main checkout" : `worktree ${owner[1]}`;
+    out.set(`${k.project}\0${k.workingDir}`, [k.project, k.workingDir, whose]);
+  }
+  return [...out.values()];
 }
-function envProject(v) {
-  if (!v) return void 0;
-  if (normProject(v) === v) return v;
-  return { bad: `COMPOSE_PROJECT_NAME ${v} ${v.includes("$") ? "cannot be resolved" : "is not a valid Compose project name"}` };
-}
+var UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
+var NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 function composeProject(c) {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose;
-  const fail = (message, fix) => ({ name: null, result: res("FAIL", id, message, fix) });
-  const present = files.filter((f) => existsSync2(join3(c.root, f)));
-  if (!present.length) return fail(`no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
-  const missing = files.filter((f) => !present.includes(f));
-  if (missing.length) return fail(`compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
-  const own = plainCompose(c, c.root, true);
-  const mine = "bad" in own ? void 0 : declaredName(c.root, own);
-  const declared = typeof mine === "string" ? mine : null;
-  if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
-  const unresolved = (d, whose = "") => fail(`${whose}compose ${d.bad}`, d.structural ? "fix the file until docker compose config accepts it" : "make name: a plain string or set the variable it uses, or set COMPOSE_PROJECT_NAME");
-  const badEnv = (d, whose = "") => fail(`${whose}${d.bad}`, "set COMPOSE_PROJECT_NAME to lowercase letters, digits, _ and -, with no unresolved $");
-  const badFiles = (d, whose = "") => fail(`${whose}${d.bad}`, "point COMPOSE_FILE at existing compose files, or unset it");
-  if ("bad" in own) return badFiles(own);
-  const envName = envProject(own.project);
-  if (typeof envName === "object") return badEnv(envName);
-  if (typeof mine === "object" && (mine.structural || !envName)) return unresolved(mine);
-  const main2 = c.worktrees[0] ?? c.root;
-  const prodPlain = c.isWorktree ? plainCompose(c, main2, false) : own;
-  if ("bad" in prodPlain) return badFiles(prodPlain, "the main checkout's ");
-  const theirs = c.isWorktree ? declaredName(main2, prodPlain) : mine;
-  const mainEnvName = c.isWorktree ? envProject(prodPlain.project) : void 0;
-  if (typeof mainEnvName === "object") return badEnv(mainEnvName, "the main checkout's ");
-  if (c.isWorktree && typeof theirs === "object" && !mainEnvName) return unresolved(theirs, "the main checkout's ");
-  const mainHasCompose = prodPlain.files.some((f) => existsSync2(resolve(main2, f)));
-  const prodDeclared = typeof theirs === "string" ? theirs : c.isWorktree && mainHasCompose ? null : declared;
-  const prod = mainEnvName || (prodDeclared ?? normProject(basename2(prodPlain.dir)));
-  const prodAlt = c.isWorktree && prodPlain.discovered ? plainRun(main2, prodPlain.discovered) : void 0;
-  if (prodAlt && "bad" in prodAlt) return prodAlt.env ? badEnv(prodAlt, "the main checkout's ") : unresolved(prodAlt, "the main checkout's ");
-  const prods = [prod, ...prodAlt?.name ? [prodAlt.name] : []];
-  const name = envName ?? (c.isWorktree ? derive(c, c.root) : declared ?? normProject(basename2(own.dir)));
-  if (!name) return fail(`no project name derives from directory ${basename2(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
-  if (normProject(name) !== name) return fail(`project name ${name} is not a valid Compose project name`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
-  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : declared ? "name: in compose file" : "derived: dirname";
-  if (c.isWorktree && prods.includes(name)) return fail(`worktree would use the main checkout's project name ${name}`, 'set COMPOSE_PROJECT_NAME, or use derive = "slug-hash"');
-  const peerNames = (w) => {
-    const p = plainCompose(c, w, false);
-    const e = "bad" in p ? void 0 : envProject(p.project);
-    if (typeof e === "string") return [e];
-    if ("bad" in p || !c.isWorktree) return [derive(c, w)];
-    const d = declaredName(w, p);
-    const alt = p.discovered && plainRun(w, p.discovered);
-    return [derive(c, w), typeof d === "string" ? d : normProject(basename2(p.dir)), ...alt && "name" in alt ? [alt.name] : []];
+  const one = (level, message, fix, name2 = null) => ({ name: name2, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [] });
+  const missing = files.filter((f) => !existsSync2(join3(c.root, f)));
+  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
+  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
+  if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
+  const envName = c.env.COMPOSE_PROJECT_NAME || void 0;
+  if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
+  if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
+  const v = composeVersion(c.run, c.root, c.env);
+  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, void 0, envName ?? (c.isWorktree ? derive(c, c.root) : null));
+  if ("error" in v) return one("FAIL", `compose: ${v.error}`, `rerun to see why: cd ${shQuote(c.root)} && docker compose version`);
+  const set = Object.keys(c.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort();
+  const probe = (root, whose, scrubs) => runs(c, root).flatMap((r) => scrubs.map((scrub) => ({ ...r, whose, pre: root === c.root && scrub ? `without your shell's COMPOSE_* (${set.join(", ")}), ` : "", r: composeName({ root: r.dir, files: r.files, env: c.env, scrub, run: c.run }) })));
+  const failed = (p) => {
+    const e = p.r;
+    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`);
   };
-  const peers = c.worktrees.filter((w) => rp(w) !== rp(c.root) && rp(w) !== rp(main2)).map((w) => ({ w, names: peerNames(w) }));
-  const clash = peers.find((p) => p.names.includes(name));
-  if (clash) return fail(`project name ${name} is also used by worktree ${clash.w}`, 'set a distinct COMPOSE_PROJECT_NAME, rename a worktree, or use derive = "slug-hash"');
-  if (c.isWorktree && !envName) {
-    const alt = own.discovered && plainRun(c.root, own.discovered);
-    if (alt && "bad" in alt) return alt.env ? badEnv(alt) : unresolved(alt);
-    const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME in the shell, which hides the .env one, and " : "";
-    const plainFail = (message) => ({ name, result: res("FAIL", id, message, `${unset}add COMPOSE_PROJECT_NAME=${name} to ${relative(c.root, dotEnv(c, c.root))}, or always pass -p ${name}`) });
-    for (const { name: plain2, named } of [{ name: declared ?? normProject(basename2(own.dir)), named: !!declared }, ...alt ? [alt] : []]) {
-      if (prods.includes(plain2)) return plainFail(`plain docker compose in this worktree would use the main checkout's project name ${plain2}`);
-      if (named && plain2 !== name) return plainFail(`plain docker compose in this worktree would use its compose name: ${plain2}, not ${name}`);
-      const shared = plain2 !== name && peers.find((p) => p.names.includes(plain2));
-      if (shared) return plainFail(`plain docker compose in this worktree would use project ${plain2}, which worktree ${shared.w} also uses`);
+  const named = (p) => "name" in p.r ? p.r.name : void 0;
+  const own = probe(c.root, c.isWorktree ? "this worktree's " : "this checkout's ", set.length ? [false, true] : [false]);
+  if (!envName && !c.isWorktree && "error" in own[0].r) return { name: null, results: [failed(own[0])], withheld: true, answers: [] };
+  if (!envName && !c.isWorktree && "noFile" in own[0].r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
+  const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]));
+  if (!name) return one("FAIL", `no project name derives from directory ${basename2(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
+  const main2 = rp(c.worktrees[0] ?? c.root);
+  const held = /* @__PURE__ */ new Map();
+  const others = [];
+  for (const w of c.worktrees.filter((w2) => rp(w2) !== rp(c.root))) {
+    const isMain = rp(w) === main2;
+    const holder2 = isMain ? "the main checkout" : `worktree ${w}`;
+    if (!isMain && !held.has(derive(c, w))) held.set(derive(c, w), existsSync2(w) ? holder2 : `${holder2} (gone, until git worktree prune)`);
+    if (!c.isWorktree || !existsSync2(w)) continue;
+    const cells = probe(w, `${holder2}'s `, [true]);
+    others.push(...cells);
+    for (const n of cells.map(named)) if (n && !held.has(n)) held.set(n, holder2);
+  }
+  const fails = [];
+  for (const p of [...own, ...others]) if ("error" in p.r) fails.push([failed(p), others.includes(p) || !c.isWorktree && !!p.files]);
+  const holder = held.get(name);
+  const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
+  if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
+  for (const p of c.isWorktree ? own : []) {
+    const a = named(p);
+    const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename2(c.root))] : []];
+    if (a === void 0 || mine.includes(a) && !held.has(a)) continue;
+    const by = held.get(a);
+    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join3(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
+    fails.push([res("FAIL", id, `${p.pre}${p.label} would use project ${a}, ${by ? `which ${by} uses` : `not ${name}`}`, fix), false]);
+  }
+  const answers = [...new Set(own.flatMap((p) => named(p) ?? []))];
+  const ps = listContainers(c);
+  const gone = (d) => {
+    try {
+      statSync2(d);
+      return false;
+    } catch (e) {
+      return ["ENOENT", "ENOTDIR"].includes(e.code ?? "");
     }
-  }
-  return { name, result: res("PASS", id, `${name} (${source})`) };
+  };
+  const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute2(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
+  if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
+  else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]) => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
+  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
+  const note = Array.isArray(ps) || ps.timedOut ? "" : `; running stacks not checked (${ps.failed})`;
+  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps };
+  const withheld = fails.some(([, w]) => w);
+  const results = [...fails.filter(([, w]) => w), ...fails.filter(([, w]) => !w)].map(([r]) => r);
+  results[0] = { ...results[0], message: results[0].message + note };
+  return { name: withheld ? null : name, results, withheld, answers, ps };
 }
-var DEFAULT_FILES = ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"];
-var OVERRIDE_FILES = ["compose.override.yml", "compose.override.yaml", "docker-compose.override.yml", "docker-compose.override.yaml"];
-function discover(w, cwd) {
-  for (let d = cwd; ; d = dirname(d)) {
-    const f = DEFAULT_FILES.find((n) => isFile(join3(d, n)));
-    if (f) return { dir: d, files: [f, ...OVERRIDE_FILES.filter((o) => isFile(join3(d, o))).slice(0, 1)].map((n) => relative(w, join3(d, n))) };
-    const up = relative(w, d);
-    if (!up || up.startsWith("..") || dirname(d) === d) return void 0;
-  }
-}
-function overrideBeside(c, w) {
-  const { files } = c.cfg.compose;
-  if (files.length !== 1 || !DEFAULT_FILES.includes(basename2(files[0]))) return void 0;
-  const dir = dirname(files[0]);
-  return OVERRIDE_FILES.map((o) => dir === "." ? o : `${dir}/${o}`).find((o) => existsSync2(join3(w, o)));
-}
-function containersCheck(c, project) {
+function containersCheck(c, { name: project, results, ps }) {
   const cfg = c.cfg.compose;
   const id = "b.containers";
-  if (!cfg.inputs.length || !project) return [];
-  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root, timeoutMs: PROBE_TIMEOUT_MS });
-  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, the daemon is down, or it did not answer in 10s)")];
-  const running = ids.stdout.split("\n").filter(Boolean);
+  if (!cfg.inputs.length) return [];
+  if (!project) return results[0].level === "SKIP" ? [res("SKIP", id, "project unknown (compose unavailable)")] : [];
+  const all = ps ?? listContainers(c);
+  if (!Array.isArray(all)) return [res("SKIP", id, `docker is not available (${all.failed})`)];
+  const running = all.filter((k) => k.project === project && k.state === "running");
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
@@ -9031,15 +9054,20 @@ function containersCheck(c, project) {
     }
   };
   const newest = files.reduce((n, f) => Math.max(n, mtime(f)), ct * 1e3);
-  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root, timeoutMs: PROBE_TIMEOUT_MS });
-  if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
-  const stale = info.stdout.split("\n").map((l) => l.trim().split(" ")).filter(([name, created]) => name && Date.parse(created ?? "") < newest).map(([name]) => name.replace(/^\//, ""));
+  const stale = running.filter((k) => k.created < newest);
   const quote = (s) => /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
-  const plain2 = plainCompose(c, c.root, true);
-  const override = "bad" in plain2 ? void 0 : plain2.override;
-  const fix = `docker compose -p ${project} ${[...cfg.files, ...override ? [override] : []].map((f) => `-f ${quote(f)}`).join(" ")} up -d --build --force-recreate`;
+  const rel = (p) => p === c.root ? "." : p.startsWith(`${c.root}/`) ? p.slice(c.root.length + 1) : p;
+  const split2 = (v) => v.split(/,(?=\/)/);
+  const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
+  const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? JSON.parse([...agreed][0]) : [];
+  const own = split2(started);
+  const fs = own.every((f) => isAbsolute2(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
+  const args = fs.map((f) => ` -f ${quote(f)}`);
+  if (wd && rel(wd) !== normalize2(dirname(fs[0]))) args.push(` --project-directory ${quote(rel(wd))}`);
+  if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate`;
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
-  return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
 function composeChecks(c, project) {
   if (!c.cfg.compose) return [];
@@ -9056,8 +9084,8 @@ function composeChecks(c, project) {
   }).filter((n) => !allowContainerName.includes(n));
   if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
-    project.result,
-    ...c.static || project.result.level === "FAIL" ? [] : containersCheck(c, project.name),
+    ...project.results,
+    ...c.static || project.results.some((r) => r.level === "FAIL") ? [] : containersCheck(c, project),
     unread.length ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it") : names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
   ];
 }
@@ -9137,16 +9165,18 @@ function envCheckMain(argv, d) {
   }
   const ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees };
   const home = d.env.HOME || homedir();
-  const redact = (s) => home.length > 1 ? s.split(home).join("~") : s;
+  const redact = (s) => redactHome(s, home);
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
-    const { name, result } = composeProject(ctx);
+    const { name, results: results2 } = composeProject(ctx);
     if (name) d.out(redact(name));
-    if (result.level === "FAIL") d.err(redact(`env-check: ${name ? "warning: " : ""}${result.message}${name ? "; fix: " : " \u2014 fix: "}${result.fix}`));
+    const fails = results2.filter((r) => r.level === "FAIL");
+    for (const r of fails) d.err(redact(`env-check: ${name ? "warning: " : ""}${r.message}${name ? "; fix: " : " \u2014 fix: "}${r.fix}`));
+    if (!fails.length && !name) d.err(redact(`env-check: ${results2[0].message}`));
     return name ? 0 : 1;
   }
   const compose = cfg.compose?.mode === "test" ? composeProject(ctx) : null;
-  const project = compose?.result.level === "FAIL" ? null : compose?.name ?? null;
+  const project = compose?.name ?? null;
   const results = [
     ...pinChecks(ctx),
     ...sharedCheck(ctx),
@@ -9176,7 +9206,7 @@ function envCheckMain(argv, d) {
 
 // src/lib/zone-cli.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
-import { join as join5, relative as relative2, resolve as resolve3 } from "node:path";
+import { join as join5, relative, resolve as resolve3 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -9369,7 +9399,7 @@ function zoneMain(argv, d) {
   const root = repoRoot(d.run, d.cwd) ?? d.cwd;
   const filePath = typeof f.file === "string" ? resolve3(d.cwd, f.file) : join5(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
-  const shown = relative2(d.cwd, filePath).startsWith("..") ? filePath : relative2(d.cwd, filePath);
+  const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
   try {
     text = readFileSync4(filePath, "utf8");

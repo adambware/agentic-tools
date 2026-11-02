@@ -2,12 +2,13 @@
 // Every check returns Results; a check that cannot decide fails or warns, never passes.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { isMap, parseAllDocuments } from "yaml";
+import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { belowFloor, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
-import { git, isExecutable, which, type Runner } from "./proc.js";
+import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
 export interface Result {
@@ -190,11 +191,17 @@ function isComposeFile(c: Ctx, f: string): boolean {
   return keys.some((k) => COMPOSE_KEYS.includes(k)) || (keys.some((k) => k !== "version") && keys.every(isMetaKey));
 }
 
-/** Compose's project directory: the first compose file's. It holds the `.env` Compose reads and names the default project. */
+/** Compose normalizes a directory or `name:` into a project name: lowercase, characters outside [a-z0-9_-] dropped, leading `_` and `-` trimmed. */
+const normProject = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+/** A name Compose takes for -p or COMPOSE_PROJECT_NAME: one normalizing leaves as is (lowercase letters, digits, `-`, `_`; a letter or digit first). */
+const isProject = (s: string): boolean => s !== "" && normProject(s) === s;
+/** Compose's project directory for checkout `root` under the configured files: the first configured file's. */
 const projectDir = (c: Ctx, root: string): string => dirname(resolve(root, c.cfg.compose!.files[0]!));
-const dotEnv = (c: Ctx, root: string): string => join(projectDir(c, root), ".env");
 
-/** The name plain `docker compose` gives `root` (the main checkout, or any checkout under "dirname"), else the slug-hash. */
+/**
+ * The `-p` name loops gives checkout `root`: this is loops' own policy, not Compose's. The main checkout (and any
+ * checkout under "dirname") gets what plain Compose would derive from its project directory, else the slug-hash.
+ */
 function derive(c: Ctx, root: string): string {
   const main = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main)) return normProject(basename(projectDir(c, root)));
@@ -202,256 +209,206 @@ function derive(c: Ctx, root: string): string {
   return `${norm(basename(main)) || "wt"}-${norm(basename(root)).slice(0, 24)}-${hash}`;
 }
 
-/**
- * KEY=VALUE or KEY: VALUE lines of a `.env` file (optional `export `, quotes, `#` comments); a missing or unreadable file is {}.
- * As in Compose, an unquoted or double-quoted value is interpolated against `shell`, then the keys above it; one that
- * cannot be resolved keeps its raw text, so its `$` fails whatever uses it.
- */
-function parseDotEnv(file: string, shell: NodeJS.ProcessEnv): Record<string, string> {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return {};
-  }
-  const out: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(?:export\s+)?([\w.-]+)\s*[=:]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const q = /^(["'])(.*?)\1/.exec(m[2]!);
-    const v = q?.[2] ?? m[2]!.replace(/(^|\s)#.*$/, "").trim();
-    out[m[1]!] = q?.[1] === "'" ? v : (interpolate(v, { ...out, ...shell }) ?? v);
-  }
-  return out;
-}
-
-/** Compose-style interpolation of a `name:` value against `env`; null when it cannot be resolved. */
-function interpolate(raw: string, env: NodeJS.ProcessEnv): string | null {
-  let bad = false;
-  const out = raw.replace(/\$(?:\$|\{(\w+)(?:(:?[-?])([^}]*))?\}|(\w+))/g, (m, braced?: string, op?: string, arg = "", bare?: string) => {
-    if (m === "$$") return "$";
-    const v = env[braced ?? bare!];
-    const set = op?.startsWith(":") ? !!v : v !== undefined;
-    if (op?.endsWith("?") ? !set : !op && v === undefined) bad = true;
-    return set ? v! : (op?.endsWith("-") ? arg : "");
-  });
-  return bad || out.includes("$") ? null : out;
-}
-
-/** Compose normalizes a file-declared project name: lowercase, characters outside [a-z0-9_-] dropped, leading `_` and `-` trimmed. */
-const normProject = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
-
-interface Plain {
-  /** Compose files, relative to the checkout. */
-  files: string[];
-  /** Project directory: the default name's source. */
+/** One `docker compose` run without -p: where it starts, its project directory (whose `.env` it reads), its -f files. */
+interface Run {
   dir: string;
-  /** What `name:` is interpolated against. */
-  env: NodeJS.ProcessEnv;
-  /** COMPOSE_PROJECT_NAME as Compose reads it. */
-  project?: string;
-  /** The implicit compose.override.* among `files`. */
-  override?: string;
-  /** What plain `docker compose` discovers instead, when that is not `files`. */
-  discovered?: Plain;
+  pdir: string;
+  files?: string[];
+  label: string;
 }
-const isFile = (f: string): boolean => {
+/**
+ * runs(X): the configured run (only when X has every configured file); plain `docker compose` from the first configured
+ * file's directory, or its nearest existing ancestor (Compose walks up from there, possibly out of X); plain
+ * `docker compose` from X's root, when that is another directory.
+ */
+function runs(c: Ctx, root: string): Run[] {
+  const { files } = c.cfg.compose!;
+  let dir = projectDir(c, root);
+  while (!existsSync(dir) && dir !== root) dir = dirname(dir);
+  const atRoot = rp(dir) === rp(root);
+  return [
+    ...(files.every((f) => existsSync(join(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : []),
+    { dir, pdir: dir, label: atRoot ? "root plain run" : "project-dir plain run" },
+    ...(atRoot ? [] : [{ dir: root, pdir: root, label: "root plain run" }]),
+  ];
+}
+/** A container from `docker ps -a`: its name, state, creation time (ms) and Compose labels. */
+export interface Container {
+  name: string;
+  state: string;
+  created: number;
+  project: string;
+  workingDir: string;
+  configFiles: string;
+  envFile: string;
+}
+/** Every container, or why `docker ps` listed none (`timedOut`: it hung; otherwise the running-stack check did not run). */
+export type Listing = Container[] | { failed: string; timedOut: boolean };
+const LABELS = ["", ".working_dir", ".config_files", ".environment_file"].map((l) => `{{json (.Label "com.docker.compose.project${l}")}}`);
+/** One JSON array per container, so any character in a path survives. */
+const PS_FORMAT = `[{{json .Names}},{{json .State}},{{json .CreatedAt}},${LABELS.join(",")}]`;
+
+/** The one `docker ps -a` of a run, shared by e.project (running stacks) and b.containers. */
+export function listContainers(c: Ctx): Listing {
+  const r = c.run("docker", ["ps", "-a", "--format", PS_FORMAT], { cwd: c.root, env: c.env, timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.timedOut) return { failed: `docker ps timed out after ${PROBE_TIMEOUT_MS / 1000}s`, timedOut: true };
+  if (r.code !== 0) return { failed: r.notFound ? "docker not found" : `docker ps exit ${r.code ?? r.abend ?? "abnormal"}`, timedOut: false };
   try {
-    return statSync(f).isFile();
+    return r.stdout.split("\n").filter(Boolean).map((l) => {
+      const [name, state, at, project, workingDir, configFiles, envFile] = JSON.parse(l) as string[];
+      // CreatedAt is Go's time.String(): `2026-11-01 17:00:00 -0400 EDT`, whole seconds.
+      const created = Date.parse(at!.replace(/^(\S+) (\S+) ([+-]\d\d)(\d\d).*/, "$1T$2$3:$4"));
+      return { name: name!, state: state!, created, project: project!, workingDir: workingDir!, configFiles: configFiles!, envFile: envFile! };
+    });
   } catch {
-    return false;
+    return { failed: "docker ps printed a listing loops cannot read", timedOut: false };
   }
-};
-
-/**
- * What plain `docker compose` (no -f, no -p) loads in checkout `w`, run from its project directory. COMPOSE_FILE (the
- * shell's when `shell`, even empty, else the `.env`'s) replaces the configured files and moves the project directory
- * to its first file's, whose `.env` fills keys the first left unset; without it a lone default-named file gains the
- * compose.override.* beside it, and Compose's own discovery, when it finds other files, is `discovered`. `{ bad }`
- * when COMPOSE_FILE is empty or names something that is not a file.
- */
-function plainCompose(c: Ctx, w: string, shell: boolean): Plain | { bad: string } {
-  const cwd = projectDir(c, w);
-  let dot = parseDotEnv(dotEnv(c, w), c.env);
-  // A set-but-empty shell value still hides the .env one.
-  const pick = (k: string): string | undefined => (shell && c.env[k] !== undefined ? c.env[k] : dot[k]);
-  const list = pick("COMPOSE_FILE");
-  if (list === undefined) {
-    const override = overrideBeside(c, w);
-    const files = [...c.cfg.compose!.files, ...(override ? [override] : [])];
-    const found = discover(w, cwd);
-    const same = found && found.files.length === files.length && found.files.every((f, i) => resolve(w, f) === resolve(w, files[i]!));
-    // A .env in the directory Compose found the file in fills keys the working directory's left unset.
-    const fill = found && found.dir !== cwd ? { ...parseDotEnv(join(found.dir, ".env"), c.env), ...dot } : dot;
-    const discovered = found && !same ? { files: found.files, dir: found.dir, env: { ...fill, ...c.env }, project: shell && c.env.COMPOSE_PROJECT_NAME !== undefined ? c.env.COMPOSE_PROJECT_NAME : fill.COMPOSE_PROJECT_NAME } : undefined;
-    return { files, dir: cwd, env: { ...dot, ...c.env }, project: pick("COMPOSE_PROJECT_NAME"), override, discovered };
-  }
-  if (!list) return { bad: "COMPOSE_FILE is empty, which Compose rejects" };
-  const files = list.split(pick("COMPOSE_PATH_SEPARATOR") || ":").map((f) => resolve(cwd, f));
-  const gone = files.find((f) => !isFile(f));
-  if (gone !== undefined) return { bad: `COMPOSE_FILE names ${relative(w, gone) || "."}, which is not a file` };
-  const dir = dirname(files[0]!);
-  if (dir !== cwd) dot = { ...parseDotEnv(join(dir, ".env"), c.env), ...dot };
-  return { files: files.map((f) => relative(w, f)), dir, env: { ...dot, ...c.env }, project: pick("COMPOSE_PROJECT_NAME") };
 }
 
-/**
- * The last non-empty top-level `name:` across plain Compose's ordered files in checkout `w`, interpolated against
- * its `.env` (the shell env wins) and normalized: `undefined` when none declares one (`name: ""` counts as none),
- * `{ bad }` (why, after "compose ") when its name cannot be resolved, `{ bad, structural }` when a file is not one
- * valid YAML mapping with a string name, which Compose rejects whatever names the project.
- */
-function declaredName(w: string, p: Plain): string | { bad: string; structural?: true } | undefined {
-  let last: string | undefined;
-  for (const f of p.files) {
-    if (!existsSync(resolve(w, f))) continue;
-    const broken = (why: string) => ({ bad: `file ${f} ${why}`, structural: true as const });
-    const docs = readCompose(resolve(w, f));
-    if (typeof docs === "string") return broken(docs);
-    // Compose merges the documents in order, checking the name after each: a later null or "" keeps the one set.
-    let raw: unknown;
-    let has = false;
-    for (const d of docs) {
-      if (!d) return broken("has no top-level mapping");
-      if (Object.hasOwn(d, "name") && (!has || (d.name !== null && d.name !== ""))) [raw, has] = [d.name, true];
-      // Compose rejects a null or non-string name rather than ignoring it.
-      if (has && typeof raw !== "string") return broken("has a name: that is not a string");
+/** `p` as the filesystem spells it (symlinks resolved, native letter case); a gone path through its nearest existing ancestor. */
+function canon(p: string): string {
+  if (!isAbsolute(p)) return p;
+  for (let head = p, tail = ""; ; tail = `/${basename(head)}${tail}`, head = dirname(head)) {
+    try {
+      return realpathSync.native(head) + tail;
+    } catch {
+      if (dirname(head) === head) return p;
     }
-    if (typeof raw !== "string") continue;
-    const v = interpolate(raw, p.env);
-    if (v === null || (v !== "" && !normProject(v))) return { bad: `name: ${raw} cannot be resolved` };
-    if (v !== "") last = normProject(v);
   }
-  return last;
 }
 
 /**
- * The project plain `docker compose` gives Plain `p` in checkout `w` (its COMPOSE_PROJECT_NAME, else its `name:`,
- * else its directory's), `named` when a `name:` sets it, or why Compose rejects it (`env` when COMPOSE_PROJECT_NAME is bad).
+ * Containers of `projects` whose project directory (`working_dir` label) another checkout or no checkout owns: the
+ * longest checkout root that holds it by whole path segments. One [project, directory (empty without the label), owner]
+ * per project and directory.
  */
-function plainRun(w: string, p: Plain): { name: string; named: boolean } | { bad: string; structural?: true; env?: true } {
-  const e = envProject(p.project);
-  if (typeof e === "object") return { ...e, env: true };
-  const d = declaredName(w, p);
-  if (typeof d === "object" && (d.structural || !e)) return d;
-  return e ? { name: e, named: false } : typeof d === "string" ? { name: d, named: true } : { name: normProject(basename(p.dir)), named: false };
+function strays(c: Ctx, ps: Container[], projects: string[]): [string, string, string][] {
+  const roots = c.worktrees.map((w) => [canon(w), w] as const).sort((a, b) => b[0].length - a[0].length);
+  const out = new Map<string, [string, string, string]>();
+  for (const k of ps.filter((k) => projects.includes(k.project))) {
+    const wd = canon(k.workingDir);
+    const owner = roots.find(([r]) => wd === r || wd.startsWith(`${r}/`));
+    if (owner?.[0] === canon(c.root)) continue;
+    const whose = !owner ? "outside every checkout" : owner[0] === canon(c.worktrees[0]!) ? "the main checkout" : `worktree ${owner[1]}`;
+    out.set(`${k.project}\0${k.workingDir}`, [k.project, k.workingDir, whose]);
+  }
+  return [...out.values()];
 }
 
+/** One (run, env) cell and what Compose answered. `pre` marks this checkout's cells probed without the shell's COMPOSE_*. */
+type Cell = Run & { whose: string; pre: string; r: ComposeName };
+
 /**
- * A COMPOSE_PROJECT_NAME (Plain.project): `undefined` when unset or empty, `{ bad }` when it cannot be resolved or
- * is not a valid name (Compose rejects it rather than normalizing it).
+ * e.project. `name` is the `-p` name, null when a FAIL withholds it, when the main checkout has no Compose (SKIP) and
+ * in --static. `results` is one PASS or SKIP, or every FAIL, worst first: those that withhold the name, then those that
+ * keep it (`-p name` is safe; only a run without -p is not). `answers` are this checkout's; `ps` is the run's `docker ps` (b.containers reads it too), absent when
+ * evaluation stopped before the running-stack check.
  */
-function envProject(v: string | undefined): string | { bad: string } | undefined {
-  if (!v) return undefined;
-  if (normProject(v) === v) return v;
-  return { bad: `COMPOSE_PROJECT_NAME ${v} ${v.includes("$") ? "cannot be resolved" : "is not a valid Compose project name"}` };
-}
+export type ComposeProject = { name: string | null; results: Result[]; withheld: boolean; answers: string[]; ps?: Listing };
 
-export type ComposeProject = { name: string | null; result: Result };
+const UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
+// Compose exited 0 there, so the rerun (config -q) prints nothing.
+const NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 
 /**
- * The Compose project name for this checkout and its e.project result. The name is null in --static and on a FAIL,
- * except when only plain `docker compose` (no -p) would misplace the stack: then `-p <name>` is still safe.
+ * The Compose project name for this checkout and its e.project results. Compose says what each run without -p is
+ * named; loops only decides what may collide, and never guesses where Compose's answer came from.
  */
 export function composeProject(c: Ctx): ComposeProject {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose!;
-  const fail = (message: string, fix: string): { name: null; result: Result } => ({ name: null, result: res("FAIL", id, message, fix) });
-  const present = files.filter((f) => existsSync(join(c.root, f)));
-  if (!present.length) return fail(`no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
-  const missing = files.filter((f) => !present.includes(f));
-  if (missing.length) return fail(`compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
-  const own = plainCompose(c, c.root, true);
-  const mine = "bad" in own ? undefined : declaredName(c.root, own);
-  const declared = typeof mine === "string" ? mine : null;
-  if (c.static) return { name: null, result: res("PASS", id, `compose files present${declared ? `, name: ${declared}` : ""} (project name not resolved in --static)`) };
-  const unresolved = (d: { bad: string; structural?: true }, whose = "") =>
-    fail(`${whose}compose ${d.bad}`, d.structural ? "fix the file until docker compose config accepts it" : "make name: a plain string or set the variable it uses, or set COMPOSE_PROJECT_NAME");
-  const badEnv = (d: { bad: string }, whose = "") => fail(`${whose}${d.bad}`, "set COMPOSE_PROJECT_NAME to lowercase letters, digits, _ and -, with no unresolved $");
-  const badFiles = (d: { bad: string }, whose = "") => fail(`${whose}${d.bad}`, "point COMPOSE_FILE at existing compose files, or unset it");
-  if ("bad" in own) return badFiles(own);
-  // The shell's COMPOSE_PROJECT_NAME beats this checkout's own .env, which beats the file.
-  const envName = envProject(own.project);
-  if (typeof envName === "object") return badEnv(envName);
-  // A file Compose rejects fails whatever names the project; an unresolvable name: only where it sets the project.
-  if (typeof mine === "object" && (mine.structural || !envName)) return unresolved(mine);
-  // A worktree may declare its own name:; the prod name is the main checkout's, and a COMPOSE_PROJECT_NAME in its .env beats the file.
-  const main = c.worktrees[0] ?? c.root;
-  const prodPlain = c.isWorktree ? plainCompose(c, main, false) : own;
-  if ("bad" in prodPlain) return badFiles(prodPlain, "the main checkout's ");
-  const theirs = c.isWorktree ? declaredName(main, prodPlain) : mine;
-  const mainEnvName = c.isWorktree ? envProject(prodPlain.project) : undefined;
-  if (typeof mainEnvName === "object") return badEnv(mainEnvName, "the main checkout's ");
-  if (c.isWorktree && typeof theirs === "object" && !mainEnvName) return unresolved(theirs, "the main checkout's ");
-  // The worktree's own name: stands in for prod only when the main checkout has no compose file to run.
-  const mainHasCompose = prodPlain.files.some((f) => existsSync(resolve(main, f)));
-  const prodDeclared = typeof theirs === "string" ? theirs : c.isWorktree && mainHasCompose ? null : declared;
-  const prod = mainEnvName || (prodDeclared ?? normProject(basename(prodPlain.dir)));
-  // Plain `docker compose` in the main checkout may load other files than the configured ones: its name is prod too.
-  const prodAlt = c.isWorktree && prodPlain.discovered ? plainRun(main, prodPlain.discovered) : undefined;
-  if (prodAlt && "bad" in prodAlt) return prodAlt.env ? badEnv(prodAlt, "the main checkout's ") : unresolved(prodAlt, "the main checkout's ");
-  const prods = [prod, ...(prodAlt?.name ? [prodAlt.name] : [])];
-  const name = envName ?? (c.isWorktree ? derive(c, c.root) : (declared ?? normProject(basename(own.dir))));
-  if (!name) return fail(`no project name derives from directory ${basename(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
-  if (normProject(name) !== name) return fail(`project name ${name} is not a valid Compose project name`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
-  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : declared ? "name: in compose file" : "derived: dirname";
-  if (c.isWorktree && prods.includes(name)) return fail(`worktree would use the main checkout's project name ${name}`, "set COMPOSE_PROJECT_NAME, or use derive = \"slug-hash\"");
-  // A peer worktree runs as its .env's COMPOSE_PROJECT_NAME; without one, as its derived name under -p, and (seen from
-  // a worktree) as its plain Compose name. The main checkout is the prod check above.
-  const peerNames = (w: string): string[] => {
-    const p = plainCompose(c, w, false);
-    const e = "bad" in p ? undefined : envProject(p.project);
-    if (typeof e === "string") return [e];
-    if ("bad" in p || !c.isWorktree) return [derive(c, w)];
-    const d = declaredName(w, p);
-    const alt = p.discovered && plainRun(w, p.discovered);
-    return [derive(c, w), typeof d === "string" ? d : normProject(basename(p.dir)), ...(alt && "name" in alt ? [alt.name] : [])];
+  const one = (level: Level, message: string, fix?: string, name: string | null = null): ComposeProject => ({ name, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [] });
+  // Check 0: this checkout lacks a configured file.
+  const missing = files.filter((f) => !existsSync(join(c.root, f)));
+  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
+  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
+  if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
+  const envName = c.env.COMPOSE_PROJECT_NAME || undefined;
+  // Check 0b: Compose rejects the shell's name outright, so every run here fails and no name holds.
+  if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
+  // Check 0c: git lists the main checkout first and every linked worktree after it (a successful list has at least one
+  // entry). Without that, derive and the held names would take this worktree for the main checkout.
+  if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]!) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
+  // Check 1: without Compose nothing here starts a stack; the name is then only what loops vouches for on its own.
+  const v = composeVersion(c.run, c.root, c.env);
+  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, undefined, envName ?? (c.isWorktree ? derive(c, c.root) : null));
+  if ("error" in v) return one("FAIL", `compose: ${v.error}`, `rerun to see why: cd ${shQuote(c.root)} && docker compose version`);
+  // envs(X): this checkout under the shell as is, and again without COMPOSE_* when the shell sets any (even empty);
+  // every other checkout runs from its own shell, so without this one's COMPOSE_*.
+  const set = Object.keys(c.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort();
+  const probe = (root: string, whose: string, scrubs: boolean[]): Cell[] =>
+    runs(c, root).flatMap((r) => scrubs.map((scrub) => ({ ...r, whose, pre: root === c.root && scrub ? `without your shell's COMPOSE_* (${set.join(", ")}), ` : "", r: composeName({ root: r.dir, files: r.files, env: c.env, scrub, run: c.run }) })));
+  const failed = (p: Cell): Result => {
+    const e = p.r as ComposeError;
+    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`);
   };
-  const peers = c.worktrees.filter((w) => rp(w) !== rp(c.root) && rp(w) !== rp(main)).map((w) => ({ w, names: peerNames(w) }));
-  const clash = peers.find((p) => p.names.includes(name));
-  if (clash) return fail(`project name ${name} is also used by worktree ${clash.w}`, "set a distinct COMPOSE_PROJECT_NAME, rename a worktree, or use derive = \"slug-hash\"");
-  // Without -p, plain `docker compose` here takes this worktree's own name:, else its project directory's name.
-  // -p <name> stays safe, so these FAILs keep the name.
-  if (c.isWorktree && !envName) {
-    const alt = own.discovered && plainRun(c.root, own.discovered);
-    if (alt && "bad" in alt) return alt.env ? badEnv(alt) : unresolved(alt);
-    const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME in the shell, which hides the .env one, and " : "";
-    const plainFail = (message: string) => ({ name, result: res("FAIL", id, message, `${unset}add COMPOSE_PROJECT_NAME=${name} to ${relative(c.root, dotEnv(c, c.root))}, or always pass -p ${name}`) });
-    // The configured files, and what Compose discovers when it finds others.
-    for (const { name: plain, named } of [{ name: declared ?? normProject(basename(own.dir)), named: !!declared }, ...(alt ? [alt] : [])]) {
-      if (prods.includes(plain)) return plainFail(`plain docker compose in this worktree would use the main checkout's project name ${plain}`);
-      // A committed name: is every worktree's.
-      if (named && plain !== name) return plainFail(`plain docker compose in this worktree would use its compose name: ${plain}, not ${name}`);
-      const shared = plain !== name && peers.find((p) => p.names.includes(plain));
-      if (shared) return plainFail(`plain docker compose in this worktree would use project ${plain}, which worktree ${shared.w} also uses`);
+  const named = (p: Cell): string | undefined => ("name" in p.r ? p.r.name : undefined);
+  const own = probe(c.root, c.isWorktree ? "this worktree's " : "this checkout's ", set.length ? [false, true] : [false]);
+  // name(X): the shell's, else a worktree's derived one, else the main checkout's configured run as is (own[0], as
+  // check 0 found every file). That probe failing leaves nothing to check.
+  if (!envName && !c.isWorktree && "error" in own[0]!.r) return { name: null, results: [failed(own[0]!)], withheld: true, answers: [] };
+  if (!envName && !c.isWorktree && "noFile" in own[0]!.r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
+  const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]!));
+  if (!name) return one("FAIL", `no project name derives from directory ${basename(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
+  // Held names, from a worktree: the main checkout's answers, every other worktree's derived name and answers (a gone
+  // one only its derived name). From the main checkout: only the worktrees' derived names (each reports the rest).
+  const main = rp(c.worktrees[0] ?? c.root);
+  const held = new Map<string, string>();
+  const others: Cell[] = [];
+  for (const w of c.worktrees.filter((w) => rp(w) !== rp(c.root))) {
+    const isMain = rp(w) === main;
+    const holder = isMain ? "the main checkout" : `worktree ${w}`;
+    if (!isMain && !held.has(derive(c, w))) held.set(derive(c, w), existsSync(w) ? holder : `${holder} (gone, until git worktree prune)`);
+    if (!c.isWorktree || !existsSync(w)) continue;
+    const cells = probe(w, `${holder}'s `, [true]);
+    others.push(...cells);
+    for (const n of cells.map(named)) if (n && !held.has(n)) held.set(n, holder);
+  }
+  // Every check runs; each FAIL says whether it withholds the name (true) or keeps it.
+  const fails: [Result, boolean][] = [];
+  // Check 2: a failed run of another checkout, or the main checkout's configured run, withholds the name (it feeds the
+  // name or a held one); this checkout's other runs keep it (only that run is unknown).
+  for (const p of [...own, ...others]) if ("error" in p.r) fails.push([failed(p), others.includes(p) || (!c.isWorktree && !!p.files)]);
+  // Checks 3 and 6: the name itself is another checkout's.
+  const holder = held.get(name);
+  const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
+  if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  // Check 4: each run here without -p lands on an own name: the name, the derived one, or the root's directory name for
+  // a run whose project directory is the root; each only while nobody holds it.
+  const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
+  for (const p of c.isWorktree ? own : []) {
+    const a = named(p);
+    const mine = [name, derive(c, c.root), ...(rp(p.pdir) === rp(c.root) ? [normProject(basename(c.root))] : [])];
+    if (a === undefined || (mine.includes(a) && !held.has(a))) continue;
+    const by = held.get(a);
+    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
+    fails.push([res("FAIL", id, `${p.pre}${p.label} would use project ${a}, ${by ? `which ${by} uses` : `not ${name}`}`, fix), false]);
+  }
+  const answers = [...new Set(own.flatMap((p) => named(p) ?? []))];
+  // Check 5: a stack of the name (withholds) or of an answer (keeps) started from another checkout or none; it reports
+  // first. A docker ps that hangs withholds; one that fails leaves the check not run, and the first Result says so.
+  // A stack whose project directory still exists may run there on purpose (a committed name: in another checkout, a
+  // clone): the fix only steers this checkout off it. `down -p` (it needs no compose file) only when the label is gone.
+  const ps = listContainers(c);
+  // Gone is ENOENT or ENOTDIR; an unreadable directory (EACCES: another user's home) still exists.
+  const gone = (d: string): boolean => {
+    try {
+      statSync(d);
+      return false;
+    } catch (e) {
+      return ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException).code ?? "");
     }
-  }
-  return { name, result: res("PASS", id, `${name} (${source})`) };
-}
-
-/** Compose's discovery: one of these names, plus the first of the overrides beside it. */
-const DEFAULT_FILES = ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"];
-const OVERRIDE_FILES = ["compose.override.yml", "compose.override.yaml", "docker-compose.override.yml", "docker-compose.override.yaml"];
-
-/**
- * What plain `docker compose` loads from `cwd` in checkout `w`: the first default-named file in `cwd` or its nearest
- * parent inside `w`, plus the first override beside it, relative to `w`. Undefined when it finds none.
- */
-function discover(w: string, cwd: string): { dir: string; files: string[] } | undefined {
-  for (let d = cwd; ; d = dirname(d)) {
-    const f = DEFAULT_FILES.find((n) => isFile(join(d, n)));
-    if (f) return { dir: d, files: [f, ...OVERRIDE_FILES.filter((o) => isFile(join(d, o))).slice(0, 1)].map((n) => relative(w, join(d, n))) };
-    const up = relative(w, d);
-    if (!up || up.startsWith("..") || dirname(d) === d) return undefined;
-  }
-}
-
-/** The compose.override.* plain `docker compose` adds beside a lone default-named file (unless COMPOSE_FILE is set). */
-function overrideBeside(c: Ctx, w: string): string | undefined {
-  const { files } = c.cfg.compose!;
-  if (files.length !== 1 || !DEFAULT_FILES.includes(basename(files[0]!))) return undefined;
-  const dir = dirname(files[0]!);
-  return OVERRIDE_FILES.map((o) => (dir === "." ? o : `${dir}/${o}`)).find((o) => existsSync(join(w, o)));
+  };
+  const stop = (p: string, d: string): string => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
+  if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
+  else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]): [Result, boolean] => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
+  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
+  const note = Array.isArray(ps) || ps.timedOut ? "" : `; running stacks not checked (${ps.failed})`;
+  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps };
+  const withheld = fails.some(([, w]) => w);
+  const results = [...fails.filter(([, w]) => w), ...fails.filter(([, w]) => !w)].map(([r]) => r);
+  results[0] = { ...results[0]!, message: results[0]!.message + note };
+  return { name: withheld ? null : name, results, withheld, answers, ps };
 }
 
 /**
@@ -459,15 +416,20 @@ function overrideBeside(c: Ctx, w: string): string | undefined {
  * newest change to a `[compose] inputs` glob is running stale code. The newest change is the later of
  * the newest commit touching the inputs and their modification times: a pull, merge or checkout can
  * bring in a commit dated before the build, but it rewrites the file. Docker (via the injected
- * Runner) being absent or down, or the stack not running, is a SKIP, never a WARN.
+ * Runner) being absent or down, or the stack not running, is a SKIP, never a WARN. It reads e.project's
+ * `docker ps -a` listing, and lists the containers itself only when e.project stopped before the running-stack check.
+ * The fix replays the stale containers' own invocation from their Compose labels when they agree on it, and runs
+ * from the checkout root.
  */
-export function containersCheck(c: Ctx, project: string | null): Result[] {
+export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeProject): Result[] {
   const cfg = c.cfg.compose!;
   const id = "b.containers";
-  if (!cfg.inputs.length || !project) return [];
-  const ids = c.run("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${project}`], { cwd: c.root, timeoutMs: PROBE_TIMEOUT_MS });
-  if (ids.code !== 0) return [res("SKIP", id, "docker is not available (not installed, the daemon is down, or it did not answer in 10s)")];
-  const running = ids.stdout.split("\n").filter(Boolean);
+  if (!cfg.inputs.length) return [];
+  // A SKIP without a name is the main checkout without Compose: nothing vouches for its project.
+  if (!project) return results[0]!.level === "SKIP" ? [res("SKIP", id, "project unknown (compose unavailable)")] : [];
+  const all = ps ?? listContainers(c);
+  if (!Array.isArray(all)) return [res("SKIP", id, `docker is not available (${all.failed})`)];
+  const running = all.filter((k) => k.project === project && k.state === "running");
   if (!running.length) return [res("SKIP", id, `stack down (no running container for project ${project})`)];
   const matchers = cfg.inputs.flatMap((g) => compileGlob(g));
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
@@ -481,20 +443,27 @@ export function containersCheck(c: Ctx, project: string | null): Result[] {
     }
   };
   const newest = files.reduce((n, f) => Math.max(n, mtime(f)), ct * 1000);
-  const info = c.run("docker", ["inspect", "--format", "{{.Name}} {{.Created}}", ...running], { cwd: c.root, timeoutMs: PROBE_TIMEOUT_MS });
-  if (info.code !== 0) return [res("SKIP", id, "docker inspect failed")];
-  const stale = info.stdout
-    .split("\n")
-    .map((l) => l.trim().split(" "))
-    .filter(([name, created]) => name && Date.parse(created ?? "") < newest)
-    .map(([name]) => name!.replace(/^\//, ""));
+  const stale = running.filter((k) => k.created < newest);
   const quote = (s: string): string => (/^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
-  const plain = plainCompose(c, c.root, true);
-  const override = "bad" in plain ? undefined : plain.override;
+  // A label path relative to the root when spelled under it, else as Compose recorded it: Compose resolves a file's
+  // relative paths (../data) against its directory as spelled, so neither a symlinked directory nor another spelling
+  // of the root is its target.
+  const rel = (p: string): string => (p === c.root ? "." : p.startsWith(`${c.root}/`) ? p.slice(c.root.length + 1) : p);
+  // Compose joins each label's paths with commas, so only a comma that starts a new absolute path splits them.
+  const split = (v: string): string[] => v.split(/,(?=\/)/);
+  const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
+  const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? (JSON.parse([...agreed][0]!) as string[]) : [];
+  // The files the stack was started with (its override included) when every one is still there, else the configured list.
+  const own = split(started);
+  const fs = own.every((f) => isAbsolute(f) && existsSync(f)) ? own.map(rel) : cfg.files;
+  const args = fs.map((f) => ` -f ${quote(f)}`);
+  // Compose's default project directory is the first file's directory as spelled, so compare spellings.
+  if (wd && rel(wd) !== normalize(dirname(fs[0]!))) args.push(` --project-directory ${quote(rel(wd))}`);
+  if (envFile) args.push(...split(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
   // A cache-hit `--build` leaves a container whose inputs were only rewritten Running, still stale by mtime.
-  const fix = `docker compose -p ${project} ${[...cfg.files, ...(override ? [override] : [])].map((f) => `-f ${quote(f)}`).join(" ")} up -d --build --force-recreate`;
+  const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate`;
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
-  return [stale.length ? res(level, id, `${short(stale)} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
+  return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
 }
 
 /** The compose checks. `project` is the one composeProject result for this run (null only when compose is not in test mode). */
@@ -517,8 +486,8 @@ export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] 
     .filter((n) => !allowContainerName.includes(n));
   if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
-    project.result,
-    ...(c.static || project.result.level === "FAIL" ? [] : containersCheck(c, project.name)),
+    ...project.results,
+    ...(c.static || project.results.some((r) => r.level === "FAIL") ? [] : containersCheck(c, project)),
     unread.length
       ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it")
       : names.length

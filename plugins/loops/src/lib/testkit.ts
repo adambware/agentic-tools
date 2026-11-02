@@ -3,12 +3,31 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { run, type Deps } from "./proc.js";
+import { Worker } from "node:worker_threads";
+import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
+import { run, type Deps, type Runner, type RunResult } from "./proc.js";
 
 export const tmp = (): string => realpathSync(mkdtempSync(join(tmpdir(), "loops-test-")));
 
 export function sh(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+}
+
+/**
+ * An HTTP server on 127.0.0.1 that counts connections (a git fetch, a TLS hello) and answers 404. It runs in a worker
+ * thread, so it answers while the test blocks in spawnSync. `close()` it in afterEach or finally.
+ */
+export async function canary(): Promise<{ port: number; hits: () => number; close: () => Promise<number> }> {
+  const hits = new Int32Array(new SharedArrayBuffer(4));
+  const w = new Worker(
+    `const { parentPort, workerData } = require("node:worker_threads");
+     const s = require("node:http").createServer((_, r) => r.writeHead(404).end());
+     s.on("connection", () => Atomics.add(workerData, 0, 1));
+     s.listen(0, "127.0.0.1", () => parentPort.postMessage(s.address().port));`,
+    { eval: true, workerData: hits },
+  );
+  const port = await new Promise<number>((ok, ko) => w.once("message", ok).once("error", ko));
+  return { port, hits: () => Atomics.load(hits, 0), close: () => w.terminate() };
 }
 
 /** Write a file (creating dirs); `exec` sets the 0755 bit. */
@@ -47,4 +66,52 @@ export function deps(cwd: string, env: Record<string, string> = {}, stdin = ""):
     err: (s) => err.push(s),
   };
   return { d, out, err };
+}
+
+/**
+ * What the stubbed `docker compose config` answers for one checkout: the project name, Compose's error line (`<root>`
+ * stands for the checkout path), or (for `docker compose version` from that root) why Compose cannot run at all.
+ */
+export type ComposeAnswer = string | { error: string } | { unavailable: "docker" | "plugin" };
+/**
+ * Answers keyed by checkout root; one answer serves both probe shapes unless the configured (`-f`) and plain probes differ.
+ * `scrubbed`, when given, answers every probe whose env carries no COMPOSE_* but REMOTE_OFF's (this checkout's runs without the shell's).
+ */
+export type ComposeAnswers = Record<string, ComposeAnswer | { cfg?: ComposeAnswer; plain?: ComposeAnswer; scrubbed?: ComposeAnswer }>;
+export interface ComposeCall {
+  cwd: string;
+  /** The `-f` files, in order; empty for a plain probe. */
+  files: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** The real runner, except that `docker ps` lists no container: a developer's own stacks never reach a test. */
+export const noStacks: Runner = (cmd, args, opts) => (cmd === "docker" && args[0] === "ps" ? { code: 0, stdout: "", stderr: "", timedOut: false } : run(cmd, args, opts));
+
+/**
+ * A Runner that answers `docker compose config` from `answers` (what real Compose v5.1.2 returned for the fixture),
+ * records each probe in `calls`, and hands every other command to `inner` (by default `docker ps` lists nothing). A root without an answer throws, so a
+ * missing fixture is loud instead of a silent FAIL. `docker compose version` answers 5.1.2, unless the answer for its
+ * cwd is `unavailable`: docker not found, or a docker without the plugin (exit 125 on the unknown --short flag).
+ */
+export function composeStub(answers: ComposeAnswers, calls: ComposeCall[] = [], inner: Runner = noStacks): Runner {
+  const byRoot = new Map(Object.entries(answers).map(([k, v]) => [realpathSync(k), v]));
+  const res = (code: number | null, stdout = "", stderr = ""): RunResult => ({ code, stdout, stderr, timedOut: false });
+  return (cmd, args, opts) => {
+    const cwd = opts?.cwd ?? process.cwd();
+    const entry = byRoot.get(realpathSync(cwd));
+    const down = typeof entry === "object" && "unavailable" in entry ? entry.unavailable : undefined;
+    if (isComposeVersionCall(cmd, args)) return down === "docker" ? { ...res(null), notFound: true } : down ? res(125, "", "unknown flag: --short\n") : res(0, "5.1.2\n");
+    if (!isComposeConfigCall(cmd, args)) return inner(cmd, args, opts);
+    const files = args.flatMap((a, i) => (a === "-f" ? [args[i + 1]!] : []));
+    calls.push({ cwd, files, env: opts?.env ?? {} });
+    if (down) throw new Error(`composeStub: ${cwd} answers docker compose version only (unavailable)`);
+    const shaped = typeof entry === "object" && !("error" in entry) && !("unavailable" in entry);
+    const bare = !Object.keys(opts?.env ?? {}).some((k) => k.startsWith("COMPOSE_") && !Object.hasOwn(REMOTE_OFF, k));
+    const a = shaped ? ((bare ? entry.scrubbed : undefined) ?? (files.length ? entry.cfg : entry.plain)) : entry;
+    if (a === undefined) throw new Error(`composeStub: no answer for ${files.length ? `docker compose -f ${files.join(" -f ")}` : "plain docker compose"} config in ${cwd}`);
+    if (typeof a === "string") return res(0, JSON.stringify({ name: a, services: {} }));
+    if ("error" in a) return res(1, "", `${a.error.split("<root>").join(cwd)}\n`);
+    throw new Error("composeStub: unavailable is a docker compose version answer");
+  };
 }

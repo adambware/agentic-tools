@@ -18,6 +18,10 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** True when spawn failed with ENOENT: the command is not there, or the cwd is not; false or absent otherwise. */
+  notFound?: boolean;
+  /** What left code null when the process did not just exit: the signal that killed it or the spawn error code (ENOBUFS, EACCES…). */
+  abend?: string;
 }
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => RunResult;
 
@@ -31,9 +35,32 @@ export const run: Runner = (cmd, args, opts = {}) => {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
-  const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
-  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut };
+  const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
+  const timedOut = errCode === "ETIMEDOUT";
+  const abend = r.status === null ? (errCode ?? r.signal ?? undefined) : undefined;
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
 };
+
+/** `s` as one POSIX shell word, for commands a fix tells the developer to run. */
+export function shQuote(s: string): string {
+  return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * `s` with `home` shown as `~`, keeping printed commands runnable: a tilde inside quotes does not expand, so a word
+ * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself).
+ */
+export function redactHome(s: string, home: string): string {
+  if (home.length <= 1) return s;
+  const q = `'${home}`;
+  return s
+    .split(`${q}/`)
+    .join("~/'")
+    .split(`${q}'`)
+    .join("~")
+    .split(home)
+    .join("~");
+}
 
 /** Everything a subcommand touches outside its own logic, injected so tests need no real process state. */
 export interface Deps {

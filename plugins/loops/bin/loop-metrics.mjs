@@ -616,7 +616,7 @@ function isMissing(e) {
 }
 
 // src/lib/row.ts
-var VERSION = "0.4.1";
+var VERSION = "0.5.0";
 var DAY_MS2 = 24 * 60 * 60 * 1e3;
 var WINDOW_DAYS = [7, 30];
 var WIDEST_WINDOW_MS = Math.max(...WINDOW_DAYS) * DAY_MS2;
