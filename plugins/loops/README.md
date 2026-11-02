@@ -400,7 +400,7 @@ are not counted. Results with the same level and message fold into one line that
 `env-check: warning:` line on stderr per FAIL that keeps it; exit 1 with each FAIL and its fix on stderr when a FAIL
 withholds it (a configured file missing, a shell `COMPOSE_PROJECT_NAME` Compose rejects, `git worktree list` failing
 or not listing the main checkout, the name held by another checkout, a container of the name started from
-another checkout or from none, `docker compose version` failing to run (timed out, killed or refused), `docker ps` timing out, a failed run of another checkout
+another checkout or from none, `docker compose version` failing for any reason but a missing compose plugin (timed out, killed, refused or a non-zero exit), `docker ps` timing out, a failed run of another checkout
 or of the main checkout's configured run), or when it is unknown (the main checkout with Compose unavailable and no
 shell `COMPOSE_PROJECT_NAME`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
 and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs). `--json` is `{schema, engine, mode, root,
@@ -412,7 +412,7 @@ results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, 
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
-repo, and bad TOML are all exit 2.
+repo, `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
 
 ```toml
 schema_version = 1
@@ -425,13 +425,13 @@ hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
 [[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
 tool = "go"
 sources = ["go-mod:go.mod", "tool-versions", "setup-go:.github/workflows/*.yml"]
-compare = "minor"                       # exact (default) | minor | major | floor
+compare = "minor"                       # exact (default) | minor | major
 local = "warn"                          # warn (default) | fail | off
 
 [[pins]]
 tool = "node"
 sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
-compare = "floor"                       # engines is a floor; every other source must be >= it
+compare = "exact"                       # engines is a range: one INFO row, never compared
 
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH
@@ -455,32 +455,57 @@ static = true                           # also run under --static (default false
 timeout_s = 15
 ```
 
-Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files):
+**Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
+depth, and the pin is the most specific one. A range is never compared: after the verdict, each distinct
+(source, value) range adds one INFO row `range, not compared`. When every source yields only ranges,
+`a.pins.<tool>` is a FAIL (`no exact pin among sources (...); pin an exact version in a supported source`) and no
+`a.local.<tool>` row runs. A value in the "anything else" column, or a `<tool>-version-file` name missing from
+the second table, is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact version`. `compare =
+"floor"` was removed in 0.6.0 (exit 2); checking that a pin falls inside a range is a later `a.range` check.
+These two tables are the only list of supported forms.
 
-| kind | default file | reads |
-|---|---|---|
-| `tool-versions` | `.tool-versions` | every line for the tool (`node` also matches `nodejs`, `go` also matches `golang`; a file listing both at different versions is a disagreement) |
-| `nvmrc`, `node-version`, `python-version` | `.nvmrc`, `.node-version`, `.python-version` | the first non-blank, non-comment line (a trailing `# comment` is ignored, as nvm does); it must be one version or series, and a range is a FAIL (see below) |
-| `go-mod` | `go.mod` | `toolchain` if present, else `go` |
-| `engines` | `package.json` | `engines.<tool>`'s lowest lower bound, as a floor (`<20` alone is a FAIL) |
-| `setup-go`, `setup-node`, `setup-python` | `.github/workflows/*.{yml,yaml}` | `<tool>-version`, or the file named by `<tool>-version-file` (see below) |
-| `golangci-action`, `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) or `goreleaser/goreleaser-action` (tool `goreleaser`); `latest` is no version |
-| `dockerfile` | `Dockerfile` | `FROM <image>:<tag>` (image `golang` for go, else the tool name) and `ARG <TOOL>_VERSION=` |
+Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files). A pin is one version or one
+series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2` (and node's `=20.11.1`).
 
-Workflow sources (`setup-*`, `golangci-action`, `goreleaser-action`) parse each workflow as YAML 1.2, as Actions does, and read every `jobs.*.steps[]` step (or a composite action's `runs.steps[]`) that uses the action. Any YAML form works: flow mappings, block scalars, a value on the next line, anchors and aliases. Action refs (`Actions/Setup-Node@v4`) and input names match case-insensitively, and a multi-line input (`python-version: |`) is read line by line. A workflow that does not parse is a FAIL. These are also a FAIL, not a skipped step: an input that is not a literal version (an expression like `${{ matrix.go }}`, a list or mapping, or a keyword such as `stable`, `oldstable`, `lts/*`, `node` or `current`); an empty input with no non-empty `-file` or version input beside it; an unquoted number that YAML reads differently from its text (`go-version: 1.20` reaches the action as 1.2, so quote it); a merge key (`<<:`) in `with:`; an alias with no anchor; and a `uses:` of the action outside a steps list. A literal `latest` is still ignored.
-A version (an input, or the first line of a version file) must be one version or one series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2`. A range (`>=1.20`, `<2`, `20 || 22`, `^1.20`, `~1.20.3`, `1.20 - 1.22`) or a version followed by other text is a FAIL (`is a range, not a pinned version`). For node sources a single semver `=` is an exact pin (`=20.11.1`, `= v20.11.1`); `==` and, in `.python-version`, `=` are still ranges. A value must start with a version (optionally `v`): implementation or keyword values that merely contain digits are not versions, so setup-python `pypy3.9`, `pypy-3.10`, `graalpy-24.0` and setup-node `lts/-1` FAIL as "is not a version", `.python-version` `pypy3.9-7.3.11` and `.nvmrc` `lts/-1` FAIL as "no version in", a `.tool-versions` `python pypy3.9` line is not read, and a Dockerfile tag such as `node:lts-alpine3.20` is not read.
-`<tool>-version-file` files are read in their own format for `go.mod`, `go.work`, `.tool-versions`, `package.json` (`volta.<tool>`, else `engines.<tool>` as a floor), `pyproject.toml` and `Pipfile`. Any other file (`.nvmrc`, `.node-version`, `.python-version`, `.go-version` or a custom name) is read as a plain version file, as the actions read it: its first non-blank, non-comment line must be a pinned version, else FAIL. `pyproject.toml` is parsed as TOML and read as setup-python reads it: `[project] requires-python` when the file has a `project` table (dotted keys and inline tables count), else `[tool.poetry.dependencies] python`. Poetry's `^X`, `~X`, bare `X` and `X.*` floor at X, and with `||` the lowest alternative is used; the PEP 440 lower bound is a floor. Invalid TOML, a non-string value, neither key, or no lower bound is a FAIL. `python-version-file: Pipfile` reads `[requires] python_full_version`, else `python_version`. A named file that holds no version for the tool (a go.mod with no `go` line, a .tool-versions without the tool) is a FAIL. When a step sets both `<tool>-version` and `<tool>-version-file`, only the direct input is read and the file is ignored (it may even be missing), as the setup actions do; a direct `latest` therefore also ignores the file.
-An inclusive engines or PEP 440 prerelease bound keeps its prerelease (`>=20.0.0-rc.1` floors at 20.0.0-rc.1, `>=20.0.0-0` at 20.0.0-0, `>=3.13.0rc1` at 3.13.0rc1). An exclusive prerelease bound floors at its immediate successor (`>20.0.0-rc.1` at 20.0.0-rc.1.0, `>3.13.0rc1` at 3.13.0rc1.0), so the next prerelease (rc.2) passes and the bound itself does not.
-Prereleases keep their identity: `22.0.0-rc.1`, `3.13.0rc1` and `1.26rc1` do not equal their release under `exact` (nor does `22` under `exact`), and they rank below it under `floor`. Under `minor`/`major` a prerelease is ignored only when it follows more components than the compare depth. So `22.0.0-rc.1` and `3.13.0rc1` match their line under `minor`, but a two-component prerelease such as `1.26rc1` or `3.13-dev` stays distinct from `1.26` and `1.26.x` under `minor`, as does `22-rc.1` under `major`. Only known prerelease shapes count: `-alpha`, `-beta`, `-rc`, `-pre`, `-preview`, `-dev`, `-next`, `-nightly`, `-canary`, `-snapshot`, `-ea`, and the attached PEP 440/Go forms `rc1`, `a2`, `b1`, `.dev0`. Any other suffix ends the version, both in Dockerfile `FROM` tags and `ARG <TOOL>_VERSION=` values and in local `--version` output: image variants (`-alpine`, `-slim-bookworm`, and a bare `-dev` straight after the version, the Chainguard/Wolfi dev image, so `node:20-dev` reads as 20; `-dev` followed by a number still counts as a prerelease), patchlevels (`3.1.4p223`), build ids, vendor suffixes (`-desktop.1`) and package revisions (`-1`).
+| kind | default file | pin (compared) | range (INFO, not compared) | anything else |
+|---|---|---|---|---|
+| `tool-versions` | `.tool-versions` | the first version field of every line for the tool (`node` also matches `nodejs`, `go` also `golang`; two such lines at different versions disagree) | none | FAIL unsupported: `system`, `latest`, `lts`, `ref:…`, `path:…`, `pypy3.9-7.3.11` |
+| `nvmrc` | `.nvmrc` | the first non-blank, non-comment line (a trailing `# comment` is dropped, as nvm does) | none: a range (`>=20`, `^20.11`) is a FAIL `is a range, not a pinned version` | FAIL unsupported: `lts/*`, `lts/iron`, `lts/-1`, `node`, `stable`, `latest`, a version followed by other text |
+| `node-version` | `.node-version` | as `nvmrc` | none (FAIL, as `nvmrc`) | FAIL unsupported, as `nvmrc` |
+| `python-version` | `.python-version` | as `nvmrc`, without node's `=` (`=3.12.1` is a range) | none (FAIL, as `nvmrc`) | FAIL unsupported: `system`, `pypy3.9-7.3.11` |
+| `go-mod` | `go.mod` | `toolchain goX`, else `go X` | none | FAIL unsupported (`go stable`) |
+| `engines` | `package.json` | none | `engines.<tool>`, always, even an exact-looking `20.11.0` | missing or not a string: FAIL |
+| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>`; a tag containing `$` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`) |
+| `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable` |
+| `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current` |
+| `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table) | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0` |
+| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) | a range `version:` | FAIL unsupported: `latest` |
+| `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `goreleaser/goreleaser-action` (tool `goreleaser`), e.g. `~> v2` | a range `version:` (`^2.5`) | FAIL unsupported: `latest` |
+
+`<tool>-version-file` names are matched on the file's basename; any other name is a FAIL `unsupported form:
+<tool>-version-file <name> in <workflow>:<line> is not a supported version file (...)`, with no plain-file fallback.
+
+| `<tool>-version-file` name | reads | pin (compared) | range (INFO, not compared) |
+|---|---|---|---|
+| `go.mod`, `go.work` | `toolchain goX`, else `go X` | yes | none |
+| `.tool-versions` | the tool's lines, as the `tool-versions` kind | yes | none |
+| `package.json` | `volta.<tool>`, else `engines.<tool>` (neither is a FAIL) | `volta.<tool>` | `engines.<tool>` |
+| `pyproject.toml` | `[project] requires-python` when the file has a `project` table, else `[tool.poetry.dependencies] python` | none | always |
+| `Pipfile` | `[requires] python_full_version`, else `python_version` | a pin | a range |
+| `.nvmrc`, `.node-version`, `.python-version`, `.go-version` | the first non-blank, non-comment line, as the `nvmrc` kind | yes | none (a range is a FAIL) |
+
+Workflow sources (`setup-*`, `golangci-action`, `goreleaser-action`) parse each workflow as YAML 1.2, as Actions does, and read every `jobs.*.steps[]` step (or a composite action's `runs.steps[]`) that uses the action. Any YAML form works: flow mappings, block scalars, a value on the next line, anchors and aliases. Action refs (`Actions/Setup-Node@v4`) and input names match case-insensitively, and a multi-line input (`python-version: |`) is read line by line. A workflow that does not parse is a FAIL. These are also a FAIL, not a skipped step: an input that is not a literal version (an expression like `${{ matrix.go }}`, a list or mapping); an empty input with no non-empty `-file` or version input beside it; an unquoted number that YAML reads differently from its text (`go-version: 1.20` reaches the action as 1.2, so quote it); a merge key (`<<:`) in `with:`; an alias with no anchor; and a `uses:` of the action outside a steps list. Keywords (`latest`, `stable`, `lts/*`, ...) are unsupported forms, as the matrix says.
+For node sources a single semver `=` is a pin (`=20.11.1`, `= v20.11.1`); `==` and, in `.python-version`, `=` are ranges. A value must start with a version (optionally `v`): implementation or keyword values that merely contain digits (`pypy3.9`, `graalpy-24.0`, `lts/-1`, `node:lts-alpine3.20`) are unsupported forms, never read as a version.
+`pyproject.toml` and `Pipfile` are parsed as TOML (dotted keys and inline tables count); invalid TOML, a non-string value or a missing key is a FAIL. A named file that holds no version for the tool (a go.mod with no `go` line, a .tool-versions without the tool) is a FAIL. When a step sets both `<tool>-version` and `<tool>-version-file`, only the direct input is read and the file is ignored (it may even be missing), as the setup actions do.
+Prereleases keep their identity: `22.0.0-rc.1`, `3.13.0rc1` and `1.26rc1` do not equal their release under `exact` (nor does `22` under `exact`). Under `minor`/`major` a prerelease is ignored only when it follows more components than the compare depth. So `22.0.0-rc.1` and `3.13.0rc1` match their line under `minor`, but a two-component prerelease such as `1.26rc1` or `3.13-dev` stays distinct from `1.26` and `1.26.x` under `minor`, as does `22-rc.1` under `major`. Only known prerelease shapes count: `-alpha`, `-beta`, `-rc`, `-pre`, `-preview`, `-dev`, `-next`, `-nightly`, `-canary`, `-snapshot`, `-ea`, and the attached PEP 440/Go forms `rc1`, `a2`, `b1`, `.dev0`. Any other suffix ends the version, both in Dockerfile `FROM` tags and `ARG <TOOL>_VERSION=` values and in local `--version` output: image variants (`-alpine`, `-slim-bookworm`, and a bare `-dev` straight after the version, the Chainguard/Wolfi dev image, so `node:20-dev` reads as 20; `-dev` followed by a number still counts as a prerelease), patchlevels (`3.1.4p223`), build ids, vendor suffixes (`-desktop.1`) and package revisions (`-1`).
 
 Versions compare on the components both sides state, so `1.26` equals `1.26.1` under `exact`;
-every pair of sources must agree, and the pin is the most specific pinned version (an `engines`
-floor never becomes the pin).
-A configured source that is missing or has no version for the tool is a FAIL, never a PASS.
+every pair of pins must agree, and the pin is the most specific one (a range never becomes the pin).
+A configured source that is missing or yields neither a pin nor a range for the tool is a FAIL, never a PASS.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
 `python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain; a probe that does
 not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
-match the pin and also be at or above any `engines` floor: a pinned source never waives the floor.
+match the pin at the `compare` depth; ranges do not bind it.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
 `docker compose [-f <configured files>] config --no-env-resolution --format json` reads `name`. For each checkout
@@ -513,8 +538,9 @@ and are reported alone:
   its own directory name, or a held one: FAIL, the name is kept; the fix names the `.env` to edit, or export
   `COMPOSE_PROJECT_NAME`, or always pass `-p` (unset an empty `COMPOSE_PROJECT_NAME` first).
 
-`docker compose version` not found or exiting non-zero is a SKIP; timing out, being killed or being refused (EACCES)
-is a FAIL, withheld. Any other Compose failure is a FAIL whose fix is the command to rerun as
+`docker compose version` not found, or exiting non-zero with the Compose plugin absent (stderr says `unknown flag:
+--short`, `'compose' is not a docker command` or `unknown command: docker compose`), is a SKIP; any other non-zero
+exit (a daemon error, say), timing out, being killed or being refused (EACCES) is a FAIL, withheld. Any other Compose failure is a FAIL whose fix is the command to rerun as
 `config --no-env-resolution -q` (Compose's error and exit, never the resolved model with its `.env` values),
 directory and environment included, with the remote loaders off, or "upgrade Compose" when it is too old; a run that
 exits 0 with unusable JSON or no project name has no error to rerun, so its fix says to check `docker compose version`
@@ -545,7 +571,7 @@ Not covered:
 ```
                  .loops/env-check.toml ─┐
   git worktree list ──► checkouts ──────┼──► composeProject (policy, env-checks.ts)
-                                        │        │ docker compose version once: not found / exit ≠ 0 → SKIP; timeout → FAIL
+                                        │        │ docker compose version once: not found / plugin absent → SKIP; other exit ≠ 0, timeout → FAIL
                                         │        │ runs (no -p): configured -f, plain from the first file's dir, plain from the root
                                         │        │ own: shell as is (+ again without COMPOSE_*) ──► compose-config.ts ──► docker compose config
                                         │        │ from a worktree, main + peers: no COMPOSE_*     {name|noFile|error}   --no-env-resolution --format json
@@ -578,7 +604,8 @@ later of the newest commit touching the inputs and the inputs' modification time
 merge or checkout that brings in an older-dated commit, or an uncommitted edit, still counts (a
 checkout that rewrites an unchanged input can flag a fresh container; recreate the containers to clear it,
 since a rebuild that hits the build cache leaves them running).
-A container older than that change is `containers` severity (FAIL by default), and the fix recreates the stack the
+A container older than that change, or whose creation time loops cannot read, is `containers` severity (FAIL by default); so is
+a `git log` over the inputs that fails or prints no time (an empty log is the SKIP). The fix recreates the stack the
 way it was started, run from the checkout root:
 `docker compose -p <project> -f <file>... [--project-directory <dir>] [--env-file <file>]... up -d --build --force-recreate`.
 It reads the stale containers' Compose labels when they all carry the same `config_files`, `working_dir` and

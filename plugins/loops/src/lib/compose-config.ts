@@ -51,6 +51,8 @@ const TOO_OLD = /^(?:docker: )?unknown flag:? --no-env-resolution\b/m;
 // Warnings from Compose (`time=… level=warning`) and from the Docker CLI (`WARNING: Error parsing config file …`)
 // come before the failure and are not it.
 const WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
+// The Docker CLI without the compose plugin: it rejects `--short` on the `docker compose` stub, or does not know the command.
+const NO_PLUGIN = /^(?:docker: )?(?:unknown flag:? --short\b|'compose' is not a docker command|unknown command: docker compose)/m;
 // Plain `docker compose` (no -f) found no compose file in the cwd or above it. The corpus pins this wording.
 const NO_FILE = "no configuration file provided: not found";
 
@@ -82,8 +84,12 @@ export function composeVersion(run: Runner, cwd: string, env?: NodeJS.ProcessEnv
   if (r.timedOut) return { error: `docker compose version timed out after ${seconds}` };
   if (r.notFound) return { unavailable: "docker is not installed" };
   if (r.code === null) return { error: `docker compose version ${abended(r)}` };
-  // A missing compose plugin is docker exiting non-zero (125 for the unknown --short flag).
-  if (r.code !== 0) return { unavailable: `docker compose version exited ${r.code}` };
+  // A missing compose plugin is docker exiting non-zero (125 for the unknown --short flag) and saying so on stderr;
+  // any other non-zero exit is a docker that failed (daemon, config, crash), which is not "no Compose" and must not SKIP.
+  if (r.code !== 0) {
+    const why = r.stderr.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n");
+    return NO_PLUGIN.test(why) ? { unavailable: `docker compose version exited ${r.code}` } : { error: `docker compose version exited ${r.code}` };
+  }
   return { version: r.stdout.trim() };
 }
 

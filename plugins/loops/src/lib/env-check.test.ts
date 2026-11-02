@@ -95,15 +95,79 @@ describe("pins and local toolchains", () => {
     expect([miss.code, miss.out]).toEqual([1, expect.stringContaining("FAIL a.pins.go  go-mod: no go version found in go.mod")]);
   });
 
+  // The 0.6.0 pins contract: only exact pins are compared; each range is one INFO row, never a bound.
+  const PIN = (tool: string, sources: string, extra = "") => `${HEAD}[[pins]]\ntool = "${tool}"\nsources = [${sources}]\ncompare = "exact"\n${extra}`;
+  const nodeShim = (v: string) => shim("node", `echo v${v}`);
+  const ENGINES = (range: string) => JSON.stringify({ engines: { node: range } });
+  const WF_NODE = (...vs: string[]) => `jobs:\n  ci:\n    steps:\n${vs.map((x) => `      - uses: actions/setup-node@v4\n        with:\n          node-version: '${x}'\n`).join("")}`;
+  /** `LEVEL id` of each row, without the summary line. */
+  const heads = (lines: string[]) => lines.filter((l) => !l.startsWith("env-check:")).map((l) => l.split("  ")[0]);
+
   it.each([
-    ["nvmrc 22.1.0 above the engines floor", "22.1.0", ">=20.11.0", 0, "PASS a.pins.node"],
-    ["nvmrc 18.2.0 below the engines floor", "18.2.0", ">=20.0.0", 1, "FAIL a.pins.node  nvmrc:.nvmrc=18.2.0 below the floor 20.0.0"],
-  ])("exact compare treats an engines range as a floor: %s", (_n, nvmrc, range, code, line) => {
-    const cfg = `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "exact"\n`;
-    const r = check(setup(cfg, { ".nvmrc": `${nvmrc}\n`, "package.json": JSON.stringify({ engines: { node: range } }) }));
-    expect(r.code).toBe(code);
-    expect(r.out).toContain(line);
-    expect(r.out).not.toContain("disagree");
+    ["nvmrc 22.1.0 with engines >=20.11.0 (PASS, now with INFO)", "22.1.0", ">=20.11.0"],
+    ["nvmrc 18.2.0 with engines >=20.0.0 (was FAIL below the floor; a later a.range check covers it)", "18.2.0", ">=20.0.0"],
+  ])("an engines range beside a pin is INFO, not compared: %s", (_n, nvmrc, range) => {
+    const r = check(setup(PIN("node", `"nvmrc", "engines"`, `local = "off"\n`), { ".nvmrc": `${nvmrc}\n`, "package.json": ENGINES(range) }));
+    expect(r.code).toBe(0);
+    expect(heads(r.lines)).toEqual(["PASS a.pins.node", "INFO a.pins.node"]);
+    expect(r.lines[0]).toMatch(new RegExp(`^PASS a\\.pins\\.node  node ${nvmrc.replace(/\./g, "\\.")}(?: |$)`));
+    expect(r.lines[1]).toContain("engines:package.json");
+    expect(r.lines[1]).toContain(`"${range}"`);
+    expect(r.lines[1]).toContain("range, not compared");
+    expect(r.out).not.toMatch(/floor|disagree/);
+  });
+
+  it("rows run verdict, one INFO per distinct (source, range) in read order, then a.local", () => {
+    const files = { ".nvmrc": "20.11.0\n", "package.json": ENGINES(">=20"), ".github/workflows/ci.yml": WF_NODE(">=20", "^20.11.0", ">=20") };
+    const r = check(setup(PIN("node", `"nvmrc", "engines", "setup-node"`), files), [], withPath(nodeShim("20.11.0")));
+    expect(r.code).toBe(0);
+    expect(heads(r.lines)).toEqual(["PASS a.pins.node", "INFO a.pins.node", "INFO a.pins.node", "INFO a.pins.node", "PASS a.local.node"]);
+    const info = r.lines.slice(1, 4).map((l) => [l.includes("range, not compared"), /engines:package\.json|setup-node:\.github\/workflows\/ci\.yml/.exec(l)?.[0], /"[^"]*"/.exec(l)?.[0]]);
+    expect(info).toEqual([
+      [true, "engines:package.json", '">=20"'],
+      [true, "setup-node:.github/workflows/ci.yml", '">=20"'], // the same value from another source is its own row
+      [true, "setup-node:.github/workflows/ci.yml", '"^20.11.0"'], // the repeated ">=20" step is not
+    ]);
+    expect(r.lines[4]).toBe("PASS a.local.node  local node 20.11.0 matches pin 20.11.0");
+    expect(r.lines.at(-1)).toBe("env-check: 0 FAIL, 0 WARN, 2 PASS, 0 SKIP"); // INFO is not counted
+  });
+
+  const PY_FILE = { ".github/workflows/ci.yml": "jobs:\n  ci:\n    steps:\n      - uses: actions/setup-python@v5\n        with:\n          python-version-file: pyproject.toml\n", "pyproject.toml": '[project]\nrequires-python = ">=3.10"\n' };
+  it.each([
+    ["engines only", "node", `"engines"`, { "package.json": ENGINES(">=20") }, "engines:package.json", 1],
+    ["a range input only", "node", `"setup-node"`, { ".github/workflows/ci.yml": WF_NODE(">=20") }, "setup-node:.github/workflows/ci.yml", 1],
+    ["two range sources", "node", `"engines", "setup-node"`, { "package.json": ENGINES(">=20"), ".github/workflows/ci.yml": WF_NODE(">=20.1") }, "engines:package.json, setup-node:.github/workflows/ci.yml", 2],
+    ["pyproject requires-python only", "python", `"setup-python"`, PY_FILE, "setup-python:.github/workflows/ci.yml", 1],
+  ])("zero exact pins (%s) is a FAIL, then the INFO rows, and no a.local row", (_n, tool, sources, files, labels, infos) => {
+    const r = check(setup(PIN(tool, sources, `local = "fail"\n`), files), [], withPath(nodeShim("20.11.0"), shim("python3", "echo Python 3.12.1")));
+    expect(r.code).toBe(1);
+    expect(heads(r.lines)).toEqual([`FAIL a.pins.${tool}`, ...Array<string>(infos).fill(`INFO a.pins.${tool}`)]);
+    expect(r.lines[0]).toMatch(new RegExp(`^FAIL a\\.pins\\.${tool}  no exact pin among sources \\(${labels.replace(/[.()/]/g, "\\$&")}\\); pin an exact version in a supported source`));
+    expect(r.out).not.toContain("a.local");
+  });
+
+  it("a disagreement names only the pins, then reports the ranges, and skips a.local", () => {
+    const files = { ".nvmrc": "20.11.0\n", ".tool-versions": "nodejs 22.1.0\n", "package.json": ENGINES(">=20") };
+    const r = check(setup(PIN("node", `"nvmrc", "engines", "tool-versions"`), files), [], withPath(nodeShim("20.11.0")));
+    expect(r.code).toBe(1);
+    expect(heads(r.lines)).toEqual(["FAIL a.pins.node", "INFO a.pins.node"]);
+    expect(r.lines[0]).toMatch(/^FAIL a\.pins\.node  nvmrc:\.nvmrc=20\.11\.0, tool-versions:\.tool-versions=22\.1\.0 disagree \(exact\)/);
+  });
+
+  it("an unsupported form is one FAIL naming file:line, with no INFO rows and no a.local", () => {
+    const files = { ".nvmrc": "lts/*\n", "package.json": ENGINES(">=20") };
+    const r = check(setup(PIN("node", `"engines", "nvmrc"`, `local = "fail"\n`), files), [], withPath(nodeShim("20.11.0")));
+    expect(r.code).toBe(1);
+    expect(heads(r.lines)).toEqual(["FAIL a.pins.node"]);
+    expect(r.lines[0]).toContain('unsupported form "lts/*" in .nvmrc:1; pin an exact version');
+  });
+
+  it("a.local matches the pin at the compare depth; an engines range no longer binds it", () => {
+    const files = { ".nvmrc": "20\n", "package.json": ENGINES(">=20.11.0") };
+    const r = check(setup(PIN("node", `"nvmrc", "engines"`, `local = "fail"\n`).replace('"exact"', '"major"'), files), [], withPath(nodeShim("20.5.0")));
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("PASS a.local.node  local node 20.5.0 matches pin 20");
+    expect(r.out).not.toContain("floor");
   });
 
   it.each([
@@ -347,6 +411,19 @@ describe("compose", () => {
     const s = check(wt, [], {}, lost);
     expect([s.code, s.out]).toEqual([1, expect.stringContaining("FAIL e.project  the main checkout's configured run: docker compose config could not start (its directory is gone) — fix: rerun to see Compose's error: cd ")]);
     expect(check(wt, ["--compose-project"], {}, lost)).toMatchObject({ code: 1, out: "" });
+  });
+
+  it("fails, withholding the name, when `docker compose version` exits non-zero for a reason other than a missing plugin", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-d");
+    const stub = composeStub({ [wt]: "feat-d" });
+    const daemon: Runner = (cmd, args, opts) => (isComposeVersionCall(cmd, args) ? { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon\n", timedOut: false } : stub(cmd, args, opts));
+    const r = check(wt, [], {}, daemon);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("FAIL e.project  compose: docker compose version exited 1");
+    expect(r.out).not.toContain("SKIP e.project");
+    expect(check(wt, ["--compose-project"], {}, daemon)).toMatchObject({ code: 1, out: "" });
   });
 
   it("does not count the remote-loader switches as the shell's COMPOSE_*: no scrubbed own probe, no label", () => {
@@ -1654,6 +1731,36 @@ describe("b.containers", () => {
     expect(shell.out).toContain("PASS d.p  project=[mine]");
   });
 
+  it("fails closed when a container's creation time or the inputs' newest commit time cannot be read", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const raw = (name: string, at: string) => JSON.stringify([name, "running", at, "app-prod", root, "", ""]);
+    const level = "FAIL";
+    // An unparsable CreatedAt must not read as fresh: that container counts as stale and the message says why.
+    const garbled = check(root, [], {}, fake(listing(ctr(root, "db-1", "2999-01-01T00:00:00Z"), raw("web-1", "not a time")), [], prod(root)));
+    expect(garbled.code).toBe(1);
+    expect(garbled.out).toContain(`${level} b.containers  web-1 created before the newest change to the compose inputs (loops cannot read its creation time)`);
+    expect(garbled.out).not.toContain("db-1");
+    expect(b(root, [], fake(listing(raw("web-1", "")), [], prod(root)))).toContain("FAIL b.containers  web-1");
+    expect(b(root, [], fake(listing(raw("web-1", "not a time")), [], prod(root)))).toContain("loops cannot read its creation time");
+    // At the warn level it is a WARN.
+    const warn = setup(cfg('containers = "warn"\n'), files);
+    commit(warn);
+    expect(b(warn, [], fake(listing(raw("web-1", "garbage").replace(root, warn)), [], prod(warn)))).toMatch(/^WARN b\.containers {2}web-1 .*loops cannot read its creation time/);
+    // A git log that fails or prints garbage over tracked inputs is not "no commit touches the inputs".
+    const gitLog = (out: RunResult): Runner => {
+      const inner = fake(listing(ctr(root, "web-1", "2999-01-01T00:00:00Z")), [], prod(root));
+      return (cmd, args, opts) => (cmd === "git" && args[0] === "log" && args.includes("--format=%ct") ? out : inner(cmd, args, opts));
+    };
+    for (const out of [res(128), res(0, "not-a-number\n")]) {
+      const line = b(root, [], gitLog(out));
+      expect(line).toMatch(/^FAIL b\.containers {2}.*loops cannot read the commit time of the compose inputs/);
+      expect(line).not.toContain("SKIP");
+    }
+    // The genuine "no commit" (empty output) stays a SKIP.
+    expect(b(root, [], gitLog(res(0, "")))).toBe("SKIP b.containers  no commit touches the [compose] inputs");
+  });
+
   it("skips when no commit touches the inputs or the listing cannot be read", () => {
     const none = setup(cfg().replace('inputs = ["compose.yml", "docker/**"]', 'inputs = ["nothing/**"]'), files);
     commit(none);
@@ -1830,7 +1937,9 @@ describe("output and exit codes", () => {
     ["unknown pins key", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\nfoo = 1\n`, /\[\[pins\]\] #1: unknown key "foo"/],
     ["unknown source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["gomod"]\n`, /unknown source kind in "gomod"/],
     ["inherited source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["constructor"]\n`, /unknown source kind in "constructor"/],
-    ["bad compare", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\ncompare = "close"\n`, /compare must be exact\|minor\|major\|floor/],
+    ["bad compare", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\ncompare = "close"\n`, /compare must be exact\|minor\|major(?!\|)/],
+    // 0.6.0: compare = "floor" was accepted; ranges are no longer compared, so it is a config error that says why.
+    ["compare floor (removed in 0.6.0)", `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "floor"\n`, /\[\[pins\]\] #1: .*floor was removed in loops 0\.6\.0.*ranges are no longer compared.*a\.range.*exact, minor or major/],
     ["engine too new", `engine = ">=9.0.0"\n${HEAD}`, new RegExp(`needs loops >=9\\.0\\.0, this is ${V}; update agentic-tools`)],
     ["engine odd form", `engine = "^0.4"\n${HEAD}`, /engine must look like ">=0\.4\.0"/],
     ["compose test without files", `${HEAD}[compose]\nmode = "test"\n`, /mode test needs files/],
