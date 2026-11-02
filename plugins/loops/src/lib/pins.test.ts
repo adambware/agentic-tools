@@ -305,6 +305,9 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["tool-versions", "node", { ".tool-versions": "# node\nnodejs >=20\n" }, unsupported(">=20", ".tool-versions", 2)],
   ["go-mod", "go", { "go.mod": "module x\n\ngo >=1.20\n" }, unsupported(">=1.20", "go.mod", 3)],
   ["setup-node", "node", { ".github/workflows/ci.yml": WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{\n  "volta": {\n    "node": "^20.11"\n  }\n}\n' }, unsupported("^20.11", "package.json", 3)],
+  // Value: protects=a Pipfile python_version that is not a string FAILs; fails_when=the non-string guard is dropped and 3 reads as a
+  // pin; why_new=no row gave Pipfile a non-string value; seam=none; no_claim=none beyond protects
+  ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-python@v5\n        with:\n          python-version-file: Pipfile\n"), Pipfile: "[requires]\npython_version = 3\n" }, /requires\.python_version is not a string/],
   // An empty or comment-only plain version file holds no version: a FAIL, also as one of several glob matches.
   ["nvmrc", "node", { ".nvmrc": "" }, /no version in \.nvmrc/],
   ["python-version", "python", { ".python-version": "# none yet\n\n" }, /no version in \.python-version/],
@@ -624,6 +627,13 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     // `<<` inside quotes is not a heredoc word (Docker splits the line into shell words first), so nothing is skipped.
     ["a FROM after a double-quoted <<EOF", 'FROM node:20\nRUN echo "use <<EOF for docs"\nFROM node:latest\nRUN <<EOF\necho\nEOF\n', /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
     ["a FROM after a single-quoted <<EOF", "FROM node:20\nRUN echo 'use <<EOF for docs'\nFROM node:latest\nRUN <<EOF\necho\nEOF\n", /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
+    // Value: protects=Dockerfile logical-line edge shapes keep their file:line: a continuation open at EOF, CRLF endings, and
+    // `<<` on an instruction that takes no heredoc; fails_when=the EOF flush is dropped (the FROM vanishes), \r leaks into the
+    // text or the heredoc terminator match, or the RUN|COPY|ADD guard is removed (the LABEL line then reads as an unterminated
+    // heredoc); why_new=the rows above end every continuation, use LF, and only open heredocs on RUN; seam=none; no_claim=none beyond protects
+    ["a FROM whose last line ends in a backslash", "FROM node:20\nFROM node:latest \\\n", /unsupported form "node:latest" in Dockerfile:2; pin an exact version/],
+    ["CRLF line endings keep the physical line", "FROM node:20\r\nRUN a \\\r\n  && b\r\nFROM node:latest\r\n", /unsupported form "node:latest" in Dockerfile:4; pin an exact version/],
+    ["a << word on a LABEL is no heredoc", "FROM node:20\nLABEL <<EOF\nFROM node:latest\n", /unsupported form "node:latest" in Dockerfile:3; pin an exact version/],
     // The line is counted in UTF-16 units, as the instruction text is indexed: a character outside the BMP shifts nothing.
     ["an ARG value after an emoji on a continued line", 'ARG A="🙂🙂🙂🙂" NODE_VERSION=lts \\\n  B=1\n', unsupported("lts", "Dockerfile", 1)],
   ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
@@ -641,6 +651,14 @@ describe("Dockerfile instructions are read wherever Docker reads them", () => {
     ["a FROM in a RUN heredoc body", "FROM node:20\nRUN <<EOF\nFROM node:latest\nEOF\n", ["20"]],
     ["a FROM in a quoted <<- heredoc body", "FROM node:20\nRUN cat <<-\"EOT\" > /x\n\tFROM node:latest\n\tEOT\nFROM node:18\n", ["20", "18"]],
     ["a FROM in a backslash-quoted heredoc body", "FROM node:20\nRUN <<\\EOF\nFROM node:latest\nEOF\n", ["20"]],
+    // COPY and ADD take heredocs like RUN; a single-quoted name and CRLF endings close it the same way.
+    // Value: protects=a COPY/ADD heredoc body, a single-quoted name and a CRLF heredoc are skipped and reading resumes after the
+    // delimiter; fails_when=the guard is narrowed to RUN, quotes stay on the name, or \r breaks the delimiter match; why_new=the rows
+    // above open heredocs only on RUN with LF endings; seam=none; no_claim=none beyond protects
+    ["a FROM in a COPY heredoc body", "FROM node:20\nCOPY <<EOF /x\nFROM node:latest\nEOF\n", ["20"]],
+    ["a FROM in an ADD heredoc body", "FROM node:20\nADD <<EOF /x\nFROM node:latest\nEOF\nFROM node:18\n", ["20", "18"]],
+    ["a FROM in a single-quoted heredoc body", "FROM node:20\nRUN cat <<'EOF'\nFROM node:latest\nEOF\n", ["20"]],
+    ["a FROM in a heredoc body under CRLF endings", "FROM node:20\r\nRUN <<EOF\r\nFROM node:latest\r\nEOF\r\nFROM node:18\r\n", ["20", "18"]],
     ["a FROM in a heredoc whose name has a dash", "FROM node:20\nRUN <<END-OF-SCRIPT\nFROM node:latest\nEND-OF-SCRIPT\n", ["20"]],
   ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });
