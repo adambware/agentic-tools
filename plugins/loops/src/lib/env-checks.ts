@@ -213,6 +213,8 @@ export function harnessChecks(c: Ctx): Result[] {
     out.push(parts.length ? res("FAIL", "d.files", parts.join("; "), fix) : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
   }
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
+  // "auto" finding nothing is said (uncounted), so it does not read as checked; an explicit [] configures nothing.
+  if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
     const bad = entries.filter((e) => !isExecutable(join(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
@@ -228,8 +230,13 @@ export function harnessChecks(c: Ctx): Result[] {
     const parts = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts.length ? res("FAIL", "d.tracked", parts.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
-  if (h.sparse && !c.static && git(c.run, c.root, ["config", "--get", "core.sparseCheckout"])?.trim() === "true") {
-    out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+  if (h.sparse && !c.static) {
+    // --type=bool reads every git spelling (yes, on, 1) and --default=false makes unset "false", so a failed read (an
+    // invalid value, git failing) or any other output is a WARN, never "off".
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+    else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
+    else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
   }
   return out;
 }

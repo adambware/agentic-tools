@@ -393,7 +393,9 @@ env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
 ```
 
 Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
-are not counted. Results with the same level and message fold into one line that ends
+are not counted. A run with no counted row (no FAIL, WARN, PASS or SKIP; only INFO rows, or none) adds
+`WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)` last (under `--static`:
+`no check ran under --static (CI=true implies it)`, naming the checks that do run there); exit stays 0. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
 `--compose-project` (print the Compose project name for this checkout and exit 0 when `e.project` keeps it, with one
@@ -412,7 +414,7 @@ results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, 
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
-repo, `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
+repo, a `[[local]]` id `x.none` (reserved), `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
 
 ```toml
 schema_version = 1
@@ -436,9 +438,9 @@ compare = "exact"                       # engines is a range: one INFO row, neve
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
 files = ["go.mod", "VERSION"]           # d.files: regular files (symlinks followed), present and non-empty; a directory FAILs; working tree only (untracked counts)
-entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by .github/workflows, or a list
+entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by tracked .github/workflows (INFO when there are none), or a list
 tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
-sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on
+sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on (any git bool spelling) or unreadable, else PASS
 
 [compose]                               # e.*; omit the table for no compose checks
 mode = "none"                           # none: FAIL if a compose file is tracked | test
@@ -449,7 +451,7 @@ derive = "dirname"                      # dirname (default) | slug-hash (<main, 
 allow_container_name = ["app"]
 
 [[local]]                               # a repo's own checks
-id = "d.lint-lock"                      # <a-e or x>.<name>
+id = "d.lint-lock"                      # <a-e or x>.<name>; x.none is reserved
 run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
 timeout_s = 15

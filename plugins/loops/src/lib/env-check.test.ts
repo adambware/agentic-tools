@@ -487,6 +487,45 @@ describe("harness", () => {
     expect(r.out).toContain("WARN d.sparse  sparse checkout is enabled");
     expect(r.code).toBe(0);
   });
+
+  it("d.sparse reads every git bool spelling, PASSes when off, and is not run under --static", () => {
+    for (const v of ["yes", "on", "1"]) {
+      expect(run('sparse = "warn"', {}, (root) => sh(root, "config", "core.sparseCheckout", v)).out).toContain("WARN d.sparse  sparse checkout is enabled");
+    }
+    expect(run('sparse = "warn"').lines.filter((l) => l.includes("d.sparse"))).toEqual(["PASS d.sparse  sparse checkout is off"]);
+    expect(run('sparse = "warn"', {}, (root) => sh(root, "config", "core.sparseCheckout", "false")).out).toContain("PASS d.sparse  sparse checkout is off");
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    commit(root);
+    expect(check(root, ["--static"]).out).not.toContain("d.sparse");
+  });
+
+  it("d.sparse WARNs, never PASSes, when core.sparseCheckout cannot be read", () => {
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    commit(root);
+    // An invalid value makes git exit 128 (it also breaks ls-files, so stub only the config read).
+    const bad: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "config" && args.includes("core.sparseCheckout") ? { code: 128, stdout: "", stderr: "fatal: bad boolean config value", timedOut: false } : procRun(cmd, args, opts));
+    const odd: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "config" && args.includes("core.sparseCheckout") ? { code: 0, stdout: "maybe\n", stderr: "", timedOut: false } : procRun(cmd, args, opts));
+    for (const runner of [bad, odd]) {
+      const r = check(root, [], {}, runner);
+      expect(r.lines.filter((l) => l.includes("d.sparse"))).toEqual(["WARN d.sparse  could not read core.sparseCheckout — fix: run git config --type=bool --get core.sparseCheckout to see what is wrong"]);
+      expect(r.code).toBe(0);
+    }
+  });
+
+  it("d.entrypoints auto with no ./ command in tracked workflows is an uncounted INFO; an explicit [] stays silent", () => {
+    const files = { ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - run: make test\n" };
+    const r = run('entrypoints = "auto"\ntools = ["git"]', files);
+    expect(r.lines).toEqual([
+      "PASS d.tools  present: git",
+      "INFO d.entrypoints  auto: no ./ command in tracked .github/workflows; nothing to check",
+      "env-check: 0 FAIL, 0 WARN, 1 PASS, 0 SKIP",
+    ]);
+    expect(r.code).toBe(0);
+    expect(run('entrypoints = []\ntools = ["git"]', files).out).not.toContain("d.entrypoints");
+    // An untracked workflow is not read, so its ./ command does not count.
+    const u = run('entrypoints = "auto"\ntools = ["git"]', {}, (root) => put(root, ".github/workflows/ci.yml", "jobs:\n  a:\n    steps:\n      - run: ./ci.sh\n"));
+    expect(u.out).toContain("INFO d.entrypoints  auto: no ./ command in tracked .github/workflows");
+  });
 });
 
 describe("compose", () => {
@@ -2267,6 +2306,7 @@ describe("output and exit codes", () => {
     ["compose test without files", `${HEAD}[compose]\nmode = "test"\n`, /mode test needs files/],
     ["compose dev", `${HEAD}[compose]\nmode = "dev"\n`, /mode must be none\|test/],
     ["bad local id", `${HEAD}[[local]]\nid = "zz"\nrun = "a"\n`, /id "zz" must look like/],
+    ["reserved local id x.none", `${HEAD}[[local]]\nid = "x.none"\nrun = "a"\n`, /\[\[local\]\] #1: id x\.none is reserved for env-check's own "no check ran" row/],
     // Value: protects=parseConfig rejects empty sources, duplicate local ids and a non-positive timeout_s; fails_when=one of those guards is removed; why_new=the bad-config table had no rows for them; seam=none; no_claim=none beyond protects
     ["empty sources", `${HEAD}[[pins]]\ntool = "go"\nsources = []\n`, /\[\[pins\]\] #1: sources is empty/],
     ["duplicate local id", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\n[[local]]\nid = "d.a"\nrun = "b"\n`, /\[\[local\]\] #2: duplicate id d\.a/],
@@ -2312,6 +2352,46 @@ describe("output and exit codes", () => {
   it("--compose-project exits 2 when compose mode is not test", () => {
     expect(check(setup(HEAD), ["--compose-project"]).code).toBe(2);
     expect(check(setup(`${HEAD}[compose]\nmode = "none"\n`), ["--compose-project"])).toMatchObject({ code: 2, out: "", err: expect.stringContaining("compose mode is not test") });
+  });
+});
+
+describe("x.none: a run that checks nothing", () => {
+  const NONE = "WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)";
+  it("adds a counted WARN with a fix, keeps exit 0, and shows under --quiet and in --json", () => {
+    const root = setup(HEAD);
+    commit(root);
+    expect(check(root)).toMatchObject({ code: 0, lines: [NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"] });
+    expect(check(root, ["--quiet"]).lines).toEqual([NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+    const j = JSON.parse(check(root, ["--json"]).out);
+    expect([j.results, j.summary, j.exit]).toEqual([
+      [{ level: "WARN", id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", also: [], source: "builtin" }],
+      { fail: 0, warn: 1, pass: 0, skip: 0 },
+      0,
+    ]);
+    // An empty [harness] is the same as none.
+    expect(check(setup(`${HEAD}[harness]\ntools = []\nfiles = []\n`)).lines).toEqual([NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+  });
+
+  it("names --static when the only configured checks do not run there", () => {
+    for (const [args, env] of [[["--static"], {}], [[], { CI: "true" }]] as [string[], Record<string, string>][]) {
+      const r = check(setup(`${HEAD}[harness]\ntools = ["git"]\nsparse = "warn"\n`), args, env);
+      expect([r.code, r.lines]).toEqual([
+        0,
+        [
+          "WARN x.none  no check ran under --static (CI=true implies it) — fix: add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)",
+          "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP",
+        ],
+      ]);
+    }
+  });
+
+  it("counts a run of only INFO rows as nothing checked, and never fires beside a counted row", () => {
+    const root = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
+    commit(root);
+    expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" }).lines).toEqual(["INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+    expect(check(root, ["--static"]).out).not.toContain("x.none"); // SKIP c.shared counts
+    expect(check(root).out).not.toContain("x.none");
+    expect(check(setup(`${HEAD}[harness]\ntools = ["git"]\n`)).out).not.toContain("x.none");
   });
 });
 
