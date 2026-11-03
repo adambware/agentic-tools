@@ -130,6 +130,7 @@ export function parseConfig(text: string, file: string): Config {
     const t = table(l, where, ["id", "run", "static", "timeout_s"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
+    if (id === "x.none") throw new UsageError(`${where}: id x.none is reserved for env-check's own "no check ran" row`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v): v is number => typeof v === "number" && v >= 0.001 && Number.isSafeInteger(Math.round(v * 1000)), "a positive number of seconds (at least 0.001)", 15);

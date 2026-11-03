@@ -7,8 +7,9 @@ import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
-import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
-import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
+import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { git, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
+import { CONTROL, cut, escapeCtl, quote, short } from "./text.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
 export interface Result {
@@ -32,6 +33,11 @@ export interface Ctx {
   isWorktree: boolean;
   /** `git worktree list` paths, the main checkout first. */
   worktrees: string[];
+  /**
+   * `$HOME` shown as `~`: the renderer's own redaction, applied to relayed text before it is cut, since a cut through
+   * home would leave a prefix the renderer no longer recognises.
+   */
+  redact: (s: string) => string;
 }
 
 const res = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "builtin" });
@@ -43,31 +49,58 @@ const rp = (p: string): string => {
     return p;
   }
 };
-const short = (xs: string[], n = 5): string => xs.slice(0, n).join(", ") + (xs.length > n ? ` (+${xs.length - n} more)` : "");
 
 const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
 /** Docker calls and toolchain probes: a hung daemon, shim or network call must not hang the run. */
 const PROBE_TIMEOUT_MS = 10_000;
+
+/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` written as a plain
+ * version (not `1.62.x` or `v1.2.3`, which the managers would not install as `want`), else the generic advice. An alias
+ * tool's line may name another plugin (`golang`), so it gets a bare `asdf install` in that file's directory. */
+function installFix(root: string, tool: string, want: string, pins: PinValue[]): string {
+  const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
+  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool];
+  const written = (file: string): boolean => {
+    try {
+      return readFileSync(join(root, file), "utf8").split("\n").some((l) => {
+        const m = /^\s*(\S+)\s+(\S+)/.exec(l);
+        return !!m && names.includes(m[1]!) && m[2] === want;
+      });
+    } catch {
+      return false;
+    }
+  };
+  const TV = "tool-versions:";
+  const file = /^\d+(?:\.\d+)*$/.test(want) ? pins.map((v) => v.src).find((src) => src.startsWith(TV) && written(src.slice(TV.length)))?.slice(TV.length) : undefined;
+  if (file === undefined) return generic;
+  if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
+  if (basename(file) !== ".tool-versions") return generic; // a bare asdf install reads only a .tool-versions
+  const dir = dirname(file);
+  return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : shQuote(dir)}, which installs the ${file} pins`;
+}
 
 export function pinChecks(c: Ctx): Result[] {
   const out: Result[] = [];
   for (const pin of c.cfg.pins) {
     const id = `a.pins.${pin.tool}`;
     let vals: PinValue[];
+    const notes: string[] = [];
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s));
+      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
-      out.push(res("FAIL", id, e.message, `fix the source file or the sources in ${CFG}`));
+      out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict.
+    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict, then one per
+    // distinct workflow skipped for its reusable-workflow calls.
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs: PinValue[]) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = new Set<string>();
     const info = vals
       .filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`))
-      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`));
+      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`))
+      .concat([...new Set(notes)].map((n) => res("INFO", id, n)));
     if (!pins.length) {
       out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
@@ -85,13 +118,24 @@ export function pinChecks(c: Ctx): Result[] {
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = `install ${pin.tool} ${want} (asdf install, mise install, or your package manager)`;
-    if (r.timedOut) out.push(res(level, lid, `${[bin, ...args].join(" ")} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
+    const fix = installFix(c.root, pin.tool, want, pins);
+    const cmd = [bin, ...args].join(" ");
+    // The tool's first output line, redacted then cut and escaped, so it stays on this row and cannot read as a second fix.
+    const said = (...texts: string[]) => {
+      const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+      return l ? `: ${escapeCtl(cut(c.redact(l), 120))}` : "";
+    };
+    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
+    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
+    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
+    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
+    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
-  return out;
+  // Pin rows name tracked files (git allows any byte but NUL in a name) and config text; escapeCtl leaves escaped text as
+  // it is, so escaping every row once also covers the tool output said() already escaped.
+  return out.map((r) => ({ ...r, message: escapeCtl(r.message), fix: r.fix === undefined ? undefined : escapeCtl(r.fix) }));
 }
 
 export function sharedCheck(c: Ctx): Result[] {
@@ -112,18 +156,72 @@ function autoEntrypoints(c: Ctx): string[] {
   return [...found].sort();
 }
 
+/**
+ * Why the asdf or mise shim at `p` cannot run `tool` in this checkout, or null when it resolves or `p` is no shim. Asks
+ * the manager (`asdf which` / `mise which`, from the repo root with the run's env), which resolves the version the shim
+ * would use; the tool itself never runs.
+ */
+function shimProblem(c: Ctx, tool: string, p: string): string | null {
+  const s = shimOf(p);
+  if (!s) return null;
+  const cmd = s.cmd ?? which(s.manager, c.env.PATH);
+  if (!cmd) return `${s.manager} not on PATH`;
+  const r = c.run(cmd, ["which", tool], { cwd: c.root, env: c.env, timeoutMs: PROBE_TIMEOUT_MS });
+  const how = `${s.manager} which ${tool}`;
+  const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+  if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
+  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
+  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(c.redact(said), 120))}` : ""}`;
+  return r.stdout.trim() ? null : `${how} printed no path`;
+}
+
 export function harnessChecks(c: Ctx): Result[] {
   const h = c.cfg.harness;
   const out: Result[] = [];
   if (h.tools.length && !c.static) {
-    const missing = h.tools.filter((t) => !which(t, c.env.PATH));
-    out.push(missing.length ? res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools") : res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
+    const missing: string[] = [];
+    const unresolved: string[] = [];
+    for (const t of h.tools) {
+      const p = which(t, c.env.PATH);
+      const why = p ? shimProblem(c, t, p) : null;
+      if (!p) missing.push(t);
+      else if (why) unresolved.push(`${t} (${why})`);
+    }
+    if (missing.length) out.push(res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools"));
+    if (unresolved.length) {
+      out.push(
+        res(
+          "FAIL",
+          "d.tools",
+          `version-manager shim resolves no version here: ${unresolved.join("; ")}`,
+          "set a version for this checkout (a .tool-versions line for asdf, mise use <tool>@<version> for mise), put the version manager on PATH, or install the tool outside it",
+        ),
+      );
+    }
+    if (!missing.length && !unresolved.length) out.push(res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
   }
   if (h.files.length) {
-    const bad = h.files.filter((f) => !existsSync(join(c.root, f)) || statSync(join(c.root, f)).size === 0);
-    out.push(bad.length ? res("FAIL", "d.files", `missing or empty: ${bad.join(", ")}`, "restore the files (git checkout) or fix [harness] files") : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
+    // One stat, symlinks followed: a directory's size is a filesystem detail, so anything but a regular file FAILs.
+    // The working tree only; whether the file is tracked is d.tracked's job.
+    const kind = (f: string): "ok" | "missing" | "other" => {
+      try {
+        const s = statSync(join(c.root, f));
+        return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
+      } catch {
+        return "missing";
+      }
+    };
+    const kinds = h.files.map(kind);
+    const missing = h.files.filter((_, i) => kinds[i] === "missing");
+    const other = h.files.filter((_, i) => kinds[i] === "other");
+    const parts = [missing.length ? `missing or empty: ${missing.join(", ")}` : "", other.length ? `not a regular file: ${other.join(", ")}` : ""].filter(Boolean);
+    const fix = `restore the files (git checkout) or fix [harness] files${other.length ? " (list a file inside a directory, not the directory)" : ""}`;
+    out.push(parts.length ? res("FAIL", "d.files", parts.join("; "), fix) : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
   }
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
+  // "auto" finding nothing is said (uncounted), so it does not read as checked; an explicit [] configures nothing.
+  if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
     const bad = entries.filter((e) => !isExecutable(join(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
@@ -139,8 +237,13 @@ export function harnessChecks(c: Ctx): Result[] {
     const parts = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts.length ? res("FAIL", "d.tracked", parts.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
-  if (h.sparse && !c.static && git(c.run, c.root, ["config", "--get", "core.sparseCheckout"])?.trim() === "true") {
-    out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+  if (h.sparse && !c.static) {
+    // --type=bool reads every git spelling (yes, on, 1) and --default=false makes unset "false", so a failed read (an
+    // invalid value, git failing) or any other output is a WARN, never "off".
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+    else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
+    else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
   }
   return out;
 }
@@ -518,9 +621,14 @@ export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] 
   ];
 }
 
-const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix: (.*))?$/;
+// The message ends at the first separator; a bare trailing "— fix:" is an empty fix.
+const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*))?)?$/;
 
-/** Run one `[[local]]` check. Fail closed: bad lines, no lines, or a bad exit without a FAIL are FAILs. */
+/**
+ * Run one `[[local]]` check. Fail closed: bad lines (a control character other than tab included), no lines, or a bad
+ * exit without a FAIL are FAILs. Relayed text is escaped, so a check cannot move the cursor or add a second fix, and
+ * has `$HOME` redacted before it is cut.
+ */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
   const env: NodeJS.ProcessEnv = {
@@ -537,15 +645,16 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
-  for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
-    const m = LINE.exec(line);
-    if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+  // Only a CRLF's "\r" and trailing blanks are trimmed, so a line ending in (or made of) another control is rejected.
+  for (const line of r.stdout.split("\n").map((s) => s.replace(/\r$/, "").replace(/[ \t]+$/, "")).filter(Boolean)) {
+    const m = CONTROL.test(line) ? null : LINE.exec(line);
+    if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
-  const stderr = r.stderr.trim().split("\n")[0] ?? "";
-  const why = stderr ? ` (${stderr.slice(0, 120)})` : "";
+  const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
+  const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;

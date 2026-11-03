@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
-import { redactHome, run, type Runner, type RunResult } from "./proc.js";
+import { redactHome, run, run as procRun, type Runner, type RunResult } from "./proc.js";
 import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
 import { composeStub, deps, put, repo, sh, shim, tmp, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
 import { VERSION } from "./version.js";
@@ -95,7 +95,7 @@ describe("pins and local toolchains", () => {
     expect([miss.code, miss.out]).toEqual([1, expect.stringContaining("FAIL a.pins.go  go-mod: no go version found in go.mod")]);
   });
 
-  // The 0.6.0 pins contract: only exact pins are compared; each range is one INFO row, never a bound.
+  // The 0.6.0 pins contract: only exact pins are compared; each range is one INFO row, never a bound. // pregate-literal: VERSION=0.6.0 names the release that introduced this contract
   const PIN = (tool: string, sources: string, extra = "") => `${HEAD}[[pins]]\ntool = "${tool}"\nsources = [${sources}]\ncompare = "exact"\n${extra}`;
   const nodeShim = (v: string) => shim("node", `echo v${v}`);
   const ENGINES = (range: string) => JSON.stringify({ engines: { node: range } });
@@ -185,7 +185,7 @@ describe("pins and local toolchains", () => {
   });
 
   it("treats a missing tool as the configured level and local = off as no check", () => {
-    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found or gave no version");
+    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found on PATH");
     expect(check(setup(`${GO_PIN}local = "off"\n`, GO_FILES)).out).not.toContain("a.local");
   });
 
@@ -195,6 +195,86 @@ describe("pins and local toolchains", () => {
     const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], {}, hung);
     expect(seen).toEqual([10_000]);
     expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL a.local.go  go version timed out after 10s — fix: install go 1.26.1")]);
+  });
+
+  // GO_FILES pins go 1.26.1 in .tool-versions; go may be written golang there, so its fix is a bare asdf install.
+  const GO_TV_FIX = "install go 1.26.1: run asdf install (or mise install) in the repo root, which installs the .tool-versions pins";
+  it.each([
+    ["a shim with no version set", shim("go", 'echo "No version is set for command go" >&2\necho "Consider adding: golang 1.26.1" >&2\nexit 126'), "go version exited 126: No version is set for command go"],
+    ["an exit with no output", shim("go", "exit 3"), "go version exited 3"],
+    ["exit 0 with no version", shim("go", 'echo\necho "go dev build"'), "go version printed no version: go dev build"],
+    ["exit 0 with nothing", shim("go", "true"), "go version printed no version"],
+  ])("a failed probe says how it failed: %s", (_n, dir, message) => {
+    const r = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin` });
+    expect(r.code).toBe(0);
+    expect(r.lines.find((l) => l.startsWith("WARN a.local.go"))).toBe(`WARN a.local.go  ${message} — fix: ${GO_TV_FIX}`);
+  });
+
+  it("a probe that could not start reports the spawn error", () => {
+    const eacces: Runner = (cmd, args, opts) => (cmd === "go" ? { code: null, stdout: "", stderr: "", timedOut: false, abend: "EACCES" } : run(cmd, args, opts));
+    const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], {}, eacces);
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL a.local.go  go version could not run (EACCES) — fix:")]);
+  });
+
+  it("relays the tool's output escaped and cut, so it stays on its row and cannot read as a second fix", () => {
+    const dir = shim("go", `printf '  bad\\033[2J\\rx — fix: rm -rf ~ %s\\n' "$(printf 'y%.0s' $(seq 1 150))" >&2\nexit 1`);
+    const r = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin` });
+    const row = r.lines.find((l) => l.startsWith("WARN a.local.go"))!;
+    expect(row).toMatch(/^WARN a\.local\.go  go version exited 1: bad\\u001b\[2J\\rx \\u2014 fix: rm -rf ~ y+… — fix: install go 1\.26\.1: /);
+    expect(row.split(" — fix: ")).toHaveLength(2);
+    expect(row.slice(row.indexOf("exited 1: ") + 10, row.indexOf("…")).length).toBeGreaterThan(100);
+    expect([...row.slice(row.indexOf("exited 1: ") + 10, row.indexOf("…") + 1)].length).toBeLessThanOrEqual(150); // 120 code points, escapes expanded
+  });
+
+  it("redacts $HOME before cutting the tool's output, so a cut through home leaks no part of it", () => {
+    // "error: " + 107 zeros + " " puts home at code point 115, across the 120-code-point cut.
+    const dir = shim("go", `echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.config/go/env" >&2\nexit 2`);
+    const out = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin`, HOME: "/home/someuser" }).out;
+    expect(out).toMatch(/WARN a\.local\.go {2}go version exited 2: error: 0{107} ~\/\.co… — fix: /);
+    expect(out).not.toMatch(/\/home|someu/);
+  });
+
+  it.each([
+    ["a tool pinned only by .tool-versions names its asdf and mise install", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 9.9.9\n" }, "golangci-lint", "install golangci-lint 9.9.9: asdf install golangci-lint 9.9.9, or mise install golangci-lint@9.9.9"],
+    ["an alias tool in a subdirectory .tool-versions gets a bare asdf install there", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools/.tool-versions"]\n`, { "tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in tools, which installs the tools/.tool-versions pins"],
+    ["an alias tool pinned by another file name keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools.txt"]\n`, { "tools.txt": "golang 1.26.1\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
+    ["a pin more specific than .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod", "tool-versions"]\ncompare = "minor"\n`, { "go.mod": "module x\n\ngo 1.26.1\n", ".tool-versions": "golang 1.26\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
+    ["a subdirectory that needs quoting is shell-quoted", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:my tools/.tool-versions"]\n`, { "my tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in 'my tools', which installs the my tools/.tool-versions pins"],
+    ["a series in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 1.62.x\n" }, "golangci-lint", "install golangci-lint 1.62 (asdf install, mise install, or your package manager)"],
+  ])("the fix follows the pin source: %s", (_n, config, files, tool, fix) => {
+    const r = check(setup(config, files), [], { PATH: `${shim(tool, "exit 126")}:/usr/bin:/bin` });
+    expect(r.lines.find((l) => l.startsWith(`WARN a.local.${tool}`))).toMatch(new RegExp(` — fix: ${fix.replace(/[.*+?^${}()|[\]\\/@]/g, "\\$&")}$`));
+  });
+
+  // A job-level reusable-workflow call is noted, never read: an uncounted INFO beside a PASS, or named in the FAIL.
+  const REUSE = "on: push\njobs:\n  ci:\n    uses: someorg/.github/.github/workflows/go-ci.yml@abc123\n    with:\n      go-version: \"1.25\"\n";
+  const REL = "jobs:\n  release:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.26.1'\n";
+  const NOTE = "setup-go:.github/workflows/ci.yml: job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read";
+  it("a globbed workflow that only calls a reusable workflow is an INFO row after the PASS; the exit is unchanged", () => {
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", ".github/workflows/ci.yml": REUSE, ".github/workflows/release.yml": REL });
+    const r = check(root);
+    expect(r.code).toBe(0);
+    expect(r.lines).toEqual(["PASS a.pins.go  go 1.26.1 (go-mod:go.mod, setup-go:.github/workflows/release.yml)", `INFO a.pins.go  ${NOTE}`, "env-check: 0 FAIL, 0 WARN, 1 PASS, 0 SKIP"]);
+    const j = JSON.parse(check(root, ["--json"]).out) as { results: { level: string; id: string; message: string }[] };
+    expect(j.results.filter((x) => x.id === "a.pins.go").map((x) => [x.level, x.message])).toEqual([["PASS", expect.any(String)], ["INFO", NOTE]]);
+  });
+
+  it("escapes a tracked file name in pin rows, so a control character in it cannot reach the terminal", () => {
+    const wf = ".github/workflows/ci\u001b[2J.yml";
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", [wf]: REUSE, ".github/workflows/release.yml": REL });
+    const r = check(root);
+    expect(r.lines[1]).toBe(`INFO a.pins.go  ${NOTE.replace("ci.yml", "ci\\u001b[2J.yml")}`);
+    const only = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { [wf]: REUSE }));
+    expect(only.lines[0]).toMatch(/^FAIL a\.pins\.go {2}setup-go: no go version found in \.github\/workflows\/ci\\u001b\[2J\.yml; /);
+    for (const x of [r, only]) expect(x.out).not.toContain("\u001b");
+  });
+
+  it("a reusable-only workflow as the only match stays a FAIL, with a fix that says reusable inputs are not read", () => {
+    const r = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { ".github/workflows/ci.yml": REUSE }));
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toBe(
+      "FAIL a.pins.go  setup-go: no go version found in .github/workflows/ci.yml; job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read — fix: pin the version in a step that uses actions/setup-go in a workflow of this repo, or remove the setup-go source from .loops/env-check.toml (reusable-workflow inputs are not read)",
+    );
   });
 });
 
@@ -236,9 +316,172 @@ describe("harness", () => {
     expect(run('tools = ["git"]').out).toContain("PASS d.tools  present: git");
   });
 
+  describe("d.tools version-manager shims", () => {
+    const FIX =
+      "fix: set a version for this checkout (a .tool-versions line for asdf, mise use <tool>@<version> for mise), put the version manager on PATH, or install the tool outside it";
+    /** An asdf shim for `tool` that execs `asdf` (by name, or by the given path); running it leaves a marker. */
+    const asdfShim = (dir: string, tool: string, asdf = "asdf") =>
+      put(dir, tool, `#!/usr/bin/env bash\n# asdf-plugin: ${tool} 1.0.0\ntouch "${dir}/ran-${tool}"\nexec ${asdf} exec "${tool}" "$@"\n`, true);
+    /** A fake version manager `name` in `dir` that logs "<cwd> <args>" and answers `which` with `body`. */
+    const manager = (dir: string, name: string, body: string) => put(dir, name, `#!/bin/sh\necho "$PWD $*" >> "${dir}/${name}.log"\n${body}\n`, true);
+    const NO_VERSION = 'echo "No version is set for command $2" >&2; exit 126';
+    const RESOLVES = 'echo "/opt/asdf/installs/$2/1.0.0/bin/$2"';
+    const go = (tools: string, env: Record<string, string>, runner?: Runner) => {
+      const root = setup(`${HEAD}[harness]\ntools = ${tools}\n`);
+      commit(root);
+      return { root, ...check(root, [], env, runner) };
+    };
+    // A PATH with no real asdf or mise on it: git runs from the process env, so it is not needed here.
+    const bare = (...dirs: string[]) => ({ PATH: [...dirs, "/usr/bin", "/bin"].join(":") });
+
+    it("FAILs an asdf shim that resolves no version, asking asdf which from the repo root and never running the tool", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", NO_VERSION);
+      const r = go('["fakelint"]', bare(shims, bin));
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(`FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf which fakelint exited 126: No version is set for command fakelint) — ${FIX}`);
+      expect(r.out).not.toContain("PASS d.tools");
+      expect(readFileSync(join(bin, "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      expect(existsSync(join(shims, "ran-fakelint"))).toBe(false);
+    });
+
+    it("PASSes an asdf shim that resolves, and never runs a plain tool or the shim", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      put(shims, "plain", `#!/bin/sh\ntouch "${shims}/ran-plain"\n`, true);
+      manager(bin, "asdf", RESOLVES);
+      const r = go('["fakelint", "plain"]', bare(shims, bin));
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("PASS d.tools  present: fakelint, plain");
+      expect(readFileSync(join(bin, "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`); // only the shim is asked about
+      expect(existsSync(join(shims, "ran-fakelint")) || existsSync(join(shims, "ran-plain"))).toBe(false);
+    });
+
+    it("FAILs when asdf is not on PATH, unless the shim execs asdf by an absolute path", () => {
+      const shims = tmp();
+      asdfShim(shims, "fakelint");
+      expect(go('["fakelint"]', bare(shims)).out).toContain("FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf not on PATH)");
+      // An older asdf shim names asdf by its path: that asdf is asked, though no asdf is on PATH.
+      const abs = tmp();
+      const home = tmp();
+      asdfShim(abs, "fakelint", `${home}/bin/asdf`);
+      manager(join(home, "bin"), "asdf", RESOLVES);
+      const r = go('["fakelint"]', bare(abs));
+      expect(r.out).toContain("PASS d.tools  present: fakelint");
+      expect(readFileSync(join(home, "bin", "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      // ...and a PATH asdf is not asked instead of it.
+      const other = tmp();
+      manager(other, "asdf", RESOLVES);
+      manager(join(home, "bin"), "asdf", NO_VERSION);
+      expect(go('["fakelint"]', bare(abs, other)).out).toContain("(asdf which fakelint exited 126: No version is set for command fakelint)");
+      expect(existsSync(join(other, "asdf.log"))).toBe(false);
+      // A named asdf that is gone cannot run the shim either.
+      const gone = tmp();
+      asdfShim(gone, "fakelint", "/nonexistent-dir/bin/asdf");
+      expect(go('["fakelint"]', bare(gone)).out).toContain("fakelint (asdf not found at /nonexistent-dir/bin/asdf)");
+    });
+
+    it("asks mise about a symlink to the mise binary, and does not treat mise itself as a shim", () => {
+      const bin = tmp();
+      const shims = tmp();
+      manager(bin, "mise", 'echo "mise ERROR $2 is not a mise bin" >&2; exit 1');
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      const r = go('["fakelint"]', bare(shims));
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("FAIL d.tools  version-manager shim resolves no version here: fakelint (mise which fakelint exited 1: mise ERROR fakelint is not a mise bin)");
+      expect(readFileSync(join(bin, "mise.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      manager(bin, "mise", RESOLVES);
+      expect(go('["fakelint"]', bare(shims)).out).toContain("PASS d.tools  present: fakelint");
+      rmSync(join(bin, "mise.log"));
+      expect(go('["mise"]', bare(bin)).out).toContain("PASS d.tools  present: mise");
+      expect(existsSync(join(bin, "mise.log"))).toBe(false);
+    });
+
+    it("FAILs a manager that times out, prints no path, or cannot run", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "exit 0");
+      expect(go('["fakelint"]', bare(shims, bin)).out).toContain("fakelint (asdf which fakelint printed no path)");
+      const stub = (r: Partial<RunResult>): Runner => (cmd, args, opts) => (cmd.endsWith("asdf") ? { code: null, stdout: "", stderr: "", timedOut: false, ...r } : procRun(cmd, args, opts));
+      expect(go('["fakelint"]', bare(shims, bin), stub({ timedOut: true })).out).toContain("fakelint (asdf which fakelint timed out after 10s)");
+      expect(go('["fakelint"]', bare(shims, bin), stub({ abend: "EACCES" })).out).toContain("fakelint (asdf which fakelint could not run (EACCES))");
+    });
+
+    it("lists missing tools first, then unresolved shims, in two FAIL rows", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      asdfShim(shims, "other");
+      manager(bin, "asdf", NO_VERSION);
+      const r = go('["nope-tool", "fakelint", "other"]', bare(shims, bin));
+      expect(r.code).toBe(1);
+      const rows = r.lines.filter((l) => l.includes("d.tools"));
+      expect(rows.map((l) => l.split(" — ")[0])).toEqual([
+        "FAIL d.tools  missing on PATH: nope-tool",
+        "FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf which fakelint exited 126: No version is set for command fakelint); other (asdf which other exited 126: No version is set for command other)",
+      ]);
+    });
+
+    it("escapes the manager's output line", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "printf 'bad\\033[2J — fix: rm -rf x\\n' >&2; exit 3");
+      expect(go('["fakelint"]', bare(shims, bin)).out).toContain("(asdf which fakelint exited 3: bad\\u001b[2J \\u2014 fix: rm -rf x)");
+    });
+
+    it("redacts $HOME before cutting the manager's output line", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", `echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.asdf/x" >&2; exit 3`);
+      const out = go('["fakelint"]', { ...bare(shims, bin), HOME: "/home/someuser" }).out;
+      expect(out).toMatch(/\(asdf which fakelint exited 3: error: 0{107} ~\/\.as…\)/);
+      expect(out).not.toMatch(/\/home|someu/);
+    });
+
+    it.each([[["--static"], {}], [[], { CI: "true" }]] as [string[], Record<string, string>][])("%j %j never asks the manager", (args, env) => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", RESOLVES);
+      const root = setup(`${HEAD}[harness]\ntools = ["fakelint"]\n`);
+      commit(root);
+      const r = check(root, args, { ...bare(shims, bin), ...env });
+      expect(r.out).not.toContain("d.tools");
+      expect(existsSync(join(bin, "asdf.log")) || existsSync(join(shims, "ran-fakelint"))).toBe(false);
+    });
+  });
+
   it("d.files needs present, non-empty files", () => {
     const r = run('files = ["VERSION", "go.sum", "README.md"]', { VERSION: "" });
-    expect(r.out).toContain("FAIL d.files  missing or empty: VERSION, go.sum");
+    expect(r.out).toContain("FAIL d.files  missing or empty: VERSION, go.sum — fix: restore the files (git checkout) or fix [harness] files");
+  });
+
+  it("d.files FAILs a directory, a symlink to one, or a FIFO in a separate clause, whatever the directory holds", () => {
+    const r = run('files = ["full", "VERSION", "emptydir", "linkdir", "fifo", "go.sum"]', { "full/a.txt": "x\n", VERSION: "" }, (root) => {
+      mkdirSync(join(root, "emptydir"));
+      symlinkSync("full", join(root, "linkdir"));
+      execFileSync("mkfifo", [join(root, "fifo")]);
+    });
+    expect(r.code).toBe(1);
+    expect(r.lines.filter((l) => l.includes("d.files"))).toEqual([
+      "FAIL d.files  missing or empty: VERSION, go.sum; not a regular file: full, emptydir, linkdir, fifo — fix: restore the files (git checkout) or fix [harness] files (list a file inside a directory, not the directory)",
+    ]);
+    expect(run('files = ["full"]', { "full/a.txt": "x\n" }).out).toContain("FAIL d.files  not a regular file: full — fix:");
+  });
+
+  it("d.files follows symlinks to regular files, FAILs a dangling one, and checks the working tree only (untracked counts)", () => {
+    const r = run('files = ["link", "untracked.txt"]', { "real.txt": "x\n" }, (root) => {
+      symlinkSync("real.txt", join(root, "link"));
+      put(root, "untracked.txt", "y\n");
+    });
+    expect(r.out).toContain("PASS d.files  present: link, untracked.txt");
+    expect(run('files = ["dangling"]', {}, (root) => symlinkSync("nowhere", join(root, "dangling"))).out).toContain("FAIL d.files  missing or empty: dangling — fix:");
   });
 
   it("d.entrypoints auto reads ./commands from CI workflows and needs +x", () => {
@@ -272,6 +515,45 @@ describe("harness", () => {
     const r = run('sparse = "warn"', {}, (root) => sh(root, "config", "core.sparseCheckout", "true"));
     expect(r.out).toContain("WARN d.sparse  sparse checkout is enabled");
     expect(r.code).toBe(0);
+  });
+
+  it("d.sparse reads every git bool spelling, PASSes when off, and is not run under --static", () => {
+    for (const v of ["yes", "on", "1"]) {
+      expect(run('sparse = "warn"', {}, (root) => sh(root, "config", "core.sparseCheckout", v)).out).toContain("WARN d.sparse  sparse checkout is enabled");
+    }
+    expect(run('sparse = "warn"').lines.filter((l) => l.includes("d.sparse"))).toEqual(["PASS d.sparse  sparse checkout is off"]);
+    expect(run('sparse = "warn"', {}, (root) => sh(root, "config", "core.sparseCheckout", "false")).out).toContain("PASS d.sparse  sparse checkout is off");
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    commit(root);
+    expect(check(root, ["--static"]).out).not.toContain("d.sparse");
+  });
+
+  it("d.sparse WARNs, never PASSes, when core.sparseCheckout cannot be read", () => {
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    commit(root);
+    // An invalid value makes git exit 128 (it also breaks ls-files, so stub only the config read).
+    const bad: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "config" && args.includes("core.sparseCheckout") ? { code: 128, stdout: "", stderr: "fatal: bad boolean config value", timedOut: false } : procRun(cmd, args, opts));
+    const odd: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "config" && args.includes("core.sparseCheckout") ? { code: 0, stdout: "maybe\n", stderr: "", timedOut: false } : procRun(cmd, args, opts));
+    for (const runner of [bad, odd]) {
+      const r = check(root, [], {}, runner);
+      expect(r.lines.filter((l) => l.includes("d.sparse"))).toEqual(["WARN d.sparse  could not read core.sparseCheckout — fix: run git config --type=bool --get core.sparseCheckout to see what is wrong"]);
+      expect(r.code).toBe(0);
+    }
+  });
+
+  it("d.entrypoints auto with no ./ command in tracked workflows is an uncounted INFO; an explicit [] stays silent", () => {
+    const files = { ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - run: make test\n" };
+    const r = run('entrypoints = "auto"\ntools = ["git"]', files);
+    expect(r.lines).toEqual([
+      "PASS d.tools  present: git",
+      "INFO d.entrypoints  auto: no ./ command in tracked .github/workflows; nothing to check",
+      "env-check: 0 FAIL, 0 WARN, 1 PASS, 0 SKIP",
+    ]);
+    expect(r.code).toBe(0);
+    expect(run('entrypoints = []\ntools = ["git"]', files).out).not.toContain("d.entrypoints");
+    // An untracked workflow is not read, so its ./ command does not count.
+    const u = run('entrypoints = "auto"\ntools = ["git"]', {}, (root) => put(root, ".github/workflows/ci.yml", "jobs:\n  a:\n    steps:\n      - run: ./ci.sh\n"));
+    expect(u.out).toContain("INFO d.entrypoints  auto: no ./ command in tracked .github/workflows");
   });
 });
 
@@ -1879,9 +2161,9 @@ describe("local checks", () => {
   });
 
   it.each([
-    ["an unparseable line", 'echo "all good"', /FAIL d\.x\.protocol {2}unparseable line: all good/],
-    ["an id outside the configured one", 'echo "PASS other.id ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS other\.id ok/],
-    ["an id that only shares a prefix", 'echo "PASS d.xy ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS d\.xy ok/],
+    ["an unparseable line", 'echo "all good"', /FAIL d\.x\.protocol {2}unparseable line "all good"/],
+    ["an id outside the configured one", 'echo "PASS other.id ok"', /FAIL d\.x\.protocol {2}unparseable line "PASS other\.id ok"/],
+    ["an id that only shares a prefix", 'echo "PASS d.xy ok"', /FAIL d\.x\.protocol {2}unparseable line "PASS d\.xy ok"/],
     ["no output", "true", /FAIL d\.x {2}printed no results/],
     ["a nonzero exit without a FAIL line", 'echo "PASS d.x fine"\necho boom >&2\nexit 4', /FAIL d\.x {2}exited 4 without a FAIL line \(boom\)/],
   ])("fails closed on %s", (_n, script, re) => {
@@ -1950,6 +2232,78 @@ describe("local checks", () => {
     put(root, CFG, HEAD + parts.join(""));
     expect(check(root).lines.slice(0, 4).map((l) => l.split(" ")[1])).toEqual(["a.c", "d.b", "d.a", "x.z"]);
   });
+
+  it("splits a line at its first fix separator, accepts -- as one, and reads an empty fix as none", () => {
+    const r = run([
+      'echo "WARN d.x.dbl first — fix: a — fix: b"',
+      'echo "WARN d.x.dd msg -- fix: ascii dashes"',
+      'echo "PASS d.x.pe ok — fix: "',
+      'echo "WARN d.x.we empty — fix:"',
+      'printf "FAIL d.x.fe bad — fix:   \\n"',
+    ].join("\n"));
+    expect(r.lines).toEqual([
+      "WARN d.x.dbl  first — fix: a — fix: b",
+      "WARN d.x.dd  msg — fix: ascii dashes",
+      "PASS d.x.pe  ok",
+      "WARN d.x.we  empty — fix: address the message above and re-run",
+      "FAIL d.x.fe  bad — fix: address the message above and re-run",
+      "env-check: 1 FAIL, 3 WARN, 1 PASS, 0 SKIP",
+    ]);
+  });
+
+  it("accepts CRLF line endings but rejects a line with any other control character, echoed escaped in quotes", () => {
+    const crlf = run('printf "PASS d.x fine\\r\\nWARN d.x.w tab\\there — fix: f\\r\\n"');
+    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const cr = run('printf "WARN d.x.cr mid\\rcr here — fix: f\\n"');
+    expect(cr.code).toBe(1);
+    expect(cr.lines[0]).toBe(`FAIL d.x.protocol  unparseable line "WARN d.x.cr mid\\rcr here \\u2014 fix: f" — fix: ${fix}`);
+    expect(cr.out).not.toContain("\r");
+    expect(cr.lines[0]!.split(" — fix: ")).toHaveLength(2);
+    // A colour or cursor code turns an otherwise good PASS into a protocol FAIL (NO_COLOR=1 is exported).
+    const esc = run('printf "PASS d.x ok\\033[2K\\n"');
+    expect([esc.code, esc.lines[0]]).toEqual([1, `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u001b[2K" — fix: ${fix}`]);
+    expect(esc.out).not.toContain("\u001b");
+    expect(esc.out).not.toContain("PASS d.x  ok");
+  });
+
+  it("rejects a line that ends in, or is only, a control character other than CRLF's \\r, and a bidi control", () => {
+    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const r = run('printf "PASS d.x ok\\v\\nPASS d.x fine\\n\\f\\nPASS d.x.r ok \\342\\200\\250\\nPASS d.x.b ok \\342\\200\\256lmth.exe\\n \\r\\n"');
+    expect(r.lines).toEqual([
+      `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u000b" — fix: ${fix}`,
+      "PASS d.x  fine",
+      `FAIL d.x.protocol  unparseable line "\\u000c" — fix: ${fix}`,
+      `FAIL d.x.protocol  unparseable line "PASS d.x.r ok \\u2028" — fix: ${fix}`,
+      `FAIL d.x.protocol  unparseable line "PASS d.x.b ok \\u202elmth.exe" — fix: ${fix}`,
+      "env-check: 4 FAIL, 0 WARN, 1 PASS, 0 SKIP",
+    ]);
+  });
+
+  it("takes the first non-blank stderr line for the excerpt, without CRLF's \\r", () => {
+    const r = run('printf "\\r\\nboom\\r\\nmore\\r\\n" >&2\nexit 3');
+    expect(r.lines[0]).toBe("FAIL d.x  printed no results, exit 3 (boom) — fix: run .loops/checks/d_x.sh by hand");
+  });
+
+  it("cuts a long rejected line to 80 code points without splitting a character, and escapes the stderr excerpt", () => {
+    const long = run(`echo "${"y".repeat(79)}😀${"z".repeat(100)}"`);
+    expect(long.lines[0]).toContain(`unparseable line "${"y".repeat(79)}😀…" — fix:`);
+    const err = run('echo "PASS d.x fine"\nprintf "bad\\033[31m — fix: nope\\n" >&2\nexit 4');
+    expect(err.lines[1]).toBe("FAIL d.x  exited 4 without a FAIL line (bad\\u001b[31m \\u2014 fix: nope) — fix: run .loops/checks/d_x.sh by hand");
+    expect(err.out).not.toContain("\u001b");
+  });
+
+  it("redacts $HOME before cutting a rejected line or the stderr excerpt, so a cut through home leaks no part of it", () => {
+    const env = { HOME: "/home/someuser" };
+    // "WARN d.x.c " + 63 zeros + " " puts home at code point 75, across the 80-code-point cut.
+    const line = run(`printf 'WARN d.x.c %s /home/someuser/.config/x\\001\\n' "$(printf '0%.0s' $(seq 1 63))"`, "", env);
+    expect(line.lines[0]).toMatch(/^FAIL d\.x\.protocol {2}unparseable line "WARN d\.x\.c 0{63} ~\/\.co…" — fix: /);
+    // "error: " + 107 zeros + " " puts home at code point 115, across the 120-code-point cut.
+    const err = run(`echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.config/x" >&2\nexit 4`, "", env);
+    expect(err.lines[0]).toMatch(/^FAIL d\.x {2}printed no results, exit 4 \(error: 0{107} ~\/\.co…\) — fix: /);
+    for (const r of [line, err]) expect(r.out).not.toMatch(/\/home|someu/);
+    expect(JSON.stringify(JSON.parse(run(`echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/x" >&2\nexit 4`, "", env, ["--json"]).out))).not.toMatch(/\/home|someu/);
+  });
 });
 
 describe("output and exit codes", () => {
@@ -1977,6 +2331,24 @@ describe("output and exit codes", () => {
     expect(JSON.parse(raw).root).toBe("~/app-node");
   });
 
+  it("redacts $HOME given with a trailing slash, never leaking the bare home", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", 'echo "PASS d.a root=$ENV_CHECK_ROOT home=$(dirname "$ENV_CHECK_ROOT")"'));
+    const env = { HOME: `${dirname(root)}/` };
+    expect(check(root, [], env).lines[0]).toBe("PASS d.a  root=~/app-node home=~");
+    const raw = check(root, ["--json"], env).out;
+    expect(raw).not.toContain(dirname(root));
+    expect(JSON.parse(raw).root).toBe("~/app-node");
+    const h = "/home/u";
+    for (const home of [h, `${h}/`, `${h}//`]) {
+      expect(redactHome(`cd '${h}' && cd '${h}/it'\\''s' && cd ${h}/x`, home)).toBe("cd ~ && cd ~/'it'\\''s' && cd ~/x");
+      expect(redactHome(`bare ${h} end`, home)).toBe("bare ~ end");
+      expect(redactHome(h, home)).toBe("~");
+    }
+    expect(redactHome("/x", "/")).toBe("/x");
+    expect(redactHome("/x", "//")).toBe("/x");
+  });
+
   const bad: [string, string, RegExp][] = [
     ["invalid TOML", "schema_version = \n", /env-check\.toml: /],
     ["no schema_version", "", /schema_version is missing/],
@@ -1986,13 +2358,14 @@ describe("output and exit codes", () => {
     ["unknown source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["gomod"]\n`, /unknown source kind in "gomod"/],
     ["inherited source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["constructor"]\n`, /unknown source kind in "constructor"/],
     ["bad compare", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\ncompare = "close"\n`, /compare must be exact\|minor\|major(?!\|)/],
-    // 0.6.0: compare = "floor" was accepted; ranges are no longer compared, so it is a config error that says why.
+    // 0.6.0: compare = "floor" was accepted; ranges are no longer compared, so it is a config error that says why. // pregate-literal: VERSION=0.6.0 names the release that removed floor
     ["compare floor (removed in 0.6.0)", `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "floor"\n`, /\[\[pins\]\] #1: .*floor was removed in loops 0\.6\.0.*ranges are no longer compared.*a\.range.*exact, minor or major/],
     ["engine too new", `engine = ">=9.0.0"\n${HEAD}`, new RegExp(`needs loops >=9\\.0\\.0, this is ${V}; update agentic-tools`)],
     ["engine odd form", `engine = "^0.4"\n${HEAD}`, /engine must look like ">=0\.4\.0"/],
     ["compose test without files", `${HEAD}[compose]\nmode = "test"\n`, /mode test needs files/],
     ["compose dev", `${HEAD}[compose]\nmode = "dev"\n`, /mode must be none\|test/],
     ["bad local id", `${HEAD}[[local]]\nid = "zz"\nrun = "a"\n`, /id "zz" must look like/],
+    ["reserved local id x.none", `${HEAD}[[local]]\nid = "x.none"\nrun = "a"\n`, /\[\[local\]\] #1: id x\.none is reserved for env-check's own "no check ran" row/],
     // Value: protects=parseConfig rejects empty sources, duplicate local ids and a non-positive timeout_s; fails_when=one of those guards is removed; why_new=the bad-config table had no rows for them; seam=none; no_claim=none beyond protects
     ["empty sources", `${HEAD}[[pins]]\ntool = "go"\nsources = []\n`, /\[\[pins\]\] #1: sources is empty/],
     ["duplicate local id", `${HEAD}[[local]]\nid = "d.a"\nrun = "a"\n[[local]]\nid = "d.a"\nrun = "b"\n`, /\[\[local\]\] #2: duplicate id d\.a/],
@@ -2038,6 +2411,46 @@ describe("output and exit codes", () => {
   it("--compose-project exits 2 when compose mode is not test", () => {
     expect(check(setup(HEAD), ["--compose-project"]).code).toBe(2);
     expect(check(setup(`${HEAD}[compose]\nmode = "none"\n`), ["--compose-project"])).toMatchObject({ code: 2, out: "", err: expect.stringContaining("compose mode is not test") });
+  });
+});
+
+describe("x.none: a run that checks nothing", () => {
+  const NONE = "WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)";
+  it("adds a counted WARN with a fix, keeps exit 0, and shows under --quiet and in --json", () => {
+    const root = setup(HEAD);
+    commit(root);
+    expect(check(root)).toMatchObject({ code: 0, lines: [NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"] });
+    expect(check(root, ["--quiet"]).lines).toEqual([NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+    const j = JSON.parse(check(root, ["--json"]).out);
+    expect([j.results, j.summary, j.exit]).toEqual([
+      [{ level: "WARN", id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", also: [], source: "builtin" }],
+      { fail: 0, warn: 1, pass: 0, skip: 0 },
+      0,
+    ]);
+    // An empty [harness] is the same as none.
+    expect(check(setup(`${HEAD}[harness]\ntools = []\nfiles = []\n`)).lines).toEqual([NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+  });
+
+  it("names --static when the only configured checks do not run there", () => {
+    for (const [args, env] of [[["--static"], {}], [[], { CI: "true" }]] as [string[], Record<string, string>][]) {
+      const r = check(setup(`${HEAD}[harness]\ntools = ["git"]\nsparse = "warn"\n`), args, env);
+      expect([r.code, r.lines]).toEqual([
+        0,
+        [
+          "WARN x.none  no check ran under --static (CI=true implies it) — fix: add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)",
+          "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP",
+        ],
+      ]);
+    }
+  });
+
+  it("counts a run of only INFO rows as nothing checked, and never fires beside a counted row", () => {
+    const root = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
+    commit(root);
+    expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" }).lines).toEqual(["INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
+    expect(check(root, ["--static"]).out).not.toContain("x.none"); // SKIP c.shared counts
+    expect(check(root).out).not.toContain("x.none");
+    expect(check(setup(`${HEAD}[harness]\ntools = ["git"]\n`)).out).not.toContain("x.none");
   });
 });
 

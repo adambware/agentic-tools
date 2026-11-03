@@ -1,8 +1,8 @@
 // Process and flag helpers shared by `loops zone` and `loops env-check`. Commands that spawn
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 
 /** Bad usage, bad config or an unreadable repo: the CLI prints it to stderr and exits 2. */
 export class UsageError extends Error {}
@@ -48,9 +48,11 @@ export function shQuote(s: string): string {
 
 /**
  * `s` with `home` shown as `~`, keeping printed commands runnable: a tilde inside quotes does not expand, so a word
- * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself).
+ * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself). A trailing slash on home is
+ * ignored, so `HOME=/home/u/` still hides a bare `/home/u`.
  */
 export function redactHome(s: string, home: string): string {
+  home = home.replace(/\/+$/, "");
   if (home.length <= 1) return s;
   const q = `'${home}`;
   return s
@@ -99,6 +101,43 @@ export function which(name: string, pathVar: string | undefined): string | null 
     if (dir && isExecutable(join(dir, name))) return join(dir, name);
   }
   return null;
+}
+
+/** A version-manager shim: which manager resolves the tool, and the manager binary to ask (null: look it up on PATH). */
+export interface Shim {
+  manager: "asdf" | "mise";
+  cmd: string | null;
+}
+
+/**
+ * The version manager behind `file`, read from the file and never run, or null for anything else. An asdf shim is a
+ * script with a `# asdf-plugin:` line in its header that execs asdf, by an absolute path in older shims (that asdf is
+ * the one to ask, if the path names an `asdf`; any other program is never run, and asdf is looked up on PATH) or by
+ * name; a mise shim is a symlink to the mise binary itself.
+ */
+export function shimOf(file: string): Shim | null {
+  let real: string;
+  try {
+    real = realpathSync(file);
+  } catch {
+    return null;
+  }
+  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real };
+  const buf = Buffer.alloc(4096);
+  let head: string;
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  if (!/^# asdf-plugin:/m.test(head)) return null;
+  const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
+  const cmd = m?.[1] ?? m?.[2];
+  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null };
 }
 
 type Flags = Record<string, boolean | string | string[]>;
