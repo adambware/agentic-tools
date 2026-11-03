@@ -6038,9 +6038,9 @@ var require_lexer = __commonJS({
         }
       }
       *parseQuotedScalar() {
-        const quote = this.charAt(0);
-        let end = this.buffer.indexOf(quote, this.pos + 1);
-        if (quote === "'") {
+        const quote2 = this.charAt(0);
+        let end = this.buffer.indexOf(quote2, this.pos + 1);
+        if (quote2 === "'") {
           while (end !== -1 && this.buffer[end + 1] === "'")
             end = this.buffer.indexOf("'", end + 2);
         } else {
@@ -7372,7 +7372,7 @@ import { homedir } from "node:os";
 import { join as join4, resolve as resolve2 } from "node:path";
 
 // src/lib/env-config.ts
-import { isAbsolute, normalize as normalize2 } from "node:path";
+import { isAbsolute as isAbsolute2, normalize as normalize2 } from "node:path";
 
 // node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
@@ -8134,8 +8134,8 @@ var HAS_WELLFORMED = !!"".isWellFormed;
 
 // src/lib/proc.ts
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 var UsageError = class extends Error {
 };
 var run = (cmd, args, opts = {}) => {
@@ -8157,6 +8157,7 @@ function shQuote(s) {
   return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 function redactHome(s, home) {
+  home = home.replace(/\/+$/, "");
   if (home.length <= 1) return s;
   const q = `'${home}`;
   return s.split(`${q}/`).join("~/'").split(`${q}'`).join("~").split(home).join("~");
@@ -8182,6 +8183,30 @@ function which(name, pathVar) {
     if (dir && isExecutable(join(dir, name))) return join(dir, name);
   }
   return null;
+}
+function shimOf(file) {
+  let real;
+  try {
+    real = realpathSync(file);
+  } catch {
+    return null;
+  }
+  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real };
+  const buf = Buffer.alloc(4096);
+  let head;
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== void 0) closeSync(fd);
+  }
+  if (!/^# asdf-plugin:/m.test(head)) return null;
+  const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
+  const cmd = m?.[1] ?? m?.[2];
+  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null };
 }
 function parseFlags(argv, spec) {
   const out = {};
@@ -8216,7 +8241,7 @@ function parseFlags(argv, spec) {
 
 // src/lib/pins.ts
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join as join2, normalize } from "node:path";
+import { basename as basename2, join as join2, normalize } from "node:path";
 var import_yaml = __toESM(require_dist(), 1);
 
 // src/lib/glob.ts
@@ -8283,8 +8308,33 @@ function compileGlob(token) {
 }
 var isGlob = (s) => /[*?{]/.test(s);
 
+// src/lib/text.ts
+var short = (xs, n = 5) => xs.slice(0, n).join(", ") + (xs.length > n ? ` (+${xs.length - n} more)` : "");
+function cut(s, n) {
+  let out = "";
+  let i = 0;
+  for (const cp of s) {
+    if (i++ === n) return `${out}\u2026`;
+    out += cp;
+  }
+  return s;
+}
+var CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+var ESCAPED = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)/g;
+var NAMED = { "	": "\\t", "\n": "\\n", "\r": "\\r" };
+function escapeCtl(s) {
+  return s.replace(ESCAPED, (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+function quote(s, n = 80) {
+  return `"${escapeCtl(cut(s, n).replace(/[\\"]/g, "\\$&"))}"`;
+}
+
 // src/lib/pins.ts
 var PinError = class extends Error {
+  constructor(m, fix) {
+    super(m);
+    this.fix = fix;
+  }
 };
 var VER = /(\d+(?:\.\d+){0,2}(?:-(?:alpha|beta|rc|preview|pre|dev|next|nightly|canary|snapshot|ea)(?![a-z])(?:[.-]?\d[0-9a-z]*)*|\.?(?:alpha|beta|preview|pre|dev|rc|a|b|c)\d+(?:\.\d+)*)?)/i;
 var ver = (s) => VER.exec(s)?.[1]?.replace(/[.-]+$/, "") ?? null;
@@ -8492,7 +8542,7 @@ var ACTIONS = {
 function setup(kind) {
   const [action, forTool, key] = ACTIONS[kind];
   const named = new RegExp(`^${action}@`, "i");
-  return (text, tool, root, file) => {
+  return (text, tool, root, file, calls) => {
     if (tool !== forTool) return [];
     const lc = new import_yaml.LineCounter();
     const doc = (0, import_yaml.parseDocument)(text, { lineCounter: lc });
@@ -8543,10 +8593,10 @@ function setup(kind) {
             out2.push(f);
           }
         } else if (!existsSync(join2(root, val))) throw new PinError(`${key}-file ${val} not found`);
-        else if (!Object.hasOwn(BY_NAME, basename(val)))
+        else if (!Object.hasOwn(BY_NAME, basename2(val)))
           throw new PinError(`unsupported form: ${k} ${val} in ${file}:${at} is not a supported version file (${VERSION_FILES.join(", ")}); pin an exact version`);
         else {
-          const found = BY_NAME[basename(val)](readFileSync(join2(root, val), "utf8"), tool, root, normalize(val));
+          const found = BY_NAME[basename2(val)](readFileSync(join2(root, val), "utf8"), tool, root, normalize(val));
           if (!found.length) throw new PinError(`${key}-file ${val} has no ${tool} version`);
           out2.push(...found);
         }
@@ -8559,7 +8609,12 @@ function setup(kind) {
       const jobs = deref(top.get("jobs", true));
       if ((0, import_yaml.isMap)(jobs)) for (const p of jobs.items) {
         const job = deref(p.value);
-        if ((0, import_yaml.isMap)(job)) lists.push(job.get("steps", true));
+        if (!(0, import_yaml.isMap)(job)) continue;
+        lists.push(job.get("steps", true));
+        const ref = job.get("uses", true);
+        const v = deref(ref);
+        if (ref && (0, import_yaml.isScalar)(v) && typeof v.value === "string")
+          calls?.push(`job ${escapeCtl(keyOf(p.key) ?? "?")} calls reusable workflow ${escapeCtl(v.value.trim())} (${line(ref)})`);
       }
       const runs2 = deref(top.get("runs", true));
       if ((0, import_yaml.isMap)(runs2)) lists.push(runs2.get("steps", true));
@@ -8590,11 +8645,11 @@ var KINDS = {
   "go-mod": { file: "go.mod", parse: goMod },
   engines: { file: "package.json", parse: engines },
   dockerfile: { file: "Dockerfile", parse: dockerfile },
-  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go") },
-  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node") },
-  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python") },
-  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
-  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") }
+  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go"), action: ACTIONS["setup-go"][0] },
+  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node"), action: ACTIONS["setup-node"][0] },
+  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python"), action: ACTIONS["setup-python"][0] },
+  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action"), action: ACTIONS["golangci-action"][0] },
+  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action"), action: ACTIONS["goreleaser-action"][0] }
 };
 var SOURCE_KINDS = Object.fromEntries(Object.entries(KINDS).map(([k, { file }]) => [k, file]));
 var splitSource = (spec) => {
@@ -8602,7 +8657,7 @@ var splitSource = (spec) => {
   return i < 0 ? [spec, void 0] : [spec.slice(0, i), spec.slice(i + 1)];
 };
 var isSourceKind = (spec) => Object.hasOwn(KINDS, splitSource(spec)[0]);
-function readSource(root, tracked, tool, spec) {
+function readSource(root, tracked, tool, spec, notes) {
   const [kind, path] = splitSource(spec);
   const k = KINDS[kind];
   const target = path ?? k.file;
@@ -8610,15 +8665,28 @@ function readSource(root, tracked, tool, spec) {
   const files = res2 ? tracked.filter((f) => res2.some((re) => re.test(f))) : [target];
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out = [];
+  const skipped = [];
   for (const f of files) {
     if (!existsSync(join2(root, f))) throw new PinError(`${spec}: ${f} not found`);
+    const calls = [];
+    let found;
     try {
-      for (const x of k.parse(readFileSync(join2(root, f), "utf8"), tool, root, f)) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+      found = k.parse(readFileSync(join2(root, f), "utf8"), tool, root, f, calls);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${e.message}`);
     }
+    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length) throw new PinError(`${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files`}`);
+  if (!out.length) {
+    const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
+    if (!skipped.length) throw new PinError(msg);
+    throw new PinError(
+      `${msg}; ${skipped.map(([f, s]) => files.length === 1 ? s : `${f}: ${s}`).join("; ")}`,
+      `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`
+    );
+  }
+  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`));
   return out;
 }
 var DEPTH = { exact: 3, minor: 2, major: 1 };
@@ -8639,7 +8707,7 @@ function disagreement(vals, mode) {
 var localOk = (local, pin, mode) => cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.6.0";
+var VERSION = "0.7.0";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -8731,12 +8799,13 @@ function parseConfig(text, file) {
     const t = table2(l, where, ["id", "run", "static", "timeout_s"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
+    if (id === "x.none") throw new UsageError(`${where}: id x.none is reserved for env-check's own "no check ran" row`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v >= 1e-3 && Number.isSafeInteger(Math.round(v * 1e3)), "a positive number of seconds (at least 0.001)", 15);
     const timeoutMs = Math.round(timeoutS * 1e3);
     const run2 = pick(t, "run", where, isStr, "a path");
-    if (isAbsolute(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
+    if (isAbsolute2(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
     return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
@@ -8745,8 +8814,8 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync, statSync as statSync2 } from "node:fs";
-import { basename as basename2, dirname, isAbsolute as isAbsolute2, join as join3, normalize as normalize3, resolve } from "node:path";
+import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
+import { basename as basename3, dirname, isAbsolute as isAbsolute3, join as join3, normalize as normalize3, resolve } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -8812,30 +8881,51 @@ var res = (level, id, message, fix) => ({ level, id, message, fix, source: "buil
 var CFG = ".loops/env-check.toml";
 var rp = (p) => {
   try {
-    return realpathSync(p);
+    return realpathSync2(p);
   } catch {
     return p;
   }
 };
-var short = (xs, n = 5) => xs.slice(0, n).join(", ") + (xs.length > n ? ` (+${xs.length - n} more)` : "");
 var VERSION_CMD = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
 var PROBE_TIMEOUT_MS = 1e4;
+function installFix(root, tool, want, pins) {
+  const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
+  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
+  const written = (file2) => {
+    try {
+      return readFileSync2(join3(root, file2), "utf8").split("\n").some((l) => {
+        const m = /^\s*(\S+)\s+(\S+)/.exec(l);
+        return !!m && names.includes(m[1]) && m[2] === want;
+      });
+    } catch {
+      return false;
+    }
+  };
+  const TV = "tool-versions:";
+  const file = /^\d+(?:\.\d+)*$/.test(want) ? pins.map((v) => v.src).find((src) => src.startsWith(TV) && written(src.slice(TV.length)))?.slice(TV.length) : void 0;
+  if (file === void 0) return generic;
+  if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
+  if (basename3(file) !== ".tool-versions") return generic;
+  const dir = dirname(file);
+  return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : shQuote(dir)}, which installs the ${file} pins`;
+}
 function pinChecks(c) {
   const out = [];
   for (const pin of c.cfg.pins) {
     const id = `a.pins.${pin.tool}`;
     let vals;
+    const notes = [];
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s));
+      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
-      out.push(res("FAIL", id, e.message, `fix the source file or the sources in ${CFG}`));
+      out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
       continue;
     }
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = /* @__PURE__ */ new Set();
-    const info = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`)).map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`));
+    const info = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`)).map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`)).concat([...new Set(notes)].map((n) => res("INFO", id, n)));
     if (!pins.length) {
       out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
@@ -8853,13 +8943,21 @@ function pinChecks(c) {
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = `install ${pin.tool} ${want} (asdf install, mise install, or your package manager)`;
-    if (r.timedOut) out.push(res(level, lid, `${[bin, ...args].join(" ")} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, fix));
-    else if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
+    const fix = installFix(c.root, pin.tool, want, pins);
+    const cmd = [bin, ...args].join(" ");
+    const said = (...texts) => {
+      const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+      return l ? `: ${escapeCtl(cut(c.redact(l), 120))}` : "";
+    };
+    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, fix));
+    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
+    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
+    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
+    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
-  return out;
+  return out.map((r) => ({ ...r, message: escapeCtl(r.message), fix: r.fix === void 0 ? void 0 : escapeCtl(r.fix) }));
 }
 function sharedCheck(c) {
   if (c.cfg.sharedHint === null) return [];
@@ -8876,18 +8974,63 @@ function autoEntrypoints(c) {
   }
   return [...found].sort();
 }
+function shimProblem(c, tool, p) {
+  const s = shimOf(p);
+  if (!s) return null;
+  const cmd = s.cmd ?? which(s.manager, c.env.PATH);
+  if (!cmd) return `${s.manager} not on PATH`;
+  const r = c.run(cmd, ["which", tool], { cwd: c.root, env: c.env, timeoutMs: PROBE_TIMEOUT_MS });
+  const how = `${s.manager} which ${tool}`;
+  const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+  if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`;
+  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
+  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(c.redact(said), 120))}` : ""}`;
+  return r.stdout.trim() ? null : `${how} printed no path`;
+}
 function harnessChecks(c) {
   const h = c.cfg.harness;
   const out = [];
   if (h.tools.length && !c.static) {
-    const missing = h.tools.filter((t) => !which(t, c.env.PATH));
-    out.push(missing.length ? res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools") : res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
+    const missing = [];
+    const unresolved = [];
+    for (const t of h.tools) {
+      const p = which(t, c.env.PATH);
+      const why = p ? shimProblem(c, t, p) : null;
+      if (!p) missing.push(t);
+      else if (why) unresolved.push(`${t} (${why})`);
+    }
+    if (missing.length) out.push(res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools"));
+    if (unresolved.length) {
+      out.push(
+        res(
+          "FAIL",
+          "d.tools",
+          `version-manager shim resolves no version here: ${unresolved.join("; ")}`,
+          "set a version for this checkout (a .tool-versions line for asdf, mise use <tool>@<version> for mise), put the version manager on PATH, or install the tool outside it"
+        )
+      );
+    }
+    if (!missing.length && !unresolved.length) out.push(res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
   }
   if (h.files.length) {
-    const bad = h.files.filter((f) => !existsSync2(join3(c.root, f)) || statSync2(join3(c.root, f)).size === 0);
-    out.push(bad.length ? res("FAIL", "d.files", `missing or empty: ${bad.join(", ")}`, "restore the files (git checkout) or fix [harness] files") : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
+    const kind = (f) => {
+      try {
+        const s = statSync2(join3(c.root, f));
+        return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
+      } catch {
+        return "missing";
+      }
+    };
+    const kinds = h.files.map(kind);
+    const missing = h.files.filter((_, i) => kinds[i] === "missing");
+    const other = h.files.filter((_, i) => kinds[i] === "other");
+    const parts2 = [missing.length ? `missing or empty: ${missing.join(", ")}` : "", other.length ? `not a regular file: ${other.join(", ")}` : ""].filter(Boolean);
+    const fix = `restore the files (git checkout) or fix [harness] files${other.length ? " (list a file inside a directory, not the directory)" : ""}`;
+    out.push(parts2.length ? res("FAIL", "d.files", parts2.join("; "), fix) : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
   }
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
+  if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
     const bad = entries.filter((e) => !isExecutable(join3(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
@@ -8900,8 +9043,11 @@ function harnessChecks(c) {
     const parts2 = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
-  if (h.sparse && !c.static && git(c.run, c.root, ["config", "--get", "core.sparseCheckout"])?.trim() === "true") {
-    out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+  if (h.sparse && !c.static) {
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
+    else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
+    else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
   }
   return out;
 }
@@ -8950,9 +9096,9 @@ var isProject = (s) => s !== "" && normProject(s) === s;
 var projectDir = (c, root) => dirname(resolve(root, c.cfg.compose.files[0]));
 function derive(c, root) {
   const main2 = c.worktrees[0] ?? c.root;
-  if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename2(projectDir(c, root)));
+  if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename3(projectDir(c, root)));
   const hash = createHash("sha1").update(rp(root)).digest("hex").slice(0, 6);
-  return `${norm(basename2(main2)) || "wt"}-${norm(basename2(root)).slice(0, 24)}-${hash}`;
+  return `${norm(basename3(main2)) || "wt"}-${norm(basename3(root)).slice(0, 24)}-${hash}`;
 }
 function runs(c, root) {
   const { files } = c.cfg.compose;
@@ -8982,10 +9128,10 @@ function listContainers(c) {
   }
 }
 function canon(p) {
-  if (!isAbsolute2(p)) return p;
-  for (let head = p, tail = ""; ; tail = `/${basename2(head)}${tail}`, head = dirname(head)) {
+  if (!isAbsolute3(p)) return p;
+  for (let head = p, tail = ""; ; tail = `/${basename3(head)}${tail}`, head = dirname(head)) {
     try {
-      return realpathSync.native(head) + tail;
+      return realpathSync2.native(head) + tail;
     } catch {
       if (dirname(head) === head) return p;
     }
@@ -9030,7 +9176,7 @@ function composeProject(c) {
   if (!envName && !c.isWorktree && "error" in own[0].r) return { name: null, results: [failed(own[0])], withheld: true, answers: [] };
   if (!envName && !c.isWorktree && "noFile" in own[0].r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]));
-  if (!name) return one("FAIL", `no project name derives from directory ${basename2(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
+  if (!name) return one("FAIL", `no project name derives from directory ${basename3(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
   const main2 = rp(c.worktrees[0] ?? c.root);
   const held = /* @__PURE__ */ new Map();
   const others = [];
@@ -9051,7 +9197,7 @@ function composeProject(c) {
   const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
   for (const p of c.isWorktree ? own : []) {
     const a = named(p);
-    const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename2(c.root))] : []];
+    const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename3(c.root))] : []];
     if (a === void 0 || mine.includes(a) && !held.has(a)) continue;
     const by = held.get(a);
     const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join3(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
@@ -9067,7 +9213,7 @@ function composeProject(c) {
       return ["ENOENT", "ENOTDIR"].includes(e.code ?? "");
     }
   };
-  const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute2(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
+  const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute3(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
   if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
   else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]) => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
@@ -9107,16 +9253,16 @@ function containersCheck(c, { name: project, results, ps }) {
   const newest = mtimes.reduce((n, [, t]) => Math.max(n, t), ct * 1e3);
   const stale = running.filter((k) => !(k.created >= newest));
   const unreadable = stale.filter((k) => Number.isNaN(k.created)).map((k) => k.name);
-  const quote = (s) => /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+  const quote2 = (s) => /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
   const rel = (p) => p === c.root ? "." : p.startsWith(`${c.root}/`) ? p.slice(c.root.length + 1) : p;
   const split2 = (v) => v.split(/,(?=\/)/);
   const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
   const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? JSON.parse([...agreed][0]) : [];
   const own = split2(started);
-  const fs = own.every((f) => isAbsolute2(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
-  const args = fs.map((f) => ` -f ${quote(f)}`);
-  if (wd && rel(wd) !== normalize3(dirname(fs[0]))) args.push(` --project-directory ${quote(rel(wd))}`);
-  if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote(rel(f))}`));
+  const fs = own.every((f) => isAbsolute3(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
+  const args = fs.map((f) => ` -f ${quote2(f)}`);
+  if (wd && rel(wd) !== normalize3(dirname(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
+  if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote2(rel(f))}`));
   const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
   const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
   return [stale.length ? res(level, id, `${short(stale.map((k) => k.name))} created before the newest change to the compose inputs${why}`, fix) : res("PASS", id, `${running.length} running container(s) are newer than the compose inputs`)];
@@ -9141,7 +9287,7 @@ function composeChecks(c, project) {
     unread.length ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it") : names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
   ];
 }
-var LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix: (.*))?$/;
+var LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*))?)?$/;
 function runLocal(c, l, project) {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
   const env = {
@@ -9158,14 +9304,14 @@ function runLocal(c, l, project) {
   const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
   const mk = (level, id, message, fix) => ({ level, id, message, fix, source: "local" });
   const out = [];
-  for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
-    const m = LINE.exec(line);
-    if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+  for (const line of r.stdout.split("\n").map((s) => s.replace(/\r$/, "").replace(/[ \t]+$/, "")).filter(Boolean)) {
+    const m = CONTROL.test(line) ? null : LINE.exec(line);
+    if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]?.trim() || void 0));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
-  const stderr = r.stderr.trim().split("\n")[0] ?? "";
-  const why = stderr ? ` (${stderr.slice(0, 120)})` : "";
+  const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
+  const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;
@@ -9215,9 +9361,9 @@ function envCheckMain(argv, d) {
     isWorktree = dir("--git-dir") !== dir("--git-common-dir");
     worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"]) ?? "").split("\n").flatMap((l) => l.startsWith("worktree ") ? [l.slice(9)] : []);
   }
-  const ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees };
   const home = d.env.HOME || homedir();
   const redact = (s) => redactHome(s, home);
+  const ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees, redact };
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
     const { name, results: results2 } = composeProject(ctx);
@@ -9236,6 +9382,11 @@ function envCheckMain(argv, d) {
     ...composeChecks(ctx, compose),
     ...cfg.locals.flatMap((l) => runLocal(ctx, l, project))
   ].map((r, i) => ({ r, i })).sort((a, b) => group(a.r) - group(b.r) || a.i - b.i).map(({ r }) => r);
+  if (!results.some((r) => r.level !== "INFO")) {
+    results.push(
+      isStatic ? { level: "WARN", id: "x.none", message: "no check ran under --static (CI=true implies it)", fix: "add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)", source: "builtin" } : { level: "WARN", id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", source: "builtin" }
+    );
+  }
   const shown = collapse(results).map((r) => ({
     ...r,
     id: redact(r.id),

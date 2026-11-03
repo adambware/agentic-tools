@@ -16,7 +16,7 @@ from GitHub via `gh`; without one, everything stays local.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.6.0","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.7.0","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
@@ -526,7 +526,7 @@ line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf i
 `d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
 line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
-asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, times out, exits non-zero (its first output
+asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run, times out, exits non-zero (its first output
 line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
@@ -658,8 +658,8 @@ later ones belong to the fix. An empty fix counts as none, so a WARN or FAIL get
 above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
 `ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
 (the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
-It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…) or a Unicode line
-separator included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
+It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
+separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
 `"`, control characters and the dash of a `— fix:` escaped (`\r`, `\u001b`, `\u2014`), so the output line still has one fix; no lines is a FAIL; a nonzero
 exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
 a timeout adds a WARN, "not a pass",

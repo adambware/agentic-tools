@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.7.0] - 2026-11-02
+
+`loops env-check` reports more of what it cannot verify and fails closed in four places that used to pass. A run that checks nothing now says so, local-check output is sanitized, and probe failures say why.
+
+### Changed
+
+- Behavior change (exit code): `d.tools` FAILs a tool on PATH that is an asdf shim (a `# asdf-plugin:` header) or a mise shim (a symlink to the mise binary) when its manager resolves no version for this checkout. It runs `asdf which <tool>` or `mise which <tool>` from the repo root with a 10s limit and never runs the listed tool. An older asdf shim's `exec <absolute path> exec` is asked only when that path names `asdf`; otherwise asdf is looked up on PATH. A missing manager, one that cannot run, a timeout, a non-zero exit (first output line shown, escaped) or empty output each give their own FAIL row after any "missing on PATH" row. `--static` and `CI=true` still run no `d.tools` probe.
+- Behavior change (exit code): `d.files` FAILs a directory, or any other non-regular entry (a symlink to a directory too), as "not a regular file". Every directory used to PASS whatever it held. Untracked files still pass: `d.files` checks the working tree, and tracking is `d.tracked`'s job.
+- Behavior change (level): a run with no counted row (no FAIL, WARN, PASS or SKIP) adds a counted WARN `x.none` with a fix, worded for `--static` when that is why. The exit code stays 0. `x.none` is reserved: a `[[local]]` using it is a config error (exit 2).
+- Behavior change (exit code): a local-check line containing a control character other than tab, a Unicode line separator, a bidi control or a zero-width space (CRLF line ends still pass) is FAIL `<id>.protocol`, including a line that ends in or is only such a character. A rejected line is echoed as a quoted, escaped string cut to 80 code points, and the stderr excerpt is escaped too, so relayed text cannot move the cursor or read as a second fix. A bare trailing `— fix:` is an empty fix, and the README documents the split at the first separator.
+- Behavior change (level): `d.sparse` reads `core.sparseCheckout` as a git boolean (`yes`, `on`, `1` now WARN), PASSes when it is off, and WARNs `could not read core.sparseCheckout` on a failed or odd read instead of passing.
+- `entrypoints = "auto"` with no `./` command in tracked workflows adds an uncounted INFO `d.entrypoints` row instead of nothing.
+- `a.local` tells apart a tool not on PATH, a probe that could not run, a non-zero exit and an exit with no version, with the tool's first output line escaped and cut to 120 characters. When a `.tool-versions` line pins the version as written, the fix names `asdf install` / `mise install` (a bare `asdf install` in that file's directory for go and node).
+- Workflow pin sources note a job-level reusable-workflow call (`jobs.<id>.uses`). Under a glob, a workflow that only makes such a call adds an uncounted INFO row when another file gives the value; otherwise the FAIL names the files (up to 5) and the calls, with a fix saying reusable inputs are not read. `with:` inputs of a reusable call are never read.
+
+### Fixed
+
+- `redactHome` ignores a trailing slash on `$HOME`, which left a bare home path unredacted.
+- Pin rows escape tracked file names and config text, and the `.tool-versions` install fix shell-quotes the directory it names.
+- Cutting relayed text to length reads no further than the cut, so one huge output line no longer costs memory in proportion to its length.
+
 ## [loops 0.6.0] - 2026-11-02
 
 `loops env-check` `a.pins` compares exact pins only. Ranges are reported, not compared, and a value loops cannot read as a pin or a range is a FAIL that names its file and line. The README's pin source matrix is the only list of supported forms, and a test checks it against the code. Two fail-open paths from 0.5.0 now fail closed.
