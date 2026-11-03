@@ -76,7 +76,7 @@ function installFix(root: string, tool: string, want: string, pins: PinValue[]):
   if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
   if (basename(file) !== ".tool-versions") return generic; // a bare asdf install reads only a .tool-versions
   const dir = dirname(file);
-  return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : dir}, which installs the ${file} pins`;
+  return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : shQuote(dir)}, which installs the ${file} pins`;
 }
 
 export function pinChecks(c: Ctx): Result[] {
@@ -133,7 +133,9 @@ export function pinChecks(c: Ctx): Result[] {
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
-  return out;
+  // Pin rows name tracked files (git allows any byte but NUL in a name) and config text; escapeCtl leaves escaped text as
+  // it is, so escaping every row once also covers the tool output said() already escaped.
+  return out.map((r) => ({ ...r, message: escapeCtl(r.message), fix: r.fix === undefined ? undefined : escapeCtl(r.fix) }));
 }
 
 export function sharedCheck(c: Ctx): Result[] {
@@ -643,14 +645,15 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
-  for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
+  // Only a CRLF's "\r" and trailing blanks are trimmed, so a line ending in (or made of) another control is rejected.
+  for (const line of r.stdout.split("\n").map((s) => s.replace(/\r$/, "").replace(/[ \t]+$/, "")).filter(Boolean)) {
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
-  const stderr = r.stderr.trim().split("\n")[0] ?? "";
+  const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
   const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));

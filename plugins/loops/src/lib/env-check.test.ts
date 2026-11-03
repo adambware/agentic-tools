@@ -239,6 +239,7 @@ describe("pins and local toolchains", () => {
     ["an alias tool in a subdirectory .tool-versions gets a bare asdf install there", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools/.tool-versions"]\n`, { "tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in tools, which installs the tools/.tool-versions pins"],
     ["an alias tool pinned by another file name keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools.txt"]\n`, { "tools.txt": "golang 1.26.1\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
     ["a pin more specific than .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod", "tool-versions"]\ncompare = "minor"\n`, { "go.mod": "module x\n\ngo 1.26.1\n", ".tool-versions": "golang 1.26\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
+    ["a subdirectory that needs quoting is shell-quoted", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:my tools/.tool-versions"]\n`, { "my tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in 'my tools', which installs the my tools/.tool-versions pins"],
     ["a series in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 1.62.x\n" }, "golangci-lint", "install golangci-lint 1.62 (asdf install, mise install, or your package manager)"],
   ])("the fix follows the pin source: %s", (_n, config, files, tool, fix) => {
     const r = check(setup(config, files), [], { PATH: `${shim(tool, "exit 126")}:/usr/bin:/bin` });
@@ -256,6 +257,16 @@ describe("pins and local toolchains", () => {
     expect(r.lines).toEqual(["PASS a.pins.go  go 1.26.1 (go-mod:go.mod, setup-go:.github/workflows/release.yml)", `INFO a.pins.go  ${NOTE}`, "env-check: 0 FAIL, 0 WARN, 1 PASS, 0 SKIP"]);
     const j = JSON.parse(check(root, ["--json"]).out) as { results: { level: string; id: string; message: string }[] };
     expect(j.results.filter((x) => x.id === "a.pins.go").map((x) => [x.level, x.message])).toEqual([["PASS", expect.any(String)], ["INFO", NOTE]]);
+  });
+
+  it("escapes a tracked file name in pin rows, so a control character in it cannot reach the terminal", () => {
+    const wf = ".github/workflows/ci\u001b[2J.yml";
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", [wf]: REUSE, ".github/workflows/release.yml": REL });
+    const r = check(root);
+    expect(r.lines[1]).toBe(`INFO a.pins.go  ${NOTE.replace("ci.yml", "ci\\u001b[2J.yml")}`);
+    const only = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { [wf]: REUSE }));
+    expect(only.lines[0]).toMatch(/^FAIL a\.pins\.go {2}setup-go: no go version found in \.github\/workflows\/ci\\u001b\[2J\.yml; /);
+    for (const x of [r, only]) expect(x.out).not.toContain("\u001b");
   });
 
   it("a reusable-only workflow as the only match stays a FAIL, with a fix that says reusable inputs are not read", () => {
@@ -2254,6 +2265,24 @@ describe("local checks", () => {
     expect([esc.code, esc.lines[0]]).toEqual([1, `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u001b[2K" — fix: ${fix}`]);
     expect(esc.out).not.toContain("\u001b");
     expect(esc.out).not.toContain("PASS d.x  ok");
+  });
+
+  it("rejects a line that ends in, or is only, a control character other than CRLF's \\r, and a bidi control", () => {
+    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const r = run('printf "PASS d.x ok\\v\\nPASS d.x fine\\n\\f\\nPASS d.x.r ok \\342\\200\\250\\nPASS d.x.b ok \\342\\200\\256lmth.exe\\n \\r\\n"');
+    expect(r.lines).toEqual([
+      `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u000b" — fix: ${fix}`,
+      "PASS d.x  fine",
+      `FAIL d.x.protocol  unparseable line "\\u000c" — fix: ${fix}`,
+      `FAIL d.x.protocol  unparseable line "PASS d.x.r ok \\u2028" — fix: ${fix}`,
+      `FAIL d.x.protocol  unparseable line "PASS d.x.b ok \\u202elmth.exe" — fix: ${fix}`,
+      "env-check: 4 FAIL, 0 WARN, 1 PASS, 0 SKIP",
+    ]);
+  });
+
+  it("takes the first non-blank stderr line for the excerpt, without CRLF's \\r", () => {
+    const r = run('printf "\\r\\nboom\\r\\nmore\\r\\n" >&2\nexit 3');
+    expect(r.lines[0]).toBe("FAIL d.x  printed no results, exit 3 (boom) — fix: run .loops/checks/d_x.sh by hand");
   });
 
   it("cuts a long rejected line to 80 code points without splitting a character, and escapes the stderr excerpt", () => {

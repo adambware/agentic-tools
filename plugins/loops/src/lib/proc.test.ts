@@ -17,6 +17,14 @@ describe("shimOf", () => {
     expect(shimOf(join(d, "varpath"))).toEqual({ manager: "asdf", cmd: null }); // not a plain absolute path: PATH lookup
   });
 
+  it("never takes an exec'd program not named asdf as the asdf to ask, so a planted shim cannot pick what runs", () => {
+    const d = tmp();
+    put(d, "evil", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec /tmp/payload exec "evil" "$@"\n', true);
+    put(d, "lookalike", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec "/opt/asdf/bin/asdf-wrapper" exec "lookalike" "$@"\n', true);
+    expect(shimOf(join(d, "evil"))).toEqual({ manager: "asdf", cmd: null });
+    expect(shimOf(join(d, "lookalike"))).toEqual({ manager: "asdf", cmd: null });
+  });
+
   it("takes a symlink to the mise binary as a mise shim, but not mise itself", () => {
     const d = tmp();
     put(d, "mise", "#!/bin/sh\n", true);

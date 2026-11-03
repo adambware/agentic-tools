@@ -112,7 +112,8 @@ export interface Shim {
 /**
  * The version manager behind `file`, read from the file and never run, or null for anything else. An asdf shim is a
  * script with a `# asdf-plugin:` line in its header that execs asdf, by an absolute path in older shims (that asdf is
- * the one to ask) or by name; a mise shim is a symlink to the mise binary itself.
+ * the one to ask, if the path names an `asdf`; any other program is never run, and asdf is looked up on PATH) or by
+ * name; a mise shim is a symlink to the mise binary itself.
  */
 export function shimOf(file: string): Shim | null {
   let real: string;
@@ -136,7 +137,7 @@ export function shimOf(file: string): Shim | null {
   if (!/^# asdf-plugin:/m.test(head)) return null;
   const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
   const cmd = m?.[1] ?? m?.[2];
-  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) ? cmd : null };
+  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null };
 }
 
 type Flags = Record<string, boolean | string | string[]>;

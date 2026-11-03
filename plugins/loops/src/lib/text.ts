@@ -4,16 +4,25 @@
 /** Up to `n` items joined by ", ", noting how many more there are. */
 export const short = (xs: string[], n = 5): string => xs.slice(0, n).join(", ") + (xs.length > n ? ` (+${xs.length - n} more)` : "");
 
-/** The first `n` code points of `s`, ending in "…" when cut; never splits a surrogate pair. */
+/** The first `n` code points of `s`, ending in "…" when cut; never splits a surrogate pair, and reads no further. */
 export function cut(s: string, n: number): string {
-  const cps = [...s];
-  return cps.length > n ? `${cps.slice(0, n).join("")}…` : s;
+  let out = "";
+  let i = 0;
+  for (const cp of s) {
+    if (i++ === n) return `${out}…`;
+    out += cp;
+  }
+  return s;
 }
 
-/** A control character (C0, DEL, C1) other than tab, or a Unicode line or paragraph separator. */
-export const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/;
-// What escapeCtl rewrites: every control character (tab too) and the dash of a "— fix:", the output's fix separator.
-const ESCAPED = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|—(?=\s*fix:)/g;
+/**
+ * A control character (C0, DEL, C1) other than tab, a Unicode line or paragraph separator, a bidi control or mark
+ * (which reorders how a row displays), or a zero-width space. ZWNJ and ZWJ (U+200C, U+200D) pass: scripts and emoji
+ * need them.
+ */
+export const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+// What escapeCtl rewrites: every CONTROL character, tab too, and the dash of a "— fix:", the output's fix separator.
+const ESCAPED = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)/g;
 const NAMED: Record<string, string> = { "\t": "\\t", "\n": "\\n", "\r": "\\r" };
 
 /**
