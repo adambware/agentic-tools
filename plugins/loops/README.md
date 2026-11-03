@@ -435,7 +435,7 @@ compare = "exact"                       # engines is a range: one INFO row, neve
 
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
-files = ["go.mod", "VERSION"]           # d.files: present and non-empty
+files = ["go.mod", "VERSION"]           # d.files: regular files (symlinks followed), present and non-empty; a directory FAILs; working tree only (untracked counts)
 entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by .github/workflows, or a list
 tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
 sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on

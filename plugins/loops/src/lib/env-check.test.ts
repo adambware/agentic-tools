@@ -430,7 +430,29 @@ describe("harness", () => {
 
   it("d.files needs present, non-empty files", () => {
     const r = run('files = ["VERSION", "go.sum", "README.md"]', { VERSION: "" });
-    expect(r.out).toContain("FAIL d.files  missing or empty: VERSION, go.sum");
+    expect(r.out).toContain("FAIL d.files  missing or empty: VERSION, go.sum — fix: restore the files (git checkout) or fix [harness] files");
+  });
+
+  it("d.files FAILs a directory, a symlink to one, or a FIFO in a separate clause, whatever the directory holds", () => {
+    const r = run('files = ["full", "VERSION", "emptydir", "linkdir", "fifo", "go.sum"]', { "full/a.txt": "x\n", VERSION: "" }, (root) => {
+      mkdirSync(join(root, "emptydir"));
+      symlinkSync("full", join(root, "linkdir"));
+      execFileSync("mkfifo", [join(root, "fifo")]);
+    });
+    expect(r.code).toBe(1);
+    expect(r.lines.filter((l) => l.includes("d.files"))).toEqual([
+      "FAIL d.files  missing or empty: VERSION, go.sum; not a regular file: full, emptydir, linkdir, fifo — fix: restore the files (git checkout) or fix [harness] files (list a file inside a directory, not the directory)",
+    ]);
+    expect(run('files = ["full"]', { "full/a.txt": "x\n" }).out).toContain("FAIL d.files  not a regular file: full — fix:");
+  });
+
+  it("d.files follows symlinks to regular files, FAILs a dangling one, and checks the working tree only (untracked counts)", () => {
+    const r = run('files = ["link", "untracked.txt"]', { "real.txt": "x\n" }, (root) => {
+      symlinkSync("real.txt", join(root, "link"));
+      put(root, "untracked.txt", "y\n");
+    });
+    expect(r.out).toContain("PASS d.files  present: link, untracked.txt");
+    expect(run('files = ["dangling"]', {}, (root) => symlinkSync("nowhere", join(root, "dangling"))).out).toContain("FAIL d.files  missing or empty: dangling — fix:");
   });
 
   it("d.entrypoints auto reads ./commands from CI workflows and needs +x", () => {

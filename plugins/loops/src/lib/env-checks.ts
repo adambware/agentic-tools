@@ -195,8 +195,22 @@ export function harnessChecks(c: Ctx): Result[] {
     if (!missing.length && !unresolved.length) out.push(res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
   }
   if (h.files.length) {
-    const bad = h.files.filter((f) => !existsSync(join(c.root, f)) || statSync(join(c.root, f)).size === 0);
-    out.push(bad.length ? res("FAIL", "d.files", `missing or empty: ${bad.join(", ")}`, "restore the files (git checkout) or fix [harness] files") : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
+    // One stat, symlinks followed: a directory's size is a filesystem detail, so anything but a regular file FAILs.
+    // The working tree only; whether the file is tracked is d.tracked's job.
+    const kind = (f: string): "ok" | "missing" | "other" => {
+      try {
+        const s = statSync(join(c.root, f));
+        return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
+      } catch {
+        return "missing";
+      }
+    };
+    const kinds = h.files.map(kind);
+    const missing = h.files.filter((_, i) => kinds[i] === "missing");
+    const other = h.files.filter((_, i) => kinds[i] === "other");
+    const parts = [missing.length ? `missing or empty: ${missing.join(", ")}` : "", other.length ? `not a regular file: ${other.join(", ")}` : ""].filter(Boolean);
+    const fix = `restore the files (git checkout) or fix [harness] files${other.length ? " (list a file inside a directory, not the directory)" : ""}`;
+    out.push(parts.length ? res("FAIL", "d.files", parts.join("; "), fix) : res("PASS", "d.files", `present: ${h.files.join(", ")}`));
   }
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
   if (entries.length) {
