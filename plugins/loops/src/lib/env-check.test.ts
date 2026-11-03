@@ -226,6 +226,14 @@ describe("pins and local toolchains", () => {
     expect([...row.slice(row.indexOf("exited 1: ") + 10, row.indexOf("…") + 1)].length).toBeLessThanOrEqual(150); // 120 code points, escapes expanded
   });
 
+  it("redacts $HOME before cutting the tool's output, so a cut through home leaks no part of it", () => {
+    // "error: " + 107 zeros + " " puts home at code point 115, across the 120-code-point cut.
+    const dir = shim("go", `echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.config/go/env" >&2\nexit 2`);
+    const out = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin`, HOME: "/home/someuser" }).out;
+    expect(out).toMatch(/WARN a\.local\.go {2}go version exited 2: error: 0{107} ~\/\.co… — fix: /);
+    expect(out).not.toMatch(/\/home|someu/);
+  });
+
   it.each([
     ["a tool pinned only by .tool-versions names its asdf and mise install", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 9.9.9\n" }, "golangci-lint", "install golangci-lint 9.9.9: asdf install golangci-lint 9.9.9, or mise install golangci-lint@9.9.9"],
     ["an alias tool in a subdirectory .tool-versions gets a bare asdf install there", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools/.tool-versions"]\n`, { "tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in tools, which installs the tools/.tool-versions pins"],
@@ -413,6 +421,16 @@ describe("harness", () => {
       asdfShim(shims, "fakelint");
       manager(bin, "asdf", "printf 'bad\\033[2J — fix: rm -rf x\\n' >&2; exit 3");
       expect(go('["fakelint"]', bare(shims, bin)).out).toContain("(asdf which fakelint exited 3: bad\\u001b[2J \\u2014 fix: rm -rf x)");
+    });
+
+    it("redacts $HOME before cutting the manager's output line", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", `echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.asdf/x" >&2; exit 3`);
+      const out = go('["fakelint"]', { ...bare(shims, bin), HOME: "/home/someuser" }).out;
+      expect(out).toMatch(/\(asdf which fakelint exited 3: error: 0{107} ~\/\.as…\)/);
+      expect(out).not.toMatch(/\/home|someu/);
     });
 
     it.each([[["--static"], {}], [[], { CI: "true" }]] as [string[], Record<string, string>][])("%j %j never asks the manager", (args, env) => {
@@ -2244,6 +2262,18 @@ describe("local checks", () => {
     const err = run('echo "PASS d.x fine"\nprintf "bad\\033[31m — fix: nope\\n" >&2\nexit 4');
     expect(err.lines[1]).toBe("FAIL d.x  exited 4 without a FAIL line (bad\\u001b[31m \\u2014 fix: nope) — fix: run .loops/checks/d_x.sh by hand");
     expect(err.out).not.toContain("\u001b");
+  });
+
+  it("redacts $HOME before cutting a rejected line or the stderr excerpt, so a cut through home leaks no part of it", () => {
+    const env = { HOME: "/home/someuser" };
+    // "WARN d.x.c " + 63 zeros + " " puts home at code point 75, across the 80-code-point cut.
+    const line = run(`printf 'WARN d.x.c %s /home/someuser/.config/x\\001\\n' "$(printf '0%.0s' $(seq 1 63))"`, "", env);
+    expect(line.lines[0]).toMatch(/^FAIL d\.x\.protocol {2}unparseable line "WARN d\.x\.c 0{63} ~\/\.co…" — fix: /);
+    // "error: " + 107 zeros + " " puts home at code point 115, across the 120-code-point cut.
+    const err = run(`echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/.config/x" >&2\nexit 4`, "", env);
+    expect(err.lines[0]).toMatch(/^FAIL d\.x {2}printed no results, exit 4 \(error: 0{107} ~\/\.co…\) — fix: /);
+    for (const r of [line, err]) expect(r.out).not.toMatch(/\/home|someu/);
+    expect(JSON.stringify(JSON.parse(run(`echo "error: $(printf '0%.0s' $(seq 1 107)) /home/someuser/x" >&2\nexit 4`, "", env, ["--json"]).out))).not.toMatch(/\/home|someu/);
   });
 });
 

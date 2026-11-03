@@ -33,6 +33,11 @@ export interface Ctx {
   isWorktree: boolean;
   /** `git worktree list` paths, the main checkout first. */
   worktrees: string[];
+  /**
+   * `$HOME` shown as `~`: the renderer's own redaction, applied to relayed text before it is cut, since a cut through
+   * home would leave a prefix the renderer no longer recognises.
+   */
+  redact: (s: string) => string;
 }
 
 const res = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "builtin" });
@@ -115,10 +120,10 @@ export function pinChecks(c: Ctx): Result[] {
     const level = pin.local === "fail" ? "FAIL" : "WARN";
     const fix = installFix(c.root, pin.tool, want, pins);
     const cmd = [bin, ...args].join(" ");
-    // The tool's first output line, escaped so it stays on this row and cannot read as a second fix.
+    // The tool's first output line, redacted then cut and escaped, so it stays on this row and cannot read as a second fix.
     const said = (...texts: string[]) => {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
-      return l ? `: ${escapeCtl(cut(l, 120))}` : "";
+      return l ? `: ${escapeCtl(cut(c.redact(l), 120))}` : "";
     };
     if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
     else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
@@ -165,7 +170,7 @@ function shimProblem(c: Ctx, tool: string, p: string): string | null {
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
   if (r.notFound) return `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(said, 120))}` : ""}`;
+  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(c.redact(said), 120))}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
 }
 
@@ -619,7 +624,8 @@ const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*)
 
 /**
  * Run one `[[local]]` check. Fail closed: bad lines (a control character other than tab included), no lines, or a bad
- * exit without a FAIL are FAILs. Relayed text is escaped, so a check cannot move the cursor or add a second fix.
+ * exit without a FAIL are FAILs. Relayed text is escaped, so a check cannot move the cursor or add a second fix, and
+ * has `$HOME` redacted before it is cut.
  */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
@@ -640,12 +646,12 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(line)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.trim().split("\n")[0] ?? "";
-  const why = stderr ? ` (${escapeCtl(cut(stderr, 120))})` : "";
+  const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;

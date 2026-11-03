@@ -57,10 +57,9 @@ export function envCheckMain(argv: string[], d: Deps): number {
       .split("\n")
       .flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
   }
-  const ctx: Ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees };
-
   const home = d.env.HOME || homedir();
   const redact = (s: string): string => redactHome(s, home);
+  const ctx: Ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees, redact };
 
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
