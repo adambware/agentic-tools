@@ -714,3 +714,73 @@ describe("package.json volta is a pin or unsupported, never skipped", () => {
   it("an absent volta.node still falls back to engines (a range)", () =>
     expect(read("setup-node", "node", { [CI]: WF(SETUP_NODE("node-version-file: package.json")), "package.json": '{"volta":{"npm":"10.2.0"},"engines":{"node":">=20"}}' })).toEqual(["range >=20"]));
 });
+
+describe("reusable-workflow calls (jobs.<id>.uses) are noted, never read", () => {
+  const CALL = (ref = "someorg/.github/.github/workflows/go-ci.yml@abc123", job = "ci") => `on: push\njobs:\n  ${job}:\n    uses: ${ref}\n    with:\n      go-version: "1.25"\n`;
+  const CI = ".github/workflows/ci.yml";
+  const REL = ".github/workflows/release.yml";
+  const caught = (f: () => unknown): PinError => {
+    try {
+      f();
+    } catch (e) {
+      if (e instanceof PinError) return e;
+      throw e;
+    }
+    throw new Error("no PinError");
+  };
+
+  it("under a glob a reusable-only workflow is skipped with a note, and its with: inputs are never a value", () => {
+    const root = tmp();
+    put(root, CI, CALL());
+    put(root, REL, WF(SETUP_GO("go-version: 1.26.1")));
+    const notes: string[] = [];
+    expect(readSource(root, [CI, REL], "go", "setup-go", notes).map((x) => `${x.src}=${x.v}`)).toEqual([`setup-go:${REL}=1.26.1`]);
+    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read`]);
+  });
+
+  it("a workflow that yields a value adds no note, even beside a reusable call; notes stay optional", () => {
+    const root = tmp();
+    put(root, CI, `${WF(SETUP_GO("go-version: 1.26.1"))}  deploy:\n    uses: ./.github/workflows/deploy.yml\n`);
+    const notes: string[] = [];
+    expect(readSource(root, [CI], "go", "setup-go", notes).map((x) => x.v)).toEqual(["1.26.1"]);
+    expect(readSource(root, [CI], "go", "setup-go").map((x) => x.v)).toEqual(["1.26.1"]);
+    expect(notes).toEqual([]);
+  });
+
+  it("a named file holding only a reusable call is a FAIL that says so, with its own fix", () => {
+    const root = tmp();
+    put(root, CI, CALL());
+    const e = caught(() => readSource(root, [], "go", `setup-go:${CI}`));
+    expect(e.message).toBe(`setup-go:${CI}: no go version found in ${CI}; job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read`);
+    expect(e.fix).toBe("pin the version in a step that uses actions/setup-go in a workflow of this repo, or remove the setup-go source from .loops/env-check.toml (reusable-workflow inputs are not read)");
+  });
+
+  it("when no matched workflow has the step, the FAIL names the files and each one's reusable calls", () => {
+    const root = tmp();
+    put(root, CI, `jobs:\n  lint:\n    uses: org/a/.github/workflows/l.yml@v1\n  test:\n    uses: org/a/.github/workflows/t.yml@v1\n`);
+    put(root, REL, WF(""));
+    const e = caught(() => readSource(root, [CI, REL], "golangci-lint", "golangci-action"));
+    expect(e.message).toBe(
+      `golangci-action: no golangci-lint version found in 2 files (${CI}, ${REL}); ${CI}: job lint calls reusable workflow org/a/.github/workflows/l.yml@v1 (line 3), job test calls reusable workflow org/a/.github/workflows/t.yml@v1 (line 5), their with: inputs are not read`,
+    );
+    expect(e.fix).toContain("a step that uses golangci/golangci-lint-action");
+  });
+
+  it("step-less workflows with no reusable call keep the generic FAIL, naming up to 5 files", () => {
+    const root = tmp();
+    const files = Array.from({ length: 7 }, (_, i) => `.github/workflows/w${i}.yml`);
+    for (const f of files) put(root, f, WF(""));
+    const e = caught(() => readSource(root, files, "go", "setup-go"));
+    expect(e.message).toBe(`setup-go: no go version found in 7 files (${files.slice(0, 5).join(", ")} (+2 more))`);
+    expect(e.fix).toBeUndefined();
+  });
+
+  it("reads a job-level uses written as an alias, escapes control characters, and ignores a non-string uses", () => {
+    const root = tmp();
+    put(root, CI, `x: &ref "org/r/.github/workflows/a.yml@v1\\e[2J"\njobs:\n  ci:\n    uses: *ref\n  odd:\n    uses: [a, b]\n`);
+    put(root, REL, WF(SETUP_GO("go-version: 1.26.1")));
+    const notes: string[] = [];
+    readSource(root, [CI, REL], "go", "setup-go", notes);
+    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow org/r/.github/workflows/a.yml@v1\\u001b[2J (line 4), whose with: inputs are not read`]);
+  });
+});

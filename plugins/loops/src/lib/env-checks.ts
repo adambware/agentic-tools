@@ -7,7 +7,7 @@ import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
-import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, escapeCtl, quote, short } from "./text.js";
 
@@ -49,25 +49,53 @@ const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]
 /** Docker calls and toolchain probes: a hung daemon, shim or network call must not hang the run. */
 const PROBE_TIMEOUT_MS = 10_000;
 
+/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` written as a plain
+ * version (not `1.62.x` or `v1.2.3`, which the managers would not install as `want`), else the generic advice. An alias
+ * tool's line may name another plugin (`golang`), so it gets a bare `asdf install` in that file's directory. */
+function installFix(root: string, tool: string, want: string, pins: PinValue[]): string {
+  const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
+  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool]! : [tool];
+  const written = (file: string): boolean => {
+    try {
+      return readFileSync(join(root, file), "utf8").split("\n").some((l) => {
+        const m = /^\s*(\S+)\s+(\S+)/.exec(l);
+        return !!m && names.includes(m[1]!) && m[2] === want;
+      });
+    } catch {
+      return false;
+    }
+  };
+  const TV = "tool-versions:";
+  const file = /^\d+(?:\.\d+)*$/.test(want) ? pins.map((v) => v.src).find((src) => src.startsWith(TV) && written(src.slice(TV.length)))?.slice(TV.length) : undefined;
+  if (file === undefined) return generic;
+  if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
+  if (basename(file) !== ".tool-versions") return generic; // a bare asdf install reads only a .tool-versions
+  const dir = dirname(file);
+  return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : dir}, which installs the ${file} pins`;
+}
+
 export function pinChecks(c: Ctx): Result[] {
   const out: Result[] = [];
   for (const pin of c.cfg.pins) {
     const id = `a.pins.${pin.tool}`;
     let vals: PinValue[];
+    const notes: string[] = [];
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s));
+      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
-      out.push(res("FAIL", id, e.message, `fix the source file or the sources in ${CFG}`));
+      out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict.
+    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict, then one per
+    // distinct workflow skipped for its reusable-workflow calls.
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs: PinValue[]) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = new Set<string>();
     const info = vals
       .filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`))
-      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`));
+      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`))
+      .concat([...new Set(notes)].map((n) => res("INFO", id, n)));
     if (!pins.length) {
       out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
@@ -85,9 +113,18 @@ export function pinChecks(c: Ctx): Result[] {
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = `install ${pin.tool} ${want} (asdf install, mise install, or your package manager)`;
-    if (r.timedOut) out.push(res(level, lid, `${[bin, ...args].join(" ")} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (have === null) out.push(res(level, lid, `${bin} not found or gave no version`, fix));
+    const fix = installFix(c.root, pin.tool, want, pins);
+    const cmd = [bin, ...args].join(" ");
+    // The tool's first output line, escaped so it stays on this row and cannot read as a second fix.
+    const said = (...texts: string[]) => {
+      const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+      return l ? `: ${escapeCtl(cut(l, 120))}` : "";
+    };
+    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
+    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
+    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
+    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
+    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }

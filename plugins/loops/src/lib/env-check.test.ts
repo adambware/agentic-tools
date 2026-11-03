@@ -185,7 +185,7 @@ describe("pins and local toolchains", () => {
   });
 
   it("treats a missing tool as the configured level and local = off as no check", () => {
-    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found or gave no version");
+    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found on PATH");
     expect(check(setup(`${GO_PIN}local = "off"\n`, GO_FILES)).out).not.toContain("a.local");
   });
 
@@ -195,6 +195,67 @@ describe("pins and local toolchains", () => {
     const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], {}, hung);
     expect(seen).toEqual([10_000]);
     expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL a.local.go  go version timed out after 10s — fix: install go 1.26.1")]);
+  });
+
+  // GO_FILES pins go 1.26.1 in .tool-versions; go may be written golang there, so its fix is a bare asdf install.
+  const GO_TV_FIX = "install go 1.26.1: run asdf install (or mise install) in the repo root, which installs the .tool-versions pins";
+  it.each([
+    ["a shim with no version set", shim("go", 'echo "No version is set for command go" >&2\necho "Consider adding: golang 1.26.1" >&2\nexit 126'), "go version exited 126: No version is set for command go"],
+    ["an exit with no output", shim("go", "exit 3"), "go version exited 3"],
+    ["exit 0 with no version", shim("go", 'echo\necho "go dev build"'), "go version printed no version: go dev build"],
+    ["exit 0 with nothing", shim("go", "true"), "go version printed no version"],
+  ])("a failed probe says how it failed: %s", (_n, dir, message) => {
+    const r = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin` });
+    expect(r.code).toBe(0);
+    expect(r.lines.find((l) => l.startsWith("WARN a.local.go"))).toBe(`WARN a.local.go  ${message} — fix: ${GO_TV_FIX}`);
+  });
+
+  it("a probe that could not start reports the spawn error", () => {
+    const eacces: Runner = (cmd, args, opts) => (cmd === "go" ? { code: null, stdout: "", stderr: "", timedOut: false, abend: "EACCES" } : run(cmd, args, opts));
+    const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], {}, eacces);
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining("FAIL a.local.go  go version could not run (EACCES) — fix:")]);
+  });
+
+  it("relays the tool's output escaped and cut, so it stays on its row and cannot read as a second fix", () => {
+    const dir = shim("go", `printf '  bad\\033[2J\\rx — fix: rm -rf ~ %s\\n' "$(printf 'y%.0s' $(seq 1 150))" >&2\nexit 1`);
+    const r = check(setup(`${GO_PIN}local = "warn"\n`, GO_FILES), [], { PATH: `${dir}:/usr/bin:/bin` });
+    const row = r.lines.find((l) => l.startsWith("WARN a.local.go"))!;
+    expect(row).toMatch(/^WARN a\.local\.go  go version exited 1: bad\\u001b\[2J\\rx \\u2014 fix: rm -rf ~ y+… — fix: install go 1\.26\.1: /);
+    expect(row.split(" — fix: ")).toHaveLength(2);
+    expect(row.slice(row.indexOf("exited 1: ") + 10, row.indexOf("…")).length).toBeGreaterThan(100);
+    expect([...row.slice(row.indexOf("exited 1: ") + 10, row.indexOf("…") + 1)].length).toBeLessThanOrEqual(150); // 120 code points, escapes expanded
+  });
+
+  it.each([
+    ["a tool pinned only by .tool-versions names its asdf and mise install", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 9.9.9\n" }, "golangci-lint", "install golangci-lint 9.9.9: asdf install golangci-lint 9.9.9, or mise install golangci-lint@9.9.9"],
+    ["an alias tool in a subdirectory .tool-versions gets a bare asdf install there", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools/.tool-versions"]\n`, { "tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in tools, which installs the tools/.tool-versions pins"],
+    ["an alias tool pinned by another file name keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:tools.txt"]\n`, { "tools.txt": "golang 1.26.1\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
+    ["a pin more specific than .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod", "tool-versions"]\ncompare = "minor"\n`, { "go.mod": "module x\n\ngo 1.26.1\n", ".tool-versions": "golang 1.26\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
+    ["a series in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 1.62.x\n" }, "golangci-lint", "install golangci-lint 1.62 (asdf install, mise install, or your package manager)"],
+  ])("the fix follows the pin source: %s", (_n, config, files, tool, fix) => {
+    const r = check(setup(config, files), [], { PATH: `${shim(tool, "exit 126")}:/usr/bin:/bin` });
+    expect(r.lines.find((l) => l.startsWith(`WARN a.local.${tool}`))).toMatch(new RegExp(` — fix: ${fix.replace(/[.*+?^${}()|[\]\\/@]/g, "\\$&")}$`));
+  });
+
+  // A job-level reusable-workflow call is noted, never read: an uncounted INFO beside a PASS, or named in the FAIL.
+  const REUSE = "on: push\njobs:\n  ci:\n    uses: someorg/.github/.github/workflows/go-ci.yml@abc123\n    with:\n      go-version: \"1.25\"\n";
+  const REL = "jobs:\n  release:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: '1.26.1'\n";
+  const NOTE = "setup-go:.github/workflows/ci.yml: job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read";
+  it("a globbed workflow that only calls a reusable workflow is an INFO row after the PASS; the exit is unchanged", () => {
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", ".github/workflows/ci.yml": REUSE, ".github/workflows/release.yml": REL });
+    const r = check(root);
+    expect(r.code).toBe(0);
+    expect(r.lines).toEqual(["PASS a.pins.go  go 1.26.1 (go-mod:go.mod, setup-go:.github/workflows/release.yml)", `INFO a.pins.go  ${NOTE}`, "env-check: 0 FAIL, 0 WARN, 1 PASS, 0 SKIP"]);
+    const j = JSON.parse(check(root, ["--json"]).out) as { results: { level: string; id: string; message: string }[] };
+    expect(j.results.filter((x) => x.id === "a.pins.go").map((x) => [x.level, x.message])).toEqual([["PASS", expect.any(String)], ["INFO", NOTE]]);
+  });
+
+  it("a reusable-only workflow as the only match stays a FAIL, with a fix that says reusable inputs are not read", () => {
+    const r = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { ".github/workflows/ci.yml": REUSE }));
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toBe(
+      "FAIL a.pins.go  setup-go: no go version found in .github/workflows/ci.yml; job ci calls reusable workflow someorg/.github/.github/workflows/go-ci.yml@abc123 (line 4), whose with: inputs are not read — fix: pin the version in a step that uses actions/setup-go in a workflow of this repo, or remove the setup-go source from .loops/env-check.toml (reusable-workflow inputs are not read)",
+    );
   });
 });
 

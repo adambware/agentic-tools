@@ -7,8 +7,14 @@ import { basename, join, normalize } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
+import { escapeCtl, short } from "./text.js";
 
-export class PinError extends Error {}
+/** `fix`, when set, replaces the caller's generic fix for a source that cannot be read. */
+export class PinError extends Error {
+  constructor(m: string, readonly fix?: string) {
+    super(m);
+  }
+}
 export interface PinValue {
   src: string;
   /** The pinned version, or a range's value as written. */
@@ -17,8 +23,9 @@ export interface PinValue {
   range: boolean;
 }
 type Found = { v: string; range?: boolean }[];
-/** `file` is the repo-relative file `text` came from, for messages. */
-type Parser = (text: string, tool: string, root: string, file: string) => Found;
+/** `file` is the repo-relative file `text` came from, for messages. A workflow parser adds each job-level reusable-workflow
+ * call it skipped to `calls`. */
+type Parser = (text: string, tool: string, root: string, file: string, calls?: string[]) => Found;
 
 /** The first version in `s`, keeping a prerelease suffix (`22.0.0-rc.1`, `-beta-30`, `3.13.0rc1`, `1.26rc1`, `3.14.0.dev0`).
  * Only known prerelease shapes count, so an image variant (`-alpine`, `-slim-bookworm`), a patchlevel (`3.1.4p223`), a
@@ -68,7 +75,8 @@ const pinAt = (raw: string, tool: string, file: string, line: number): Found => 
   if (!f || f.range) throw unsupported(raw, file, line);
   return [{ v: f.v }];
 };
-const ALIAS: Record<string, string[]> = { node: ["node", "nodejs"], go: ["go", "golang"] };
+/** Tools whose `.tool-versions` line may use another plugin name (`nodejs`, `golang`). */
+export const ALIAS: Record<string, string[]> = { node: ["node", "nodejs"], go: ["go", "golang"] };
 const IMAGE: Record<string, string> = { go: "golang" };
 
 /** Every line naming the tool or an alias, so `golang` and `go` lines that conflict are both seen; its first version
@@ -283,11 +291,12 @@ const ACTIONS = {
   "goreleaser-action": ["goreleaser/goreleaser-action", "goreleaser", "version"],
 } as const;
 /** Reads every `jobs.*.steps[]` (or a composite action's `runs.steps[]`) step that uses the action, as YAML 1.2 the way
- * Actions does. A workflow that does not parse, an unreadable input, or a `uses:` of the action anywhere else fails. */
+ * Actions does. A workflow that does not parse, an unreadable input, or a `uses:` of the action anywhere else fails. A job
+ * that calls a reusable workflow (`jobs.<id>.uses`) is not read, never its `with:`; it is only noted in `calls`. */
 function setup(kind: keyof typeof ACTIONS): Parser {
   const [action, forTool, key] = ACTIONS[kind];
   const named = new RegExp(`^${action}@`, "i"); // GitHub resolves action repos case-insensitively
-  return (text, tool, root, file) => {
+  return (text, tool, root, file, calls) => {
     if (tool !== forTool) return [];
     const lc = new LineCounter();
     const doc = parseDocument(text, { lineCounter: lc });
@@ -358,7 +367,12 @@ function setup(kind: keyof typeof ACTIONS): Parser {
       const jobs = deref(top.get("jobs", true));
       if (isMap(jobs)) for (const p of jobs.items) {
         const job = deref(p.value);
-        if (isMap(job)) lists.push(job.get("steps", true));
+        if (!isMap(job)) continue;
+        lists.push(job.get("steps", true));
+        const ref = job.get("uses", true) as Node | undefined;
+        const v = deref(ref);
+        if (ref && isScalar(v) && typeof v.value === "string")
+          calls?.push(`job ${escapeCtl(keyOf(p.key) ?? "?")} calls reusable workflow ${escapeCtl(v.value.trim())} (${line(ref)})`);
       }
       const runs = deref(top.get("runs", true));
       if (isMap(runs)) lists.push(runs.get("steps", true));
@@ -382,7 +396,8 @@ function setup(kind: keyof typeof ACTIONS): Parser {
   };
 }
 
-const KINDS: Record<string, { file: string; parse: Parser }> = {
+/** `action`: a workflow kind's action, for the fix when no matched workflow has its step. */
+const KINDS: Record<string, { file: string; parse: Parser; action?: string }> = {
   "tool-versions": { file: ".tool-versions", parse: toolVersions },
   nvmrc: { file: ".nvmrc", parse: plain },
   "node-version": { file: ".node-version", parse: plain },
@@ -390,11 +405,11 @@ const KINDS: Record<string, { file: string; parse: Parser }> = {
   "go-mod": { file: "go.mod", parse: goMod },
   engines: { file: "package.json", parse: engines },
   dockerfile: { file: "Dockerfile", parse: dockerfile },
-  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go") },
-  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node") },
-  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python") },
-  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action") },
-  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action") },
+  "setup-go": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-go"), action: ACTIONS["setup-go"][0] },
+  "setup-node": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-node"), action: ACTIONS["setup-node"][0] },
+  "setup-python": { file: ".github/workflows/*.{yml,yaml}", parse: setup("setup-python"), action: ACTIONS["setup-python"][0] },
+  "golangci-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("golangci-action"), action: ACTIONS["golangci-action"][0] },
+  "goreleaser-action": { file: ".github/workflows/*.{yml,yaml}", parse: setup("goreleaser-action"), action: ACTIONS["goreleaser-action"][0] },
 };
 /** Source kind -> its default file (the README matrix lists exactly these). */
 export const SOURCE_KINDS: Record<string, string> = Object.fromEntries(Object.entries(KINDS).map(([k, { file }]) => [k, file]));
@@ -405,8 +420,10 @@ export const splitSource = (spec: string): [string, string | undefined] => {
 };
 export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, splitSource(spec)[0]);
 
-/** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. */
-export function readSource(root: string, tracked: string[], tool: string, spec: string): PinValue[] {
+/** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. A matched workflow that yields no
+ * value but calls a reusable workflow adds a note to `notes` (when the source still yields a value), or is named in the
+ * error (when it does not). */
+export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
   const [kind, path] = splitSource(spec);
   const k = KINDS[kind]!;
   const target = path ?? k.file;
@@ -414,15 +431,28 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
   const files = res ? tracked.filter((f) => res.some((re) => re.test(f))) : [target];
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out: PinValue[] = [];
+  const skipped: [string, string][] = []; // [file, its reusable calls]
   for (const f of files) {
     if (!existsSync(join(root, f))) throw new PinError(`${spec}: ${f} not found`);
+    const calls: string[] = [];
+    let found: Found;
     try {
-      for (const x of k.parse(readFileSync(join(root, f), "utf8"), tool, root, f)) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
+    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length) throw new PinError(`${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files`}`);
+  if (!out.length) {
+    const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
+    if (!skipped.length) throw new PinError(msg);
+    throw new PinError(
+      `${msg}; ${skipped.map(([f, s]) => (files.length === 1 ? s : `${f}: ${s}`)).join("; ")}`,
+      `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`,
+    );
+  }
+  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`));
   return out;
 }
 
