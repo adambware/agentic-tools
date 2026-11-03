@@ -48,9 +48,11 @@ export function shQuote(s: string): string {
 
 /**
  * `s` with `home` shown as `~`, keeping printed commands runnable: a tilde inside quotes does not expand, so a word
- * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself).
+ * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself). A trailing slash on home is
+ * ignored, so `HOME=/home/u/` still hides a bare `/home/u`.
  */
 export function redactHome(s: string, home: string): string {
+  home = home.replace(/\/+$/, "");
   if (home.length <= 1) return s;
   const q = `'${home}`;
   return s

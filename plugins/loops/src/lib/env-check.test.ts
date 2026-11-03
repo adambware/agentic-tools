@@ -1879,9 +1879,9 @@ describe("local checks", () => {
   });
 
   it.each([
-    ["an unparseable line", 'echo "all good"', /FAIL d\.x\.protocol {2}unparseable line: all good/],
-    ["an id outside the configured one", 'echo "PASS other.id ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS other\.id ok/],
-    ["an id that only shares a prefix", 'echo "PASS d.xy ok"', /FAIL d\.x\.protocol {2}unparseable line: PASS d\.xy ok/],
+    ["an unparseable line", 'echo "all good"', /FAIL d\.x\.protocol {2}unparseable line "all good"/],
+    ["an id outside the configured one", 'echo "PASS other.id ok"', /FAIL d\.x\.protocol {2}unparseable line "PASS other\.id ok"/],
+    ["an id that only shares a prefix", 'echo "PASS d.xy ok"', /FAIL d\.x\.protocol {2}unparseable line "PASS d\.xy ok"/],
     ["no output", "true", /FAIL d\.x {2}printed no results/],
     ["a nonzero exit without a FAIL line", 'echo "PASS d.x fine"\necho boom >&2\nexit 4', /FAIL d\.x {2}exited 4 without a FAIL line \(boom\)/],
   ])("fails closed on %s", (_n, script, re) => {
@@ -1950,6 +1950,48 @@ describe("local checks", () => {
     put(root, CFG, HEAD + parts.join(""));
     expect(check(root).lines.slice(0, 4).map((l) => l.split(" ")[1])).toEqual(["a.c", "d.b", "d.a", "x.z"]);
   });
+
+  it("splits a line at its first fix separator, accepts -- as one, and reads an empty fix as none", () => {
+    const r = run([
+      'echo "WARN d.x.dbl first — fix: a — fix: b"',
+      'echo "WARN d.x.dd msg -- fix: ascii dashes"',
+      'echo "PASS d.x.pe ok — fix: "',
+      'echo "WARN d.x.we empty — fix:"',
+      'printf "FAIL d.x.fe bad — fix:   \\n"',
+    ].join("\n"));
+    expect(r.lines).toEqual([
+      "WARN d.x.dbl  first — fix: a — fix: b",
+      "WARN d.x.dd  msg — fix: ascii dashes",
+      "PASS d.x.pe  ok",
+      "WARN d.x.we  empty — fix: address the message above and re-run",
+      "FAIL d.x.fe  bad — fix: address the message above and re-run",
+      "env-check: 1 FAIL, 3 WARN, 1 PASS, 0 SKIP",
+    ]);
+  });
+
+  it("accepts CRLF line endings but rejects a line with any other control character, echoed escaped in quotes", () => {
+    const crlf = run('printf "PASS d.x fine\\r\\nWARN d.x.w tab\\there — fix: f\\r\\n"');
+    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const cr = run('printf "WARN d.x.cr mid\\rcr here — fix: f\\n"');
+    expect(cr.code).toBe(1);
+    expect(cr.lines[0]).toBe(`FAIL d.x.protocol  unparseable line "WARN d.x.cr mid\\rcr here \\u2014 fix: f" — fix: ${fix}`);
+    expect(cr.out).not.toContain("\r");
+    expect(cr.lines[0]!.split(" — fix: ")).toHaveLength(2);
+    // A colour or cursor code turns an otherwise good PASS into a protocol FAIL (NO_COLOR=1 is exported).
+    const esc = run('printf "PASS d.x ok\\033[2K\\n"');
+    expect([esc.code, esc.lines[0]]).toEqual([1, `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u001b[2K" — fix: ${fix}`]);
+    expect(esc.out).not.toContain("\u001b");
+    expect(esc.out).not.toContain("PASS d.x  ok");
+  });
+
+  it("cuts a long rejected line to 80 code points without splitting a character, and escapes the stderr excerpt", () => {
+    const long = run(`echo "${"y".repeat(79)}😀${"z".repeat(100)}"`);
+    expect(long.lines[0]).toContain(`unparseable line "${"y".repeat(79)}😀…" — fix:`);
+    const err = run('echo "PASS d.x fine"\nprintf "bad\\033[31m — fix: nope\\n" >&2\nexit 4');
+    expect(err.lines[1]).toBe("FAIL d.x  exited 4 without a FAIL line (bad\\u001b[31m \\u2014 fix: nope) — fix: run .loops/checks/d_x.sh by hand");
+    expect(err.out).not.toContain("\u001b");
+  });
 });
 
 describe("output and exit codes", () => {
@@ -1975,6 +2017,24 @@ describe("output and exit codes", () => {
     const raw = check(root, ["--json"], env).out;
     expect(raw).not.toContain(dirname(root));
     expect(JSON.parse(raw).root).toBe("~/app-node");
+  });
+
+  it("redacts $HOME given with a trailing slash, never leaking the bare home", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", 'echo "PASS d.a root=$ENV_CHECK_ROOT home=$(dirname "$ENV_CHECK_ROOT")"'));
+    const env = { HOME: `${dirname(root)}/` };
+    expect(check(root, [], env).lines[0]).toBe("PASS d.a  root=~/app-node home=~");
+    const raw = check(root, ["--json"], env).out;
+    expect(raw).not.toContain(dirname(root));
+    expect(JSON.parse(raw).root).toBe("~/app-node");
+    const h = "/home/u";
+    for (const home of [h, `${h}/`, `${h}//`]) {
+      expect(redactHome(`cd '${h}' && cd '${h}/it'\\''s' && cd ${h}/x`, home)).toBe("cd ~ && cd ~/'it'\\''s' && cd ~/x");
+      expect(redactHome(`bare ${h} end`, home)).toBe("bare ~ end");
+      expect(redactHome(h, home)).toBe("~");
+    }
+    expect(redactHome("/x", "/")).toBe("/x");
+    expect(redactHome("/x", "//")).toBe("/x");
   });
 
   const bad: [string, string, RegExp][] = [

@@ -9,6 +9,7 @@ import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
+import { CONTROL, cut, escapeCtl, quote, short } from "./text.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
 export interface Result {
@@ -43,7 +44,6 @@ const rp = (p: string): string => {
     return p;
   }
 };
-const short = (xs: string[], n = 5): string => xs.slice(0, n).join(", ") + (xs.length > n ? ` (+${xs.length - n} more)` : "");
 
 const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
 /** Docker calls and toolchain probes: a hung daemon, shim or network call must not hang the run. */
@@ -518,9 +518,13 @@ export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] 
   ];
 }
 
-const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix: (.*))?$/;
+// The message ends at the first separator; a bare trailing "— fix:" is an empty fix.
+const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*))?)?$/;
 
-/** Run one `[[local]]` check. Fail closed: bad lines, no lines, or a bad exit without a FAIL are FAILs. */
+/**
+ * Run one `[[local]]` check. Fail closed: bad lines (a control character other than tab included), no lines, or a bad
+ * exit without a FAIL are FAILs. Relayed text is escaped, so a check cannot move the cursor or add a second fix.
+ */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
   const env: NodeJS.ProcessEnv = {
@@ -538,14 +542,14 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
   for (const line of r.stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean)) {
-    const m = LINE.exec(line);
-    if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line: ${line.slice(0, 80)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+    const m = CONTROL.test(line) ? null : LINE.exec(line);
+    if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(line)}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.trim().split("\n")[0] ?? "";
-  const why = stderr ? ` (${stderr.slice(0, 120)})` : "";
+  const why = stderr ? ` (${escapeCtl(cut(stderr, 120))})` : "";
   if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;

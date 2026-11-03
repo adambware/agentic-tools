@@ -640,11 +640,16 @@ result on stdout:
 (PASS|WARN|FAIL|SKIP|INFO) <id> <message>[ — fix: <fix>]
 ```
 
-`<id>` must be the configured id or `<id>.<name>`. The environment has `ENV_CHECK_ROOT`,
+`<id>` must be the configured id or `<id>.<name>`. The fix starts at the first ` — fix: ` (` -- fix: ` also works);
+later ones belong to the fix. An empty fix counts as none, so a WARN or FAIL gets the default `address the message
+above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
 `ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
 (the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
-It fails closed: an unparseable line is `FAIL <id>.protocol`; no lines is a FAIL; a nonzero exit
-without a FAIL line adds one (with the first stderr line); a timeout adds a WARN, "not a pass",
+It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…) or a Unicode line
+separator included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
+`"`, control characters and the dash of a `— fix:` escaped (`\r`, `\u001b`, `\u2014`), so the output line still has one fix; no lines is a FAIL; a nonzero
+exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
+a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).
 
 **Wrapper.** `templates/env-check` is a 15-line POSIX `sh` wrapper to copy into a repo as
