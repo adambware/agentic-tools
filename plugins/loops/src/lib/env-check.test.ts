@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
-import { redactHome, run, type Runner, type RunResult } from "./proc.js";
+import { redactHome, run, run as procRun, type Runner, type RunResult } from "./proc.js";
 import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
 import { composeStub, deps, put, repo, sh, shim, tmp, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
 import { VERSION } from "./version.js";
@@ -295,6 +295,137 @@ describe("harness", () => {
   it("d.tools lists what is missing from PATH", () => {
     expect(run('tools = ["git", "nope-tool", "nope-two"]').out).toContain("FAIL d.tools  missing on PATH: nope-tool, nope-two");
     expect(run('tools = ["git"]').out).toContain("PASS d.tools  present: git");
+  });
+
+  describe("d.tools version-manager shims", () => {
+    const FIX =
+      "fix: set a version for this checkout (a .tool-versions line for asdf, mise use <tool>@<version> for mise), put the version manager on PATH, or install the tool outside it";
+    /** An asdf shim for `tool` that execs `asdf` (by name, or by the given path); running it leaves a marker. */
+    const asdfShim = (dir: string, tool: string, asdf = "asdf") =>
+      put(dir, tool, `#!/usr/bin/env bash\n# asdf-plugin: ${tool} 1.0.0\ntouch "${dir}/ran-${tool}"\nexec ${asdf} exec "${tool}" "$@"\n`, true);
+    /** A fake version manager `name` in `dir` that logs "<cwd> <args>" and answers `which` with `body`. */
+    const manager = (dir: string, name: string, body: string) => put(dir, name, `#!/bin/sh\necho "$PWD $*" >> "${dir}/${name}.log"\n${body}\n`, true);
+    const NO_VERSION = 'echo "No version is set for command $2" >&2; exit 126';
+    const RESOLVES = 'echo "/opt/asdf/installs/$2/1.0.0/bin/$2"';
+    const go = (tools: string, env: Record<string, string>, runner?: Runner) => {
+      const root = setup(`${HEAD}[harness]\ntools = ${tools}\n`);
+      commit(root);
+      return { root, ...check(root, [], env, runner) };
+    };
+    // A PATH with no real asdf or mise on it: git runs from the process env, so it is not needed here.
+    const bare = (...dirs: string[]) => ({ PATH: [...dirs, "/usr/bin", "/bin"].join(":") });
+
+    it("FAILs an asdf shim that resolves no version, asking asdf which from the repo root and never running the tool", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", NO_VERSION);
+      const r = go('["fakelint"]', bare(shims, bin));
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(`FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf which fakelint exited 126: No version is set for command fakelint) — ${FIX}`);
+      expect(r.out).not.toContain("PASS d.tools");
+      expect(readFileSync(join(bin, "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      expect(existsSync(join(shims, "ran-fakelint"))).toBe(false);
+    });
+
+    it("PASSes an asdf shim that resolves, and never runs a plain tool or the shim", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      put(shims, "plain", `#!/bin/sh\ntouch "${shims}/ran-plain"\n`, true);
+      manager(bin, "asdf", RESOLVES);
+      const r = go('["fakelint", "plain"]', bare(shims, bin));
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("PASS d.tools  present: fakelint, plain");
+      expect(readFileSync(join(bin, "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`); // only the shim is asked about
+      expect(existsSync(join(shims, "ran-fakelint")) || existsSync(join(shims, "ran-plain"))).toBe(false);
+    });
+
+    it("FAILs when asdf is not on PATH, unless the shim execs asdf by an absolute path", () => {
+      const shims = tmp();
+      asdfShim(shims, "fakelint");
+      expect(go('["fakelint"]', bare(shims)).out).toContain("FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf not on PATH)");
+      // An older asdf shim names asdf by its path: that asdf is asked, though no asdf is on PATH.
+      const abs = tmp();
+      const home = tmp();
+      asdfShim(abs, "fakelint", `${home}/bin/asdf`);
+      manager(join(home, "bin"), "asdf", RESOLVES);
+      const r = go('["fakelint"]', bare(abs));
+      expect(r.out).toContain("PASS d.tools  present: fakelint");
+      expect(readFileSync(join(home, "bin", "asdf.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      // ...and a PATH asdf is not asked instead of it.
+      const other = tmp();
+      manager(other, "asdf", RESOLVES);
+      manager(join(home, "bin"), "asdf", NO_VERSION);
+      expect(go('["fakelint"]', bare(abs, other)).out).toContain("(asdf which fakelint exited 126: No version is set for command fakelint)");
+      expect(existsSync(join(other, "asdf.log"))).toBe(false);
+      // A named asdf that is gone cannot run the shim either.
+      const gone = tmp();
+      asdfShim(gone, "fakelint", "/nonexistent-dir/bin/asdf");
+      expect(go('["fakelint"]', bare(gone)).out).toContain("fakelint (asdf not found at /nonexistent-dir/bin/asdf)");
+    });
+
+    it("asks mise about a symlink to the mise binary, and does not treat mise itself as a shim", () => {
+      const bin = tmp();
+      const shims = tmp();
+      manager(bin, "mise", 'echo "mise ERROR $2 is not a mise bin" >&2; exit 1');
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      const r = go('["fakelint"]', bare(shims));
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("FAIL d.tools  version-manager shim resolves no version here: fakelint (mise which fakelint exited 1: mise ERROR fakelint is not a mise bin)");
+      expect(readFileSync(join(bin, "mise.log"), "utf8")).toBe(`${r.root} which fakelint\n`);
+      manager(bin, "mise", RESOLVES);
+      expect(go('["fakelint"]', bare(shims)).out).toContain("PASS d.tools  present: fakelint");
+      rmSync(join(bin, "mise.log"));
+      expect(go('["mise"]', bare(bin)).out).toContain("PASS d.tools  present: mise");
+      expect(existsSync(join(bin, "mise.log"))).toBe(false);
+    });
+
+    it("FAILs a manager that times out, prints no path, or cannot run", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "exit 0");
+      expect(go('["fakelint"]', bare(shims, bin)).out).toContain("fakelint (asdf which fakelint printed no path)");
+      const stub = (r: Partial<RunResult>): Runner => (cmd, args, opts) => (cmd.endsWith("asdf") ? { code: null, stdout: "", stderr: "", timedOut: false, ...r } : procRun(cmd, args, opts));
+      expect(go('["fakelint"]', bare(shims, bin), stub({ timedOut: true })).out).toContain("fakelint (asdf which fakelint timed out after 10s)");
+      expect(go('["fakelint"]', bare(shims, bin), stub({ abend: "EACCES" })).out).toContain("fakelint (asdf which fakelint could not run (EACCES))");
+    });
+
+    it("lists missing tools first, then unresolved shims, in two FAIL rows", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      asdfShim(shims, "other");
+      manager(bin, "asdf", NO_VERSION);
+      const r = go('["nope-tool", "fakelint", "other"]', bare(shims, bin));
+      expect(r.code).toBe(1);
+      const rows = r.lines.filter((l) => l.includes("d.tools"));
+      expect(rows.map((l) => l.split(" — ")[0])).toEqual([
+        "FAIL d.tools  missing on PATH: nope-tool",
+        "FAIL d.tools  version-manager shim resolves no version here: fakelint (asdf which fakelint exited 126: No version is set for command fakelint); other (asdf which other exited 126: No version is set for command other)",
+      ]);
+    });
+
+    it("escapes the manager's output line", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "printf 'bad\\033[2J — fix: rm -rf x\\n' >&2; exit 3");
+      expect(go('["fakelint"]', bare(shims, bin)).out).toContain("(asdf which fakelint exited 3: bad\\u001b[2J \\u2014 fix: rm -rf x)");
+    });
+
+    it.each([[["--static"], {}], [[], { CI: "true" }]] as [string[], Record<string, string>][])("%j %j never asks the manager", (args, env) => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", RESOLVES);
+      const root = setup(`${HEAD}[harness]\ntools = ["fakelint"]\n`);
+      commit(root);
+      const r = check(root, args, { ...bare(shims, bin), ...env });
+      expect(r.out).not.toContain("d.tools");
+      expect(existsSync(join(bin, "asdf.log")) || existsSync(join(shims, "ran-fakelint"))).toBe(false);
+    });
   });
 
   it("d.files needs present, non-empty files", () => {

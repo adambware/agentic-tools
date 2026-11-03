@@ -434,7 +434,7 @@ sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
 compare = "exact"                       # engines is a range: one INFO row, never compared
 
 [harness]                               # d.*
-tools = ["git", "go", "make"]           # d.tools: on PATH
+tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
 files = ["go.mod", "VERSION"]           # d.files: present and non-empty
 entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by .github/workflows, or a list
 tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
@@ -521,6 +521,11 @@ PATH`, `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line
 line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf install <tool> <version>` and
 `mise install <tool>@<version>`; for `go` and `node`, whose line may say `golang` or `nodejs`, it names a bare
 `asdf install` (or `mise install`) in that file's directory. Any other pin source keeps the generic install fix.
+`d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
+line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
+`mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
+asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, times out, exits non-zero (its first output
+line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
 `docker compose [-f <configured files>] config --no-env-resolution --format json` reads `name`. For each checkout

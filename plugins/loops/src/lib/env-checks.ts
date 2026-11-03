@@ -8,7 +8,7 @@ import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type C
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
-import { git, isExecutable, shQuote, which, type Runner } from "./proc.js";
+import { git, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, escapeCtl, quote, short } from "./text.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
@@ -149,12 +149,50 @@ function autoEntrypoints(c: Ctx): string[] {
   return [...found].sort();
 }
 
+/**
+ * Why the asdf or mise shim at `p` cannot run `tool` in this checkout, or null when it resolves or `p` is no shim. Asks
+ * the manager (`asdf which` / `mise which`, from the repo root with the run's env), which resolves the version the shim
+ * would use; the tool itself never runs.
+ */
+function shimProblem(c: Ctx, tool: string, p: string): string | null {
+  const s = shimOf(p);
+  if (!s) return null;
+  const cmd = s.cmd ?? which(s.manager, c.env.PATH);
+  if (!cmd) return `${s.manager} not on PATH`;
+  const r = c.run(cmd, ["which", tool], { cwd: c.root, env: c.env, timeoutMs: PROBE_TIMEOUT_MS });
+  const how = `${s.manager} which ${tool}`;
+  const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
+  if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
+  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
+  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(said, 120))}` : ""}`;
+  return r.stdout.trim() ? null : `${how} printed no path`;
+}
+
 export function harnessChecks(c: Ctx): Result[] {
   const h = c.cfg.harness;
   const out: Result[] = [];
   if (h.tools.length && !c.static) {
-    const missing = h.tools.filter((t) => !which(t, c.env.PATH));
-    out.push(missing.length ? res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools") : res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
+    const missing: string[] = [];
+    const unresolved: string[] = [];
+    for (const t of h.tools) {
+      const p = which(t, c.env.PATH);
+      const why = p ? shimProblem(c, t, p) : null;
+      if (!p) missing.push(t);
+      else if (why) unresolved.push(`${t} (${why})`);
+    }
+    if (missing.length) out.push(res("FAIL", "d.tools", `missing on PATH: ${missing.join(", ")}`, "install the missing tools"));
+    if (unresolved.length) {
+      out.push(
+        res(
+          "FAIL",
+          "d.tools",
+          `version-manager shim resolves no version here: ${unresolved.join("; ")}`,
+          "set a version for this checkout (a .tool-versions line for asdf, mise use <tool>@<version> for mise), put the version manager on PATH, or install the tool outside it",
+        ),
+      );
+    }
+    if (!missing.length && !unresolved.length) out.push(res("PASS", "d.tools", `present: ${h.tools.join(", ")}`));
   }
   if (h.files.length) {
     const bad = h.files.filter((f) => !existsSync(join(c.root, f)) || statSync(join(c.root, f)).size === 0);
