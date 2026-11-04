@@ -503,7 +503,7 @@ exactly these forms; where the matrix lists no range, a range is a FAIL.
 | `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable`; FAIL `setup-go step without a version in <file>:<line>` for a step with neither `go-version` nor `go-version-file` (no `with:`, an empty `with:`, or only `cache:`/`check-latest:`) |
 | `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current`; FAIL `setup-node step without a version in <file>:<line>` for a step with neither `node-version` nor `node-version-file` (the action has no default file) |
 | `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table); a step with neither input reads `.python-version` at the repo root, as the action does from v4.7.0 | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0`; FAIL `setup-python step without a version in <file>:<line>` when that file is absent or the action ref is older than v4.7.0 |
-| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`); a step with no `version`/`version-file` reads `github.com/golangci/golangci-lint/v2 vX` from `<working-directory>/go.mod`, as the action does (`golangci-lint vX` for refs v6 and older) | a range `version:` | FAIL unsupported: `latest`; FAIL `golangci-lint-action step without a version in <file>:<line>` when go.mod has no such line (the action installs latest) |
+| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`); a step with no `version`/`version-file` reads `github.com/golangci/golangci-lint/v2 vX` from `<working-directory>/go.mod`, as the action does (`golangci-lint vX` for v6.5 and later v6 refs); refs before v6.5.0 and any `install-mode` other than `binary` never read go.mod | a range `version:` | FAIL unsupported: `latest`; FAIL `golangci-lint-action step without a version in <file>:<line>` when go.mod is not read or has no such line (the action installs latest) |
 | `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `goreleaser/goreleaser-action` (tool `goreleaser`), e.g. `~> v2` | a range `version:` (`^2.5`); a step with no `version` is the action's default `~> v2` (v6 and later), an INFO range | FAIL unsupported: `latest`; FAIL `goreleaser-action step without a version in <file>:<line>` for refs v5 and older (default latest) |
 
 `<tool>-version-file` names are matched on the file's basename; any other name is a FAIL `unsupported form:
@@ -550,9 +550,10 @@ line) or a mise shim (a symlink to the mise binary) is checked by asking its man
 asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
 for a manager whose `#!` interpreter is missing), times out, exits non-zero (its first output
 line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row. The one
-exception follows mise's own fallback: a mise shim whose `mise which` exits non-zero still PASSes when an executable
-copy of the tool that is no shim (neither asdf nor mise) sits on PATH after the shim's own directory, since the shim
-runs that copy; the copy is found, never run. asdf has no such fallback.
+exception follows mise's own fallback: a mise shim whose `mise which` exits 1 with '... is a mise bin however it is
+not currently active' still PASSes when an executable copy of the tool that is no shim (neither asdf nor mise) sits on
+PATH after the shim's own directory, since the shim runs that copy; the copy is found, never run. Any other mise error
+(an untrusted or broken config, mise itself failing) stays a FAIL. asdf has no such fallback.
 The shim handling was checked against a real mise (2026-11-04): mise v2026.11.0 (linux-arm64 release binary,
 sha256 verified) in a throwaway container from node:22.12.0-bookworm-slim
 (sha256:35531c52ce27b6575d69755c73e65d4468dba93a25644eed56dc12879cae9213, linux/aarch64, Debian 12), with a tool

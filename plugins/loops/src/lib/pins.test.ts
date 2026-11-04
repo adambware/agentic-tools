@@ -854,6 +854,17 @@ describe("a setup step without a version is a FAIL, never skipped beside a pinne
   });
   // Value: protects=the go.mod default never reads outside the checkout; fails_when=a working-directory that leaves the root or
   // is absolute is followed; why_new=only in-repo working-directories were read; seam=none; no_claim=symlinked folders
+  // Value: protects=go.mod is read only where the action reads it; fails_when=a pre-6.5 ref or a non-binary install-mode (which
+  // installs latest or nothing) records go.mod's line as a pin; why_new=only refs v6.5+ and the default install-mode were tested;
+  // seam=none; no_claim=which minor a bare @v6 names (read as the newest v6)
+  it("golangci-lint-action before v6.5.0 or in a non-binary install-mode FAILs, never reads go.mod", () => {
+    const V1 = "module x\n\nrequire github.com/golangci/golangci-lint v1.64.8\n";
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    for (const ref of ["v6.4.0", "v5"]) fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI(ref)), "go.mod": V1 }, noVersion("golangci-lint-action", CI, 6));
+    for (const m of ["goinstall", "none", "${{ matrix.mode }}"])
+      fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", `\n          install-mode: ${m}`)), "go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", "\n          install-mode: Binary")), "go.mod": MOD })).toEqual(["2.1.5"]);
+  });
   it("a working-directory outside the checkout FAILs, never reads that go.mod", () => {
     const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
     for (const out of [(r: string) => `../${basename(r)}/tools`, (r: string) => `${r}/tools`]) {

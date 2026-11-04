@@ -206,7 +206,8 @@ function autoEntrypoints(c: Ctx): string[] {
  * the manager (`asdf which` / `mise which`, from the repo root with the run's env), which resolves the version the shim
  * would use; the tool itself never runs. A mise shim with no active version runs the next copy of the tool on PATH
  * (mise 2026.11.0, linux/aarch64, while `mise which` exits 1), so one that fails `mise which` resolves when an
- * executable copy that is no shim follows the shim's own directory on PATH.
+ * executable copy that is no shim follows the shim's own directory on PATH. Only that state falls back: any other mise
+ * error (an untrusted or broken config, mise itself failing) fails the shim too.
  */
 function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const s = shimOf(p);
@@ -219,7 +220,8 @@ function shimProblem(c: Ctx, tool: string, p: string): string | null {
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
   if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return s.manager === "mise" && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
+  const inactive = s.manager === "mise" && r.code === 1 && /is a mise bin however it is not currently active/.test(r.stderr);
+  if (r.code !== 0) return inactive && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
 }
 

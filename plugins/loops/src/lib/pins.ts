@@ -308,8 +308,11 @@ const refVer = (uses: string): [number, number] | null => {
 };
 /** What each action installs for a step that sets neither its version input nor its `-file`, as of the upstream release cited:
  * the value it reads, or null when it installs no pinned version (the step is then a FAIL). `wd` is the step's
- * `working-directory` input (null when it is not a literal). */
-const DEFAULTS: Record<keyof typeof ACTIONS, (root: string, tool: string, ref: [number, number] | null, wd: string | null) => Found | null> = {
+ * `working-directory` input and `mode` its `install-mode` (`binary` when unset); each is null when it is not a literal. */
+const DEFAULTS: Record<
+  keyof typeof ACTIONS,
+  (root: string, tool: string, ref: [number, number] | null, wd: string | null, mode: string | null) => Found | null
+> = {
   // actions/setup-go v7.0.0 src/main.ts: no version installs nothing, and GOTOOLCHAIN=local keeps go.mod's toolchain out.
   "setup-go": () => null,
   // actions/setup-node v7.1.0 src/main.ts resolveVersionInput: no default version file.
@@ -321,8 +324,10 @@ const DEFAULTS: Record<keyof typeof ACTIONS, (root: string, tool: string, ref: [
       ? null
       : plain(readFileSync(join(root, ".python-version"), "utf8"), tool, root, ".python-version"),
   // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: the module's version in
-  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest.
-  "golangci-action": (root, tool, ref, wd) => {
+  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest. Before v6.5.0, and
+  // in every install-mode but `binary` (goinstall installs latest, none installs nothing), go.mod is never read.
+  "golangci-action": (root, tool, ref, wd, mode) => {
+    if ((ref && (ref[0] < 6 || (ref[0] === 6 && ref[1] < 5))) || mode !== "binary") return null;
     const mod = wd === null ? null : normalize(join(wd, "go.mod"));
     // A go.mod outside the checkout is not one this repo pins: unknown, so the step FAILs.
     if (mod === null || isAbsolute(mod) || mod.startsWith(`..${sep}`) || !existsSync(join(root, mod))) return null;
@@ -373,6 +378,7 @@ function setup(kind: keyof typeof ACTIONS): Parser {
       const w = deref(step.get("with", true));
       const ins: [string, string, number][] = [];
       let wd: string | null = ".";
+      let mode: string | null = "binary";
       if (w !== undefined && !(isScalar(w) && w.value === null)) {
         if (!isMap(w)) throw new PinError(`with: of ${action} at ${line(w as Node)} is not a mapping`);
         for (const p of w.items) {
@@ -383,12 +389,16 @@ function setup(kind: keyof typeof ACTIONS): Parser {
             const v = deref(p.value);
             wd = isScalar(v) && typeof v.value === "string" && !v.value.includes("${{") ? v.value.trim() || "." : null;
           }
+          if (k === "install-mode") {
+            const v = deref(p.value);
+            mode = isScalar(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null; // an expression is no `binary`
+          }
         }
       }
       // A step with neither input gets the action's default, or is a FAIL: it is never skipped.
       if (!ins.length) {
         const u = deref(step.get("uses", true)) as Node & { value: string };
-        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd);
+        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd, mode);
         if (!found) throw new PinError(`${action.split("/")[1]} step without a version in ${file}:${lc.linePos(u.range![0]).line}`);
         return found;
       }

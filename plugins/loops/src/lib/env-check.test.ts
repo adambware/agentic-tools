@@ -785,6 +785,21 @@ describe("harness", () => {
       expect(go('["fakelint"]', bare(aShims, bin, sys)).out).toContain("fakelint (asdf which fakelint exited 126: No version is set for command fakelint)");
     });
 
+    // Value: protects=only the verified "not currently active" state falls back to a later copy; fails_when=any non-zero mise
+    // which (an untrusted config, a mise error) PASSes beside a later copy, though the shim fails the same way; why_new=the
+    // fallback row used only the inactive message; seam=shimProblem; no_claim=every mise error message
+    it("FAILs a mise shim whose mise which fails for another reason, even with a non-shim copy after it on PATH", () => {
+      const bin = tmp();
+      const shims = tmp();
+      const sys = tmp();
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      put(sys, "fakelint", "#!/bin/sh\n", true);
+      manager(bin, "mise", 'echo "mise ERROR Config files in /x/mise.toml are not trusted." >&2; exit 1');
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("fakelint (mise which fakelint exited 1: mise ERROR Config files in /x/mise.toml are not trusted.)");
+      manager(bin, "mise", 'echo "mise ERROR $2 is a mise bin however it is not currently active" >&2; exit 2');
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("FAIL d.tools");
+    });
+
     it("FAILs a manager that times out, prints no path, or cannot run", () => {
       const shims = tmp();
       const bin = tmp();

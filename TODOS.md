@@ -238,7 +238,7 @@
 
 - [ ] **loops 0.8.0 backlog: features the 0.7.1 pilots asked for** [P2 features]
   - **What:** Eight items cut from 0.7.1 as features: opt-in `a.range` (compare ranges, not only exact pins); optional pin sources (`.nvmrc` and `.tool-versions`, "if present"); a built-in npm `node_modules`-vs-lockfile check; detect a workflow that runs Go with no `setup-go`; a "skip when absent" level for local checks; a compose test mode with `${VAR:?}` interpolation; split the pin check's local severity by major versus minor/patch; run `[[local]]` checks in parallel.
-  - **Why:** Each was asked for by a pilot (rolodex, descry and two private repos) during the 0.7.1 review and cut as a feature, not a fix. Without this entry the list lives only in a session note.
+  - **Why:** Each was asked for by one of the four pilot repos during the 0.7.1 review and cut as a feature, not a fix. Without this entry the list lives only in a session note.
   - **Context:** 0.7.1 is fixes-only. Start from the 0.7.1 plan's out-of-scope list. Also open from the 0.7.1 review: a `[[local]]` child that leaves the check's group with `setsid` escapes both the timeout and the interrupt group kill (needs process-tree tracking); if the supervisor is SIGKILLed or its 10 s backstop fires, the local's group is orphaned because the engine does not know the check's pid; on an interrupt the supervisor sends SIGKILL at once instead of forwarding SIGINT with a grace period; CI still runs Node 20 with no `engines` field in `package.json`.
   - **Effort:** L
   - **Depends on / blocked by:** loops 0.7.1 merged.
