@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
 import { redactHome, run, run as procRun, type Runner, type RunResult } from "./proc.js";
 import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
-import { composeStub, deps, put, repo, sh, shim, tmp, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
+import { composeStub, deps, put, repo, running, sh, shim, tmp, until, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
 import { VERSION } from "./version.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -2505,13 +2505,11 @@ describe("local checks", () => {
 
   it("kills the check's whole process group at its timeout, so a child it started is not left running", () => {
     const mark = `loops-sleeper-${process.pid}-${n++}`;
-    const left = () => spawnSync("pgrep", ["-f", mark]).status === 0;
     try {
       // `; :` keeps the child shell (and the mark in its argv) alive beside its sleep.
       const t = run(`sh -c 'sleep 30; : ${mark}' &\nwait`, "timeout_s = 1\n");
       expect(t.out).toContain("WARN d.x  timed out after 1s (not a pass)");
-      for (let i = 0; i < 20 && left(); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-      expect(left()).toBe(false);
+      expect(until(() => running(mark) === false, 2_000)).toBe(true);
     } finally {
       spawnSync("pkill", ["-KILL", "-f", mark]);
     }

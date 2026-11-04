@@ -2,9 +2,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
 import { describe, expect, it } from "vitest";
-import { gitEnv, redactHome, shimOf } from "./proc.js";
-import { put, tmp } from "./testkit.js";
+import { gitEnv, redactHome, run, shimOf } from "./proc.js";
+import { put, running, tmp, until } from "./testkit.js";
 
 describe("shimOf", () => {
   it("reads an asdf shim's header and the asdf it execs, without running it", () => {
@@ -87,24 +88,20 @@ describe("redactHome", () => {
 });
 
 describe("run with group", () => {
-  const PROC = fileURLToPath(new URL("./proc.ts", import.meta.url));
   let n = 0;
-  const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  const alive = (mark: string) => spawnSync("pgrep", ["-f", mark]).status === 0;
-  /** Waits up to `ms` for `ok`, polling every 50ms. */
-  const until = (ok: () => boolean, ms: number) => {
-    for (let t = 0; t < ms && !ok(); t += 50) pause(50);
-    return ok();
-  };
+  // run() bundled to plain JS, so an engine runs on any node CI uses, with no TypeScript loader.
+  const proc = join(tmp(), "proc.mjs");
+  buildSync({ entryPoints: [fileURLToPath(new URL("./proc.ts", import.meta.url))], bundle: true, format: "esm", platform: "node", outfile: proc, logLevel: "silent" });
   /**
    * An engine: a node process blocked in run() on a grouped check that leaves a marked sleeper running beside it. With
-   * `own`, the engine leads its own process group, as a foreground job does under a terminal.
+   * `own`, the engine leads its own process group, as a foreground job does under a terminal. The script reaches it
+   * through env, so only the check's shells carry the mark in their command line: one seen running is the check itself.
    */
   const engine = (mark: string, own: boolean) => {
     // `; :` keeps the child shell (and the mark in its argv) alive beside its sleep.
     const script = `sh -c 'sleep 30; : ${mark}' &\nwait`;
-    const code = `import { run } from ${JSON.stringify(PROC)};\nrun("sh", ["-c", ${JSON.stringify(script)}], { group: true, timeoutMs: 60000 });`;
-    return spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", code], { stdio: "ignore", detached: own });
+    const code = `import { run } from ${JSON.stringify(proc)};\nrun("sh", ["-c", process.env.LOOPS_TEST_SCRIPT], { group: true, timeoutMs: 60000 });`;
+    return spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: "ignore", detached: own, env: { ...process.env, LOOPS_TEST_SCRIPT: script } });
   };
 
   // Value: protects=an interrupt reaching a grouped [[local]] (R20 runs it in its own session, which a terminal's Ctrl-C
@@ -119,9 +116,9 @@ describe("run with group", () => {
     const mark = `loops-interrupt-${process.pid}-${n++}`;
     const e = engine(mark, group);
     try {
-      expect(until(() => alive(mark), 10_000)).toBe(true);
+      expect(until(() => running(mark) === true, 10_000)).toBe(true);
       process.kill(group ? -e.pid! : e.pid!, sig);
-      expect(until(() => !alive(mark), 3_000)).toBe(true);
+      expect(until(() => running(mark) === false, 3_000)).toBe(true);
     } finally {
       try {
         process.kill(group ? -e.pid! : e.pid!, "SIGKILL");
@@ -131,4 +128,13 @@ describe("run with group", () => {
       spawnSync("pkill", ["-KILL", "-f", mark]);
     }
   }, 20_000);
+
+  // Value: protects=a chatty [[local]]'s result lines (the supervisor relays through pipes the engine drains while it
+  // writes); fails_when=a relay write gives up on a full pipe, so stdout is lost behind >64 KB of stderr (verified: red
+  // at the K-SIGINT supervisor, stdout came back empty with code 0); why_new=the K-SIGINT tests print nothing;
+  // seam=run() with group, a real supervisor; no_claim=output past MAX_BUFFER (ENOBUFS, as before)
+  it("relays all of a check's output, however much it writes to stderr before stdout", () => {
+    const r = run("/bin/sh", ["-c", "echo 'FAIL x.bad early'; head -c 300000 /dev/zero | tr '\\0' e >&2; echo 'PASS x.ok late'"], { group: true, timeoutMs: 20_000 });
+    expect({ code: r.code, abend: r.abend, stdout: r.stdout, stderr: r.stderr.length }).toEqual({ code: 0, abend: undefined, stdout: "FAIL x.bad early\nPASS x.ok late\n", stderr: 300_000 });
+  });
 });

@@ -47,7 +47,13 @@ const kill = () => { try { if (child && child.pid) process.kill(-child.pid, "SIG
 for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => { kill(); process.exit(128 + constants.signals[s]); });
 const orphan = () => process.ppid !== o.parent;
 setInterval(() => { if (orphan()) { kill(); process.exit(1); } }, 100).unref();
-const put = (fd, b) => { for (let at = 0; at < b.length; ) at += writeSync(fd, b, at, b.length - at); };
+// The pipes to the engine are non-blocking: a full one (64 KB) throws EAGAIN until the engine drains it, so wait a ms.
+const nap = new Int32Array(new SharedArrayBuffer(4));
+const put = (fd, b) => {
+  for (let at = 0; at < b.length; ) {
+    try { at += writeSync(fd, b, at, b.length - at); } catch (e) { if (e.code !== "EAGAIN") throw e; Atomics.wait(nap, 0, 0, 1); }
+  }
+};
 const bufs = [[], []], sizes = [0, 0];
 const finish = (code, signal) => {
   if (done) return;
@@ -121,7 +127,8 @@ function runGroup(cmd: string, args: string[], opts: RunOpts): RunResult {
   } catch {
     // no status: the supervisor itself did not finish
   }
-  if (!st) {
+  // A supervisor that died after its status line (a relay write failed) relayed only part of the output.
+  if (!st || r.status !== 0) {
     const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
     return { code: null, stdout: "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why };
   }
