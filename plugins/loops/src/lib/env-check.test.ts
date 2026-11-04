@@ -441,12 +441,29 @@ describe("c.shared", () => {
     const wt = worktree(root, "feat-h");
     const dump = join(tmp(), "hook-env");
     put(root, ".git/hooks/pre-commit", `#!/bin/sh\n{ pwd; env | grep '^GIT_'; } > '${dump}'\n`, true);
-    sh(wt, "commit", "-q", "--allow-empty", "-m", "hooked");
+    // An explicit hooks path: a developer's global core.hooksPath would skip this one.
+    sh(wt, "-c", `core.hooksPath=${join(root, ".git", "hooks")}`, "commit", "-q", "--allow-empty", "-m", "hooked");
     const [cwd, ...vars] = readFileSync(dump, "utf8").trim().split("\n");
     const env = Object.fromEntries(vars.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
     expect(env.GIT_DIR).toBeTruthy(); // git did set one
     expect(check(cwd!, [], env).lines).toContain(PASS);
     expect(check(root, [], { GIT_DIR: ".git" }).lines[0]).toMatch(/^FAIL c\.shared {2}this is the shared checkout/); // the main checkout's own, relative
+  });
+
+  // Value: protects=R3's "FAIL only when it points elsewhere" for a GIT_DIR naming this checkout's own .git gitfile or
+  // a relative one from a subdirectory; fails_when=the compare skips git's gitfile hop (verified: red at T5, a worktree's
+  // GIT_DIR=$PWD/.git FAILed) or resolves against the root, not cwd; why_new=the hook row sets the resolved git-dir
+  // only, from the root; seam=real worktree and main checkout; no_claim=GIT_DIR naming a bare repo
+  it("follows a GIT_DIR that names a .git gitfile, and resolves a relative one from cwd, as git does", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-f");
+    expect(readFileSync(join(wt, ".git"), "utf8")).toMatch(/^gitdir: /); // a gitfile, not a directory
+    for (const gd of [join(wt, ".git"), ".git"]) expect(check(wt, [], { GIT_DIR: gd }).lines).toContain(PASS);
+    expect(check(join(wt, ".loops"), [], { GIT_DIR: "../.git" }).lines).toContain(PASS);
+    const sub = join(root, ".loops");
+    expect(check(sub, [], { GIT_DIR: "../.git" }).lines[0]).toMatch(/^FAIL c\.shared {2}this is the shared checkout/);
+    expect(check(sub, [], { GIT_DIR: ".git" }).lines[0]).toBe(`FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${join(sub, ".git")} — fix: unset GIT_DIR GIT_WORK_TREE`);
+    expect(check(join(wt, ".loops"), [], { GIT_DIR: join(root, ".git") }).lines[0]).toBe(`FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${join(root, ".git")} — fix: unset GIT_DIR GIT_WORK_TREE`);
   });
 
   it.each(["--git-dir", "--git-common-dir"])("fails when git rev-parse %s fails, instead of guessing a worktree", (flag) => {
@@ -1186,6 +1203,22 @@ describe("compose", () => {
     const r = check(root, ["--compose-project"], {}, composeStub({ [root]: "app-node" }, calls));
     expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: this checkout would use project app-node, which worktree ${wt} uses — fix: export another COMPOSE_PROJECT_NAME, set derive = "slug-hash" in ${CFG}, or rename worktree ${wt}`)]);
     expect(calls.every((c) => rp(c.cwd) === root)).toBe(true);
+  });
+
+  // Value: protects=Check 0c's guard when git's metadata cannot be read; fails_when=composeProject takes a worktree
+  // whose rev-parse failed for the main checkout and hands out the main checkout's name (verified: red at T5, exit 0 and
+  // app-prod); why_new=the rev-parse failure tests covered c.shared and ENV_CHECK_WORKTREE only; seam=a stubbed failing
+  // rev-parse --git-common-dir in a real worktree; no_claim=what Compose itself would name the run
+  it.each(["--git-dir", "--git-common-dir"])("withholds the name when git rev-parse %s fails, instead of taking a worktree for the main checkout", (flag) => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-rp");
+    const stub = composeStub({ [root]: "app-prod", [wt]: "app-prod" });
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "rev-parse" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : stub(cmd, args, opts));
+    const fail = "could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why";
+    expect(check(wt, ["--compose-project"], {}, nul)).toMatchObject({ code: 1, out: "", err: `env-check: ${fail}` });
+    expect(check(wt, [], {}, nul)).toMatchObject({ code: 1, lines: expect.arrayContaining([`FAIL e.project  ${fail}`]) });
+    expect(check(wt, [], {}, nul).out).not.toContain("PASS e.project");
   });
 
   it("probes the main checkout's plain run even when it lacks this branch's configured files", () => {

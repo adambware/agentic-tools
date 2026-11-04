@@ -435,7 +435,8 @@ hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
                                         # a cp -R copy FAILs "copied?", a moved one FAILs "moved"
                                         # (fix: git worktree repair); an inherited GIT_DIR or
                                         # GIT_WORK_TREE naming another checkout FAILs (a hook's own
-                                        # is silent); unreadable git metadata FAILs, also under
+                                        # is silent; a relative one is read from cwd, and a GIT_DIR
+                                        # naming a .git gitfile names where it points); unreadable git metadata FAILs, also under
                                         # --static. ALLOW_MAIN downgrades none of these
 
 [[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
@@ -572,10 +573,11 @@ OCI) `include:` or `extends.file:` is never fetched; such a file is a failed run
 worktree, the main checkout holds its answers and every other worktree holds its derived name and its answers (a
 deleted one, its derived name); seen from the main checkout, worktrees hold their derived names. e.project runs
 every check and reports every FAIL, the ones that withhold the name first, except that a missing configured file, an
-invalid shell `COMPOSE_PROJECT_NAME`, a bad `git worktree list` and a failed `docker compose version` end evaluation
+invalid shell `COMPOSE_PROJECT_NAME`, unreadable git metadata, a bad `git worktree list` and a failed `docker compose version` end evaluation
 and are reported alone:
 - a configured file missing here, a shell `COMPOSE_PROJECT_NAME` Compose rejects (it takes lowercase letters,
   digits, `-` and `_`, a letter or digit first; checked before asking Compose, even when Compose is unavailable), a
+  failed `git rev-parse --git-dir --git-common-dir` (a worktree is then not known to be one), a
   `git worktree list` that fails or, from a worktree, does not list the main checkout first (fix: rerun
   `git worktree list --porcelain`), the name held by another checkout, or (main) equal to a worktree's derived
   name: FAIL, and the name is withheld;

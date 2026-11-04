@@ -55,6 +55,15 @@ const rp = (p: string): string => {
     return p;
   }
 };
+/** The git-dir a GIT_DIR of `p` names, as git reads it: a `gitdir: <path>` file (a worktree's .git) points elsewhere. */
+const gitDirAt = (p: string): string => {
+  try {
+    const m = statSync(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync(p, "utf8")) : null;
+    return m ? resolve(dirname(p), m[1]!.trim()) : p;
+  } catch {
+    return p;
+  }
+};
 
 const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
 /** Why an executable file failed to spawn with ENOENT: the interpreter its `#!` line names is not there. */
@@ -159,7 +168,7 @@ export function sharedCheck(c: Ctx): Result[] {
   // The user's own git obeys an inherited GIT_DIR / GIT_WORK_TREE that env-check's git drops; the one git sets in a
   // hook names this checkout, so it is silent.
   for (const [k, want, what] of [["GIT_DIR", c.gitDir!, "git metadata"], ["GIT_WORK_TREE", c.root, "files"]] as const) {
-    const at = c.env[k] ? rp(resolve(c.cwd, c.env[k])) : null;
+    const at = c.env[k] ? rp(k === "GIT_DIR" ? gitDirAt(resolve(c.cwd, c.env[k])) : resolve(c.cwd, c.env[k])) : null;
     if (at && at !== rp(want)) return [res("FAIL", "c.shared", `${k} points at another checkout's ${what}; git commands here act on ${at}`, "unset GIT_DIR GIT_WORK_TREE")];
   }
   if (c.isWorktree) {
@@ -484,6 +493,8 @@ export function composeProject(c: Ctx): ComposeProject {
   const envName = c.env.COMPOSE_PROJECT_NAME || undefined;
   // Check 0b: Compose rejects the shell's name outright, so every run here fails and no name holds.
   if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
+  // Without git's metadata a worktree is not known to be one, so check 0c below would take it for the main checkout.
+  if (c.gitDir === null) return one("FAIL", "could not read git metadata", "rerun git rev-parse --git-dir --git-common-dir to see why");
   // Check 0c: git lists the main checkout first and every linked worktree after it (a successful list has at least one
   // entry). Without that, derive and the held names would take this worktree for the main checkout.
   if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]!) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
