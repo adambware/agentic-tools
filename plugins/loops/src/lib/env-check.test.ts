@@ -2386,16 +2386,16 @@ describe("output and exit codes", () => {
     expect((JSON.parse(check(root, ["--json"]).out) as { results: { also: string[] }[] }).results[0]!.also).toEqual(["d.a.y--fix:"]);
   });
 
-  // Escape once, at the edges: the text renderer (showRow) and the JSON pass. A check that escapes its own text makes
-  // --json carry it escaped while other rows are raw.
-  it("no module but text.ts and the env-check renderer uses escapeCtl", () => {
+  // Escape once, at the edges: the text renderer (showRow), the JSON pass and the CLI's exit-2 line. A check that
+  // escapes its own text makes --json carry it escaped while other rows are raw.
+  it("no module but text.ts, the env-check renderer and the CLI error printer uses escapeCtl", () => {
     const src = join(HERE, "..");
     const users = ["lib", "bin"].flatMap((d) =>
       readdirSync(join(src, d))
         .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && /\bescapeCtl\b/.test(readFileSync(join(src, d, f), "utf8")))
         .map((f) => `${d}/${f}`),
     );
-    expect(users.sort()).toEqual(["lib/env-check.ts", "lib/text.ts"]);
+    expect(users.sort()).toEqual(["lib/env-check.ts", "lib/loops-cli.ts", "lib/text.ts"]);
   });
 
   it("--json carries results, summary and exit; INFO is not counted", () => {
@@ -2491,6 +2491,23 @@ describe("output and exit codes", () => {
     put(root, ".git/index", "garbage, not an index");
     const r = check(root);
     expect([r.code, r.err]).toEqual([2, expect.stringMatching(/git ls-files failed: \S/)]);
+  });
+
+  it("redacts and escapes an exit-2 message relayed from git", () => {
+    const root = setup(HEAD);
+    const r = check(root, [], { HOME: "/home/bob" }, (cmd, args, opts) =>
+      cmd === "git" && args.join(" ") === "ls-files -z" ? { code: 128, stdout: "", stderr: "fatal: \u001b[2Jbad index /home/bob/r/.git/index\nmore", timedOut: false } : run(cmd, args, opts),
+    );
+    expect([r.code, r.err]).toEqual([2, "env-check: git ls-files failed: fatal: \\u001b[2Jbad index ~/r/.git/index"]);
+  });
+
+  it("redacts and escapes the whole exit-2 line, the command prefix too; the usage after it stays as is", () => {
+    const t = deps(tmp(), { HOME: "/home/bob" });
+    expect([main(["\u001b[2J\nboom"], t.d), main(["/home/bob/x\u202e"], t.d)]).toEqual([2, 2]);
+    const lines = t.err.join("\n").split("\n");
+    expect(lines.filter((l) => l.includes("unknown command"))).toEqual(["\\u001b[2J\\nboom: unknown command \\u001b[2J\\nboom", "~/x\\u202e: unknown command ~/x\\u202e"]);
+    expect(lines[1]).toMatch(/^loops [0-9.]+$/);
+    expect(lines[2]).toMatch(/^usage: loops <command>/);
   });
 
   it("--compose-project exits 2 when compose mode is not test", () => {

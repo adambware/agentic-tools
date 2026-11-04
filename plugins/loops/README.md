@@ -419,6 +419,7 @@ bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, s
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
 repo, a `[[local]]` id `x.none` (reserved), `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
+The exit-2 error line of every `loops` command is redacted and escaped like a text row, the command name included.
 
 ```toml
 schema_version = 1

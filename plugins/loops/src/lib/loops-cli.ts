@@ -1,7 +1,9 @@
 // `loops` dispatcher: `zone`, `env-check`, `--version`.
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { envCheckMain } from "./env-check.js";
-import { run, UsageError, type Deps } from "./proc.js";
+import { redactHome, run, UsageError, type Deps } from "./proc.js";
+import { escapeCtl } from "./text.js";
 import { VERSION } from "./version.js";
 import { zoneMain } from "./zone-cli.js";
 
@@ -25,16 +27,23 @@ export function realDeps(): Deps {
 /** Exit codes: 0 ok, 1 an env-check FAIL, 2 usage or config error. */
 export function main(argv: string[], d: Deps = realDeps()): number {
   const [cmd, ...rest] = argv;
+  // Printed as is after the error line: our own text, kept on its own lines.
+  let usage: string | undefined;
   try {
     if (cmd === "--version" || cmd === "-V") d.out(`loops ${VERSION}`);
     else if (cmd === "-h" || cmd === "--help") d.out(USAGE);
     else if (cmd === "zone") return zoneMain(rest, d);
     else if (cmd === "env-check") return envCheckMain(rest, d);
-    else throw new UsageError(cmd ? `unknown command ${cmd}\n${USAGE}` : USAGE);
+    else {
+      usage = cmd ? USAGE : USAGE.slice(USAGE.indexOf("\n") + 1);
+      throw new UsageError(cmd ? `unknown command ${cmd}` : `loops ${VERSION}`);
+    }
     return 0;
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
-    d.err(`${cmd ?? "loops"}: ${e.message}`);
+    // The whole line is redacted, then escaped: cmd is the caller's argv, and messages relay paths and git's stderr.
+    d.err(escapeCtl(redactHome(`${cmd ?? "loops"}: ${e.message}`, d.env.HOME || homedir())));
+    if (usage) d.err(usage);
     return 2;
   }
 }
