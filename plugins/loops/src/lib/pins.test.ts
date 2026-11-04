@@ -775,12 +775,12 @@ describe("reusable-workflow calls (jobs.<id>.uses) are noted, never read", () =>
     expect(e.fix).toBeUndefined();
   });
 
-  it("reads a job-level uses written as an alias, escapes control characters, and ignores a non-string uses", () => {
+  it("reads a job-level uses written as an alias, keeps control characters raw for the renderer, and ignores a non-string uses", () => {
     const root = tmp();
     put(root, CI, `x: &ref "org/r/.github/workflows/a.yml@v1\\e[2J"\njobs:\n  ci:\n    uses: *ref\n  odd:\n    uses: [a, b]\n`);
     put(root, REL, WF(SETUP_GO("go-version: 1.26.1")));
     const notes: string[] = [];
     readSource(root, [CI, REL], "go", "setup-go", notes);
-    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow org/r/.github/workflows/a.yml@v1\\u001b[2J (line 4), whose with: inputs are not read`]);
+    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow org/r/.github/workflows/a.yml@v1\u001b[2J (line 4), whose with: inputs are not read`]);
   });
 });

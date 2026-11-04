@@ -407,6 +407,10 @@ or of the main checkout's configured run), or when it is unknown (the main check
 shell `COMPOSE_PROJECT_NAME`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
 and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
+Text output escapes every row (and each `--compose-project` stderr line) once: control characters, bidi controls and
+the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
+`\u002d- fix:`, so a row has one fix. `--json` values are the raw text (redacted, not escaped), with DEL, C1, U+2028/2029,
+bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, so `JSON.parse` returns them exactly.
 
 `--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
 `b.containers`, `d.tools`, `d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
@@ -654,13 +658,13 @@ result on stdout:
 ```
 
 `<id>` must be the configured id or `<id>.<name>`. The fix starts at the first ` — fix: ` (` -- fix: ` also works);
-later ones belong to the fix. An empty fix counts as none, so a WARN or FAIL gets the default `address the message
+later ones belong to the fix (escaped in text output). An empty fix counts as none, so a WARN or FAIL gets the default `address the message
 above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
 `ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
 (the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
 separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
-`"`, control characters and the dash of a `— fix:` escaped (`\r`, `\u001b`, `\u2014`), so the output line still has one fix; no lines is a FAIL; a nonzero
+`"`, control characters, the dash of a `— fix:` and the first dash of a `-- fix:` escaped (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix; no lines is a FAIL; a nonzero
 exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
 a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).

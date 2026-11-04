@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -269,6 +269,16 @@ describe("pins and local toolchains", () => {
     for (const x of [r, only]) expect(x.out).not.toContain("\u001b");
   });
 
+  it("relays a reusable-workflow note escaped in text and raw in --json", () => {
+    const wf = REUSE.replace("  ci:\n    uses: someorg/.github/.github/workflows/go-ci.yml@abc123", '  "c\\u202ei":\n    uses: "someorg/.github/.github/workflows/go\\e-ci.yml@abc123"');
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", ".github/workflows/ci.yml": wf, ".github/workflows/release.yml": REL });
+    const note = NOTE.replace("job ci", "job c\u202ei").replace("go-ci.yml", "go\u001b-ci.yml");
+    expect(check(root).lines[1]).toBe(`INFO a.pins.go  ${note.replace("\u202e", "\\u202e").replace("\u001b", "\\u001b")}`);
+    const raw = check(root, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u202e]/);
+    expect((JSON.parse(raw) as { results: { message: string }[] }).results[1]!.message).toBe(note);
+  });
+
   it("a reusable-only workflow as the only match stays a FAIL, with a fix that says reusable inputs are not read", () => {
     const r = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { ".github/workflows/ci.yml": REUSE }));
     expect(r.code).toBe(1);
@@ -384,6 +394,25 @@ describe("harness", () => {
       expect(go('["fakelint"]', bare(gone)).out).toContain("fakelint (asdf not found at /nonexistent-dir/bin/asdf)");
     });
 
+    it("relays a shim diagnostic and a shim's manager path escaped in text and raw in --json", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "printf 'No version\\033[2K\\302\\233 set\\n' >&2; exit 126");
+      const root = setup(`${HEAD}[harness]\ntools = ["fakelint"]\n`);
+      commit(root);
+      expect(check(root, [], bare(shims, bin)).out).toContain("(asdf which fakelint exited 126: No version\\u001b[2K\\u009b set)");
+      const raw = check(root, ["--json"], bare(shims, bin)).out;
+      expect(raw).not.toMatch(/[\u001b\u009b]/);
+      const tools = (JSON.parse(raw) as { results: { id: string; message: string }[] }).results.find((x) => x.id === "d.tools");
+      expect(tools?.message).toContain("(asdf which fakelint exited 126: No version\u001b[2K\u009b set)");
+      const gone = tmp();
+      asdfShim(gone, "fakelint", "/nonexistent-dir/\u001b[2Kbin/asdf");
+      const g = check(root, [], bare(gone));
+      expect(g.out).toContain("fakelint (asdf not found at /nonexistent-dir/\\u001b[2Kbin/asdf)");
+      expect(g.out).not.toContain("\u001b");
+    });
+
     it("asks mise about a symlink to the mise binary, and does not treat mise itself as a shim", () => {
       const bin = tmp();
       const shims = tmp();
@@ -493,6 +522,20 @@ describe("harness", () => {
     // A tracked workflow deleted from the worktree is d.tracked's finding, not a crash.
     const gone = run('entrypoints = "auto"\ntracked = true', files, (root) => rmSync(join(root, ".github/workflows/ci.yml")));
     expect([gone.code, gone.out]).toEqual([1, expect.stringContaining("FAIL d.tracked  deleted: .github/workflows/ci.yml")]);
+  });
+
+  it("d.tracked escapes a tracked name in text and keeps it raw in --json, JSON-escaped", () => {
+    const name = "a\u001b[2Kb\u009bc\u202e.txt";
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { [name]: "x\n" });
+    commit(root);
+    rmSync(join(root, name));
+    const r = check(root);
+    expect(r.out).toContain("FAIL d.tracked  deleted: a\\u001b[2Kb\\u009bc\\u202e.txt — fix: ");
+    expect(r.out).not.toMatch(/[\u001b\u009b\u202e]/);
+    const raw = check(root, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u009b\u202e]/);
+    const rows = (JSON.parse(raw) as { results: { id: string; message: string }[] }).results;
+    expect(rows.find((x) => x.id === "d.tracked")?.message).toBe(`deleted: ${name}`);
   });
 
   it("d.tracked catches a deleted tracked file and a lost exec bit", () => {
@@ -751,7 +794,7 @@ describe("compose", () => {
     const w = checkC(wt, { [wt]: old, [root]: "app-prod" }, [], { COMPOSE_PROJECT_NAME: "mine" });
     expect([w.code, w.out]).toEqual([1, expect.stringContaining(`FAIL e.project  ${why("this worktree's")} — fix: ${fix}`)]);
     const wp = checkC(wt, { [wt]: old, [root]: "app-prod" }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "mine" });
-    expect([wp.code, wp.out, wp.err]).toEqual([0, "mine", expect.stringContaining(`env-check: warning: ${why("this worktree's")}; fix: ${fix}`)]);
+    expect([wp.code, wp.out, wp.err]).toEqual([0, "mine", expect.stringContaining(`env-check: warning: ${why("this worktree's")} — fix: ${fix}`)]);
   });
 
   it("holds a peer worktree's derived name and every answer, probing a peer without the configured files plainly, and a gone peer's derived name", () => {
@@ -883,7 +926,7 @@ describe("compose", () => {
     const at = (dir: string, cfg: ComposeAnswer): ComposeAnswers => ({ [dir]: { cfg, plain: NO_FILE }, [join(dir, "docker")]: NO_FILE });
     const r = checkC(ws, { ...at(sub, "app-node"), ...at(ws, "docker") }, ["--compose-project"]);
     const n = "app-node-feat-s-[0-9a-f]{6}";
-    expect([r.code, r.out, r.err]).toEqual([0, expect.stringMatching(new RegExp(`^${n}$`)), expect.stringMatching(new RegExp(`env-check: warning: configured run would use project docker, not ${n}; fix: add COMPOSE_PROJECT_NAME=${n} to ${ws}/docker/\\.env, or export it, or always pass -p ${n}`))]);
+    expect([r.code, r.out, r.err]).toEqual([0, expect.stringMatching(new RegExp(`^${n}$`)), expect.stringMatching(new RegExp(`env-check: warning: configured run would use project docker, not ${n} — fix: add COMPOSE_PROJECT_NAME=${n} to ${ws}/docker/\\.env, or export it, or always pass -p ${n}`))]);
     // From the root, the worktree's own directory name (Compose's default) is an own name.
     const root2 = setup(test('derive = "slug-hash"\n'), { "compose.yml": "services: {}\n" });
     commit(root2);
@@ -1026,7 +1069,7 @@ describe("compose", () => {
     // A .env naming the main checkout's project: -p feat-a stays safe, but a run without -p lands on prod.
     put(wt, ".env", `COMPOSE_PROJECT_NAME=${prod}\n`);
     const env = checkC(wt, { [root]: prod, [wt]: prod }, ["--compose-project"]);
-    expect([env.code, env.out, env.err]).toEqual([0, "feat-a", expect.stringContaining(`env-check: warning: configured run would use project ${prod}, which the main checkout uses; fix: add COMPOSE_PROJECT_NAME=feat-a to ${wt}/.env`)]);
+    expect([env.code, env.out, env.err]).toEqual([0, "feat-a", expect.stringContaining(`env-check: warning: configured run would use project ${prod}, which the main checkout uses — fix: add COMPOSE_PROJECT_NAME=feat-a to ${wt}/.env`)]);
     rmSync(join(wt, ".env"));
     // Its own name: is not the main checkout's, but docker compose there without -p still runs as feat-stack, not feat-a.
     const own = checkC(wt, { [root]: prod, [wt]: "feat-stack" });
@@ -1196,7 +1239,7 @@ describe("compose", () => {
     put(root, ".env", "STACK_NAME=live\n");
     // The worktree has no .env, so Compose cannot name its run: a FAIL, but -p feat-r is still safe, so the name is kept.
     const own = checkC(wt, { [wt]: EMPTY, [root]: "live" }, ["--compose-project"]);
-    expect([own.code, own.out, own.err]).toEqual([0, "feat-r", expect.stringContaining(`env-check: warning: this worktree's configured run: docker compose config exited 1; fix: ${RERUN(wt)}`)]);
+    expect([own.code, own.out, own.err]).toEqual([0, "feat-r", expect.stringContaining(`env-check: warning: this worktree's configured run: docker compose config exited 1 — fix: ${RERUN(wt)}`)]);
     // With its own COMPOSE_PROJECT_NAME that name: is irrelevant, and the prod name is main's resolved one.
     put(wt, ".env", "COMPOSE_PROJECT_NAME=feat-r\n");
     expect(checkC(wt, { [wt]: "feat-r", [root]: "live" }).out).toContain("PASS e.project  feat-r (derived: dirname)");
@@ -1409,7 +1452,7 @@ describe("compose", () => {
     // -p s3-wt is safe there, so --compose-project still hands it over, warning on stderr.
     const p = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" }, ["--compose-project"]);
     expect([p.code, p.out]).toEqual([0, "s3-wt"]);
-    expect(p.err).toContain(`env-check: warning: configured run would use project app-prod, which the main checkout uses; fix: add COMPOSE_PROJECT_NAME=s3-wt to ${wt}/.env`);
+    expect(p.err).toContain(`env-check: warning: configured run would use project app-prod, which the main checkout uses — fix: add COMPOSE_PROJECT_NAME=s3-wt to ${wt}/.env`);
     // A real reuse of the prod name yields no name, and stderr carries the fix.
     const reuse = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "app-prod" });
     expect([reuse.code, reuse.out, reuse.err]).toEqual([1, "", expect.stringContaining("env-check: this worktree would use project app-prod, which the main checkout uses — fix: export another COMPOSE_PROJECT_NAME")]);
@@ -1723,6 +1766,18 @@ describe("e.project running stacks", () => {
     expect(stacks(root, answers, listing(at(join(wt, "sub"), "app-node"))).text).toContain(`FAIL e.project  project app-node was started from project directory ${wt}/sub (worktree ${wt})`);
     expect(stacks(wt, answers, listing(at(join(wt, "sub"), "w1"))).text).toBe("PASS e.project  w1 (derived: dirname)");
     expect(stacks(wt, answers, listing(at(root, "w1"))).text).toContain(`FAIL e.project  project w1 was started from project directory ${root} (the main checkout)`);
+  });
+
+  it("escapes a working_dir label in text rows and the --compose-project stderr line, which uses the text fix separator", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const away = join(tmp(), "x\u001b[2Ky");
+    const r = stacks(root, { [root]: "app-node" }, listing(at(away, "app-node")));
+    expect(r).toMatchObject({ exit: 1, name: "" });
+    for (const t of [r.text, r.err]) {
+      expect(t).toMatch(/x\\u001b\[2Ky \(outside every checkout\) — fix: export another COMPOSE_PROJECT_NAME/);
+      expect(t).not.toContain("\u001b");
+    }
   });
 
   it("withholds the name for a stack of the name, keeps it for a stack of another answer, and reports check 5 first", () => {
@@ -2233,28 +2288,31 @@ describe("local checks", () => {
     expect(check(root).lines.slice(0, 4).map((l) => l.split(" ")[1])).toEqual(["a.c", "d.b", "d.a", "x.z"]);
   });
 
-  it("splits a line at its first fix separator, accepts -- as one, and reads an empty fix as none", () => {
+  it("splits a line at its first fix separator, accepts -- as one, defuses later ones, and reads an empty fix as none", () => {
     const r = run([
       'echo "WARN d.x.dbl first — fix: a — fix: b"',
       'echo "WARN d.x.dd msg -- fix: ascii dashes"',
+      'echo "WARN d.x.add m -- fix: a -- fix: b; git checkout -- x"',
       'echo "PASS d.x.pe ok — fix: "',
       'echo "WARN d.x.we empty — fix:"',
       'printf "FAIL d.x.fe bad — fix:   \\n"',
     ].join("\n"));
     expect(r.lines).toEqual([
-      "WARN d.x.dbl  first — fix: a — fix: b",
+      "WARN d.x.dbl  first — fix: a \\u2014 fix: b",
       "WARN d.x.dd  msg — fix: ascii dashes",
+      "WARN d.x.add  m — fix: a \\u002d- fix: b; git checkout -- x",
       "PASS d.x.pe  ok",
       "WARN d.x.we  empty — fix: address the message above and re-run",
       "FAIL d.x.fe  bad — fix: address the message above and re-run",
-      "env-check: 1 FAIL, 3 WARN, 1 PASS, 0 SKIP",
+      "env-check: 1 FAIL, 4 WARN, 1 PASS, 0 SKIP",
     ]);
+    for (const l of r.lines) expect(l.split(/ (?:—|--) fix: /).length).toBeLessThanOrEqual(2);
   });
 
   it("accepts CRLF line endings but rejects a line with any other control character, echoed escaped in quotes", () => {
     const crlf = run('printf "PASS d.x fine\\r\\nWARN d.x.w tab\\there — fix: f\\r\\n"');
-    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
-    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+    const fix = "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>";
     const cr = run('printf "WARN d.x.cr mid\\rcr here — fix: f\\n"');
     expect(cr.code).toBe(1);
     expect(cr.lines[0]).toBe(`FAIL d.x.protocol  unparseable line "WARN d.x.cr mid\\rcr here \\u2014 fix: f" — fix: ${fix}`);
@@ -2268,7 +2326,7 @@ describe("local checks", () => {
   });
 
   it("rejects a line that ends in, or is only, a control character other than CRLF's \\r, and a bidi control", () => {
-    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const fix = "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>";
     const r = run('printf "PASS d.x ok\\v\\nPASS d.x fine\\n\\f\\nPASS d.x.r ok \\342\\200\\250\\nPASS d.x.b ok \\342\\200\\256lmth.exe\\n \\r\\n"');
     expect(r.lines).toEqual([
       `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u000b" — fix: ${fix}`,
@@ -2293,6 +2351,14 @@ describe("local checks", () => {
     expect(err.out).not.toContain("\u001b");
   });
 
+  it("relays a stderr reason escaped in text and raw in --json", () => {
+    const script = "printf 'boom\\033[2K\\342\\200\\256x\\n' >&2\nexit 3";
+    expect(run(script).lines[0]).toBe("FAIL d.x  printed no results, exit 3 (boom\\u001b[2K\\u202ex) — fix: run .loops/checks/d_x.sh by hand");
+    const raw = run(script, "", {}, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u202e]/);
+    expect((JSON.parse(raw) as { results: { message: string }[] }).results[0]!.message).toBe("printed no results, exit 3 (boom\u001b[2K\u202ex)");
+  });
+
   it("redacts $HOME before cutting a rejected line or the stderr excerpt, so a cut through home leaks no part of it", () => {
     const env = { HOME: "/home/someuser" };
     // "WARN d.x.c " + 63 zeros + " " puts home at code point 75, across the 80-code-point cut.
@@ -2311,6 +2377,25 @@ describe("output and exit codes", () => {
     const root = setup(HEAD);
     put(root, CFG, HEAD + local(root, "d.a", 'echo "PASS d.a fine"\necho "WARN d.a.w hmm — fix: x"\necho "INFO d.a.i note"'));
     expect(check(root, ["--quiet"]).lines).toEqual(["WARN d.a.w  hmm — fix: x", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+  });
+
+  it("escapes folded also ids like the rest of the row", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", 'echo "WARN d.a.x same"\necho "WARN d.a.y--fix: same"'));
+    expect(check(root).lines[0]).toBe("WARN d.a.x  same — fix: address the message above and re-run (also: d.a.y\\u002d-fix:)");
+    expect((JSON.parse(check(root, ["--json"]).out) as { results: { also: string[] }[] }).results[0]!.also).toEqual(["d.a.y--fix:"]);
+  });
+
+  // Escape once, at the edges: the text renderer (showRow) and the JSON pass. A check that escapes its own text makes
+  // --json carry it escaped while other rows are raw.
+  it("no module but text.ts and the env-check renderer uses escapeCtl", () => {
+    const src = join(HERE, "..");
+    const users = ["lib", "bin"].flatMap((d) =>
+      readdirSync(join(src, d))
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && /\bescapeCtl\b/.test(readFileSync(join(src, d, f), "utf8")))
+        .map((f) => `${d}/${f}`),
+    );
+    expect(users.sort()).toEqual(["lib/env-check.ts", "lib/text.ts"]);
   });
 
   it("--json carries results, summary and exit; INFO is not counted", () => {

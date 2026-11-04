@@ -7,7 +7,7 @@ import { basename, join, normalize } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
-import { escapeCtl, short } from "./text.js";
+import { short } from "./text.js";
 
 /** `fix`, when set, replaces the caller's generic fix for a source that cannot be read. */
 export class PinError extends Error {
@@ -372,7 +372,7 @@ function setup(kind: keyof typeof ACTIONS): Parser {
         const ref = job.get("uses", true) as Node | undefined;
         const v = deref(ref);
         if (ref && isScalar(v) && typeof v.value === "string")
-          calls?.push(`job ${escapeCtl(keyOf(p.key) ?? "?")} calls reusable workflow ${escapeCtl(v.value.trim())} (${line(ref)})`);
+          calls?.push(`job ${keyOf(p.key) ?? "?"} calls reusable workflow ${v.value.trim()} (${line(ref)})`);
       }
       const runs = deref(top.get("runs", true));
       if (isMap(runs)) lists.push(runs.get("steps", true));

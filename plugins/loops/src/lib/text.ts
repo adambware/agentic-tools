@@ -21,13 +21,15 @@ export function cut(s: string, n: number): string {
  * need them.
  */
 export const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
-// What escapeCtl rewrites: every CONTROL character, tab too, and the dash of a "— fix:", the output's fix separator.
-const ESCAPED = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)/g;
+// What escapeCtl rewrites: every CONTROL character, tab too, the dash of a "— fix:", the output's fix separator, and
+// the first dash of a "-- fix:", its ASCII form (other double dashes, as in `git checkout -- x`, stay).
+const ESCAPED = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)|-(?=-\s*fix:)/g;
 const NAMED: Record<string, string> = { "\t": "\\t", "\n": "\\n", "\r": "\\r" };
 
 /**
- * `s` with control characters and the dash of any `— fix:` written as escapes (`\r`, `\u001b`, `\u2014`), so relayed
- * text can neither move the cursor nor read as a second fix on its output line.
+ * `s` with control characters and the dash of any `— fix:` or first dash of any `-- fix:` written as escapes (`\r`,
+ * `\u001b`, `\u2014`, `\u002d`), so relayed text can neither move the cursor nor read as a second fix on its output line.
+ * Idempotent: its output has nothing left to rewrite.
  */
 export function escapeCtl(s: string): string {
   return s.replace(ESCAPED, (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
@@ -36,4 +38,15 @@ export function escapeCtl(s: string): string {
 /** `s` cut to `n` code points as a double-quoted string, with `\`, `"` and what escapeCtl rewrites escaped. */
 export function quote(s: string, n = 80): string {
   return `"${escapeCtl(cut(s, n).replace(/[\\"]/g, "\\$&"))}"`;
+}
+
+// What JSON.stringify leaves raw that a terminal acts on: DEL, C1, line and paragraph separators, bidi, zero-width.
+const JSON_RAW = /[\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+
+/**
+ * `v` as JSON with those characters also written as `\uXXXX` (JSON.stringify already escapes C0), so the text is safe to
+ * print and JSON.parse returns the values exactly. They occur only inside strings, where `\uXXXX` is valid.
+ */
+export function jsonText(v: unknown): string {
+  return JSON.stringify(v).replace(JSON_RAW, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
