@@ -173,11 +173,13 @@ const pipfile: Parser = (text, tool, _root, file) => {
 const imageTag = (t: string): string => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
 /** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. Before a `$`
  * the version must be complete, ended by a variant separator (`18-${DISTRO}`, `20-alpine${X}`): a `$` that may continue
- * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`) leaves it unknown. */
+ * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`), or its prerelease (`20-dev-${N}`, `22-rc-${N}`, which read as
+ * `20-dev-1` and `22-rc-1` with a digit there), leaves it unknown. */
 const tagVer = (t: string): string | null => {
-  const lit = imageTag(t.split("$")[0]!);
+  const raw = t.split("$")[0]!;
+  const lit = imageTag(raw);
   const v = /^v?\d/i.test(lit) ? ver(lit) : null;
-  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+  return v !== null && (!t.includes("$") || (/^[-_]/.test(lit.slice(lit.indexOf(v) + v.length)) && ver(imageTag(`${raw}1`)) === v)) ? v : null;
 };
 /** A Dockerfile instruction as Docker reads it: its text and, for each character, the 1-based physical line it is on. */
 type Logical = { text: string; lines: number[] };
@@ -231,13 +233,15 @@ const logicalLines = (text: string, file: string): Logical[] => {
   return out;
 };
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
- * with `$` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its `$`
- * (`18-${DISTRO}`) is that version; no tag, a digest only or any other tag is unsupported. An ARG value is its whole shell
- * word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not `"20"${SUFFIX}`). */
+ * with `$<TOOL>_VERSION` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its
+ * `$` (`18-${DISTRO}`) is that version; no tag, a digest only, another variable or any other tag is unsupported. An ARG
+ * value is its whole shell word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not
+ * `"20"${SUFFIX}`). */
 const dockerfile: Parser = (text, tool, _root, file) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
+  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -246,20 +250,26 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
-    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
+    // A tag of <TOOL>_VERSION is skipped: its ARG is the pin. Any other variable there is unsupported.
+    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) continue;
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
   }
   // `ARG A=1 B=2` declares each pair: the tool's may be any of them.
-  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   for (const l of logical) {
     const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
     if (!m) continue;
-    for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
-      if (p[1]!.toUpperCase() !== key) continue;
-      const v = p[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
-      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + p[0].length - p[2]!.length)));
+    // Shell words, as Docker splits them: a backslash escapes the next character, also inside double quotes. A word whose
+    // quote never closes leaves the line unreadable, a FAIL when it names the tool's variable.
+    for (const p of m[2]!.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+      if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]!))
+        throw unsupported(m[2]!.trim(), file, at(l, m[1]!.length));
+      const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
+      if (pair?.[1]!.toUpperCase() !== key) continue;
+      const v = pair[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
+      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + pair[1]!.length + 1)));
     }
   }
   return out;

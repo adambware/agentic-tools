@@ -851,3 +851,27 @@ describe("a setup step without a version is a FAIL, never skipped beside a pinne
     sibling("goreleaser-action", "goreleaser", PINNED, step("goreleaser/goreleaser-action@v5"), "goreleaser-action");
   });
 });
+
+// Value: protects=PR #25 review notes 1, 2 and 8: a Dockerfile pin hidden behind an escaped quote, a `-dev-${N}`/`-rc-${N}` tag
+// read as its bare version, and a `$` tag of another variable FAIL instead of passing on a pinned sibling; fails_when=the ARG
+// words, tagVer or the `$` tag rule regress; why_new=each was silent or a wrong pin at base; seam=none; no_claim=other
+// Dockerfile syntaxes
+describe("Dockerfile pins a variable or a quote could hide are FAILs", () => {
+  it.each([
+    // Note 1: `\"` is an escaped quote, so NODE_VERSION is the next pair, as Docker reads it.
+    ["an escaped quote before the pair", 'FROM node:20\nARG A=x\\" NODE_VERSION=lts\n', unsupported("lts", "Dockerfile", 2)],
+    ["an escaped quote inside a quoted value", 'FROM node:20\nARG A="x\\" y" NODE_VERSION=lts\n', unsupported("lts", "Dockerfile", 2)],
+    ["an unterminated quote on a line naming the variable", 'FROM node:20\nARG A="x NODE_VERSION=20\n', unsupported('A="x NODE_VERSION=20', "Dockerfile", 2)],
+    // Note 2: `${N}` may continue the prerelease (`20-dev-1`, `22-rc-1`), so the bare version is not the pin.
+    ["a -dev- tag continued by a variable", "ARG NODE_VERSION=20\nFROM node:20-dev-${N}\n", unsupported("node:20-dev-${N}", "Dockerfile", 2)],
+    ["an -rc- tag continued by a variable", "ARG NODE_VERSION=22\nFROM node:22-rc-${N}\n", unsupported("node:22-rc-${N}", "Dockerfile", 2)],
+    // Note 8: only a tag of <TOOL>_VERSION is skipped for its ARG.
+    ["a tag of another variable", "ARG NODE_VERSION=20\nFROM node:${OTHER}\n", unsupported("node:${OTHER}", "Dockerfile", 2)],
+    ["a bare $ tag of another variable", "ARG NODE_VERSION=20\nFROM node:$OTHER-alpine\n", unsupported("node:$OTHER-alpine", "Dockerfile", 2)],
+  ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
+  it.each([
+    ["an escaped quote before a pinned pair", 'ARG A=x\\" NODE_VERSION=20.11.0\n', ["20.11.0"]],
+    ["a tag of the tool's variable", "ARG NODE_VERSION=20.11.0\nFROM node:${NODE_VERSION}-alpine\nFROM node:$NODE_VERSION\n", ["20.11.0"]],
+    ["a variant word continued by a variable", "FROM node:20-alpine${X}\nFROM node:18-${DISTRO}\n", ["20", "18"]],
+  ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
+});
