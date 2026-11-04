@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
@@ -54,10 +54,26 @@ describe("shimOf", () => {
 });
 
 describe("gitEnv", () => {
-  it("drops git's repo-local variables and keeps the rest, without changing its argument", () => {
-    const env = { GIT_DIR: "/x/.git", GIT_INDEX_FILE: "/x/i", GIT_CONFIG_PARAMETERS: "'a.b'='c'", GIT_COMMON_DIR: "/x", GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" };
-    expect(gitEnv(env)).toEqual({ GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" });
+  it("drops git's repo-local variables but command-scope config, and keeps the rest, without changing its argument", () => {
+    const cfg = { GIT_CONFIG_PARAMETERS: "'a.b'='c'", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "*" };
+    const env = { GIT_DIR: "/x/.git", GIT_INDEX_FILE: "/x/.git/index", GIT_CONFIG: "/x/c", GIT_COMMON_DIR: "/x", GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin", ...cfg };
+    expect(gitEnv(env)).toEqual({ GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin", ...cfg });
+    expect(gitEnv(env, { gitDir: null, root: "/x" })).toEqual(gitEnv(env));
     expect(env.GIT_DIR).toBe("/x/.git");
+  });
+
+  it("keeps GIT_INDEX_FILE only for a file directly in the checkout's own git-dir, relative to the root, through symlinks", () => {
+    const d = tmp();
+    const [root, gitDir] = [join(d, "r"), join(d, "r", ".git")];
+    for (const p of [join(gitDir, "worktrees", "w"), join(gitDir, "modules", "m"), join(d, "o", ".git")]) mkdirSync(p, { recursive: true });
+    put(gitDir, "index.lock", "");
+    symlinkSync(root, join(d, "link"));
+    const own = { gitDir, root };
+    const kept = (i: string, o: { gitDir: string | null; root: string } = own) => gitEnv({ GIT_INDEX_FILE: i }, o).GIT_INDEX_FILE ?? null;
+    for (const i of [join(gitDir, "index.lock"), join(gitDir, "next-index-1.lock"), ".git/index", "./.git/../.git/index.lock", join(d, "link", ".git", "index.lock")]) expect(kept(i)).toBe(i);
+    expect(kept(join(d, "link", ".git", "index"), { gitDir: join(d, "link", ".git"), root })).not.toBeNull();
+    for (const i of [join(gitDir, "worktrees", "w", "index"), join(gitDir, "modules", "m", "index"), join(d, "o", ".git", "index"), join(d, "index"), join(root, "index"), gitDir, "", "../r/x/index"]) expect(kept(i)).toBeNull();
+    expect(kept(join(gitDir, "index"), { gitDir: null, root })).toBeNull();
   });
 });
 

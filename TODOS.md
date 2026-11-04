@@ -243,21 +243,15 @@
   - **Effort:** L
   - **Depends on / blocked by:** loops 0.7.1 merged.
 
-- [ ] **loops env-check: `d.tracked` FAILs a deletion being committed in a `git commit -a` pre-commit hook** [P2 correctness]
-  - **What:** `gitEnv` strips `GIT_INDEX_FILE`, so in a `git commit -a` pre-commit hook `d.tracked` reads the real index and FAILs "deleted: <file>" for a deletion that is part of the commit.
-  - **Why:** Owner decision needed (contract-4 in the 0.7.1 review): the fix changes which index env-check trusts.
-  - **Context:** Option: keep `GIT_INDEX_FILE` when it resolves inside this checkout's own git-dir, then add a hook test that runs `commit -a` with a deleted file. Deferred from: loops 0.7.1 review (2026-11-04).
-  - **Effort:** S
-  - **Depends on / blocked by:** Owner decision.
-
-- [ ] **loops env-check: `safe.directory` passed through env makes env-check exit 2 "not a git repository"** [P2 correctness]
-  - **What:** `gitEnv` strips `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, so `safe.directory` supplied through env (CI or containers) is lost and env-check exits 2.
-  - **Why:** Owner decision needed (regressions-1 in the 0.7.1 review).
-  - **Context:** Option: strip only the location variables, as git's `prepare_other_repo_env` does, and add a test that `GIT_CONFIG_COUNT` reaches env-check's git. Deferred from: loops 0.7.1 review (2026-11-04).
-  - **Effort:** S
-  - **Depends on / blocked by:** Owner decision.
-
 ## Completed
+
+- [x] **loops env-check: `d.tracked` FAILs a deletion being committed in a `git commit -a` pre-commit hook** [P2 correctness]
+  - Done: owner decision D-IDX (contract-4). `gitEnv` keeps `GIT_INDEX_FILE` when it names a file directly in this checkout's own git-dir; git-dir discovery runs without it. A real-hook test runs `commit -a` with a deletion in the main checkout and a linked worktree.
+  - **Completed:** 2026-11-04 (loops 0.7.1)
+
+- [x] **loops env-check: `safe.directory` passed through env makes env-check exit 2 "not a git repository"** [P2 correctness]
+  - Done: owner decision D-CFG (regressions-1). `gitEnv` keeps `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` (with its `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`) and drops `GIT_CONFIG`, as git's `prepare_other_repo_env` does.
+  - **Completed:** 2026-11-04 (loops 0.7.1)
 
 - [x] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
   - Done: `~/bin/loop-metrics` links into a persistent `main` worktree; the plist runs Mondays 09:00 with an absolute node path. The kickstart exited 0 and wrote a fresh row, and a jq recount of `w7.workflows` matched it exactly. The stable checkout was fast-forwarded to 0.2.1 after PR #18.

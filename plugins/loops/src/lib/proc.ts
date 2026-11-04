@@ -2,7 +2,7 @@
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
 import { spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Bad usage, bad config or an unreadable repo: the CLI prints it to stderr and exits 2. */
 export class UsageError extends Error {}
@@ -190,17 +190,40 @@ export interface Deps {
   err: (s: string) => void;
 }
 
-// What `git rev-parse --local-env-vars` lists (git 2.56): the variables that point git at a repo, index or object
-// store other than the one cwd is in. Hardcoded; a later git may add one.
-const GIT_LOCAL_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"];
+// What `git rev-parse --local-env-vars` lists (git 2.56), the variables that point git at a repo, index or object
+// store other than the one cwd is in, less GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT: git's prepare_other_repo_env
+// (run-command.c), which sets up the env for a git run in another repo, keeps those two, since they carry
+// command-scope config (`git -c`, safe.directory in CI) rather than a location. GIT_CONFIG, the file `git config`
+// reads instead of the repo's, goes as git drops it. Hardcoded; a later git may add one.
+const GIT_LOCAL_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"];
+
+/** `p`'s real path: of the file, else of its directory (an index.lock git has since renamed), else `p` as given. */
+function realOrAsIs(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    try {
+      return join(realpathSync(dirname(p)), basename(p));
+    } catch {
+      return p;
+    }
+  }
+}
 
 /**
  * `env` without git's repo-local variables, for env-check's git: an inherited GIT_DIR (a hook's, another checkout's)
- * must not make it read some other repo. `loops zone` keeps the caller's git env, temporary index and all.
+ * must not make it read some other repo. GIT_INDEX_FILE stays when `own` is given and it names a file directly in
+ * that checkout's git-dir: the index.lock (or next-index-*.lock) git hands a pre-commit hook of `git commit -a` or
+ * `git commit <paths>`, so d.tracked sees the deletion being committed. Under the git-dir, deeper, a linked
+ * worktree's or a submodule's index is another checkout's, and dropped. Git reads a relative one from the worktree
+ * top, which is `own.root`, every such spawn's cwd. Discover the git-dir without `own`, so it never sees the index.
+ * `loops zone` keeps the caller's git env, temporary index and all.
  */
-export function gitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function gitEnv(env: NodeJS.ProcessEnv, own?: { gitDir: string | null; root: string }): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const k of GIT_LOCAL_ENV) delete out[k];
+  const index = env.GIT_INDEX_FILE;
+  if (index && own?.gitDir && dirname(realOrAsIs(resolve(own.root, index))) === realOrAsIs(own.gitDir)) out.GIT_INDEX_FILE = index;
   return out;
 }
 

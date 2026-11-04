@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -317,8 +317,8 @@ describe("--static", () => {
     expect(r.out).toContain("SKIP c.shared  not checked in --static mode");
     expect(r.out).not.toContain("a.local");
     expect(r.out).not.toContain("d.tools");
-    // One rev-parse pair, no `git worktree list`.
-    expect(calls.filter((c) => c[0] === "git").map((c) => c.slice(1, 3))).toEqual([["rev-parse", "--show-toplevel"], ["ls-files", "-z"], ["rev-parse", "--git-dir"], ["rev-parse", "--git-common-dir"]]);
+    // One rev-parse pair (then ls-files, which may read a hook's own index), no `git worktree list`.
+    expect(calls.filter((c) => c[0] === "git").map((c) => c.slice(1, 3))).toEqual([["rev-parse", "--show-toplevel"], ["rev-parse", "--git-dir"], ["rev-parse", "--git-common-dir"], ["ls-files", "-z"]]);
   });
 
   // A static [[local]] that prints what env-check tells it about the worktree.
@@ -480,26 +480,119 @@ describe("c.shared", () => {
 });
 
 describe("git env", () => {
-  // `git rev-parse --local-env-vars` (git 2.56): what points git at a repo other than the one cwd is in.
+  // `git rev-parse --local-env-vars` (git 2.56): what points git at a repo other than the one cwd is in. env-check's git
+  // drops these but the two command-scope config ones, as git's prepare_other_repo_env does, and keeps GIT_INDEX_FILE
+  // only when it names an index of this checkout's own git-dir.
   const LOCAL = "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR".split(" ");
+  const CMD_CFG = { GIT_CONFIG_PARAMETERS: "'loops.p'='1'", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "loops.mark", GIT_CONFIG_VALUE_0: "1" };
+  const STRIPPED = LOCAL.filter((k) => !Object.hasOwn(CMD_CFG, k));
 
-  it("every env-check git spawn gets the caller's env without git's repo-local variables", () => {
+  it("every env-check git spawn gets the caller's env without git's repo-local variables, command-scope config kept", () => {
     const root = setup(`${HEAD}[harness]\ntracked = true\nsparse = "warn"\n[shared_checkout]\nhint = "h"\n`);
     const elsewhere = setup(HEAD);
-    const env = { ...Object.fromEntries(LOCAL.map((k) => [k, join(elsewhere, ".git")])), GIT_CONFIG_COUNT: "1", LOOPS_MARK: "1" };
+    const env = { ...Object.fromEntries(LOCAL.map((k) => [k, join(elsewhere, ".git")])), ...CMD_CFG, LOOPS_MARK: "1" };
     const seen: (NodeJS.ProcessEnv | undefined)[] = [];
     const r = check(root, [], env, (cmd, args, opts) => (cmd === "git" && seen.push(opts?.env), run(cmd, args, opts)));
     expect(r.out).toContain("PASS d.tracked");
     expect(seen.length).toBeGreaterThanOrEqual(7);
     for (const e of seen) {
-      expect(e).toMatchObject({ LOOPS_MARK: "1", HOME: "/nonexistent-home" });
-      expect(Object.keys(e ?? {}).filter((k) => LOCAL.includes(k))).toEqual([]);
+      expect(e).toMatchObject({ LOOPS_MARK: "1", HOME: "/nonexistent-home", ...CMD_CFG });
+      expect(Object.keys(e ?? {}).filter((k) => STRIPPED.includes(k))).toEqual([]);
     }
   });
 
+  // Value: protects=D-CFG, command-scope config (safe.directory in CI or a container, a `git -c`) reaching env-check's
+  // git; fails_when=gitEnv strips GIT_CONFIG_COUNT or GIT_CONFIG_PARAMETERS again (verified: red before the amend, d.sparse
+  // read "off"); why_new=the recording row above sees the vars, this one sees real git obey them; seam=real git;
+  // no_claim=safe.directory itself (a repo another uid owns cannot be faked here)
+  it("lets git obey command-scope config from GIT_CONFIG_COUNT and GIT_CONFIG_PARAMETERS, and drops GIT_CONFIG as git does", () => {
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    const on = "WARN d.sparse  sparse checkout is enabled; tools may not see every file — fix: git sparse-checkout disable";
+    expect(check(root, [], { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sparseCheckout", GIT_CONFIG_VALUE_0: "true" }).lines).toContain(on);
+    expect(check(root, [], { GIT_CONFIG_PARAMETERS: "'core.sparsecheckout'='true'" }).lines).toContain(on);
+    // GIT_CONFIG makes `git config` read that one file instead of the repo's; git's own submodule env unsets it too.
+    const file = join(tmp(), "other.config");
+    put(dirname(file), basename(file), "[core]\n\tsparseCheckout = true\n");
+    expect(check(root, [], { GIT_CONFIG: file }).lines).toContain("PASS d.sparse  sparse checkout is off");
+  });
+
+  /**
+   * `git commit -a` in `cwd`, whose pre-commit hook (in the main checkout's .git/hooks) records its cwd and GIT_* env
+   * and waits; env-check runs in that env while git holds the commit's index.lock, then the hook is let go.
+   */
+  async function inHook(root: string, cwd: string): Promise<{ env: Record<string, string>; r: ReturnType<typeof check> }> {
+    const t = tmp();
+    const [dump, go] = [join(t, "hook-env"), join(t, "go")];
+    put(root, ".git/hooks/pre-commit", `#!/bin/sh\n{ pwd; env | grep '^GIT_'; } > '${dump}.tmp' && mv '${dump}.tmp' '${dump}'\ni=0\nwhile [ ! -e '${go}' ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done\n`, true);
+    const child = spawn("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${join(root, ".git", "hooks")}`, "commit", "-q", "-a", "-m", "hooked"], { cwd, stdio: "ignore" });
+    const done = new Promise<number | null>((ok) => child.on("close", ok));
+    try {
+      expect(until(() => existsSync(dump), 10_000)).toBe(true);
+      const [at, ...vars] = readFileSync(dump, "utf8").trim().split("\n");
+      const env = Object.fromEntries(vars.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+      return { env, r: check(at!, [], env) };
+    } finally {
+      put(t, "go", "");
+      expect(await done).toBe(0);
+    }
+  }
+
+  // Value: protects=D-IDX, a pre-commit hook of `git commit -a` that deletes a tracked file; fails_when=gitEnv strips
+  // GIT_INDEX_FILE again (verified: red before the amend, "FAIL d.tracked  deleted: a.txt" in both checkouts);
+  // why_new=no row ran env-check inside a hook while git holds the commit's index; seam=real git commit, real hook;
+  // no_claim=other hook managers' own temporary indexes
+  it("reads the index git commits from in a `git commit -a` pre-commit hook, in the main checkout and a linked worktree", async () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { "a.txt": "a\n", "b.txt": "b\n" });
+    commit(root);
+    const wt = worktree(root, "feat-i");
+    rmSync(join(root, "a.txt"));
+    rmSync(join(wt, "b.txt"));
+    const ok = "PASS d.tracked  no tracked file deleted, exec bits intact";
+    for (const [cwd, gd] of [[root, join(root, ".git")], [wt, join(root, ".git", "worktrees", "feat-i")]] as const) {
+      const { env, r } = await inHook(root, cwd);
+      expect(r.lines).toContain(ok);
+      expect(join(rp(dirname(env.GIT_INDEX_FILE!)), basename(env.GIT_INDEX_FILE!))).toBe(join(rp(gd), "index.lock")); // gone since
+    }
+    expect(sh(root, "show", "--name-status", "--format=", "HEAD")).toBe("D\ta.txt\n");
+  });
+
+  // Value: protects=D-IDX's "own git-dir only": an index of another checkout or anywhere else is still dropped, and
+  // discovery never sees one; fails_when=gitEnv keeps any GIT_INDEX_FILE, keeps one under <git-dir>/worktrees/, or
+  // discovery passes the git-dir (verified: each made a row here red); why_new=the hook row only keeps; seam=real git
+  // plus a recording Runner; no_claim=none
+  it("keeps a GIT_INDEX_FILE only directly in this checkout's own git-dir, and never for git-dir discovery", () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { "a.txt": "a\n" });
+    commit(root);
+    const wt = worktree(root, "feat-j");
+    // .git/alt holds the deletion of a.txt, staged; the real index still lists it.
+    sh(root, "rm", "-q", "--cached", "a.txt");
+    execFileSync("cp", [join(root, ".git", "index"), join(root, ".git", "alt")]);
+    execFileSync("cp", [join(root, ".git", "index"), join(root, ".git", "worktrees", "feat-j", "alt")]);
+    const loose = join(tmp(), "alt");
+    execFileSync("cp", [join(root, ".git", "index"), loose]);
+    sh(root, "reset", "-q");
+    rmSync(join(root, "a.txt"));
+    const ok = "PASS d.tracked  no tracked file deleted, exec bits intact";
+    const gone = "FAIL d.tracked  deleted: a.txt — fix: git checkout -- <path> to restore, chmod +x for exec bits";
+    expect(check(root).lines).toContain(gone);
+    // Relative, git reads it from the worktree top, whatever directory env-check starts in.
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "alt") }).lines).toContain(ok);
+    expect(check(join(root, ".loops"), [], { GIT_INDEX_FILE: ".git/alt" }).lines).toContain(ok);
+    // A linked worktree's index, under the main git-dir but another checkout's; one outside any git-dir.
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "worktrees", "feat-j", "alt") }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: loose }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: join(setup(HEAD), ".git", "index") }).lines).toContain(gone);
+    const seen: [string[], NodeJS.ProcessEnv | undefined][] = [];
+    const r = check(root, [], { GIT_INDEX_FILE: join(root, ".git", "alt") }, (cmd, args, opts) => (cmd === "git" && seen.push([args, opts?.env]), run(cmd, args, opts)));
+    expect(r.lines).toContain(ok);
+    for (const [args, e] of seen) expect([args.join(" "), e?.GIT_INDEX_FILE]).toEqual([args.join(" "), args[0] === "rev-parse" ? undefined : join(root, ".git", "alt")]);
+  });
+
   // One way to spawn git: through gitEnv, in every module but zone, which reviews whatever index the caller's git env
-  // selects (a tool's temporary GIT_INDEX_FILE), so it keeps that env. proc.ts holds the helpers; testkit.ts sets up repos.
-  it("every git spawn passes gitEnv, except zone's, which never does", () => {
+  // selects (a tool's temporary GIT_INDEX_FILE), so it keeps that env. Git-dir discovery (repoRoot, rev-parse) passes
+  // no git-dir, so no GIT_INDEX_FILE; every later spawn passes one, so a hook's own index reaches it. proc.ts holds the
+  // helpers; testkit.ts sets up repos.
+  it("every git spawn passes gitEnv, with the git-dir after discovery, except zone's, which never does", () => {
     const src = join(HERE, "..");
     const spawns = (text: string): string[] =>
       [...text.matchAll(/(?<!function )\b(?:git|repoRoot)\(|\b\w+\(\s*"git",/g)].map((m) => {
@@ -518,7 +611,7 @@ describe("git env", () => {
     );
     expect(Object.keys(found).sort()).toEqual(expect.arrayContaining(["lib/env-check.ts", "lib/env-checks.ts", "lib/zone-cli.ts"]));
     for (const [file, calls] of Object.entries(found)) {
-      for (const c of calls) expect(`${file}: ${c}`).toMatch(file === "lib/zone-cli.ts" ? /^[^:]+: (?![^]*gitEnv\()/ : /gitEnv\(/);
+      for (const c of calls) expect(`${file}: ${c}`).toMatch(file === "lib/zone-cli.ts" ? /^[^:]+: (?![^]*gitEnv\()/ : /repoRoot\(|"rev-parse"/.test(c) ? /gitEnv\(\w+\.env\)/ : /gitEnv\(\w+\.env, /);
     }
   });
 });

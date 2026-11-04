@@ -39,7 +39,8 @@ const mapText = (r: Result, f: (s: string) => string): Result => ({
 
 export function envCheckMain(argv: string[], d: Deps): number {
   const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
-  // Every git spawn here runs on gitEnv(d.env): the checkout cwd is in, whatever GIT_DIR the shell or a hook set.
+  // Every git spawn here runs on gitEnv: the checkout cwd is in, whatever GIT_DIR the shell or a hook set. Discovery
+  // (this rev-parse and the git-dir pair) runs without the git-dir; later spawns pass it to keep a hook's own index.
   const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join(root, ".loops", "env-check.toml");
@@ -56,9 +57,6 @@ export function envCheckMain(argv: string[], d: Deps): number {
   }
 
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const ls = d.run("git", ["ls-files", "-z"], { cwd: root, env: gitEnv(d.env) });
-  if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
-  const tracked = ls.stdout.split("\0").filter(Boolean);
   // The rev-parse pair runs in every mode, so --static tells locals what full mode does (~12 ms, no network). A failed
   // rev-parse is no git-dir at all: c.shared FAILs on it rather than guess from two made-up paths.
   const dir = (flag: string): string | null => {
@@ -68,10 +66,13 @@ export function envCheckMain(argv: string[], d: Deps): number {
   const [own, common] = [dir("--git-dir"), dir("--git-common-dir")];
   const gitDir = own && common ? own : null;
   const isWorktree = !!gitDir && own !== common;
+  const ls = d.run("git", ["ls-files", "-z"], { cwd: root, env: gitEnv(d.env, { gitDir, root }) });
+  if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
+  const tracked = ls.stdout.split("\0").filter(Boolean);
   let worktrees: string[] = [];
   let worktreesRead = false;
   if (!isStatic) {
-    const list = git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env));
+    const list = git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env, { gitDir, root }));
     worktreesRead = list !== null;
     worktrees = (list ?? "").split("\n").flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
   }
