@@ -528,8 +528,8 @@ an empty line inside a continuation; the body of a `RUN`, `COPY` or `ADD` heredo
 to its delimiter line, and an unterminated heredoc is a FAIL, also on an instruction still open at end of file. Only the
 default `\` escape is read: an `# escape=` parser directive that sets another escape character is an unsupported FAIL. An error names the physical line of the offending image
 or value.
-`a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
-`python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain; a probe that does
+`a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off MISE_AUTO_INSTALL=0` (`go version`, `node --version`,
+`python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain and a mise shim installs no missing version; a probe that does
 not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
 match the pin at the `compare` depth; ranges do not bind it. A probe that gives no version says why: `<tool> not found on
 PATH`, `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
@@ -659,8 +659,9 @@ fails), no running container, or no commit touching the inputs is a SKIP, never 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
-`timeout_s` stops the check itself with SIGKILL (a trapped SIGTERM cannot outlive it); a child it leaves running can hold the run open, so `exec`
-long commands. It prints one line per
+`timeout_s` stops the check with SIGKILL (a trapped SIGTERM cannot outlive it). The check runs in its own process group, and
+the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A child it leaves
+running when it exits on its own can hold the run open, so `exec` long commands. It prints one line per
 result on stdout:
 
 ```
@@ -672,7 +673,9 @@ later ones belong to the fix (escaped in text output). An empty fix counts as no
 above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
 `ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`1` when this is not the main checkout, a `cp -R` copy
 included, which a configured `c.shared` FAILs; `0` in the main checkout; empty when git could not be read; the same under `--static`), `ENV_CHECK_PROJECT`
-(the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
+(the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`,
+`MISE_AUTO_INSTALL=0` (mise's `auto_install` setting, which per upstream jdx/mise `settings.toml` also turns off its exec and
+not-found auto-install, so a shim never installs a missing version), `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
 separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
 `"`, control characters, the dash of a `— fix:` and the first dash of a `-- fix:` escaped (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix; no lines is a FAIL; a nonzero

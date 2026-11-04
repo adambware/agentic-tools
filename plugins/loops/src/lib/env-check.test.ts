@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
@@ -2431,6 +2431,30 @@ describe("local checks", () => {
     const t = run('trap "" TERM\nend=$(($(date +%s) + 4))\nwhile [ "$(date +%s)" -lt "$end" ]; do :; done', "timeout_s = 0.2\n");
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(t.out).toContain("WARN d.x  timed out after 0.2s (not a pass)");
+  });
+
+  it("kills the check's whole process group at its timeout, so a child it started is not left running", () => {
+    const mark = `loops-sleeper-${process.pid}-${n++}`;
+    const left = () => spawnSync("pgrep", ["-f", mark]).status === 0;
+    try {
+      // `; :` keeps the child shell (and the mark in its argv) alive beside its sleep.
+      const t = run(`sh -c 'sleep 30; : ${mark}' &\nwait`, "timeout_s = 1\n");
+      expect(t.out).toContain("WARN d.x  timed out after 1s (not a pass)");
+      for (let i = 0; i < 20 && left(); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      expect(left()).toBe(false);
+    } finally {
+      spawnSync("pkill", ["-KILL", "-f", mark]);
+    }
+  }, 15_000);
+
+  it("turns mise auto-install off for the a.local probe and for local checks", () => {
+    const root = setup(`${GO_PIN}local = "warn"\n`, GO_FILES);
+    put(root, CFG, `${GO_PIN}local = "warn"\n${local(root, "d.x", 'echo "PASS d.x mise=$MISE_AUTO_INSTALL"')}`);
+    const seen: [string, string | undefined][] = [];
+    const rec: Runner = (cmd, args, opts) => (cmd === "go" || cmd.endsWith("d_x.sh") ? seen.push([basename(cmd), opts?.env?.MISE_AUTO_INSTALL]) : 0, procRun(cmd, args, opts));
+    const r = check(root, [], withPath(goShim()), rec);
+    expect(seen).toEqual([["go", "0"], ["d_x.sh", "0"]]);
+    expect(r.out).toContain("PASS d.x  mise=0");
   });
 
   it("exports ENV_CHECK_PROJECT: the resolved project, else empty", () => {

@@ -120,7 +120,7 @@ export function pinChecks(c: Ctx): Result[] {
     out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
     if (c.static || pin.local === "off") continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
@@ -670,9 +670,11 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     ENV_CHECK_ID: l.id,
     GOPROXY: "off",
     GOTOOLCHAIN: "local",
+    // A mise shim must not install a missing tool: auto_install off also turns off exec and not-found auto-install.
+    MISE_AUTO_INSTALL: "0",
     NO_COLOR: "1",
   };
-  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs, group: true });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
   // Only a CRLF's "\r" and trailing blanks are trimmed, so a line ending in (or made of) another control is rejected.

@@ -1,6 +1,6 @@
 // Process and flag helpers shared by `loops zone` and `loops env-check`. Commands that spawn
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, isAbsolute, join } from "node:path";
 
@@ -11,6 +11,8 @@ export interface RunOpts {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** Run in its own process group, and kill the whole group at the timeout, so a child it started does not outlive it. */
+  group?: boolean;
 }
 export interface RunResult {
   /** null when the process could not start or was killed. */
@@ -26,7 +28,8 @@ export interface RunResult {
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => RunResult;
 
 export const run: Runner = (cmd, args, opts = {}) => {
-  const r = spawnSync(cmd, args, {
+  // spawnSync honors `detached` (its own session and process group) though its types leave it out.
+  const spawnOpts: SpawnSyncOptionsWithStringEncoding & { detached?: boolean } = {
     cwd: opts.cwd,
     env: opts.env,
     timeout: opts.timeoutMs,
@@ -34,9 +37,19 @@ export const run: Runner = (cmd, args, opts = {}) => {
     killSignal: "SIGKILL",
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
-  });
+    detached: opts.group,
+  };
+  const r = spawnSync(cmd, args, spawnOpts);
   const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
   const timedOut = errCode === "ETIMEDOUT";
+  // The timeout killed only the leader; its group (pgid = its pid) may still hold a background child.
+  if (timedOut && opts.group && r.pid) {
+    try {
+      process.kill(-r.pid, "SIGKILL");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
+    }
+  }
   const abend = r.status === null ? (errCode ?? r.signal ?? undefined) : undefined;
   return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
 };
