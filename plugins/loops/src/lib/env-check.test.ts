@@ -557,9 +557,9 @@ describe("git env", () => {
   });
 
   // Value: protects=D-IDX's "own git-dir only": an index of another checkout or anywhere else is still dropped, and
-  // discovery never sees one; fails_when=gitEnv keeps any GIT_INDEX_FILE, keeps one under <git-dir>/worktrees/, or
-  // discovery passes the git-dir (verified: each made a row here red); why_new=the hook row only keeps; seam=real git
-  // plus a recording Runner; no_claim=none
+  // discovery never sees one; fails_when=gitEnv keeps any GIT_INDEX_FILE, keeps one under <git-dir>/worktrees/, keeps
+  // an absent one (git reads it as empty, a false PASS), or discovery passes the git-dir (verified: each made a row
+  // here red); why_new=the hook row only keeps; seam=real git plus a recording Runner; no_claim=none
   it("keeps a GIT_INDEX_FILE only directly in this checkout's own git-dir, and never for git-dir discovery", () => {
     const root = setup(`${HEAD}[harness]\ntracked = true\n`, { "a.txt": "a\n" });
     commit(root);
@@ -582,6 +582,9 @@ describe("git env", () => {
     expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "worktrees", "feat-j", "alt") }).lines).toContain(gone);
     expect(check(root, [], { GIT_INDEX_FILE: loose }).lines).toContain(gone);
     expect(check(root, [], { GIT_INDEX_FILE: join(setup(HEAD), ".git", "index") }).lines).toContain(gone);
+    // Absent in its own git-dir (a hook outliving its commit, a leftover export): git would read it as empty.
+    expect(check(root, [], { GIT_INDEX_FILE: ".git/index.lock" }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "next-index-123.lock") }).lines).toContain(gone);
     const seen: [string[], NodeJS.ProcessEnv | undefined][] = [];
     const r = check(root, [], { GIT_INDEX_FILE: join(root, ".git", "alt") }, (cmd, args, opts) => (cmd === "git" && seen.push([args, opts?.env]), run(cmd, args, opts)));
     expect(r.lines).toContain(ok);

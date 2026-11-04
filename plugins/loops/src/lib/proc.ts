@@ -197,16 +197,12 @@ export interface Deps {
 // reads instead of the repo's, goes as git drops it. Hardcoded; a later git may add one.
 const GIT_LOCAL_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"];
 
-/** `p`'s real path: of the file, else of its directory (an index.lock git has since renamed), else `p` as given. */
-function realOrAsIs(p: string): string {
+/** `p`'s real path, or null when it does not exist. */
+function realOrNull(p: string): string | null {
   try {
     return realpathSync(p);
   } catch {
-    try {
-      return join(realpathSync(dirname(p)), basename(p));
-    } catch {
-      return p;
-    }
+    return null;
   }
 }
 
@@ -214,8 +210,9 @@ function realOrAsIs(p: string): string {
  * `env` without git's repo-local variables, for env-check's git: an inherited GIT_DIR (a hook's, another checkout's)
  * must not make it read some other repo. GIT_INDEX_FILE stays when `own` is given and it names a file directly in
  * that checkout's git-dir: the index.lock (or next-index-*.lock) git hands a pre-commit hook of `git commit -a` or
- * `git commit <paths>`, so d.tracked sees the deletion being committed. Under the git-dir, deeper, a linked
- * worktree's or a submodule's index is another checkout's, and dropped. Git reads a relative one from the worktree
+ * `git commit <paths>`, so d.tracked sees the deletion being committed. It must exist: git reads an absent one as an
+ * empty index, so a stale one (a hook outliving its commit, a leftover export) is dropped. Under the git-dir, deeper,
+ * a linked worktree's or a submodule's index is another checkout's, and dropped. Git reads a relative one from the worktree
  * top, which is `own.root`, every such spawn's cwd. Discover the git-dir without `own`, so it never sees the index.
  * `loops zone` keeps the caller's git env, temporary index and all.
  */
@@ -223,7 +220,9 @@ export function gitEnv(env: NodeJS.ProcessEnv, own?: { gitDir: string | null; ro
   const out = { ...env };
   for (const k of GIT_LOCAL_ENV) delete out[k];
   const index = env.GIT_INDEX_FILE;
-  if (index && own?.gitDir && dirname(realOrAsIs(resolve(own.root, index))) === realOrAsIs(own.gitDir)) out.GIT_INDEX_FILE = index;
+  const gitDir = own?.gitDir ? realOrNull(own.gitDir) : null;
+  const file = index && own && gitDir ? realOrNull(resolve(own.root, index)) : null;
+  if (file && dirname(file) === gitDir) out.GIT_INDEX_FILE = index;
   return out;
 }
 

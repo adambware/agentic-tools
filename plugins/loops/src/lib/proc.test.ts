@@ -62,17 +62,19 @@ describe("gitEnv", () => {
     expect(env.GIT_DIR).toBe("/x/.git");
   });
 
-  it("keeps GIT_INDEX_FILE only for a file directly in the checkout's own git-dir, relative to the root, through symlinks", () => {
+  it("keeps GIT_INDEX_FILE only for an existing file directly in the checkout's own git-dir, relative to the root, through symlinks", () => {
     const d = tmp();
     const [root, gitDir] = [join(d, "r"), join(d, "r", ".git")];
     for (const p of [join(gitDir, "worktrees", "w"), join(gitDir, "modules", "m"), join(d, "o", ".git")]) mkdirSync(p, { recursive: true });
-    put(gitDir, "index.lock", "");
+    for (const f of ["index.lock", "next-index-1.lock", "index"]) put(gitDir, f, "");
     symlinkSync(root, join(d, "link"));
     const own = { gitDir, root };
     const kept = (i: string, o: { gitDir: string | null; root: string } = own) => gitEnv({ GIT_INDEX_FILE: i }, o).GIT_INDEX_FILE ?? null;
     for (const i of [join(gitDir, "index.lock"), join(gitDir, "next-index-1.lock"), ".git/index", "./.git/../.git/index.lock", join(d, "link", ".git", "index.lock")]) expect(kept(i)).toBe(i);
     expect(kept(join(d, "link", ".git", "index"), { gitDir: join(d, "link", ".git"), root })).not.toBeNull();
     for (const i of [join(gitDir, "worktrees", "w", "index"), join(gitDir, "modules", "m", "index"), join(d, "o", ".git", "index"), join(d, "index"), join(root, "index"), gitDir, "", "../r/x/index"]) expect(kept(i)).toBeNull();
+    // Absent, git reads an empty index, so d.tracked would see no tracked file at all: a stale or leftover one.
+    for (const i of [".git/gone.lock", join(gitDir, "next-index-2.lock"), join(d, "link", ".git", "gone")]) expect(kept(i)).toBeNull();
     expect(kept(join(gitDir, "index"), { gitDir: null, root })).toBeNull();
   });
 });

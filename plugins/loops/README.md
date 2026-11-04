@@ -414,8 +414,9 @@ bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, s
 env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_CONFIG`…), so they read the checkout env-check runs in; `loops zone` keeps them. As git's
 `prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, e.g. `safe.directory`)
-stays, and `GIT_INDEX_FILE` stays when it names a file directly in this checkout's own git-dir (the `index.lock` of a
-`git commit -a` pre-commit hook, so `d.tracked` sees the commit's index); any other `GIT_INDEX_FILE` is dropped.
+stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in this checkout's own git-dir (the
+`index.lock` of a `git commit -a` pre-commit hook, so `d.tracked` sees the commit's index); any other `GIT_INDEX_FILE`,
+an absent one included (git would read it as an empty index), is dropped.
 
 `--static` reads repo files only: no toolchain, tool or docker probes; one git rev-parse (`a.local.*`,
 `b.containers`, `d.tools`, `d.sparse` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
