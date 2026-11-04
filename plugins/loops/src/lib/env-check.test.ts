@@ -32,6 +32,12 @@ function worktree(root: string, name: string, parent = tmp()): string {
 /** Runs everything for real, except that git ls-files `flag` fails. */
 const lsFails = (flag: string): Runner => (cmd, args, opts) => (cmd === "git" && args[0] === "ls-files" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: index file corrupt", timedOut: false } : run(cmd, args, opts));
 const withPath = (...dirs: string[]) => ({ PATH: [...dirs, process.env.PATH].join(":") });
+/** A PATH dir holding git and nothing else: env-check's git runs on the Deps env, so a tool-free PATH still needs git. */
+const gitOnly = (): string => {
+  const d = tmp();
+  symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(d, "git"));
+  return d;
+};
 const goShim = (v = "1.26.1") => shim("go", `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] || exit 9\necho "go version go${v} darwin/arm64"`);
 
 function check(cwd: string, args: string[] = [], env: Record<string, string> = {}, runner?: Runner) {
@@ -185,7 +191,7 @@ describe("pins and local toolchains", () => {
   });
 
   it("treats a missing tool as the configured level and local = off as no check", () => {
-    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found on PATH");
+    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: gitOnly() }).out).toContain("FAIL a.local.go  go not found on PATH");
     expect(check(setup(`${GO_PIN}local = "off"\n`, GO_FILES)).out).not.toContain("a.local");
   });
 
@@ -310,6 +316,50 @@ describe("c.shared", () => {
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "0" }).code).toBe(1); // only "1" allows it
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 0, out: expect.stringContaining("INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN") });
     expect(check(worktree(root, "feat-x")).lines[0]).toBe("PASS c.shared  in a linked worktree");
+  });
+});
+
+describe("git env", () => {
+  // `git rev-parse --local-env-vars` (git 2.56): what points git at a repo other than the one cwd is in.
+  const LOCAL = "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR".split(" ");
+
+  it("every env-check git spawn gets the caller's env without git's repo-local variables", () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\nsparse = "warn"\n[shared_checkout]\nhint = "h"\n`);
+    const elsewhere = setup(HEAD);
+    const env = { ...Object.fromEntries(LOCAL.map((k) => [k, join(elsewhere, ".git")])), GIT_CONFIG_COUNT: "1", LOOPS_MARK: "1" };
+    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+    const r = check(root, [], env, (cmd, args, opts) => (cmd === "git" && seen.push(opts?.env), run(cmd, args, opts)));
+    expect(r.out).toContain("PASS d.tracked");
+    expect(seen.length).toBeGreaterThanOrEqual(7);
+    for (const e of seen) {
+      expect(e).toMatchObject({ LOOPS_MARK: "1", HOME: "/nonexistent-home" });
+      expect(Object.keys(e ?? {}).filter((k) => LOCAL.includes(k))).toEqual([]);
+    }
+  });
+
+  // One way to spawn git: through gitEnv, in every module but zone, which reviews whatever index the caller's git env
+  // selects (a tool's temporary GIT_INDEX_FILE), so it keeps that env. proc.ts holds the helpers; testkit.ts sets up repos.
+  it("every git spawn passes gitEnv, except zone's, which never does", () => {
+    const src = join(HERE, "..");
+    const spawns = (text: string): string[] =>
+      [...text.matchAll(/(?<!function )\b(?:git|repoRoot)\(|\b\w+\(\s*"git",/g)].map((m) => {
+        let i = m.index + m[0].indexOf("(");
+        for (let depth = 0; i < text.length; i++) if (text[i] === "(") depth++;
+        else if (text[i] === ")" && --depth === 0) break;
+        return text.slice(m.index, i + 1);
+      });
+    const found = Object.fromEntries(
+      ["lib", "bin"].flatMap((d) =>
+        readdirSync(join(src, d))
+          .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !["proc.ts", "testkit.ts"].includes(f))
+          .map((f) => [`${d}/${f}`, spawns(readFileSync(join(src, d, f), "utf8"))] as const)
+          .filter(([, s]) => s.length),
+      ),
+    );
+    expect(Object.keys(found).sort()).toEqual(expect.arrayContaining(["lib/env-check.ts", "lib/env-checks.ts", "lib/zone-cli.ts"]));
+    for (const [file, calls] of Object.entries(found)) {
+      for (const c of calls) expect(`${file}: ${c}`).toMatch(file === "lib/zone-cli.ts" ? /^[^:]+: (?![^]*gitEnv\()/ : /gitEnv\(/);
+    }
   });
 });
 

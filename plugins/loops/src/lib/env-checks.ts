@@ -8,7 +8,7 @@ import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type C
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
-import { git, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
+import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
@@ -225,7 +225,7 @@ export function harnessChecks(c: Ctx): Result[] {
     const bad = entries.filter((e) => !isExecutable(join(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
-  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"])) : [];
+  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ!.split("\0").filter(Boolean);
@@ -239,7 +239,7 @@ export function harnessChecks(c: Ctx): Result[] {
   if (h.sparse && !c.static) {
     // --type=bool reads every git spelling (yes, on, 1) and --default=false makes unset "false", so a failed read (an
     // invalid value, git failing) or any other output is a WARN, never "off".
-    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"], gitEnv(c.env))?.trim();
     if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
@@ -549,7 +549,7 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
   // Empty output is a log with no commit over the inputs; a failed git or text that is no time is not that.
   // --no-show-signature: a user's log.showSignature would print the signature check before the time.
-  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files], gitEnv(c.env))?.trim();
   const ct = logged === undefined || !/^\d*$/.test(logged) ? NaN : Number(logged);
   if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];

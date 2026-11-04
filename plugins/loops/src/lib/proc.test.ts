@@ -1,7 +1,7 @@
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { shimOf } from "./proc.js";
+import { gitEnv, shimOf } from "./proc.js";
 import { put, tmp } from "./testkit.js";
 
 describe("shimOf", () => {
@@ -47,5 +47,13 @@ describe("shimOf", () => {
     expect(shimOf(join(d, "inline"))).toBeNull();
     if (process.getuid?.() !== 0) expect(shimOf(join(d, "locked"))).toBeNull();
     expect(shimOf(join(d, "nope"))).toBeNull();
+  });
+});
+
+describe("gitEnv", () => {
+  it("drops git's repo-local variables and keeps the rest, without changing its argument", () => {
+    const env = { GIT_DIR: "/x/.git", GIT_INDEX_FILE: "/x/i", GIT_CONFIG_PARAMETERS: "'a.b'='c'", GIT_COMMON_DIR: "/x", GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" };
+    expect(gitEnv(env)).toEqual({ GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" });
+    expect(env.GIT_DIR).toBe("/x/.git");
   });
 });

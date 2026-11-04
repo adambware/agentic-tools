@@ -74,15 +74,29 @@ export interface Deps {
   err: (s: string) => void;
 }
 
-/** stdout of a successful git command, else null. */
-export function git(r: Runner, cwd: string, args: string[]): string | null {
-  const res = r("git", args, { cwd });
+// What `git rev-parse --local-env-vars` lists (git 2.56): the variables that point git at a repo, index or object
+// store other than the one cwd is in. Hardcoded; a later git may add one.
+const GIT_LOCAL_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"];
+
+/**
+ * `env` without git's repo-local variables, for env-check's git: an inherited GIT_DIR (a hook's, another checkout's)
+ * must not make it read some other repo. `loops zone` keeps the caller's git env, temporary index and all.
+ */
+export function gitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of GIT_LOCAL_ENV) delete out[k];
+  return out;
+}
+
+/** stdout of a successful git command, else null; `env` undefined inherits this process's env. */
+export function git(r: Runner, cwd: string, args: string[], env: NodeJS.ProcessEnv | undefined): string | null {
+  const res = r("git", args, { cwd, env });
   return res.code === 0 ? res.stdout : null;
 }
 
 /** The repo's top-level dir, or null outside a git repo. */
-export function repoRoot(r: Runner, cwd: string): string | null {
-  return git(r, cwd, ["rev-parse", "--show-toplevel"])?.trim() || null;
+export function repoRoot(r: Runner, cwd: string, env: NodeJS.ProcessEnv | undefined): string | null {
+  return git(r, cwd, ["rev-parse", "--show-toplevel"], env)?.trim() || null;
 }
 
 export function isExecutable(file: string): boolean {

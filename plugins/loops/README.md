@@ -411,6 +411,8 @@ Text output escapes every row (and each `--compose-project` stderr line) once: c
 the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
 `\u002d- fix:`, so a row has one fix. `--json` values are the raw text (redacted, not escaped), with DEL, C1, U+2028/2029,
 bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, so `JSON.parse` returns them exactly.
+env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`…), so they read the checkout env-check runs in; `loops zone` keeps them.
 
 `--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
 `b.containers`, `d.tools`, `d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only

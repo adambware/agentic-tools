@@ -17,6 +17,7 @@ export function parseNameStatus(z: string): string[] {
   return paths;
 }
 
+// zone's git inherits this process's env (env undefined): a temporary GIT_INDEX_FILE a tool set is the index to review.
 function gitPaths(d: Deps, root: string, base: string | undefined, committed: boolean): string[] {
   const g = (args: string[]): string => {
     const r = d.run("git", args, { cwd: root });
@@ -24,7 +25,7 @@ function gitPaths(d: Deps, root: string, base: string | undefined, committed: bo
     return r.stdout;
   };
   const tried = base ? [base] : ["origin/HEAD", "origin/main", "main"];
-  const ref = tried.find((x) => git(d.run, root, ["rev-parse", "--verify", "--quiet", `${x}^{commit}`]) !== null);
+  const ref = tried.find((x) => git(d.run, root, ["rev-parse", "--verify", "--quiet", `${x}^{commit}`], undefined) !== null);
   if (!ref) throw new UsageError(`no base ref found (tried ${tried.join(", ")}); pass --base`);
   const mergeBase = g(["merge-base", ref, "HEAD"]).trim();
   // a repo or user setting (ignore = all, diff.ignoreSubmodules) must not hide a submodule pointer bump;
@@ -92,7 +93,7 @@ export function zoneMain(argv: string[], d: Deps): number {
     list: ["paths"],
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
-  const root = repoRoot(d.run, d.cwd) ?? d.cwd;
+  const root = repoRoot(d.run, d.cwd, undefined) ?? d.cwd;
   const filePath = typeof f.file === "string" ? resolve(d.cwd, f.file) : join(root, "risk-zones.md");
   if (!existsSync(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
@@ -118,7 +119,7 @@ export function zoneMain(argv: string[], d: Deps): number {
     if (!f.z && input.includes("\0")) throw new UsageError("--stdin input contains NUL; pass -z for NUL-separated paths");
     if (f.z && !input.includes("\0") && input.includes("\n")) throw new UsageError("--stdin -z input has newlines but no NUL; drop -z for newline-separated paths");
     raw = oneEach(input.split(f.z ? "\0" : "\n").map((p) => (f.z ? p : p.replace(/\r$/, ""))));
-  } else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
+  } else if (repoRoot(d.run, d.cwd, undefined) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
   else raw = gitPaths(d, root, typeof f.base === "string" ? f.base : undefined, f.committed === true);
   const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "")).filter(Boolean))].sort();
 

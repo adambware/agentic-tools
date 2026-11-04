@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConfig } from "./env-config.js";
 import { composeChecks, composeProject, harnessChecks, pinChecks, runLocal, sharedCheck, type Ctx, type Result } from "./env-checks.js";
-import { git, isExecutable, parseFlags, redactHome, repoRoot, UsageError, type Deps } from "./proc.js";
+import { git, gitEnv, isExecutable, parseFlags, redactHome, repoRoot, UsageError, type Deps } from "./proc.js";
 import { escapeCtl, jsonText } from "./text.js";
 import { VERSION } from "./version.js";
 
@@ -39,7 +39,8 @@ const mapText = (r: Result, f: (s: string) => string): Result => ({
 
 export function envCheckMain(argv: string[], d: Deps): number {
   const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
-  const root = repoRoot(d.run, d.cwd);
+  // Every git spawn here runs on gitEnv(d.env): the checkout cwd is in, whatever GIT_DIR the shell or a hook set.
+  const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join(root, ".loops", "env-check.toml");
   if (!existsSync(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
@@ -55,15 +56,15 @@ export function envCheckMain(argv: string[], d: Deps): number {
   }
 
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const ls = d.run("git", ["ls-files", "-z"], { cwd: root });
+  const ls = d.run("git", ["ls-files", "-z"], { cwd: root, env: gitEnv(d.env) });
   if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
   const tracked = ls.stdout.split("\0").filter(Boolean);
   let isWorktree = false;
   let worktrees: string[] = [];
   if (!isStatic) {
-    const dir = (flag: string): string => resolve(root, git(d.run, root, ["rev-parse", flag])?.trim() ?? flag);
+    const dir = (flag: string): string => resolve(root, git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim() ?? flag);
     isWorktree = dir("--git-dir") !== dir("--git-common-dir");
-    worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"]) ?? "")
+    worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env)) ?? "")
       .split("\n")
       .flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
   }
