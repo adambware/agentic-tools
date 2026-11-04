@@ -405,7 +405,7 @@ or not listing the main checkout, the name held by another checkout, a container
 another checkout or from none, `docker compose version` failing for any reason but a missing compose plugin (timed out, killed, refused or a non-zero exit), `docker ps` timing out, a failed run of another checkout
 or of the main checkout's configured run), or when it is unknown (the main checkout with Compose unavailable and no
 shell `COMPOSE_PROJECT_NAME`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
-and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). Only a whole path is replaced, at a segment boundary on both sides: with `HOME=/Users/bob`, `/Users/bob2`, `/Users/bob.old` and `/x/Users/bob` are left as they are, and a PATH list's `:/Users/bob:` becomes `:~:`. A `HOME` that is not an absolute path (`HOME=build`) redacts nothing. `--json` is `{schema, engine, mode, root,
+and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). Only a whole path is replaced, at a segment boundary on both sides: with `HOME=/Users/bob`, `/Users/bob2`, `/Users/bob.old` and `/x/Users/bob` are left as they are, punctuation alone after it (`/Users/bob.` ending a sentence, `/Users/bob...`) is not part of a name, and a PATH list's `:/Users/bob:` becomes `:~:`. A `HOME` that is not an absolute path (`HOME=build`) redacts nothing. `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
 Text output escapes every row (and each `--compose-project` stderr line) once: control characters, bidi controls and
 the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
@@ -697,8 +697,8 @@ included, which a configured `c.shared` FAILs; `0` in the main checkout; empty w
 `MISE_AUTO_INSTALL=0` (mise's `auto_install` setting, which per upstream jdx/mise `settings.toml` also turns off its exec and
 not-found auto-install, so a shim never installs a missing version), `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
-separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
-`"`, control characters, the dash of a `— fix:` and the first dash of a `-- fix:` escaped (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix; no lines is a FAIL (`could not start (missing interpreter in its #! line?)` when the check's `#!` interpreter is not there,
+separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\` and
+`"` escaped; like every row, text output then escapes its control characters and fix separators (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix, and `--json` carries it raw; no lines is a FAIL (`could not start (missing interpreter in its #! line?)` when the check's `#!` interpreter is not there,
 `could not run (<signal or error>)` when it was killed); a nonzero
 exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
 a timeout adds a WARN, "not a pass",

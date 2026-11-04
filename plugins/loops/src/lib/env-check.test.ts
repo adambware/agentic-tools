@@ -2704,6 +2704,17 @@ describe("output and exit codes", () => {
     expect(users.sort()).toEqual(["lib/env-check.ts", "lib/loops-cli.ts", "lib/text.ts"]);
   });
 
+  // Value: protects=R26's raw --json values for text a producer quotes; fails_when=quote() escapes, so JSON.parse returns
+  // a literal `\u001b` (verified: red at T7, the guard above misses it since quote lives in text.ts); why_new=the guard
+  // checks direct escapeCtl imports only; seam=a real [[local]]; no_claim=the compose fix's quoted file names (same quote)
+  it("--json carries a quoted unparseable line raw, and text mode shows it escaped once", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", "printf 'bad \\033[2J \\\\ \"q\" line\\n'"));
+    const msg = (JSON.parse(check(root, ["--json"]).out) as { results: { id: string; message: string }[] }).results.find((r) => r.id === "d.a.protocol")!.message;
+    expect(msg).toBe('unparseable line "bad \u001b[2J \\\\ \\"q\\" line"');
+    expect(check(root).lines[0]).toBe('FAIL d.a.protocol  unparseable line "bad \\u001b[2J \\\\ \\"q\\" line" — fix: emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>');
+  });
+
   it("--json carries results, summary and exit; INFO is not counted", () => {
     const root = setup(HEAD);
     put(root, CFG, HEAD + local(root, "d.a", 'echo "PASS d.a fine"\necho "FAIL d.a.f bad"\necho "INFO d.a.i note"'));

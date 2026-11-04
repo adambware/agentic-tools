@@ -66,7 +66,8 @@ describe("redactHome", () => {
   it.each([
     ["a longer name", "/Users/bob2/x", "/Users/bob2/x"],
     ["a dotted sibling", "/Users/bob.old/x and /Users/bob-x", "/Users/bob.old/x and /Users/bob-x"],
-    ["home deeper in another path", "/x/Users/bob/y", "/x/Users/bob/y"],
+    ["home deeper in another path", "/x/Users/bob/y x@/Users/bob/y ./Users/bob", "/x/Users/bob/y x@/Users/bob/y ./Users/bob"],
+    ["a sentence's end and trailing punctuation", "dir is /Users/bob. HOME=/Users/bob... /Users/bob- /Users/bob~ (/Users/bob.)", "dir is ~. HOME=~... ~- ~~ (~.)"],
     ["a PATH list", "a:/Users/bob:/Users/bobby:/Users/bob/bin", "a:~:/Users/bobby:~/bin"],
     ["prose and punctuation", "in /Users/bob/x, (/Users/bob) root=/Users/bob/y //Users/bob", "in ~/x, (~) root=~/y /~"],
     ["quoted words", "cd '/Users/bob' && cd '/Users/bob/x y' && cd '/Users/bob2'", "cd ~ && cd ~/'x y' && cd '/Users/bob2'"],

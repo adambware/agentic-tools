@@ -35,9 +35,9 @@ describe("text helpers", () => {
   });
 
   it("CONTROL and escapeCtl cover bidi controls and marks and the zero-width space, but not ZWNJ or ZWJ", () => {
-    const bidi = ["\u200b", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"];
+    const bidi = ["\u061c", "\u200b", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"];
     for (const c of bidi) expect([c, CONTROL.test(`a${c}b`)]).toEqual([c, true]);
-    expect(escapeCtl("ok \u202egnp.exe\u200b")).toBe("ok \\u202egnp.exe\\u200b");
+    expect(escapeCtl("ok \u202egnp.exe\u200b\u061c")).toBe("ok \\u202egnp.exe\\u200b\\u061c");
     for (const s of ["family 👨\u200d👩\u200d👧", "می\u200cخواهم"]) {
       expect(CONTROL.test(s)).toBe(false);
       expect(escapeCtl(s)).toBe(s);
@@ -64,16 +64,17 @@ describe("text helpers", () => {
   });
 
   it("jsonText writes DEL, C1, line separators, bidi and zero-width as \\uXXXX, losslessly", () => {
-    const raw = "a\u007fb\u0080\u009b\u2028\u2029\u200b\u200e\u200f\u202a\u202e\u2066\u2069\u001b\\u001b é\u200d";
+    const raw = "a\u061c\u007fb\u0080\u009b\u2028\u2029\u200b\u200e\u200f\u202a\u202e\u2066\u2069\u001b\\u001b é\u200d";
     const s = jsonText({ [raw]: [raw] });
-    expect(s).not.toMatch(/[\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/);
+    expect(s).not.toMatch(/[\u061c\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/);
     expect(s).toContain("\\u009b");
     expect(JSON.parse(s)).toEqual({ [raw]: [raw] });
   });
 
-  it("quote gives one double-quoted string with no raw control character and no fix separator", () => {
+  // The renderer and the JSON pass escape control text (R26), so a quoted value reaches --json raw.
+  it("quote gives one double-quoted, cut string, escaping only its backslashes and quotes", () => {
     expect(quote("all good")).toBe('"all good"');
-    expect(quote('say "hi" \\ — fix: x\r')).toBe('"say \\"hi\\" \\\\ \\u2014 fix: x\\r"');
+    expect(quote('say "hi" \\ — fix: x\r\u001b')).toBe('"say \\"hi\\" \\\\ — fix: x\r\u001b"');
     const long = quote("x".repeat(200));
     expect(long).toBe(`"${"x".repeat(80)}…"`);
     expect(quote("abc", 2)).toBe('"ab…"');

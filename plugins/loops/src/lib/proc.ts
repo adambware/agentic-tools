@@ -141,15 +141,27 @@ export function shQuote(s: string): string {
   return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** A character that continues a path segment, so a `home` match next to it is part of another name (`bob2`, `bob.old`). */
+/** A character that can continue a path segment (`bob2`, `bob.old`). */
 const SEGMENT = /[\p{L}\p{N}\p{M}._+@%~-]/u;
+const NAME = /[\p{L}\p{N}\p{M}]/u;
+
+/**
+ * Whether the segment characters from `s[i]` on join a `home` match ending there to a longer name: they do when they
+ * hold a letter or digit (`bob.old`, `bob-x`), not when they are only punctuation, as at the end of a sentence
+ * (`/home/bob.`, `/home/bob...`). Before a match any segment character joins it (`./home/bob` is a relative path).
+ */
+function joined(s: string, i: number): boolean {
+  for (; i < s.length && SEGMENT.test(s[i]!); i++) if (NAME.test(s[i]!)) return true;
+  return false;
+}
 
 /**
  * `s` with `home` shown as `~`, keeping printed commands runnable: a tilde inside quotes does not expand, so a word
  * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself). A trailing slash on home is
  * ignored, so `HOME=/home/u/` still hides a bare `/home/u`. Only a whole path at a segment boundary on both sides is
- * replaced (`/home/u2` and `/x/home/u` stay), and only an absolute home (POSIX; a relative `HOME=build` would hit every
- * `build` folder). `home` is matched literally, never turned into a pattern.
+ * replaced (`/home/u2` and `/x/home/u` stay; a `/home/u.` ending a sentence is replaced), and only an absolute home
+ * (POSIX; a relative `HOME=build` would hit every `build` folder). `home` is matched literally, never turned into a
+ * pattern.
  */
 export function redactHome(s: string, home: string): string {
   home = home.replace(/\/+$/, "");
@@ -159,7 +171,7 @@ export function redactHome(s: string, home: string): string {
   for (let i = s.indexOf(home); i !== -1; i = s.indexOf(home, Math.max(from, i + 1))) {
     const before = s[i - 1] ?? "";
     const after = s[i + home.length] ?? "";
-    if ((before && SEGMENT.test(before)) || (after && SEGMENT.test(after))) continue;
+    if ((before && SEGMENT.test(before)) || joined(s, i + home.length)) continue;
     // A quoted `'<home>/rest'` or `'<home>'` drops its opening quote, so the tilde is outside it.
     const quoted = i > from && before === "'" && (after === "/" || after === "'");
     out += `${s.slice(from, quoted ? i - 1 : i)}${quoted ? (after === "/" ? "~/'" : "~") : "~"}`;
