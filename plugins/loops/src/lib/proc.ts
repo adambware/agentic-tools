@@ -1,6 +1,6 @@
 // Process and flag helpers shared by `loops zone` and `loops env-check`. Commands that spawn
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, isAbsolute, join } from "node:path";
 
@@ -11,7 +11,7 @@ export interface RunOpts {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
-  /** Run in its own process group, and kill the whole group at the timeout, so a child it started does not outlive it. */
+  /** Run in its own process group, and kill the whole group at the timeout or an interrupt, so a child it started does not outlive it. */
   group?: boolean;
 }
 export interface RunResult {
@@ -27,32 +27,107 @@ export interface RunResult {
 }
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => RunResult;
 
+const MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * The supervisor a grouped run goes through: a node process in the caller's own process group that starts the command
+ * detached (its own session and process group), so the whole group can be killed, and kills that group with SIGKILL at
+ * the timeout, on SIGINT, SIGTERM or SIGHUP (a terminal's Ctrl-C reaches the supervisor, not the detached group), and
+ * when its parent is gone (an engine killed while spawnSync blocks its signal handlers). It reads {cmd, args, env,
+ * timeoutMs, max, parent} as JSON on stdin and relays the command's output once it ends, after one JSON status line
+ * on stderr: {code, signal, error, timedOut}.
+ */
+const SUPERVISOR = `
+const { spawn } = require("node:child_process");
+const { readFileSync, writeSync } = require("node:fs");
+const { constants } = require("node:os");
+const o = JSON.parse(readFileSync(0, "utf8"));
+let child = null, error = null, timedOut = false, done = false, timer = null;
+const kill = () => { try { if (child && child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} };
+for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => { kill(); process.exit(128 + constants.signals[s]); });
+const orphan = () => process.ppid !== o.parent;
+setInterval(() => { if (orphan()) { kill(); process.exit(1); } }, 100).unref();
+const put = (fd, b) => { for (let at = 0; at < b.length; ) at += writeSync(fd, b, at, b.length - at); };
+const bufs = [[], []], sizes = [0, 0];
+const finish = (code, signal) => {
+  if (done) return;
+  done = true;
+  clearTimeout(timer);
+  const st = timedOut || error ? { code: null, signal: null, error, timedOut } : { code, signal, error: null, timedOut };
+  put(2, Buffer.from(JSON.stringify(st) + "\\n"));
+  put(2, Buffer.concat(bufs[1]));
+  put(1, Buffer.concat(bufs[0]));
+  process.exit(0);
+};
+if (orphan()) process.exit(1);
+child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
+[child.stdout, child.stderr].forEach((s, i) => s.on("data", (b) => {
+  sizes[i] += b.length;
+  if (sizes[i] > o.max) { error = "ENOBUFS"; kill(); finish(null, null); } else bufs[i].push(b);
+}));
+child.on("close", finish);
+if (o.timeoutMs) timer = setTimeout(() => {
+  timedOut = true; error = "ETIMEDOUT"; kill();
+  // The kill closes the pipes; one held by a process that left the group would not.
+  setTimeout(() => finish(null, null), 500);
+}, o.timeoutMs);
+`;
+
+interface Status {
+  code: number | null;
+  signal: string | null;
+  error: string | null;
+  timedOut: boolean;
+}
+
 export const run: Runner = (cmd, args, opts = {}) => {
-  // spawnSync honors `detached` (its own session and process group) though its types leave it out.
-  const spawnOpts: SpawnSyncOptionsWithStringEncoding & { detached?: boolean } = {
+  if (opts.group) return runGroup(cmd, args, opts);
+  const r = spawnSync(cmd, args, {
     cwd: opts.cwd,
     env: opts.env,
     timeout: opts.timeoutMs,
     // SIGTERM can be trapped or ignored; a deadline has to hold.
     killSignal: "SIGKILL",
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    detached: opts.group,
-  };
-  const r = spawnSync(cmd, args, spawnOpts);
+    maxBuffer: MAX_BUFFER,
+  });
   const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
-  const timedOut = errCode === "ETIMEDOUT";
-  // The timeout killed only the leader; its group (pgid = its pid) may still hold a background child.
-  if (timedOut && opts.group && r.pid) {
-    try {
-      process.kill(-r.pid, "SIGKILL");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
-    }
-  }
   const abend = r.status === null ? (errCode ?? r.signal ?? undefined) : undefined;
-  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend };
 };
+
+/**
+ * `run` for `group`: through SUPERVISOR, with a clean env so NODE_OPTIONS and the like reach only the command. spawnSync
+ * blocks this process's own signal handlers, so the supervisor is what ends the group on an interrupt.
+ */
+function runGroup(cmd: string, args: string[], opts: RunOpts): RunResult {
+  const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid });
+  const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
+    cwd: opts.cwd,
+    env: {},
+    input,
+    // A backstop only: the supervisor keeps the deadline.
+    timeout: opts.timeoutMs === undefined ? undefined : opts.timeoutMs + 10_000,
+    killSignal: "SIGKILL",
+    encoding: "utf8",
+    maxBuffer: 2 * MAX_BUFFER,
+  });
+  const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
+  const nl = (r.stderr ?? "").indexOf("\n");
+  let st: Status | null = null;
+  try {
+    st = nl < 0 ? null : (JSON.parse(r.stderr.slice(0, nl)) as Status);
+  } catch {
+    // no status: the supervisor itself did not finish
+  }
+  if (!st) {
+    const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
+    return { code: null, stdout: "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why };
+  }
+  const abend = st.code === null ? (st.error ?? st.signal ?? undefined) : undefined;
+  return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend };
+}
 
 /** `s` as one POSIX shell word, for commands a fix tells the developer to run. */
 export function shQuote(s: string): string {

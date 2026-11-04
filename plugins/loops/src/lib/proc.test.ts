@@ -1,5 +1,7 @@
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { gitEnv, redactHome, shimOf } from "./proc.js";
 import { put, tmp } from "./testkit.js";
@@ -82,4 +84,51 @@ describe("redactHome", () => {
   it("redacts nothing when HOME is not an absolute path", () => {
     for (const h of ["build", "build/", "./build", "~", "", "/", "//"]) expect(redactHome("build/x /tmp/build/y ~/z", h)).toBe("build/x /tmp/build/y ~/z");
   });
+});
+
+describe("run with group", () => {
+  const PROC = fileURLToPath(new URL("./proc.ts", import.meta.url));
+  let n = 0;
+  const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const alive = (mark: string) => spawnSync("pgrep", ["-f", mark]).status === 0;
+  /** Waits up to `ms` for `ok`, polling every 50ms. */
+  const until = (ok: () => boolean, ms: number) => {
+    for (let t = 0; t < ms && !ok(); t += 50) pause(50);
+    return ok();
+  };
+  /**
+   * An engine: a node process blocked in run() on a grouped check that leaves a marked sleeper running beside it. With
+   * `own`, the engine leads its own process group, as a foreground job does under a terminal.
+   */
+  const engine = (mark: string, own: boolean) => {
+    // `; :` keeps the child shell (and the mark in its argv) alive beside its sleep.
+    const script = `sh -c 'sleep 30; : ${mark}' &\nwait`;
+    const code = `import { run } from ${JSON.stringify(PROC)};\nrun("sh", ["-c", ${JSON.stringify(script)}], { group: true, timeoutMs: 60000 });`;
+    return spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", code], { stdio: "ignore", detached: own });
+  };
+
+  // Value: protects=an interrupt reaching a grouped [[local]] (R20 runs it in its own session, which a terminal's Ctrl-C
+  // and a dying engine never reach); fails_when=run spawns the check detached with nothing left to forward the signal
+  // (verified: red at the T9 runner, the sleeper outlives the engine in all three rows); why_new=T9 tested the timeout
+  // only; seam=a real engine process importing proc.ts; no_claim=a check that escapes its group with setsid
+  it.each([
+    ["SIGINT to the engine's process group, as a terminal's Ctrl-C sends it", "SIGINT", true],
+    ["SIGINT to the engine alone", "SIGINT", false],
+    ["SIGTERM to the engine alone", "SIGTERM", false],
+  ] as const)("ends the check's whole group on %s", (_name, sig, group) => {
+    const mark = `loops-interrupt-${process.pid}-${n++}`;
+    const e = engine(mark, group);
+    try {
+      expect(until(() => alive(mark), 10_000)).toBe(true);
+      process.kill(group ? -e.pid! : e.pid!, sig);
+      expect(until(() => !alive(mark), 3_000)).toBe(true);
+    } finally {
+      try {
+        process.kill(group ? -e.pid! : e.pid!, "SIGKILL");
+      } catch {
+        // already gone
+      }
+      spawnSync("pkill", ["-KILL", "-f", mark]);
+    }
+  }, 20_000);
 });

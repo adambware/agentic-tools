@@ -674,7 +674,11 @@ fails), no running container, or no commit touching the inputs is a SKIP, never 
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
 `timeout_s` stops the check with SIGKILL (a trapped SIGTERM cannot outlive it). The check runs in its own process group, and
-the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A child it leaves
+the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A small node
+supervisor in env-check's own process group starts the check and holds the deadline; it also kills the check's group
+with SIGKILL when env-check is interrupted (Ctrl-C at the terminal, or SIGINT, SIGTERM or SIGHUP) and when env-check
+dies while the check runs, so an interrupted run leaves no check behind. A child that leaves the group (`setsid`)
+is out of its reach. A child it leaves
 running when it exits on its own can hold the run open, so `exec` long commands. It prints one line per
 result on stdout:
 
