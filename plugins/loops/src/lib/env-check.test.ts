@@ -38,6 +38,9 @@ const gitOnly = (): string => {
   symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(d, "git"));
   return d;
 };
+/** An executable `name` in `dir` whose `#!` interpreter does not exist: spawning it fails ENOENT, as a missing file does. */
+const noInterp = (dir: string, name: string): string => (put(dir, name, "#!/nonexistent/interp\necho hi\n", true), join(dir, name));
+const MISSING_INTERP = "could not start (missing interpreter in its #! line?)";
 const goShim = (v = "1.26.1") => shim("go", `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] || exit 9\necho "go version go${v} darwin/arm64"`);
 
 function check(cwd: string, args: string[] = [], env: Record<string, string> = {}, runner?: Runner) {
@@ -195,6 +198,13 @@ describe("pins and local toolchains", () => {
     expect(check(setup(`${GO_PIN}local = "off"\n`, GO_FILES)).out).not.toContain("a.local");
   });
 
+  it("a tool on PATH whose #! interpreter is missing could not start; it is not reported missing", () => {
+    const dir = tmp();
+    const go = noInterp(dir, "go");
+    const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: `${dir}:${gitOnly()}` });
+    expect([r.code, r.lines.find((l) => l.startsWith("FAIL a.local.go"))?.split(" — fix: ")[0]]).toEqual([1, `FAIL a.local.go  ${go} ${MISSING_INTERP}`]);
+  });
+
   it("probes with a timeout and reports a hung probe as timed out at the local level", () => {
     const seen: (number | undefined)[] = [];
     const hung: Runner = (cmd, args, opts) => (cmd === "go" ? (seen.push(opts?.timeoutMs), { code: null, stdout: "", stderr: "", timedOut: true }) : run(cmd, args, opts));
@@ -247,6 +257,8 @@ describe("pins and local toolchains", () => {
     ["a pin more specific than .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod", "tool-versions"]\ncompare = "minor"\n`, { "go.mod": "module x\n\ngo 1.26.1\n", ".tool-versions": "golang 1.26\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
     ["a subdirectory that needs quoting is shell-quoted", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:my tools/.tool-versions"]\n`, { "my tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in 'my tools', which installs the my tools/.tool-versions pins"],
     ["a series in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 1.62.x\n" }, "golangci-lint", "install golangci-lint 1.62 (asdf install, mise install, or your package manager)"],
+    // Value: protects=installFix's plain-version guard, the only thing that keeps a verbatim prerelease off the specific fix; fails_when=the /^\d+(?:\.\d+)*$/ guard is deleted (verified: this row then gets "asdf install golangci-lint 2.0.0-rc.1"); why_new=the series and v-prefix rows pass without the guard, since ver() normalizes them; seam=none; no_claim=whether asdf or mise can install a prerelease
+    ["a prerelease written verbatim in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 2.0.0-rc.1\n" }, "golangci-lint", "install golangci-lint 2.0.0-rc.1 (asdf install, mise install, or your package manager)"],
   ])("the fix follows the pin source: %s", (_n, config, files, tool, fix) => {
     const r = check(setup(config, files), [], { PATH: `${shim(tool, "exit 126")}:/usr/bin:/bin` });
     expect(r.lines.find((l) => l.startsWith(`WARN a.local.${tool}`))).toMatch(new RegExp(` — fix: ${fix.replace(/[.*+?^${}()|[\]\\/@]/g, "\\$&")}$`));
@@ -573,6 +585,17 @@ describe("harness", () => {
       const gone = tmp();
       asdfShim(gone, "fakelint", "/nonexistent-dir/bin/asdf");
       expect(go('["fakelint"]', bare(gone)).out).toContain("fakelint (asdf not found at /nonexistent-dir/bin/asdf)");
+    });
+
+    it("says an asdf whose #! interpreter is missing could not start, by path and on PATH", () => {
+      const abs = tmp();
+      const home = tmp();
+      const asdf = noInterp(join(home, "bin"), "asdf");
+      asdfShim(abs, "fakelint", asdf);
+      expect(go('["fakelint"]', bare(abs)).out).toContain(`fakelint (asdf at ${asdf} ${MISSING_INTERP})`);
+      const shims = tmp();
+      asdfShim(shims, "fakelint");
+      expect(go('["fakelint"]', bare(shims, join(home, "bin"))).out).toContain(`fakelint (asdf at ${asdf} ${MISSING_INTERP})`);
     });
 
     it("relays a shim diagnostic and a shim's manager path escaped in text and raw in --json", () => {
@@ -2431,6 +2454,14 @@ describe("local checks", () => {
     const t = run('trap "" TERM\nend=$(($(date +%s) + 4))\nwhile [ "$(date +%s)" -lt "$end" ]; do :; done', "timeout_s = 0.2\n");
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(t.out).toContain("WARN d.x  timed out after 0.2s (not a pass)");
+  });
+
+  it("a check whose #! interpreter is missing could not start, and one killed by a signal says so", () => {
+    const root = setup(HEAD);
+    noInterp(join(root, ".loops/checks"), "d_x.sh");
+    put(root, CFG, `${HEAD}[[local]]\nid = "d.x"\nrun = ".loops/checks/d_x.sh"\n`);
+    expect(check(root).lines[0]).toBe(`FAIL d.x  ${MISSING_INTERP} — fix: run .loops/checks/d_x.sh by hand`);
+    expect(run("kill -KILL $$").lines[0]).toBe("FAIL d.x  could not run (SIGKILL) — fix: run .loops/checks/d_x.sh by hand");
   });
 
   it("kills the check's whole process group at its timeout, so a child it started is not left running", () => {

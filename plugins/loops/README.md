@@ -532,15 +532,18 @@ or value.
 `python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain and a mise shim installs no missing version; a probe that does
 not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
 match the pin at the `compare` depth; ranges do not bind it. A probe that gives no version says why: `<tool> not found on
-PATH`, `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
+PATH`, `<path> could not start (missing interpreter in its #! line?)` (a file on PATH whose `#!` interpreter is not
+there, which the OS reports as it does a missing file), `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
 <first output line>`; the output line is cut to 120 characters with control characters escaped. When a `.tool-versions`
 line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf install <tool> <version>` and
 `mise install <tool>@<version>`; for `go` and `node`, whose line may say `golang` or `nodejs`, it names a bare
-`asdf install` (or `mise install`) in that file's directory. Any other pin source keeps the generic install fix.
+`asdf install` (or `mise install`) in that file's directory. Any other pin source, and a prerelease written as is
+(`golangci-lint 2.0.0-rc.1`), keeps the generic install fix.
 `d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
 line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
-asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run, times out, exits non-zero (its first output
+asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
+for a manager whose `#!` interpreter is missing), times out, exits non-zero (its first output
 line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
@@ -678,7 +681,8 @@ included, which a configured `c.shared` FAILs; `0` in the main checkout; empty w
 not-found auto-install, so a shim never installs a missing version), `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
 separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
-`"`, control characters, the dash of a `— fix:` and the first dash of a `-- fix:` escaped (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix; no lines is a FAIL; a nonzero
+`"`, control characters, the dash of a `— fix:` and the first dash of a `-- fix:` escaped (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix; no lines is a FAIL (`could not start (missing interpreter in its #! line?)` when the check's `#!` interpreter is not there,
+`could not run (<signal or error>)` when it was killed); a nonzero
 exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
 a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).

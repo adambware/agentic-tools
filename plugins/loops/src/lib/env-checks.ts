@@ -57,11 +57,14 @@ const rp = (p: string): string => {
 };
 
 const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
+/** Why an executable file failed to spawn with ENOENT: the interpreter its `#!` line names is not there. */
+const NO_INTERP = "could not start (missing interpreter in its #! line?)";
 /** Docker calls and toolchain probes: a hung daemon, shim or network call must not hang the run. */
 const PROBE_TIMEOUT_MS = 10_000;
 
-/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` written as a plain
- * version (not `1.62.x` or `v1.2.3`, which the managers would not install as `want`), else the generic advice. An alias
+/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` as written, else the
+ * generic advice. A series or a `v` prefix never matches as written (`want` is the normalized version), so the plain-version
+ * guard only turns away a prerelease written verbatim (`golangci-lint 2.0.0-rc.1`), which gets the generic fix. An alias
  * tool's line may name another plugin (`golang`), so it gets a bare `asdf install` in that file's directory. */
 function installFix(root: string, tool: string, want: string, pins: PinValue[]): string {
   const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
@@ -133,7 +136,11 @@ export function pinChecks(c: Ctx): Result[] {
       return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
     if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
+    else if (r.notFound) {
+      // ENOENT for a file that is on PATH is its #! interpreter, which spawn reports as it does a missing file.
+      const at = which(bin, c.env.PATH);
+      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
+    }
     else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
     else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
     else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
@@ -199,7 +206,7 @@ function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const how = `${s.manager} which ${tool}`;
   const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
-  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
   if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
@@ -687,7 +694,9 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
   const why = stderr ? ` (${cut(c.redact(stderr), 120)})` : "";
-  if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
+  // The run file was checked executable, so ENOENT is its #! interpreter.
+  const none = r.notFound ? NO_INTERP : r.code === null ? `could not run (${r.abend ?? "killed"})` : `printed no results${r.code ? `, exit ${r.code}` : ""}`;
+  if (!out.length) return [mk("FAIL", l.id, `${none}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;
 }
