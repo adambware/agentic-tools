@@ -2481,12 +2481,12 @@ describe("wrapper templates/env-check", () => {
     expect(sandbox({ PATH: nodeDir(), HOME: tmp(), LOOPS_BIN: join(dir, "loops.mjs") }, "--json").out).toBe("env-check --json");
   });
 
-  it("prints a hint and exits 3 when there is no engine or no node", () => {
+  it("prints a hint and exits 3 when there is no engine, and exits 1 when an engine exists but node does not run", () => {
     const none = sandbox({ PATH: nodeDir(), HOME: tmp() });
     expect(none).toMatchObject({ code: 3, out: "env-check: not run\n" });
     expect(none.err).toContain("engine not installed");
     const fake = shim("loops", "echo hi");
-    expect(sandbox({ PATH: tmp(), HOME: tmp(), LOOPS_BIN: join(fake, "loops") }).code).toBe(3);
+    expect(sandbox({ PATH: tmp(), HOME: tmp(), LOOPS_BIN: join(fake, "loops") })).toMatchObject({ code: 1, out: "" });
   });
 
   it("stays within 30 lines", () => {

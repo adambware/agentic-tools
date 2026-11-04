@@ -1,15 +1,27 @@
 #!/bin/sh
-# env-check: thin wrapper around the shared `loops env-check` engine (agentic-tools plugins/loops).
-# Config: .loops/env-check.toml. Exit 3 means the engine is not installed here: contributors can
-# ignore it, the repo's own CI gate stays the merge gate. Install the engine with:
+# env-check: thin wrapper around the shared `loops` env-check engine (agentic-tools plugins/loops).
+# Config: .loops/env-check.toml. Exit 3 means no engine is installed here: contributors can
+# ignore it, the repo's own CI gate stays the merge gate. Exit 2 is a broken install (a LOOPS_BIN
+# that is not a file, a dangling link); exit 1 with a FAIL row means node cannot run. Install with:
 #   ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops
-if command -v node >/dev/null 2>&1; then
-  for c in "${LOOPS_BIN:-}" "$HOME/bin/loops" "$(command -v loops 2>/dev/null)"; do
-    [ -n "$c" ] || continue
-    if [ -x "$c" ]; then exec "$c" env-check "$@"; fi
-    if [ -f "$c" ]; then exec node "$c" env-check "$@"; fi
-  done
+if [ -n "${LOOPS_BIN:-}" ] && [ ! -f "$LOOPS_BIN" ]; then
+  printf 'env-check: LOOPS_BIN=%s is not a file\n' "$LOOPS_BIN" >&2
+  exit 2
 fi
+for c in "${LOOPS_BIN:-}" "$HOME/bin/loops" "$(command -v loops 2>/dev/null)"; do
+  [ -n "$c" ] || continue
+  if [ -L "$c" ] && [ ! -e "$c" ]; then
+    printf 'env-check: %s is a broken link (target missing)\n' "$c" >&2
+    exit 2
+  fi
+  [ -f "$c" ] || continue
+  if ! node -e 0 >/dev/null 2>&1; then
+    echo "FAIL d.tools  node not runnable here (not on PATH, or a version-manager shim with no version set) — fix: install node, or set a version for this checkout (a .tool-versions line for asdf, mise use node@<version> for mise)" >&2
+    exit 1
+  fi
+  if [ -x "$c" ]; then exec "$c" env-check "$@"; fi
+  exec node "$c" env-check "$@"
+done
 echo "env-check: engine not installed (optional for contributors; see CONTRIBUTING.md)" >&2
 echo "env-check: not run"
 exit 3
