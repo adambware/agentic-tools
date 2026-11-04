@@ -59,22 +59,31 @@ export function shQuote(s: string): string {
   return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** A character that continues a path segment, so a `home` match next to it is part of another name (`bob2`, `bob.old`). */
+const SEGMENT = /[\p{L}\p{N}\p{M}._+@%~-]/u;
+
 /**
  * `s` with `home` shown as `~`, keeping printed commands runnable: a tilde inside quotes does not expand, so a word
  * shQuote quoted from a path under home becomes `~/'rest'` (or `~` for home itself). A trailing slash on home is
- * ignored, so `HOME=/home/u/` still hides a bare `/home/u`.
+ * ignored, so `HOME=/home/u/` still hides a bare `/home/u`. Only a whole path at a segment boundary on both sides is
+ * replaced (`/home/u2` and `/x/home/u` stay), and only an absolute home (POSIX; a relative `HOME=build` would hit every
+ * `build` folder). `home` is matched literally, never turned into a pattern.
  */
 export function redactHome(s: string, home: string): string {
   home = home.replace(/\/+$/, "");
-  if (home.length <= 1) return s;
-  const q = `'${home}`;
-  return s
-    .split(`${q}/`)
-    .join("~/'")
-    .split(`${q}'`)
-    .join("~")
-    .split(home)
-    .join("~");
+  if (home.length <= 1 || !home.startsWith("/")) return s;
+  let out = "";
+  let from = 0;
+  for (let i = s.indexOf(home); i !== -1; i = s.indexOf(home, Math.max(from, i + 1))) {
+    const before = s[i - 1] ?? "";
+    const after = s[i + home.length] ?? "";
+    if ((before && SEGMENT.test(before)) || (after && SEGMENT.test(after))) continue;
+    // A quoted `'<home>/rest'` or `'<home>'` drops its opening quote, so the tilde is outside it.
+    const quoted = i > from && before === "'" && (after === "/" || after === "'");
+    out += `${s.slice(from, quoted ? i - 1 : i)}${quoted ? (after === "/" ? "~/'" : "~") : "~"}`;
+    from = i + home.length + (quoted ? 1 : 0);
+  }
+  return out + s.slice(from);
 }
 
 /** Everything a subcommand touches outside its own logic, injected so tests need no real process state. */

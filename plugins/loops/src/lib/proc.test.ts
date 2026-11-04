@@ -1,7 +1,7 @@
 import { chmodSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { gitEnv, shimOf } from "./proc.js";
+import { gitEnv, redactHome, shimOf } from "./proc.js";
 import { put, tmp } from "./testkit.js";
 
 describe("shimOf", () => {
@@ -55,5 +55,31 @@ describe("gitEnv", () => {
     const env = { GIT_DIR: "/x/.git", GIT_INDEX_FILE: "/x/i", GIT_CONFIG_PARAMETERS: "'a.b'='c'", GIT_COMMON_DIR: "/x", GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" };
     expect(gitEnv(env)).toEqual({ GIT_SSH_COMMAND: "ssh", GIT_CONFIG_GLOBAL: "/g", PATH: "/bin" });
     expect(env.GIT_DIR).toBe("/x/.git");
+  });
+});
+
+describe("redactHome", () => {
+  const home = "/Users/bob";
+  it.each([
+    ["a longer name", "/Users/bob2/x", "/Users/bob2/x"],
+    ["a dotted sibling", "/Users/bob.old/x and /Users/bob-x", "/Users/bob.old/x and /Users/bob-x"],
+    ["home deeper in another path", "/x/Users/bob/y", "/x/Users/bob/y"],
+    ["a PATH list", "a:/Users/bob:/Users/bobby:/Users/bob/bin", "a:~:/Users/bobby:~/bin"],
+    ["prose and punctuation", "in /Users/bob/x, (/Users/bob) root=/Users/bob/y //Users/bob", "in ~/x, (~) root=~/y /~"],
+    ["quoted words", "cd '/Users/bob' && cd '/Users/bob/x y' && cd '/Users/bob2'", "cd ~ && cd ~/'x y' && cd '/Users/bob2'"],
+  ])("redacts only at a path-segment boundary on both sides: %s", (_n, s, want) => {
+    expect(redactHome(s, home)).toBe(want);
+    expect(redactHome(s, `${home}/`)).toBe(want);
+  });
+
+  it("matches HOME literally, with no pattern built from it", () => {
+    for (const h of ["/h/a.b", "/h/a+b", "/h/a(b", "/h/a.b+c(d)"]) {
+      const lookalike = h.replace(/[.+(]/g, "X");
+      expect(redactHome(`${h}/x ${lookalike}/x ${h}`, h)).toBe(`~/x ${lookalike}/x ~`);
+    }
+  });
+
+  it("redacts nothing when HOME is not an absolute path", () => {
+    for (const h of ["build", "build/", "./build", "~", "", "/", "//"]) expect(redactHome("build/x /tmp/build/y ~/z", h)).toBe("build/x /tmp/build/y ~/z");
   });
 });
