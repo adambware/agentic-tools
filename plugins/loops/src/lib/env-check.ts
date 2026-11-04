@@ -108,8 +108,9 @@ export function envCheckMain(argv: string[], d: Deps): number {
     .map((r, i) => ({ r, i }))
     .sort((a, b) => group(a.r) - group(b.r) || a.i - b.i)
     .map(({ r }) => r);
-  // A run with no counted row (INFO is not counted) checked nothing; say so as a counted WARN, last, exit unchanged.
-  if (!results.some((r) => r.level !== "INFO")) {
+  // A run with no FAIL, WARN or PASS checked nothing (INFO is not counted, a SKIP is not a check); say so as a counted
+  // WARN, last, exit unchanged.
+  if (!results.some((r) => r.level !== "INFO" && r.level !== "SKIP")) {
     results.push(
       isStatic
         ? { level: "WARN", id: "x.none", message: "no check ran under --static (CI=true implies it)", fix: "add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)", source: "builtin" }

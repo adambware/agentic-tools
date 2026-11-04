@@ -2731,9 +2731,28 @@ describe("x.none: a run that checks nothing", () => {
     const root = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
     commit(root);
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" }).lines).toEqual(["INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
-    expect(check(root, ["--static"]).out).not.toContain("x.none"); // SKIP c.shared counts
     expect(check(root).out).not.toContain("x.none");
     expect(check(setup(`${HEAD}[harness]\ntools = ["git"]\n`)).out).not.toContain("x.none");
+  });
+
+  it("counts a run of only SKIP rows as nothing checked, exit 0; one PASS beside a SKIP is enough", () => {
+    const shared = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
+    commit(shared);
+    expect(check(shared, ["--static"])).toMatchObject({
+      code: 0,
+      lines: [
+        "SKIP c.shared  not checked in --static mode",
+        "WARN x.none  no check ran under --static (CI=true implies it) — fix: add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)",
+        "env-check: 0 FAIL, 1 WARN, 0 PASS, 1 SKIP",
+      ],
+    });
+    const only = (script: string) => {
+      const root = setup(HEAD);
+      put(root, CFG, HEAD + local(root, "d.x", script));
+      return check(root);
+    };
+    expect(only('echo "SKIP d.x n/a"\necho "SKIP d.x.two n/a either"')).toMatchObject({ code: 0, lines: ["SKIP d.x  n/a", "SKIP d.x.two  n/a either", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 2 SKIP"] });
+    expect(only('echo "SKIP d.x n/a"\necho "PASS d.x.two ok"').out).not.toContain("x.none");
   });
 });
 

@@ -393,7 +393,7 @@ env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
 ```
 
 Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
-are not counted. A run with no counted row (no FAIL, WARN, PASS or SKIP; only INFO rows, or none) adds
+are not counted. A run with no FAIL, WARN or PASS (only SKIP and INFO rows, or none: a SKIP is not a check) adds
 `WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)` last (under `--static`:
 `no check ran under --static (CI=true implies it)`, naming the checks that do run there); exit stays 0. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
