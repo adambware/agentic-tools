@@ -24,15 +24,21 @@ export interface Result {
 export interface Ctx {
   run: Runner;
   root: string;
+  /** Where env-check runs: an inherited relative GIT_DIR is relative to it. */
+  cwd: string;
   env: NodeJS.ProcessEnv;
   static: boolean;
   cfg: Config;
   /** `git ls-files`. */
   tracked: string[];
-  /** Linked worktree? False in --static, where nothing probes worktrees. */
+  /** Linked worktree? False in --static, where nothing probes worktrees, and when git could not read the git-dir. */
   isWorktree: boolean;
+  /** `git rev-parse --git-dir`, absolute; null when it or `--git-common-dir` failed, undefined in --static. */
+  gitDir?: string | null;
   /** `git worktree list` paths, the main checkout first. */
   worktrees: string[];
+  /** False when `git worktree list` failed or did not run (--static). */
+  worktreesRead: boolean;
   /**
    * `$HOME` shown as `~`: the renderer's own redaction, applied to relayed text before it is cut, since a cut through
    * home would leave a prefix the renderer no longer recognises.
@@ -139,8 +145,32 @@ export function pinChecks(c: Ctx): Result[] {
 
 export function sharedCheck(c: Ctx): Result[] {
   if (c.cfg.sharedHint === null) return [];
+  const unread = (cmd: string) => [res("FAIL", "c.shared", "could not read git metadata", `rerun ${cmd} to see why`)];
+  if (c.gitDir === null) return unread("git rev-parse --git-dir --git-common-dir");
   if (c.static) return [res("SKIP", "c.shared", "not checked in --static mode")];
-  if (c.isWorktree) return [res("PASS", "c.shared", "in a linked worktree")];
+  // Each FAIL below comes before ENV_CHECK_ALLOW_MAIN, which allows the shared checkout, not a checkout git mistakes.
+  // The user's own git obeys an inherited GIT_DIR / GIT_WORK_TREE that env-check's git drops; the one git sets in a
+  // hook names this checkout, so it is silent.
+  for (const [k, want, what] of [["GIT_DIR", c.gitDir!, "git metadata"], ["GIT_WORK_TREE", c.root, "files"]] as const) {
+    const at = c.env[k] ? rp(resolve(c.cwd, c.env[k])) : null;
+    if (at && at !== rp(want)) return [res("FAIL", "c.shared", `${k} points at another checkout's ${what}; git commands here act on ${at}`, "unset GIT_DIR GIT_WORK_TREE")];
+  }
+  if (c.isWorktree) {
+    // A real worktree is registered and owns its metadata: git's record of it (<git-dir>/gitdir, relative to the
+    // git-dir when written with --relative-paths) names this folder. A cp -R copy, also one over another registered
+    // worktree, shares a git-dir another checkout owns; a moved worktree's record names a folder that is gone.
+    if (!c.worktreesRead) return unread("git worktree list --porcelain");
+    const me = rp(c.root);
+    let at: string | null = null;
+    try {
+      at = dirname(resolve(c.gitDir!, readFileSync(join(c.gitDir!, "gitdir"), "utf8").trim()));
+    } catch {
+      // No record: git lists it prunable, as it does a moved worktree.
+    }
+    if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
+    if (at && rp(at) !== me && existsSync(join(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
+  }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
 }

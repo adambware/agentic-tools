@@ -60,20 +60,28 @@ export function envCheckMain(argv: string[], d: Deps): number {
   if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
   const tracked = ls.stdout.split("\0").filter(Boolean);
   let isWorktree = false;
+  let gitDir: string | null | undefined;
   let worktrees: string[] = [];
+  let worktreesRead = false;
   if (!isStatic) {
-    const dir = (flag: string): string => resolve(root, git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim() ?? flag);
-    isWorktree = dir("--git-dir") !== dir("--git-common-dir");
-    worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env)) ?? "")
-      .split("\n")
-      .flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
+    // A failed rev-parse is no git-dir at all: c.shared FAILs on it rather than guess from two made-up paths.
+    const dir = (flag: string): string | null => {
+      const out = git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim();
+      return out ? resolve(root, out) : null;
+    };
+    const [own, common] = [dir("--git-dir"), dir("--git-common-dir")];
+    gitDir = own && common ? own : null;
+    isWorktree = !!gitDir && own !== common;
+    const list = git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env));
+    worktreesRead = list !== null;
+    worktrees = (list ?? "").split("\n").flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
   }
   const home = d.env.HOME || homedir();
   const redact = (s: string): string => redactHome(s, home);
   // Escape once, at the edges: a text row is redacted, then escaped, so a file name or relayed output can neither move
   // the cursor nor add a second fix; --json keeps values raw (redacted) and jsonText escapes them the JSON way.
   const showRow = (r: Result): Result => mapText(r, (s) => escapeCtl(redact(s)));
-  const ctx: Ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees, redact };
+  const ctx: Ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact };
 
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");

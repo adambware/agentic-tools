@@ -430,6 +430,12 @@ engine = ">=0.4.0"                      # only ">=X.Y.Z"; an older CLI exits 2 "
 [shared_checkout]                       # c.shared: FAIL in the main checkout, PASS in a linked worktree
 hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
                                         # ENV_CHECK_ALLOW_MAIN=1 downgrades the FAIL to INFO
+                                        # the worktree must be registered and own its git metadata:
+                                        # a cp -R copy FAILs "copied?", a moved one FAILs "moved"
+                                        # (fix: git worktree repair); an inherited GIT_DIR or
+                                        # GIT_WORK_TREE naming another checkout FAILs (a hook's own
+                                        # is silent); unreadable git metadata FAILs. ALLOW_MAIN
+                                        # downgrades none of these
 
 [[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
 tool = "go"

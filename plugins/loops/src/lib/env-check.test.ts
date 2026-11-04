@@ -317,6 +317,94 @@ describe("c.shared", () => {
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 0, out: expect.stringContaining("INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN") });
     expect(check(worktree(root, "feat-x")).lines[0]).toBe("PASS c.shared  in a linked worktree");
   });
+
+  const PASS = "PASS c.shared  in a linked worktree";
+  const COPIED = "FAIL c.shared  this folder shares another worktree's git metadata (copied?) — fix: recreate it with git worktree add; do not run git worktree repair here";
+  const committed = (): string => {
+    const root = setup(cfg);
+    commit(root);
+    return root;
+  };
+  const cpR = (from: string, to: string): void => void execFileSync("cp", ["-R", from, to]);
+
+  it("fails a cp -R copy of a worktree as copied, even with ENV_CHECK_ALLOW_MAIN=1", () => {
+    const wt = worktree(committed(), "feat-a");
+    const copy = join(tmp(), "feat-a-copy");
+    cpR(wt, copy);
+    expect(check(copy)).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+    expect(check(copy, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+    expect(check(join(copy, ".loops")).lines).toContain(COPIED); // from a subdirectory too
+    expect(check(wt).lines).toContain(PASS); // the original is still fine
+  });
+
+  it("fails worktree A copied over registered worktree B: B is listed, but its .git points at A's metadata", () => {
+    const root = committed();
+    const a = worktree(root, "feat-a");
+    const b = worktree(root, "feat-b");
+    rmSync(b, { recursive: true });
+    cpR(a, b);
+    expect(sh(root, "worktree", "list", "--porcelain")).toContain(`worktree ${b}\n`);
+    expect(check(b)).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+  });
+
+  it("passes a worktree with relative paths, one reached through a symlink, and one run from a subdirectory", () => {
+    const root = committed();
+    const rel = join(tmp(), "feat-rel");
+    sh(root, "worktree", "add", "-q", "--relative-paths", "-b", `b${n++}`, rel);
+    expect(readFileSync(join(rel, ".git"), "utf8")).toMatch(/^gitdir: \.\./); // git did store it relative
+    expect(check(rel).lines).toContain(PASS);
+    const link = join(tmp(), "link");
+    symlinkSync(tmp(), link);
+    const viaLink = worktree(root, "feat-link", link);
+    expect(check(viaLink).lines).toContain(PASS);
+    expect(check(join(viaLink, ".loops")).lines).toContain(PASS);
+    // git stores real paths, so the symlink that matters is in a hook-style GIT_DIR: equal once both are real paths.
+    const rootLink = join(tmp(), "root-link");
+    symlinkSync(root, rootLink);
+    expect(check(viaLink, [], { GIT_DIR: join(rootLink, ".git", "worktrees", "feat-link") }).lines).toContain(PASS);
+  });
+
+  it("tells a moved worktree to run git worktree repair", () => {
+    const wt = worktree(committed(), "feat-m");
+    const moved = join(tmp(), "feat-m-moved");
+    execFileSync("mv", [wt, moved]);
+    expect(check(moved)).toMatchObject({ code: 1, lines: expect.arrayContaining([`FAIL c.shared  worktree moved: git has it registered at ${wt}, which is missing — fix: run git worktree repair here`]) });
+  });
+
+  it("fails an inherited GIT_DIR or GIT_WORK_TREE that points at another checkout, even with ENV_CHECK_ALLOW_MAIN=1", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-g");
+    const gd = join(root, ".git", "worktrees", "feat-g");
+    const msg = `FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${gd} — fix: unset GIT_DIR GIT_WORK_TREE`;
+    expect(check(root, [], { GIT_DIR: gd })).toMatchObject({ code: 1, lines: expect.arrayContaining([msg]) });
+    expect(check(root, [], { GIT_DIR: gd, ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 1, lines: expect.arrayContaining([msg]) });
+    expect(check(wt, [], { GIT_WORK_TREE: root }).lines).toContain(`FAIL c.shared  GIT_WORK_TREE points at another checkout's files; git commands here act on ${root} — fix: unset GIT_DIR GIT_WORK_TREE`);
+  });
+
+  it("says nothing about the GIT_DIR git sets inside a hook: it names this checkout's own metadata", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-h");
+    const dump = join(tmp(), "hook-env");
+    put(root, ".git/hooks/pre-commit", `#!/bin/sh\n{ pwd; env | grep '^GIT_'; } > '${dump}'\n`, true);
+    sh(wt, "commit", "-q", "--allow-empty", "-m", "hooked");
+    const [cwd, ...vars] = readFileSync(dump, "utf8").trim().split("\n");
+    const env = Object.fromEntries(vars.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    expect(env.GIT_DIR).toBeTruthy(); // git did set one
+    expect(check(cwd!, [], env).lines).toContain(PASS);
+    expect(check(root, [], { GIT_DIR: ".git" }).lines[0]).toMatch(/^FAIL c\.shared {2}this is the shared checkout/); // the main checkout's own, relative
+  });
+
+  it.each(["--git-dir", "--git-common-dir"])("fails when git rev-parse %s fails, instead of guessing a worktree", (flag) => {
+    const wt = worktree(committed(), "feat-n");
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "rev-parse" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, args, opts));
+    expect(check(wt, [], {}, nul)).toMatchObject({ code: 1, lines: expect.arrayContaining(["FAIL c.shared  could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why"]) });
+  });
+
+  it("fails a worktree when git worktree list fails: its registration cannot be checked", () => {
+    const wt = worktree(committed(), "feat-l");
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, args, opts));
+    expect(check(wt, [], {}, nul).lines).toContain("FAIL c.shared  could not read git metadata — fix: rerun git worktree list --porcelain to see why");
+  });
 });
 
 describe("git env", () => {
