@@ -633,6 +633,45 @@ describe("harness", () => {
       expect(existsSync(join(bin, "mise.log"))).toBe(false);
     });
 
+    // Value: protects=the mise PATH fallback the T13 Docker probe recorded (mise 2026.11.0: a shim with no active version
+    // runs the next non-shim copy on PATH while mise which exits 1); fails_when=shimProblem FAILs on mise which's exit alone
+    // (verified: red before the fix, the shim-then-copy run exits 1 with "mise which fakelint exited 1"); why_new=no row had a
+    // copy of the tool after a mise shim; seam=shimProblem; no_claim=which copy mise would pick when one is itself a shim
+    it("PASSes a mise shim with no active version when an executable non-shim copy follows it on PATH, as mise falls back to it", () => {
+      const bin = tmp();
+      const shims = tmp();
+      const sys = tmp();
+      manager(bin, "mise", 'echo "mise ERROR $2 is a mise bin however it is not currently active" >&2; exit 1');
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      const NOT_ACTIVE = "fakelint (mise which fakelint exited 1: mise ERROR fakelint is a mise bin however it is not currently active)";
+      // Nothing after the shim: mise errors, so d.tools FAILs.
+      expect(go('["fakelint"]', bare(shims)).out).toContain(NOT_ACTIVE);
+      put(sys, "fakelint", `#!/bin/sh\ntouch "${sys}/ran-fakelint"\n`, true);
+      const r = go('["fakelint"]', bare(shims, sys));
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("PASS d.tools  present: fakelint");
+      expect(readFileSync(join(bin, "mise.log"), "utf8").endsWith(`\n${r.root} which fakelint\n`)).toBe(true); // mise is still asked first
+      expect(existsSync(join(sys, "ran-fakelint"))).toBe(false); // the copy is found, never run
+      // Only a copy after the shim's own directory counts, and only an executable one that is no shim.
+      expect(go('["fakelint"]', bare(sys, shims)).out).toContain("PASS d.tools  present: fakelint"); // the copy itself is first
+      const noexec = tmp();
+      put(noexec, "fakelint", "#!/bin/sh\n");
+      expect(go('["fakelint"]', bare(shims, noexec)).out).toContain(NOT_ACTIVE);
+      const again = tmp();
+      symlinkSync(join(bin, "mise"), join(again, "fakelint"));
+      expect(go('["fakelint"]', bare(shims, again)).out).toContain(NOT_ACTIVE);
+      const asdfShims = tmp();
+      asdfShim(asdfShims, "fakelint");
+      expect(go('["fakelint"]', bare(shims, asdfShims)).out).toContain(NOT_ACTIVE);
+      // A mise which that prints no path is no fallback; nor is asdf, which has none.
+      manager(bin, "mise", "exit 0");
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("fakelint (mise which fakelint printed no path)");
+      const aShims = tmp();
+      asdfShim(aShims, "fakelint");
+      manager(bin, "asdf", NO_VERSION);
+      expect(go('["fakelint"]', bare(aShims, bin, sys)).out).toContain("fakelint (asdf which fakelint exited 126: No version is set for command fakelint)");
+    });
+
     it("FAILs a manager that times out, prints no path, or cannot run", () => {
       const shims = tmp();
       const bin = tmp();

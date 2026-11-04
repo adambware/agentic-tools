@@ -544,14 +544,17 @@ line) or a mise shim (a symlink to the mise binary) is checked by asking its man
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
 asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
 for a manager whose `#!` interpreter is missing), times out, exits non-zero (its first output
-line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row.
+line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row. The one
+exception follows mise's own fallback: a mise shim whose `mise which` exits non-zero still PASSes when an executable
+copy of the tool that is no shim (neither asdf nor mise) sits on PATH after the shim's own directory, since the shim
+runs that copy; the copy is found, never run. asdf has no such fallback.
 The shim handling was checked against a real mise (2026-11-04): mise v2026.11.0 (linux-arm64 release binary,
 sha256 verified) in a throwaway container from node:22.12.0-bookworm-slim
 (sha256:35531c52ce27b6575d69755c73e65d4468dba93a25644eed56dc12879cae9213, linux/aarch64, Debian 12), with a tool
 installed through mise but active in no config, a system copy later on PATH, and the mise shims first. In that
 state the shim does not fail: it runs the later copy on PATH (exit 0), while `mise which <tool>` exits 1
-('... is a mise bin however it is not currently active'). d.tools still reports that state as a FAIL, though the
-tool runs (known limitation, tracked for 0.8.0). With no later copy, the shim exits 1 ('No version is set for
+('... is a mise bin however it is not currently active'). The 0.7.0 engine FAILed that state though the tool runs;
+d.tools now PASSes it by the fallback rule above. With no later copy, the shim exits 1 ('No version is set for
 shim') and d.tools FAILs it. The macOS mise build was not probed; the shim code is shared.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:

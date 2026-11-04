@@ -2,7 +2,7 @@
 // Every check returns Results; a check that cannot decide fails or warns, never passes.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
@@ -195,7 +195,9 @@ function autoEntrypoints(c: Ctx): string[] {
 /**
  * Why the asdf or mise shim at `p` cannot run `tool` in this checkout, or null when it resolves or `p` is no shim. Asks
  * the manager (`asdf which` / `mise which`, from the repo root with the run's env), which resolves the version the shim
- * would use; the tool itself never runs.
+ * would use; the tool itself never runs. A mise shim with no active version runs the next copy of the tool on PATH
+ * (mise 2026.11.0, linux/aarch64, while `mise which` exits 1), so one that fails `mise which` resolves when an
+ * executable copy that is no shim follows the shim's own directory on PATH.
  */
 function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const s = shimOf(p);
@@ -208,8 +210,15 @@ function shimProblem(c: Ctx, tool: string, p: string): string | null {
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
   if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
+  if (r.code !== 0) return s.manager === "mise" && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
+}
+
+/** Whether an executable `tool` that is no version-manager shim sits on PATH after `p`'s directory; it never runs. */
+function fallsBackTo(c: Ctx, tool: string, p: string): boolean {
+  const dirs = (c.env.PATH ?? "").split(delimiter);
+  const at = dirs.findIndex((d) => d && join(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join(d, tool)) && !shimOf(join(d, tool)));
 }
 
 export function harnessChecks(c: Ctx): Result[] {
