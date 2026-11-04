@@ -414,9 +414,10 @@ bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, s
 env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_INDEX_FILE`…), so they read the checkout env-check runs in; `loops zone` keeps them.
 
-`--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
-`b.containers`, `d.tools`, `d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
-`[[local]]` checks with `static = true` run.
+`--static` reads repo files only: no toolchain, tool or docker probes; one git rev-parse (`a.local.*`,
+`b.containers`, `d.tools`, `d.sparse` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
+rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
+`ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
@@ -434,8 +435,8 @@ hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
                                         # a cp -R copy FAILs "copied?", a moved one FAILs "moved"
                                         # (fix: git worktree repair); an inherited GIT_DIR or
                                         # GIT_WORK_TREE naming another checkout FAILs (a hook's own
-                                        # is silent); unreadable git metadata FAILs. ALLOW_MAIN
-                                        # downgrades none of these
+                                        # is silent); unreadable git metadata FAILs, also under
+                                        # --static. ALLOW_MAIN downgrades none of these
 
 [[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
 tool = "go"
@@ -669,7 +670,8 @@ result on stdout:
 `<id>` must be the configured id or `<id>.<name>`. The fix starts at the first ` — fix: ` (` -- fix: ` also works);
 later ones belong to the fix (escaped in text output). An empty fix counts as none, so a WARN or FAIL gets the default `address the message
 above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
-`ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
+`ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`1` when this is not the main checkout, a `cp -R` copy
+included, which a configured `c.shared` FAILs; `0` in the main checkout; empty when git could not be read; the same under `--static`), `ENV_CHECK_PROJECT`
 (the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
 separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,

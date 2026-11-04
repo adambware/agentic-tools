@@ -31,10 +31,10 @@ export interface Ctx {
   cfg: Config;
   /** `git ls-files`. */
   tracked: string[];
-  /** Linked worktree? False in --static, where nothing probes worktrees, and when git could not read the git-dir. */
+  /** Not the main checkout (git-dir != common-dir), in every mode; a cp -R copy counts. False when git-dir is null. */
   isWorktree: boolean;
-  /** `git rev-parse --git-dir`, absolute; null when it or `--git-common-dir` failed, undefined in --static. */
-  gitDir?: string | null;
+  /** `git rev-parse --git-dir`, absolute, in every mode; null when it or `--git-common-dir` failed. */
+  gitDir: string | null;
   /** `git worktree list` paths, the main checkout first. */
   worktrees: string[];
   /** False when `git worktree list` failed or did not run (--static). */
@@ -664,7 +664,8 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     ...c.env,
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
-    ENV_CHECK_WORKTREE: c.isWorktree ? "1" : "0",
+    // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
+    ENV_CHECK_WORKTREE: c.gitDir === null ? "" : c.isWorktree ? "1" : "0",
     ENV_CHECK_PROJECT: project ?? "",
     ENV_CHECK_ID: l.id,
     GOPROXY: "off",

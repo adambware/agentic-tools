@@ -296,13 +296,46 @@ describe("pins and local toolchains", () => {
 
 describe("--static", () => {
   const cfg = `${GO_PIN}local = "fail"\n[shared_checkout]\nhint = "use a worktree"\n[harness]\ntools = ["nope-tool"]\n`;
-  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j reads files only: no toolchain, tool or worktree probes", (args, env) => {
+  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j reads files only: no toolchain, tool or worktree-list probes", (args, env) => {
     const never = shim("go", "exit 9");
-    const r = check(setup(cfg, GO_FILES), args, { ...withPath(never), ...env });
+    const calls: string[][] = [];
+    const rec: Runner = (cmd, a, opts) => (calls.push([cmd, ...a]), run(cmd, a, opts));
+    const r = check(setup(cfg, GO_FILES), args, { ...withPath(never), ...env }, rec);
     expect(r.code).toBe(0);
     expect(r.out).toContain("SKIP c.shared  not checked in --static mode");
     expect(r.out).not.toContain("a.local");
     expect(r.out).not.toContain("d.tools");
+    // One rev-parse pair, no `git worktree list`.
+    expect(calls.filter((c) => c[0] === "git").map((c) => c.slice(1, 3))).toEqual([["rev-parse", "--show-toplevel"], ["ls-files", "-z"], ["rev-parse", "--git-dir"], ["rev-parse", "--git-common-dir"]]);
+  });
+
+  // A static [[local]] that prints what env-check tells it about the worktree.
+  const echoWt = (extra = "") => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + extra + local(root, "d.x", 'echo "PASS d.x wt=$ENV_CHECK_WORKTREE"', "static = true\n"));
+    commit(root);
+    return root;
+  };
+  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j tells a [[local]] the same ENV_CHECK_WORKTREE full mode does", (args, env) => {
+    const root = echoWt();
+    const wt = worktree(root, "feat-s");
+    expect(check(wt, args, env).lines[0]).toBe("PASS d.x  wt=1");
+    expect(check(wt).lines[0]).toBe("PASS d.x  wt=1");
+    expect(check(root, args, env).lines[0]).toBe("PASS d.x  wt=0");
+  });
+
+  it.each([
+    ["--static", "--git-dir", ["--static"], {}],
+    ["CI=true", "--git-common-dir", [], { CI: "true" }],
+  ] as [string, string, string[], Record<string, string>][])("%s: a failed rev-parse %s FAILs c.shared and tells a [[local]] nothing", (_n, flag, args, env) => {
+    const root = echoWt(`[shared_checkout]\nhint = "use a worktree"\n`);
+    const wt = worktree(root, "feat-u");
+    const nul: Runner = (cmd, a, opts) => (cmd === "git" && a[0] === "rev-parse" && a[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, a, opts));
+    // Empty, set explicitly: an inherited ENV_CHECK_WORKTREE never wins.
+    expect(check(wt, args, { ...env, ENV_CHECK_WORKTREE: "1" }, nul)).toMatchObject({
+      code: 1,
+      lines: ["FAIL c.shared  could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why", "PASS d.x  wt=", "env-check: 1 FAIL, 0 WARN, 1 PASS, 0 SKIP"],
+    });
   });
 });
 
@@ -335,6 +368,16 @@ describe("c.shared", () => {
     expect(check(copy, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
     expect(check(join(copy, ".loops")).lines).toContain(COPIED); // from a subdirectory too
     expect(check(wt).lines).toContain(PASS); // the original is still fine
+  });
+
+  it("still tells a copy's [[local]] ENV_CHECK_WORKTREE=1 (not the main checkout); c.shared fails the run", () => {
+    const root = setup(cfg);
+    put(root, CFG, cfg + local(root, "d.x", 'echo "PASS d.x wt=$ENV_CHECK_WORKTREE"', "static = true\n"));
+    commit(root);
+    const copy = join(tmp(), "feat-w-copy");
+    cpR(worktree(root, "feat-w"), copy);
+    for (const args of [[], ["--static"]]) expect(check(copy, args)).toMatchObject({ code: args.length ? 0 : 1, lines: expect.arrayContaining(["PASS d.x  wt=1"]) });
+    expect(check(copy).lines).toContain(COPIED);
   });
 
   it("fails worktree A copied over registered worktree B: B is listed, but its .git points at A's metadata", () => {

@@ -59,19 +59,18 @@ export function envCheckMain(argv: string[], d: Deps): number {
   const ls = d.run("git", ["ls-files", "-z"], { cwd: root, env: gitEnv(d.env) });
   if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
   const tracked = ls.stdout.split("\0").filter(Boolean);
-  let isWorktree = false;
-  let gitDir: string | null | undefined;
+  // The rev-parse pair runs in every mode, so --static tells locals what full mode does (~12 ms, no network). A failed
+  // rev-parse is no git-dir at all: c.shared FAILs on it rather than guess from two made-up paths.
+  const dir = (flag: string): string | null => {
+    const out = git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim();
+    return out ? resolve(root, out) : null;
+  };
+  const [own, common] = [dir("--git-dir"), dir("--git-common-dir")];
+  const gitDir = own && common ? own : null;
+  const isWorktree = !!gitDir && own !== common;
   let worktrees: string[] = [];
   let worktreesRead = false;
   if (!isStatic) {
-    // A failed rev-parse is no git-dir at all: c.shared FAILs on it rather than guess from two made-up paths.
-    const dir = (flag: string): string | null => {
-      const out = git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim();
-      return out ? resolve(root, out) : null;
-    };
-    const [own, common] = [dir("--git-dir"), dir("--git-common-dir")];
-    gitDir = own && common ? own : null;
-    isWorktree = !!gitDir && own !== common;
     const list = git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env));
     worktreesRead = list !== null;
     worktrees = (list ?? "").split("\n").flatMap((l) => (l.startsWith("worktree ") ? [l.slice(9)] : []));
