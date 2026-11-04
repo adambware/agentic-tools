@@ -131,6 +131,9 @@ describe("run with group", () => {
     ["SIGINT to the engine's process group, as a terminal's Ctrl-C sends it", "SIGINT", true],
     ["SIGINT to the engine alone", "SIGINT", false],
     ["SIGTERM to the engine alone", "SIGTERM", false],
+    // Value: protects=a closed terminal (SIGHUP) ending a grouped [[local]]; fails_when=SIGHUP drops out of the supervisor's
+    // handled signals; why_new=rows covered SIGINT/SIGTERM only; seam=none; no_claim=SIGHUP to the engine alone
+    ["SIGHUP to the engine's process group, as a closing terminal sends it", "SIGHUP", true],
   ] as const)("ends the check's whole group on %s", (_name, sig, group) => {
     const mark = `loops-interrupt-${process.pid}-${n++}`;
     const e = engine(mark, group);
