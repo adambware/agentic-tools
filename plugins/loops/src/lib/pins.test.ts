@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as glob from "./glob.js";
 import { cmp, disagreement, localOk, PinError, pinOf, readSource, ver, type PinValue } from "./pins.js";
@@ -841,6 +842,26 @@ describe("a setup step without a version is a FAIL, never skipped beside a pinne
     expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v9", "\n          working-directory: tools")), "tools/go.mod": MOD })).toEqual(["2.1.5"]);
     expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v6.5.0")), "go.mod": "module x\n\nrequire github.com/golangci/golangci-lint v1.64.8\n" })).toEqual(["1.64.8"]);
     fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v6")), "go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+  });
+  // Value: protects=a SHA- or branch-pinned step gets the current release's default, and an expression working-directory is no
+  // literal go.mod path; fails_when=refVer reads a SHA as a version, or `${{ }}` is read as a folder; why_new=every default row used
+  // an @vN ref and a literal working-directory; seam=none; no_claim=which release a SHA names
+  it("a SHA or branch ref is the current release; an expression working-directory FAILs", () => {
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    expect(read("setup-python", "python", { [CI]: WF(step("actions/setup-python@0a1b2c3d4e5f60718293a4b5c6d7e8f901234567")), ".python-version": "3.12.1\n" })).toEqual(["3.12.1"]);
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("main")), "go.mod": MOD })).toEqual(["2.1.5"]);
+    fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", "\n          working-directory: ${{ matrix.dir }}")), "go.mod": MOD, "${{ matrix.dir }}/go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+  });
+  // Value: protects=the go.mod default never reads outside the checkout; fails_when=a working-directory that leaves the root or
+  // is absolute is followed; why_new=only in-repo working-directories were read; seam=none; no_claim=symlinked folders
+  it("a working-directory outside the checkout FAILs, never reads that go.mod", () => {
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    for (const out of [(r: string) => `../${basename(r)}/tools`, (r: string) => `${r}/tools`]) {
+      const root = tmp();
+      const files = { [CI]: WF(GOLANGCI("v8", `\n          working-directory: ${out(root)}`)), "tools/go.mod": MOD, [`${root.slice(1)}/tools/go.mod`]: MOD };
+      for (const [f, c] of Object.entries(files)) put(root, f, c);
+      expect(() => readSource(root, Object.keys(files), "golangci-lint", "golangci-action")).toThrow(noVersion("golangci-lint-action", CI, 6));
+    }
   });
 
   // goreleaser/goreleaser-action v7.3.0 src/context.ts: `version` defaults to `~> v2` (v6.0.0 action.yml too); v5 and earlier

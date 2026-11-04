@@ -3037,5 +3037,11 @@ describe("versions", () => {
     const t = deps(tmp());
     expect([main(["frobnicate"], t.d), main([], t.d)]).toEqual([2, 2]);
     expect(t.err.join("\n")).toMatch(/^frobnicate: unknown command frobnicate\nloops [0-9.]+\nusage: loops/);
+    // Value: protects=bare `loops` prints its version once, as the error line, then usage; fails_when=the usage slice drops or
+    // repeats the version line; why_new=main([]) asserted only its exit code; seam=none; no_claim=none beyond protects
+    const b = deps(tmp());
+    expect(main([], b.d)).toBe(2);
+    expect(b.err.join("\n")).toMatch(new RegExp(`^loops: loops ${VERSION.replace(/\./g, "\\.")}\nusage: loops`));
+    expect(b.err.join("\n").match(/loops \d+\.\d+\.\d+/g)).toHaveLength(1);
   });
 });

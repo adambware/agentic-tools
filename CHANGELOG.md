@@ -21,6 +21,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A `[[local]]` check runs in its own process group, and its timeout kills the whole group with SIGKILL, so a child such as `go` under a shell no longer outlives it. Interrupting env-check (Ctrl-C, SIGINT, SIGTERM or SIGHUP) or killing it while a local check runs kills that group too, through a small supervisor process.
 - An executable file that cannot start because its `#!` interpreter is missing is reported as that in `a.local`, `d.tools` and `[[local]]` checks ("could not start (missing interpreter in its #! line?)"), instead of "not found" or "printed no results".
 - `templates/env-check` fails loudly: an explicit `LOOPS_BIN` that is not a regular file exits 2, a dangling candidate symlink exits 2, and a chosen engine that cannot run because `node` does not start writes a `d.tools` FAIL row to stderr and exits 1. Exit 3 stays for "no candidate". Consumers get these only when they re-copy the wrapper.
+- `--compose-project`'s stderr warning (a FAIL that keeps the name) separates its fix with ` — fix: `, like every other row; it was `; fix: `. A script that matched `; fix:` on that line must match ` — fix: `.
 
 ### Fixed
 

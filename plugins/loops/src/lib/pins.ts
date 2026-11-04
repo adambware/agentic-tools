@@ -3,7 +3,7 @@
 // or an unsupported form. A configured source that cannot be read or parsed, or holds an unsupported
 // form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join, normalize } from "node:path";
+import { basename, isAbsolute, join, normalize, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -324,7 +324,8 @@ const DEFAULTS: Record<keyof typeof ACTIONS, (root: string, tool: string, ref: [
   // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest.
   "golangci-action": (root, tool, ref, wd) => {
     const mod = wd === null ? null : normalize(join(wd, "go.mod"));
-    if (mod === null || !existsSync(join(root, mod))) return null;
+    // A go.mod outside the checkout is not one this repo pins: unknown, so the step FAILs.
+    if (mod === null || isAbsolute(mod) || mod.startsWith(`..${sep}`) || !existsSync(join(root, mod))) return null;
     const text = readFileSync(join(root, mod), "utf8");
     const m = (ref && ref[0] <= 6 ? /github.com\/golangci\/golangci-lint\s(v\S+)/ : /github.com\/golangci\/golangci-lint\/v2\s(v\S+)/).exec(text);
     return m ? pinAt(m[1]!, tool, mod, lineAt(text, m.index)) : null;
