@@ -173,11 +173,13 @@ const pipfile: Parser = (text, tool, _root, file) => {
 const imageTag = (t: string): string => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
 /** A FROM tag that starts with a version, as that version (`20-alpine3.20` is `20`); null for anything else. Before a `$`
  * the version must be complete, ended by a variant separator (`18-${DISTRO}`, `20-alpine${X}`): a `$` that may continue
- * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`) leaves it unknown. */
+ * it (`20${X}`, `20.${X}`, `3.13rc${BUILD}`, `22-rc${N}`), or its prerelease (`20-dev-${N}`, `22-rc-${N}`, which read as
+ * `20-dev-1` and `22-rc-1` with a digit there), leaves it unknown. */
 const tagVer = (t: string): string | null => {
-  const lit = imageTag(t.split("$")[0]!);
+  const raw = t.split("$")[0]!;
+  const lit = imageTag(raw);
   const v = /^v?\d/i.test(lit) ? ver(lit) : null;
-  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+  return v !== null && (!t.includes("$") || (/^[-_]/.test(lit.slice(lit.indexOf(v) + v.length)) && ver(imageTag(`${raw}1`)) === v)) ? v : null;
 };
 /** A Dockerfile instruction as Docker reads it: its text and, for each character, the 1-based physical line it is on. */
 type Logical = { text: string; lines: number[] };
@@ -231,13 +233,15 @@ const logicalLines = (text: string, file: string): Logical[] => {
   return out;
 };
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
- * with `$` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its `$`
- * (`18-${DISTRO}`) is that version; no tag, a digest only or any other tag is unsupported. An ARG value is its whole shell
- * word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not `"20"${SUFFIX}`). */
+ * with `$<TOOL>_VERSION` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its
+ * `$` (`18-${DISTRO}`) is that version; no tag, a digest only, another variable or any other tag is unsupported. An ARG
+ * value is its whole shell word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not
+ * `"20"${SUFFIX}`). */
 const dockerfile: Parser = (text, tool, _root, file) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
+  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -246,20 +250,26 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
-    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
+    // A tag of <TOOL>_VERSION is skipped: its ARG is the pin. Any other variable there is unsupported.
+    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) continue;
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
   }
   // `ARG A=1 B=2` declares each pair: the tool's may be any of them.
-  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   for (const l of logical) {
     const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
     if (!m) continue;
-    for (const p of m[2]!.matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
-      if (p[1]!.toUpperCase() !== key) continue;
-      const v = p[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
-      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + p[0].length - p[2]!.length)));
+    // Shell words, as Docker splits them: a backslash escapes the next character, also inside double quotes. A word whose
+    // quote never closes leaves the line unreadable, a FAIL when it names the tool's variable.
+    for (const p of m[2]!.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+      if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]!))
+        throw unsupported(m[2]!.trim(), file, at(l, m[1]!.length));
+      const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
+      if (pair?.[1]!.toUpperCase() !== key) continue;
+      const v = pair[2]!.replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2"); // `"20.11.0"` is `20.11.0`; `"20"${SUFFIX}` stays as written
+      out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + pair[1]!.length + 1)));
     }
   }
   return out;
@@ -290,6 +300,38 @@ const ACTIONS = {
   "golangci-action": ["golangci/golangci-lint-action", "golangci-lint", "version"],
   "goreleaser-action": ["goreleaser/goreleaser-action", "goreleaser", "version"],
 } as const;
+/** `@v4.7.1` -> [4, 7], `@v4` -> [4, Infinity] (the newest v4); null for a ref that is no version tag (a SHA, a branch), read
+ * as the current release. */
+const refVer = (uses: string): [number, number] | null => {
+  const m = /@v(\d+)(?:\.(\d+))?/i.exec(uses);
+  return m ? [Number(m[1]), m[2] === undefined ? Infinity : Number(m[2])] : null;
+};
+/** What each action installs for a step that sets neither its version input nor its `-file`, as of the upstream release cited:
+ * the value it reads, or null when it installs no pinned version (the step is then a FAIL). `wd` is the step's
+ * `working-directory` input (null when it is not a literal). */
+const DEFAULTS: Record<keyof typeof ACTIONS, (root: string, tool: string, ref: [number, number] | null, wd: string | null) => Found | null> = {
+  // actions/setup-go v7.0.0 src/main.ts: no version installs nothing, and GOTOOLCHAIN=local keeps go.mod's toolchain out.
+  "setup-go": () => null,
+  // actions/setup-node v7.1.0 src/main.ts resolveVersionInput: no default version file.
+  "setup-node": () => null,
+  // actions/setup-python v7.1.0 src/setup-python.ts resolveVersionInputFromDefaultFile (added in v4.7.0): .python-version
+  // at the workspace root.
+  "setup-python": (root, tool, ref) =>
+    (ref && (ref[0] < 4 || (ref[0] === 4 && ref[1] < 7))) || !existsSync(join(root, ".python-version"))
+      ? null
+      : plain(readFileSync(join(root, ".python-version"), "utf8"), tool, root, ".python-version"),
+  // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: the module's version in
+  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest.
+  "golangci-action": (root, tool, ref, wd) => {
+    const mod = wd === null ? null : normalize(join(wd, "go.mod"));
+    if (mod === null || !existsSync(join(root, mod))) return null;
+    const text = readFileSync(join(root, mod), "utf8");
+    const m = (ref && ref[0] <= 6 ? /github.com\/golangci\/golangci-lint\s(v\S+)/ : /github.com\/golangci\/golangci-lint\/v2\s(v\S+)/).exec(text);
+    return m ? pinAt(m[1]!, tool, mod, lineAt(text, m.index)) : null;
+  },
+  // goreleaser/goreleaser-action v7.3.0 src/context.ts (and v6.0.0 action.yml): `~> v2`, a range; v5.0.0 and earlier: latest.
+  "goreleaser-action": (_root, _tool, ref) => (ref && ref[0] <= 5 ? null : [{ v: "~> v2", range: true }]),
+};
 /** Reads every `jobs.*.steps[]` (or a composite action's `runs.steps[]`) step that uses the action, as YAML 1.2 the way
  * Actions does. A workflow that does not parse, an unreadable input, or a `uses:` of the action anywhere else fails. A job
  * that calls a reusable workflow (`jobs.<id>.uses`) is not read, never its `with:`; it is only noted in `calls`. */
@@ -328,16 +370,29 @@ function setup(kind: keyof typeof ACTIONS): Parser {
     };
     const read = (step: YAMLMap): Found => {
       const w = deref(step.get("with", true));
-      if (w === undefined || (isScalar(w) && w.value === null)) return [];
-      if (!isMap(w)) throw new PinError(`with: of ${action} at ${line(w as Node)} is not a mapping`);
       const ins: [string, string, number][] = [];
-      for (const p of w.items) {
-        const k = keyOf(p.key)?.toLowerCase(); // action inputs are case-insensitive
-        if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
-        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos((deref(p.value) as Node | null)?.range?.[0] ?? 0).line]);
+      let wd: string | null = ".";
+      if (w !== undefined && !(isScalar(w) && w.value === null)) {
+        if (!isMap(w)) throw new PinError(`with: of ${action} at ${line(w as Node)} is not a mapping`);
+        for (const p of w.items) {
+          const k = keyOf(p.key)?.toLowerCase(); // action inputs are case-insensitive
+          if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
+          if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos((deref(p.value) as Node | null)?.range?.[0] ?? 0).line]);
+          if (k === "working-directory") {
+            const v = deref(p.value);
+            wd = isScalar(v) && typeof v.value === "string" && !v.value.includes("${{") ? v.value.trim() || "." : null;
+          }
+        }
+      }
+      // A step with neither input gets the action's default, or is a FAIL: it is never skipped.
+      if (!ins.length) {
+        const u = deref(step.get("uses", true)) as Node & { value: string };
+        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd);
+        if (!found) throw new PinError(`${action.split("/")[1]} step without a version in ${file}:${lc.linePos(u.range![0]).line}`);
+        return found;
       }
       // An empty input is fine only beside a non-empty one: the action then reads that one.
-      if (ins.length && !ins.some(([, v]) => v)) throw new PinError(`${ins[0]![0]} has no value`);
+      if (!ins.some(([, v]) => v)) throw new PinError(`${ins[0]![0]} has no value`);
       // The actions use the direct input and ignore `-file` when both are set.
       const used = ins.some(([k, v]) => k === key && v) ? ins.filter(([k]) => k === key) : ins;
       const out: Found = [];
