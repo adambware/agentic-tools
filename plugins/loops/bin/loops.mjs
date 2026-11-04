@@ -8663,8 +8663,10 @@ var DEFAULTS = {
   // at the workspace root.
   "setup-python": (root, tool, ref) => ref && (ref[0] < 4 || ref[0] === 4 && ref[1] < 7) || !existsSync(join2(root, ".python-version")) ? null : plain(readFileSync(join2(root, ".python-version"), "utf8"), tool, root, ".python-version"),
   // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: the module's version in
-  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest.
-  "golangci-action": (root, tool, ref, wd) => {
+  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest. Before v6.5.0, and
+  // in every install-mode but `binary` (goinstall installs latest, none installs nothing), go.mod is never read.
+  "golangci-action": (root, tool, ref, wd, mode) => {
+    if (ref && (ref[0] < 6 || ref[0] === 6 && ref[1] < 5) || mode !== "binary") return null;
     const mod = wd === null ? null : normalize(join2(wd, "go.mod"));
     if (mod === null || isAbsolute2(mod) || mod.startsWith(`..${sep}`) || !existsSync(join2(root, mod))) return null;
     const text = readFileSync(join2(root, mod), "utf8");
@@ -8710,6 +8712,7 @@ function setup(kind) {
       const w = deref(step.get("with", true));
       const ins = [];
       let wd = ".";
+      let mode = "binary";
       if (w !== void 0 && !((0, import_yaml.isScalar)(w) && w.value === null)) {
         if (!(0, import_yaml.isMap)(w)) throw new PinError(`with: of ${action} at ${line(w)} is not a mapping`);
         for (const p of w.items) {
@@ -8720,11 +8723,15 @@ function setup(kind) {
             const v = deref(p.value);
             wd = (0, import_yaml.isScalar)(v) && typeof v.value === "string" && !v.value.includes("${{") ? v.value.trim() || "." : null;
           }
+          if (k === "install-mode") {
+            const v = deref(p.value);
+            mode = (0, import_yaml.isScalar)(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null;
+          }
         }
       }
       if (!ins.length) {
         const u = deref(step.get("uses", true));
-        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd);
+        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd, mode);
         if (!found) throw new PinError(`${action.split("/")[1]} step without a version in ${file}:${lc.linePos(u.range[0]).line}`);
         return found;
       }
@@ -9160,7 +9167,8 @@ function shimProblem(c, tool, p) {
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`;
   if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return s.manager === "mise" && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
+  const inactive = s.manager === "mise" && r.code === 1 && /is a mise bin however it is not currently active/.test(r.stderr);
+  if (r.code !== 0) return inactive && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
 }
 function fallsBackTo(c, tool, p) {
