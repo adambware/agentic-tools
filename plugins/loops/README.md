@@ -721,6 +721,10 @@ after any lines printed before it (so a FAIL printed before the timeout still co
 
 Any other exit code comes from the engine.
 
+**Re-copy the wrapper after upgrading loops.** A repo keeps running the copy it took, so a release that changes
+`templates/env-check` (0.7.1 added exits 1 and 2) reaches a consumer only when it copies the template over its
+`bin/env-check` again (`chmod +x`). The CHANGELOG says when a release changes the template.
+
 ## Roadmap
 
 Per-repo metrics landed in 0.3.0 and the `loops` CLI in 0.4.0. Still to come: CI rounds per PR, hook blocks, and the
