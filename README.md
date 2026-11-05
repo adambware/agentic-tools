@@ -33,7 +33,7 @@ More orchestration patterns and plugin types to come!
 
 - [CHANGELOG.md](CHANGELOG.md) — version history and release notes
 - [TODOS.md](TODOS.md) — open work items and deferred decisions
-- [TESTING.md](TESTING.md) — how to run the shell test suite and what new plugins must cover
+- [TESTING.md](TESTING.md) — how to run the shell test suite and the loops TypeScript suite, and what new plugins must cover
 
 ## Creating a New Plugin
 

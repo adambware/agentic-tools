@@ -247,7 +247,7 @@ Author TypeScript in `src/`; the build bundles `src/bin/*.ts` into the committed
 Run from this plugin directory, not the repo root:
 
 ```bash
-cd plugins/loops && npm install && npm run check
+cd plugins/loops && npm ci && npm run check
 ```
 
 `npm run check` is typecheck, vitest, and build. Tests use synthetic fixtures only; never commit
