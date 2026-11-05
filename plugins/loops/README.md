@@ -16,7 +16,7 @@ from GitHub via `gh`; without one, everything stays local.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.7.0","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.7.1","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
@@ -393,28 +393,40 @@ env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
 ```
 
 Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
-are not counted. A run with no counted row (no FAIL, WARN, PASS or SKIP; only INFO rows, or none) adds
+are not counted. A run with no FAIL, WARN or PASS (only SKIP and INFO rows, or none: a SKIP is not a check) adds
 `WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)` last (under `--static`:
 `no check ran under --static (CI=true implies it)`, naming the checks that do run there); exit stays 0. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
 `--compose-project` (print the Compose project name for this checkout and exit 0 when `e.project` keeps it, with one
 `env-check: warning:` line on stderr per FAIL that keeps it; exit 1 with each FAIL and its fix on stderr when a FAIL
-withholds it (a configured file missing, a shell `COMPOSE_PROJECT_NAME` Compose rejects, `git worktree list` failing
+withholds it (a configured file missing, a shell `COMPOSE_PROJECT_NAME` Compose rejects, unreadable git metadata, `git worktree list` failing
 or not listing the main checkout, the name held by another checkout, a container of the name started from
 another checkout or from none, `docker compose version` failing for any reason but a missing compose plugin (timed out, killed, refused or a non-zero exit), `docker ps` timing out, a failed run of another checkout
 or of the main checkout's configured run), or when it is unknown (the main checkout with Compose unavailable and no
 shell `COMPOSE_PROJECT_NAME`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
-and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). `--json` is `{schema, engine, mode, root,
+and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). Only a whole path is replaced, at a segment boundary on both sides: with `HOME=/Users/bob`, `/Users/bob2`, `/Users/bob.old` and `/x/Users/bob` are left as they are, punctuation alone after it (`/Users/bob.` ending a sentence, `/Users/bob...`) is not part of a name, and a PATH list's `:/Users/bob:` becomes `:~:`. A `HOME` that is not an absolute path (`HOME=build`) redacts nothing. `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
+Text output escapes every row (and each `--compose-project` stderr line) once: control characters, bidi controls and
+the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
+`\u002d- fix:`, so a row has one fix. `--json` values are the raw text (redacted, not escaped), with DEL, C1, U+2028/2029,
+bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, so `JSON.parse` returns them exactly.
+env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_CONFIG`…), so they read the checkout env-check runs in; `loops zone` keeps them. As git's
+`prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, e.g. `safe.directory`)
+stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in this checkout's own git-dir (the
+`index.lock` of a `git commit -a` pre-commit hook, so `d.tracked` sees the commit's index); any other `GIT_INDEX_FILE`,
+an absent one included (git would read it as an empty index), is dropped.
 
-`--static` reads repo files only: no toolchain, tool, docker or worktree probes (`a.local.*`,
-`b.containers`, `d.tools`, `d.sparse` are not run, `c.shared` is SKIP, `e.project` does not resolve the name) and only
-`[[local]]` checks with `static = true` run.
+`--static` reads repo files only: no toolchain, tool or docker probes; one git rev-parse (`a.local.*`,
+`b.containers`, `d.tools`, `d.sparse` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
+rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
+`ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
 
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
 repo, a `[[local]]` id `x.none` (reserved), `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
+The exit-2 error line of every `loops` command is redacted and escaped like a text row, the command name included.
 
 ```toml
 schema_version = 1
@@ -423,6 +435,13 @@ engine = ">=0.4.0"                      # only ">=X.Y.Z"; an older CLI exits 2 "
 [shared_checkout]                       # c.shared: FAIL in the main checkout, PASS in a linked worktree
 hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
                                         # ENV_CHECK_ALLOW_MAIN=1 downgrades the FAIL to INFO
+                                        # the worktree must be registered and own its git metadata:
+                                        # a cp -R copy FAILs "copied?", a moved one FAILs "moved"
+                                        # (fix: git worktree repair); an inherited GIT_DIR or
+                                        # GIT_WORK_TREE naming another checkout FAILs (a hook's own
+                                        # is silent; a relative one is read from cwd, and a GIT_DIR
+                                        # naming a .git gitfile names where it points); unreadable git metadata FAILs, also under
+                                        # --static. ALLOW_MAIN downgrades none of these
 
 [[pins]]                                # a.pins.<tool> (sources agree), a.local.<tool> (local toolchain)
 tool = "go"
@@ -480,12 +499,12 @@ exactly these forms; where the matrix lists no range, a range is a FAIL.
 | `python-version` | `.python-version` | as `nvmrc`, without node's `=` (`=3.12.1` is a range) | none (FAIL, as `nvmrc`) | FAIL unsupported: `system`, `pypy3.9-7.3.11` |
 | `go-mod` | `go.mod` | `toolchain goX`, else `go X`, in any pin form; the whole value up to a `//` comment is classified | none | FAIL unsupported: a range (`go >=1.20`), `go stable`, a version followed by other text (`go 1.26 latest`) |
 | `engines` | `package.json` | none | `engines.<tool>`, always, even an exact-looking `20.11.0` | missing or not a string: FAIL |
-| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; a tag that starts with `$` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `escape` parser directive other than `\` |
-| `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable` |
-| `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current` |
-| `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table) | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0` |
-| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`) | a range `version:` | FAIL unsupported: `latest` |
-| `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `goreleaser/goreleaser-action` (tool `goreleaser`), e.g. `~> v2` | a range `version:` (`^2.5`) | FAIL unsupported: `latest` |
+| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; an `ARG` line is split into shell words as Docker splits them, so an escaped quote (`ARG A=x\" NODE_VERSION=20`) does not hide the next pair; a tag that starts with `$<TOOL>_VERSION` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`), a `$` tag of another variable (`node:${OTHER}`), a prerelease the `$` may continue (`node:20-dev-${N}`, `node:22-rc-${N}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `ARG` line naming `<TOOL>_VERSION` with an unterminated quote; an `escape` parser directive other than `\` |
+| `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable`; FAIL `setup-go step without a version in <file>:<line>` for a step with neither `go-version` nor `go-version-file` (no `with:`, an empty `with:`, or only `cache:`/`check-latest:`) |
+| `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current`; FAIL `setup-node step without a version in <file>:<line>` for a step with neither `node-version` nor `node-version-file` (the action has no default file) |
+| `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table); a step with neither input reads `.python-version` at the repo root, as the action does from v4.7.0 | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0`; FAIL `setup-python step without a version in <file>:<line>` when that file is absent or the action ref is older than v4.7.0 |
+| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`); a step with no `version`/`version-file` reads `github.com/golangci/golangci-lint/v2 vX` from `<working-directory>/go.mod`, as the action does (`golangci-lint vX` for v6.5 and later v6 refs); refs before v6.5.0, any `install-mode` other than `binary`, and a `working-directory` that is an expression, absolute or outside the checkout never read go.mod | a range `version:` | FAIL unsupported: `latest`; FAIL `golangci-lint-action step without a version in <file>:<line>` when go.mod is not read or has no such line (the action installs latest) |
+| `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `goreleaser/goreleaser-action` (tool `goreleaser`), e.g. `~> v2` | a range `version:` (`^2.5`); a step with no `version` is the action's default `~> v2` (v6 and later), an INFO range | FAIL unsupported: `latest`; FAIL `goreleaser-action step without a version in <file>:<line>` for refs v5 and older (default latest) |
 
 `<tool>-version-file` names are matched on the file's basename; any other name is a FAIL `unsupported form:
 <tool>-version-file <name> in <workflow>:<line> is not a supported version file (...)`, with no plain-file fallback.
@@ -499,8 +518,8 @@ exactly these forms; where the matrix lists no range, a range is a FAIL.
 | `Pipfile` | `[requires] python_full_version`, else `python_version` | a pin | a range |
 | `.nvmrc`, `.node-version`, `.python-version`, `.go-version` | the first non-blank, non-comment line, as the `nvmrc` kind | yes | none (a range, or an empty or comment-only file, is a FAIL) |
 
-Workflow sources (`setup-*`, `golangci-action`, `goreleaser-action`) parse each workflow as YAML 1.2, as Actions does, and read every `jobs.*.steps[]` step (or a composite action's `runs.steps[]`) that uses the action. Any YAML form works: flow mappings, block scalars, a value on the next line, anchors and aliases. Action refs (`Actions/Setup-Node@v4`) and input names match case-insensitively, and a multi-line input (`python-version: |`) is read line by line. A workflow that does not parse is a FAIL. These are also a FAIL, not a skipped step: an input that is not a literal version (an expression like `${{ matrix.go }}`, a list or mapping); an empty input with no non-empty `-file` or version input beside it; an unquoted number that YAML reads differently from its text (`go-version: 1.20` reaches the action as 1.2, so quote it); a merge key (`<<:`) in `with:`; an alias with no anchor; and a `uses:` of the action outside a steps list. Keywords (`latest`, `stable`, `lts/*`, ...) are unsupported forms, as the matrix says.
-A job that calls a reusable workflow (`jobs.<id>.uses`) is not read, and its `with:` inputs are never compared (their names belong to the called workflow). Under a glob, a workflow with no value for the tool is skipped; when it calls a reusable workflow and another matched file gives the value, it adds an uncounted INFO row `<kind>:<file>: job <id> calls reusable workflow <ref> (line N), whose with: inputs are not read`. When no matched file gives a value, the FAIL names the files (up to 5, then `(+N more)`) and each one's reusable calls, and a named file with no step but a reusable call says so in its message and fix.
+Workflow sources (`setup-*`, `golangci-action`, `goreleaser-action`) parse each workflow as YAML 1.2, as Actions does, and read every `jobs.*.steps[]` step (or a composite action's `runs.steps[]`) that uses the action. Any YAML form works: flow mappings, block scalars, a value on the next line, anchors and aliases. Action refs (`Actions/Setup-Node@v4`) and input names match case-insensitively, and a multi-line input (`python-version: |`) is read line by line. A workflow that does not parse is a FAIL. These are also a FAIL, not a skipped step: an input that is not a literal version (an expression like `${{ matrix.go }}`, a list or mapping); an empty input with no non-empty `-file` or version input beside it; an unquoted number that YAML reads differently from its text (`go-version: 1.20` reaches the action as 1.2, so quote it); a merge key (`<<:`) in `with:`; an alias with no anchor; and a `uses:` of the action outside a steps list. Keywords (`latest`, `stable`, `lts/*`, ...) are unsupported forms, as the matrix says. A step that uses the action but sets neither its version input nor its `-file` (no `with:`, an empty `with:`, or a `with:` with neither key) is never skipped, even beside a pinned step in the same or another matched workflow: setup-go and setup-node FAIL `<action> step without a version in <file>:<line>`; setup-python reads `.python-version` (FAIL when absent); golangci-lint-action reads the golangci-lint version in go.mod; goreleaser-action reports its default `~> v2` as a range. Each rule follows the action's upstream source (setup-go v7.0.0, setup-node v7.1.0, setup-python v7.1.0, golangci-lint-action v9.3.0, goreleaser-action v7.3.0).
+A job that calls a reusable workflow (`jobs.<id>.uses`) is not read, and its `with:` inputs are never compared (their names belong to the called workflow). Under a glob, a workflow with no step that uses the action is skipped; when it calls a reusable workflow and another matched file gives the value, it adds an uncounted INFO row `<kind>:<file>: job <id> calls reusable workflow <ref> (line N), whose with: inputs are not read`. When no matched file gives a value, the FAIL names the files (up to 5, then `(+N more)`) and each one's reusable calls, and a named file with no step but a reusable call says so in its message and fix.
 For node sources a single semver `=` is a pin (`=20.11.1`, `= v20.11.1`); `==` and, in `.python-version`, `=` are ranges. A value must start with a version (optionally `v`): implementation or keyword values that merely contain digits (`pypy3.9`, `graalpy-24.0`, `lts/-1`, `node:lts-alpine3.20`) are unsupported forms, never read as a version.
 `pyproject.toml` and `Pipfile` are parsed as TOML (dotted keys and inline tables count); invalid TOML, a non-string value or a missing key is a FAIL. A named file that holds no version for the tool (a go.mod with no `go` line, a .tool-versions without the tool) is a FAIL. When a step sets both `<tool>-version` and `<tool>-version-file`, only the direct input is read and the file is ignored (it may even be missing), as the setup actions do.
 Prereleases keep their identity: `22.0.0-rc.1`, `3.13.0rc1` and `1.26rc1` do not equal their release under `exact` (nor does `22` under `exact`). Under `minor`/`major` a prerelease is ignored only when it follows more components than the compare depth. So `22.0.0-rc.1` and `3.13.0rc1` match their line under `minor`, but a two-component prerelease such as `1.26rc1` or `3.13-dev` stays distinct from `1.26` and `1.26.x` under `minor`, as does `22-rc.1` under `major`. Only known prerelease shapes count: `-alpha`, `-beta`, `-rc`, `-pre`, `-preview`, `-dev`, `-next`, `-nightly`, `-canary`, `-snapshot`, `-ea`, and the attached PEP 440/Go forms `rc1`, `a2`, `b1`, `.dev0`. Any other suffix ends the version, both in Dockerfile `FROM` tags and in local `--version` output (an `ARG <TOOL>_VERSION=` value is classified as written, like any other pin, so `20-alpine` there is unsupported and `20-dev` is a prerelease): image variants (`-alpine`, `-slim-bookworm`, and a bare `-dev` straight after the version, the Chainguard/Wolfi dev image, so `node:20-dev` reads as 20; `-dev` followed by a number still counts as a prerelease), patchlevels (`3.1.4p223`), build ids, vendor suffixes (`-desktop.1`) and package revisions (`-1`).
@@ -514,20 +533,35 @@ an empty line inside a continuation; the body of a `RUN`, `COPY` or `ADD` heredo
 to its delimiter line, and an unterminated heredoc is a FAIL, also on an instruction still open at end of file. Only the
 default `\` escape is read: an `# escape=` parser directive that sets another escape character is an unsupported FAIL. An error names the physical line of the offending image
 or value.
-`a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off` (`go version`, `node --version`,
-`python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain; a probe that does
+`a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off MISE_AUTO_INSTALL=0` (`go version`, `node --version`,
+`python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain and a mise shim installs no missing version; a probe that does
 not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
 match the pin at the `compare` depth; ranges do not bind it. A probe that gives no version says why: `<tool> not found on
-PATH`, `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
+PATH`, `<path> could not start (missing interpreter in its #! line?)` (a file on PATH whose `#!` interpreter is not
+there, which the OS reports as it does a missing file), `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
 <first output line>`; the output line is cut to 120 characters with control characters escaped. When a `.tool-versions`
 line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf install <tool> <version>` and
 `mise install <tool>@<version>`; for `go` and `node`, whose line may say `golang` or `nodejs`, it names a bare
-`asdf install` (or `mise install`) in that file's directory. Any other pin source keeps the generic install fix.
+`asdf install` (or `mise install`) in that file's directory. Any other pin source, and a prerelease written as is
+(`golangci-lint 2.0.0-rc.1`), keeps the generic install fix.
 `d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
 line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
-asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run, times out, exits non-zero (its first output
-line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row.
+asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
+for a manager whose `#!` interpreter is missing), times out, exits non-zero (its first output
+line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row. The one
+exception follows mise's own fallback: a mise shim whose `mise which` exits 1 with '... is a mise bin however it is
+not currently active' still PASSes when an executable copy of the tool that is no shim (neither asdf nor mise) sits on
+PATH after the shim's own directory, since the shim runs that copy; the copy is found, never run. Any other mise error
+(an untrusted or broken config, mise itself failing) stays a FAIL. asdf has no such fallback.
+The shim handling was checked against a real mise (2026-11-04): mise v2026.11.0 (linux-arm64 release binary,
+sha256 verified) in a throwaway container from node:22.12.0-bookworm-slim
+(sha256:35531c52ce27b6575d69755c73e65d4468dba93a25644eed56dc12879cae9213, linux/aarch64, Debian 12), with a tool
+installed through mise but active in no config, a system copy later on PATH, and the mise shims first. In that
+state the shim does not fail: it runs the later copy on PATH (exit 0), while `mise which <tool>` exits 1
+('... is a mise bin however it is not currently active'). The 0.7.0 engine FAILed that state though the tool runs;
+d.tools now PASSes it by the fallback rule above. With no later copy, the shim exits 1 ('No version is set for
+shim') and d.tools FAILs it. The macOS mise build was not probed; the shim code is shared.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
 `docker compose [-f <configured files>] config --no-env-resolution --format json` reads `name`. For each checkout
@@ -544,10 +578,11 @@ OCI) `include:` or `extends.file:` is never fetched; such a file is a failed run
 worktree, the main checkout holds its answers and every other worktree holds its derived name and its answers (a
 deleted one, its derived name); seen from the main checkout, worktrees hold their derived names. e.project runs
 every check and reports every FAIL, the ones that withhold the name first, except that a missing configured file, an
-invalid shell `COMPOSE_PROJECT_NAME`, a bad `git worktree list` and a failed `docker compose version` end evaluation
+invalid shell `COMPOSE_PROJECT_NAME`, unreadable git metadata, a bad `git worktree list` and a failed `docker compose version` end evaluation
 and are reported alone:
 - a configured file missing here, a shell `COMPOSE_PROJECT_NAME` Compose rejects (it takes lowercase letters,
   digits, `-` and `_`, a letter or digit first; checked before asking Compose, even when Compose is unavailable), a
+  failed `git rev-parse --git-dir --git-common-dir` (a worktree is then not known to be one), a
   `git worktree list` that fails or, from a worktree, does not list the main checkout first (fix: rerun
   `git worktree list --porcelain`), the name held by another checkout, or (main) equal to a worktree's derived
   name: FAIL, and the name is withheld;
@@ -645,8 +680,13 @@ fails), no running container, or no commit touching the inputs is a SKIP, never 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
-`timeout_s` stops the check itself with SIGKILL (a trapped SIGTERM cannot outlive it); a child it leaves running can hold the run open, so `exec`
-long commands. It prints one line per
+`timeout_s` stops the check with SIGKILL (a trapped SIGTERM cannot outlive it). The check runs in its own process group, and
+the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A small node
+supervisor in env-check's own process group starts the check and holds the deadline; it also kills the check's group
+with SIGKILL when env-check is interrupted (Ctrl-C at the terminal, or SIGINT, SIGTERM or SIGHUP) and when env-check
+dies while the check runs, so an interrupted run leaves no check behind. A child that leaves the group (`setsid`)
+is out of its reach. A child it leaves
+running when it exits on its own can hold the run open, so `exec` long commands. It prints one line per
 result on stdout:
 
 ```
@@ -654,21 +694,32 @@ result on stdout:
 ```
 
 `<id>` must be the configured id or `<id>.<name>`. The fix starts at the first ` — fix: ` (` -- fix: ` also works);
-later ones belong to the fix. An empty fix counts as none, so a WARN or FAIL gets the default `address the message
+later ones belong to the fix (escaped in text output). An empty fix counts as none, so a WARN or FAIL gets the default `address the message
 above and re-run`. Trailing whitespace is ignored, so CRLF line endings are fine; tabs are allowed. The environment has `ENV_CHECK_ROOT`,
-`ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`0` or `1`), `ENV_CHECK_PROJECT`
-(the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`, `NO_COLOR=1`.
+`ENV_CHECK_MODE` (`full` or `static`), `ENV_CHECK_WORKTREE` (`1` when this is not the main checkout, a `cp -R` copy
+included, which a configured `c.shared` FAILs; `0` in the main checkout; empty when git could not be read; the same under `--static`), `ENV_CHECK_PROJECT`
+(the name `--compose-project` would print: empty when `e.project` withholds it, when it is unknown and under `--static`), `ENV_CHECK_ID`, `GOPROXY=off`, `GOTOOLCHAIN=local`,
+`MISE_AUTO_INSTALL=0` (mise's `auto_install` setting, which per upstream jdx/mise `settings.toml` also turns off its exec and
+not-found auto-install, so a shim never installs a missing version), `NO_COLOR=1`.
 It fails closed: an unparseable line, a line with a control character other than tab (ESC, a mid-line CR, NUL…), a Unicode line
-separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\`,
-`"`, control characters and the dash of a `— fix:` escaped (`\r`, `\u001b`, `\u2014`), so the output line still has one fix; no lines is a FAIL; a nonzero
+separator, a bidi control or a zero-width space included, is `FAIL <id>.protocol`, which echoes it as a double-quoted string cut to 80 characters, with `\` and
+`"` escaped; like every row, text output then escapes its control characters and fix separators (`\r`, `\u001b`, `\u2014`, `\u002d`), so the output line still has one fix, and `--json` carries it raw; no lines is a FAIL (`could not start (missing interpreter in its #! line?)` when the check's `#!` interpreter is not there,
+`could not run (<signal or error>)` when it was killed); a nonzero
 exit without a FAIL line adds one (with the first stderr line, cut to 120 characters and escaped the same way, unquoted);
 a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).
 
-**Wrapper.** `templates/env-check` is a 15-line POSIX `sh` wrapper to copy into a repo as
-`bin/env-check` (`chmod +x`). It runs `$LOOPS_BIN`, then `$HOME/bin/loops`, then `loops` on PATH,
-as `loops env-check "$@"`. With no engine or no `node` it prints a hint on stderr, `env-check:
-not run` on stdout, and exits 3, which contributors without the engine can ignore.
+**Wrapper.** `templates/env-check` is a 27-line POSIX `sh` wrapper to copy into a repo as
+`bin/env-check` (`chmod +x`). It runs the first regular file among `$LOOPS_BIN`, `$HOME/bin/loops` and
+`loops` on PATH as `loops env-check "$@"` (through `node` when the file is not executable). Exit codes of its own:
+
+| Exit | When | Output |
+|---|---|---|
+| 1 | an engine exists but `node -e 0` fails (`node` not on PATH, or an asdf/mise shim with no version set) | `FAIL d.tools  node not runnable here (...) — fix: ...` on stderr, nothing on stdout |
+| 2 | `LOOPS_BIN` is set but is not a file, or a candidate is a dangling symlink | `env-check: LOOPS_BIN=<x> is not a file` or `env-check: <path> is a broken link (target missing)` on stderr, nothing on stdout; it never falls back to another engine |
+| 3 | no engine is installed | a hint on stderr, `env-check: not run` on stdout; contributors without the engine can ignore it |
+
+Any other exit code comes from the engine.
 
 ## Roadmap
 

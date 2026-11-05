@@ -2,14 +2,14 @@
 // Every check returns Results; a check that cannot decide fails or warns, never passes.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
-import { git, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
-import { CONTROL, cut, escapeCtl, quote, short } from "./text.js";
+import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
+import { CONTROL, cut, quote, short } from "./text.js";
 
 export type Level = "PASS" | "WARN" | "FAIL" | "SKIP" | "INFO";
 export interface Result {
@@ -24,15 +24,21 @@ export interface Result {
 export interface Ctx {
   run: Runner;
   root: string;
+  /** Where env-check runs: an inherited relative GIT_DIR is relative to it. */
+  cwd: string;
   env: NodeJS.ProcessEnv;
   static: boolean;
   cfg: Config;
   /** `git ls-files`. */
   tracked: string[];
-  /** Linked worktree? False in --static, where nothing probes worktrees. */
+  /** Not the main checkout (git-dir != common-dir), in every mode; a cp -R copy counts. False when git-dir is null. */
   isWorktree: boolean;
+  /** `git rev-parse --git-dir`, absolute, in every mode; null when it or `--git-common-dir` failed. */
+  gitDir: string | null;
   /** `git worktree list` paths, the main checkout first. */
   worktrees: string[];
+  /** False when `git worktree list` failed or did not run (--static). */
+  worktreesRead: boolean;
   /**
    * `$HOME` shown as `~`: the renderer's own redaction, applied to relayed text before it is cut, since a cut through
    * home would leave a prefix the renderer no longer recognises.
@@ -49,13 +55,25 @@ const rp = (p: string): string => {
     return p;
   }
 };
+/** The git-dir a GIT_DIR of `p` names, as git reads it: a `gitdir: <path>` file (a worktree's .git) points elsewhere. */
+const gitDirAt = (p: string): string => {
+  try {
+    const m = statSync(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync(p, "utf8")) : null;
+    return m ? resolve(dirname(p), m[1]!.trim()) : p;
+  } catch {
+    return p;
+  }
+};
 
 const VERSION_CMD: Record<string, [string, string[]]> = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
+/** Why an executable file failed to spawn with ENOENT: the interpreter its `#!` line names is not there. */
+const NO_INTERP = "could not start (missing interpreter in its #! line?)";
 /** Docker calls and toolchain probes: a hung daemon, shim or network call must not hang the run. */
 const PROBE_TIMEOUT_MS = 10_000;
 
-/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` written as a plain
- * version (not `1.62.x` or `v1.2.3`, which the managers would not install as `want`), else the generic advice. An alias
+/** How to install `tool` at `want`: the asdf/mise command when a `.tool-versions` line pins `want` as written, else the
+ * generic advice. A series or a `v` prefix never matches as written (`want` is the normalized version), so the plain-version
+ * guard only turns away a prerelease written verbatim (`golangci-lint 2.0.0-rc.1`), which gets the generic fix. An alias
  * tool's line may name another plugin (`golang`), so it gets a bare `asdf install` in that file's directory. */
 function installFix(root: string, tool: string, want: string, pins: PinValue[]): string {
   const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
@@ -114,34 +132,61 @@ export function pinChecks(c: Ctx): Result[] {
     out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
     if (c.static || pin.local === "off") continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
     const fix = installFix(c.root, pin.tool, want, pins);
     const cmd = [bin, ...args].join(" ");
-    // The tool's first output line, redacted then cut and escaped, so it stays on this row and cannot read as a second fix.
+    // The tool's first output line, redacted then cut; the renderer escapes it, so it stays on this row and cannot read as
+    // a second fix.
     const said = (...texts: string[]) => {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
-      return l ? `: ${escapeCtl(cut(c.redact(l), 120))}` : "";
+      return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
     if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
+    else if (r.notFound) {
+      // ENOENT for a file that is on PATH is its #! interpreter, which spawn reports as it does a missing file.
+      const at = which(bin, c.env.PATH);
+      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
+    }
     else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
     else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
     else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
-  // Pin rows name tracked files (git allows any byte but NUL in a name) and config text; escapeCtl leaves escaped text as
-  // it is, so escaping every row once also covers the tool output said() already escaped.
-  return out.map((r) => ({ ...r, message: escapeCtl(r.message), fix: r.fix === undefined ? undefined : escapeCtl(r.fix) }));
+  return out;
 }
 
 export function sharedCheck(c: Ctx): Result[] {
   if (c.cfg.sharedHint === null) return [];
+  const unread = (cmd: string) => [res("FAIL", "c.shared", "could not read git metadata", `rerun ${cmd} to see why`)];
+  if (c.gitDir === null) return unread("git rev-parse --git-dir --git-common-dir");
   if (c.static) return [res("SKIP", "c.shared", "not checked in --static mode")];
-  if (c.isWorktree) return [res("PASS", "c.shared", "in a linked worktree")];
+  // Each FAIL below comes before ENV_CHECK_ALLOW_MAIN, which allows the shared checkout, not a checkout git mistakes.
+  // The user's own git obeys an inherited GIT_DIR / GIT_WORK_TREE that env-check's git drops; the one git sets in a
+  // hook names this checkout, so it is silent.
+  for (const [k, want, what] of [["GIT_DIR", c.gitDir!, "git metadata"], ["GIT_WORK_TREE", c.root, "files"]] as const) {
+    const at = c.env[k] ? rp(k === "GIT_DIR" ? gitDirAt(resolve(c.cwd, c.env[k])) : resolve(c.cwd, c.env[k])) : null;
+    if (at && at !== rp(want)) return [res("FAIL", "c.shared", `${k} points at another checkout's ${what}; git commands here act on ${at}`, "unset GIT_DIR GIT_WORK_TREE")];
+  }
+  if (c.isWorktree) {
+    // A real worktree is registered and owns its metadata: git's record of it (<git-dir>/gitdir, relative to the
+    // git-dir when written with --relative-paths) names this folder. A cp -R copy, also one over another registered
+    // worktree, shares a git-dir another checkout owns; a moved worktree's record names a folder that is gone.
+    if (!c.worktreesRead) return unread("git worktree list --porcelain");
+    const me = rp(c.root);
+    let at: string | null = null;
+    try {
+      at = dirname(resolve(c.gitDir!, readFileSync(join(c.gitDir!, "gitdir"), "utf8").trim()));
+    } catch {
+      // No record: git lists it prunable, as it does a moved worktree.
+    }
+    if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
+    if (at && rp(at) !== me && existsSync(join(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
+  }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
 }
@@ -159,7 +204,10 @@ function autoEntrypoints(c: Ctx): string[] {
 /**
  * Why the asdf or mise shim at `p` cannot run `tool` in this checkout, or null when it resolves or `p` is no shim. Asks
  * the manager (`asdf which` / `mise which`, from the repo root with the run's env), which resolves the version the shim
- * would use; the tool itself never runs.
+ * would use; the tool itself never runs. A mise shim with no active version runs the next copy of the tool on PATH
+ * (mise 2026.11.0, linux/aarch64, while `mise which` exits 1), so one that fails `mise which` resolves when an
+ * executable copy that is no shim follows the shim's own directory on PATH. Only that state falls back: any other mise
+ * error (an untrusted or broken config, mise itself failing) fails the shim too.
  */
 function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const s = shimOf(p);
@@ -170,10 +218,18 @@ function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const how = `${s.manager} which ${tool}`;
   const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1000}s`;
-  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(c.redact(said), 120))}` : ""}`;
+  const inactive = s.manager === "mise" && r.code === 1 && /is a mise bin however it is not currently active/.test(r.stderr);
+  if (r.code !== 0) return inactive && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
+}
+
+/** Whether an executable `tool` that is no version-manager shim sits on PATH after `p`'s directory; it never runs. */
+function fallsBackTo(c: Ctx, tool: string, p: string): boolean {
+  const dirs = (c.env.PATH ?? "").split(delimiter);
+  const at = dirs.findIndex((d) => d && join(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join(d, tool)) && !shimOf(join(d, tool)));
 }
 
 export function harnessChecks(c: Ctx): Result[] {
@@ -226,7 +282,7 @@ export function harnessChecks(c: Ctx): Result[] {
     const bad = entries.filter((e) => !isExecutable(join(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
-  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"])) : [];
+  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env, c))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ!.split("\0").filter(Boolean);
@@ -240,7 +296,7 @@ export function harnessChecks(c: Ctx): Result[] {
   if (h.sparse && !c.static) {
     // --type=bool reads every git spelling (yes, on, 1) and --default=false makes unset "false", so a failed read (an
     // invalid value, git failing) or any other output is a WARN, never "off".
-    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"], gitEnv(c.env, c))?.trim();
     if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
@@ -439,6 +495,8 @@ export function composeProject(c: Ctx): ComposeProject {
   const envName = c.env.COMPOSE_PROJECT_NAME || undefined;
   // Check 0b: Compose rejects the shell's name outright, so every run here fails and no name holds.
   if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
+  // Without git's metadata a worktree is not known to be one, so check 0c below would take it for the main checkout.
+  if (c.gitDir === null) return one("FAIL", "could not read git metadata", "rerun git rev-parse --git-dir --git-common-dir to see why");
   // Check 0c: git lists the main checkout first and every linked worktree after it (a successful list has at least one
   // entry). Without that, derive and the held names would take this worktree for the main checkout.
   if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]!) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
@@ -550,7 +608,7 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
   // Empty output is a log with no commit over the inputs; a failed git or text that is no time is not that.
   // --no-show-signature: a user's log.showSignature would print the signature check before the time.
-  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files], gitEnv(c.env, c))?.trim();
   const ct = logged === undefined || !/^\d*$/.test(logged) ? NaN : Number(logged);
   if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
@@ -626,8 +684,8 @@ const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*)
 
 /**
  * Run one `[[local]]` check. Fail closed: bad lines (a control character other than tab included), no lines, or a bad
- * exit without a FAIL are FAILs. Relayed text is escaped, so a check cannot move the cursor or add a second fix, and
- * has `$HOME` redacted before it is cut.
+ * exit without a FAIL are FAILs. Relayed text has `$HOME` redacted before it is cut; the renderer escapes it, so a
+ * check cannot move the cursor or add a second fix.
  */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
@@ -635,27 +693,32 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     ...c.env,
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
-    ENV_CHECK_WORKTREE: c.isWorktree ? "1" : "0",
+    // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
+    ENV_CHECK_WORKTREE: c.gitDir === null ? "" : c.isWorktree ? "1" : "0",
     ENV_CHECK_PROJECT: project ?? "",
     ENV_CHECK_ID: l.id,
     GOPROXY: "off",
     GOTOOLCHAIN: "local",
+    // A mise shim must not install a missing tool: auto_install off also turns off exec and not-found auto-install.
+    MISE_AUTO_INSTALL: "0",
     NO_COLOR: "1",
   };
-  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
+  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs, group: true });
   const mk = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "local" });
   const out: Result[] = [];
   // Only a CRLF's "\r" and trailing blanks are trimmed, so a line ending in (or made of) another control is rejected.
   for (const line of r.stdout.split("\n").map((s) => s.replace(/\r$/, "").replace(/[ \t]+$/, "")).filter(Boolean)) {
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>"));
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
-  const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
-  if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
+  const why = stderr ? ` (${cut(c.redact(stderr), 120)})` : "";
+  // The run file was checked executable, so ENOENT is its #! interpreter.
+  const none = r.notFound ? NO_INTERP : r.code === null ? `could not run (${r.abend ?? "killed"})` : `printed no results${r.code ? `, exit ${r.code}` : ""}`;
+  if (!out.length) return [mk("FAIL", l.id, `${none}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;
 }

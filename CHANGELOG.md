@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [loops 0.7.1] - 2026-11-04
+
+`loops env-check` 0.7.1 is a fixes-only release. Every row is escaped once, at the output edges. `c.shared` proves a worktree owns its git metadata instead of trusting `git rev-parse`. Several checks that used to pass or skip silently now fail or say why. Features the pilots asked for are listed in `TODOS.md` for 0.8.0.
+
+### Changed
+
+- Behavior change (exit code): `c.shared` PASSes a linked worktree only when it is registered in `git worktree list` and `<git-dir>/gitdir` names this folder. A `cp -R` copy (also one over another registered worktree) FAILs "copied?" with a recreate fix, and a moved worktree FAILs "moved" with `git worktree repair`. An inherited `GIT_DIR` or `GIT_WORK_TREE` naming another checkout FAILs; a `GIT_DIR` that names a `.git` gitfile is followed as git does, and the one git sets inside a hook is silent. A failed `rev-parse` or `worktree list` FAILs "could not read git metadata" in every mode instead of guessing. These come before `ENV_CHECK_ALLOW_MAIN`.
+- Behavior change (exit code): `e.project` withholds the Compose project name (FAIL "could not read git metadata") when `git rev-parse` fails, instead of giving a linked worktree the main checkout's name.
+- Behavior change (exit code): a `setup-go` or `setup-node` step with neither its version input nor its `-file` input is a FAIL "<action> step without a version in <file>:<line>", also beside a pinned sibling, where it used to be skipped. `setup-python` reads `.python-version` as its implicit file, `golangci-lint-action` reads the golangci-lint module version from `go.mod` (from v6.5.0, in `install-mode: binary` only, and only a `go.mod` inside the checkout), and `goreleaser-action` records its default `~> v2` as a range.
+- Behavior change (exit code): Dockerfile pins fail closed. An `ARG` line is split into words as Docker splits it, so an escaped quote no longer hides the next pair; an unterminated quote on a line naming `<TOOL>_VERSION` is unsupported; a `FROM` tag whose `$` may continue a prerelease (`node:20-dev-${N}`) or names any variable other than `<TOOL>_VERSION` is unsupported instead of read or skipped.
+- Behavior change (level): `x.none` fires when every counted row is SKIP, not only when no row is counted. The exit code stays 0, and the wording follows `--static`.
+- Behavior change (exit code): `d.tools` PASSes a mise shim whose tool is installed but active in no config when an executable copy that is not a shim follows it on PATH, because mise's shim runs that copy (verified against mise 2026.11.0 on linux/aarch64). Without such a copy, for any other mise error (an untrusted or broken config), and for asdf, it still FAILs.
+- `--static` now probes the worktree, so a static `[[local]]` gets the `ENV_CHECK_WORKTREE` that full mode exports instead of 0 inside a worktree. It is the empty string when git metadata is unreadable. `c.shared` still SKIPs under `--static` unless that read failed.
+- env-check's git commands run on a clean git environment (the `git rev-parse --local-env-vars` set is dropped), so an inherited `GIT_DIR` cannot point env-check at another checkout. As git's own `prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and its `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, such as `safe.directory` in CI) is kept and `GIT_CONFIG` is dropped. `GIT_INDEX_FILE` is kept when it names a file directly in this checkout's own git-dir (the `index.lock` git hands a `git commit -a` pre-commit hook), so `d.tracked` no longer FAILs a deletion being committed; one naming another checkout's index or any other path is dropped. `loops zone` keeps its inherited git environment as before.
+- The `a.local` probe and every `[[local]]` check run with `MISE_AUTO_INSTALL=0`, so a mise shim never installs a missing version while it is checked.
+- A `[[local]]` check runs in its own process group, and its timeout kills the whole group with SIGKILL, so a child such as `go` under a shell no longer outlives it. Interrupting env-check (Ctrl-C, SIGINT, SIGTERM or SIGHUP) or killing it while a local check runs kills that group too, through a small supervisor process.
+- An executable file that cannot start because its `#!` interpreter is missing is reported as that in `a.local`, `d.tools` and `[[local]]` checks ("could not start (missing interpreter in its #! line?)"), instead of "not found" or "printed no results".
+- `templates/env-check` fails loudly: an explicit `LOOPS_BIN` that is not a regular file exits 2, a dangling candidate symlink exits 2, and a chosen engine that cannot run because `node` does not start writes a `d.tools` FAIL row to stderr and exits 1. Exit 3 stays for "no candidate". Consumers get these only when they re-copy the wrapper.
+- `--compose-project`'s stderr warning (a FAIL that keeps the name) separates its fix with ` — fix: `, like every other row; it was `; fix: `. A script that matched `; fix:` on that line must match ` — fix: `.
+
+### Fixed
+
+- Every row is escaped once, at the edges: text rows and the `--compose-project` stderr lines go through one renderer that redacts and then escapes, and `--json` carries values raw (so an unparseable `[[local]]` line and quoted Compose fix arguments are no longer double-escaped), writing DEL, C1, U+2028/9, bidi and zero-width characters as `\uXXXX` so `JSON.parse` round-trips them.
+- The CLI's exit-2 error line is redacted and escaped whole, command prefix included, so a hostile argument or git stderr cannot reach the terminal raw.
+- U+061C ARABIC LETTER MARK is escaped like the other bidi controls in text and `--json` output, and a `[[local]]` line containing it is a protocol FAIL.
+- `redactHome` replaces `$HOME` only where it is a whole path (`/Users/bob2`, `/Users/bob.old` and `/x/Users/bob/y` stay), redacts `$HOME` followed only by punctuation (a sentence's period, `...`) again, builds no pattern from `$HOME`, and redacts nothing when `$HOME` is not absolute.
+- A `[[local]]` check that writes more than 64 KB to stderr no longer loses its result lines (a false "printed no results").
+
 ## [loops 0.7.0] - 2026-11-02
 
 `loops env-check` reports more of what it cannot verify and fails closed in four places that used to pass. A run that checks nothing now says so, local-check output is sanitized, and probe failures say why.

@@ -1,12 +1,12 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
 import { redactHome, run, run as procRun, type Runner, type RunResult } from "./proc.js";
 import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose-config.js";
-import { composeStub, deps, put, repo, sh, shim, tmp, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
+import { composeStub, deps, put, repo, running, sh, shim, tmp, until, type ComposeAnswer, type ComposeAnswers, type ComposeCall } from "./testkit.js";
 import { VERSION } from "./version.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +32,15 @@ function worktree(root: string, name: string, parent = tmp()): string {
 /** Runs everything for real, except that git ls-files `flag` fails. */
 const lsFails = (flag: string): Runner => (cmd, args, opts) => (cmd === "git" && args[0] === "ls-files" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: index file corrupt", timedOut: false } : run(cmd, args, opts));
 const withPath = (...dirs: string[]) => ({ PATH: [...dirs, process.env.PATH].join(":") });
+/** A PATH dir holding git and nothing else: env-check's git runs on the Deps env, so a tool-free PATH still needs git. */
+const gitOnly = (): string => {
+  const d = tmp();
+  symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(d, "git"));
+  return d;
+};
+/** An executable `name` in `dir` whose `#!` interpreter does not exist: spawning it fails ENOENT, as a missing file does. */
+const noInterp = (dir: string, name: string): string => (put(dir, name, "#!/nonexistent/interp\necho hi\n", true), join(dir, name));
+const MISSING_INTERP = "could not start (missing interpreter in its #! line?)";
 const goShim = (v = "1.26.1") => shim("go", `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] || exit 9\necho "go version go${v} darwin/arm64"`);
 
 function check(cwd: string, args: string[] = [], env: Record<string, string> = {}, runner?: Runner) {
@@ -185,8 +194,15 @@ describe("pins and local toolchains", () => {
   });
 
   it("treats a missing tool as the configured level and local = off as no check", () => {
-    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: tmp() }).out).toContain("FAIL a.local.go  go not found on PATH");
+    expect(check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: gitOnly() }).out).toContain("FAIL a.local.go  go not found on PATH");
     expect(check(setup(`${GO_PIN}local = "off"\n`, GO_FILES)).out).not.toContain("a.local");
+  });
+
+  it("a tool on PATH whose #! interpreter is missing could not start; it is not reported missing", () => {
+    const dir = tmp();
+    const go = noInterp(dir, "go");
+    const r = check(setup(`${GO_PIN}local = "fail"\n`, GO_FILES), [], { PATH: `${dir}:${gitOnly()}` });
+    expect([r.code, r.lines.find((l) => l.startsWith("FAIL a.local.go"))?.split(" — fix: ")[0]]).toEqual([1, `FAIL a.local.go  ${go} ${MISSING_INTERP}`]);
   });
 
   it("probes with a timeout and reports a hung probe as timed out at the local level", () => {
@@ -241,6 +257,8 @@ describe("pins and local toolchains", () => {
     ["a pin more specific than .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod", "tool-versions"]\ncompare = "minor"\n`, { "go.mod": "module x\n\ngo 1.26.1\n", ".tool-versions": "golang 1.26\n" }, "go", "install go 1.26.1 (asdf install, mise install, or your package manager)"],
     ["a subdirectory that needs quoting is shell-quoted", `${HEAD}[[pins]]\ntool = "go"\nsources = ["tool-versions:my tools/.tool-versions"]\n`, { "my tools/.tool-versions": "golang 1.26.1\n" }, "go", "install go 1.26.1: run asdf install (or mise install) in 'my tools', which installs the my tools/.tool-versions pins"],
     ["a series in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 1.62.x\n" }, "golangci-lint", "install golangci-lint 1.62 (asdf install, mise install, or your package manager)"],
+    // Value: protects=installFix's plain-version guard, the only thing that keeps a verbatim prerelease off the specific fix; fails_when=the /^\d+(?:\.\d+)*$/ guard is deleted (verified: this row then gets "asdf install golangci-lint 2.0.0-rc.1"); why_new=the series and v-prefix rows pass without the guard, since ver() normalizes them; seam=none; no_claim=whether asdf or mise can install a prerelease
+    ["a prerelease written verbatim in .tool-versions keeps the generic fix", `${HEAD}[[pins]]\ntool = "golangci-lint"\nsources = ["tool-versions"]\n`, { ".tool-versions": "golangci-lint 2.0.0-rc.1\n" }, "golangci-lint", "install golangci-lint 2.0.0-rc.1 (asdf install, mise install, or your package manager)"],
   ])("the fix follows the pin source: %s", (_n, config, files, tool, fix) => {
     const r = check(setup(config, files), [], { PATH: `${shim(tool, "exit 126")}:/usr/bin:/bin` });
     expect(r.lines.find((l) => l.startsWith(`WARN a.local.${tool}`))).toMatch(new RegExp(` — fix: ${fix.replace(/[.*+?^${}()|[\]\\/@]/g, "\\$&")}$`));
@@ -269,6 +287,16 @@ describe("pins and local toolchains", () => {
     for (const x of [r, only]) expect(x.out).not.toContain("\u001b");
   });
 
+  it("relays a reusable-workflow note escaped in text and raw in --json", () => {
+    const wf = REUSE.replace("  ci:\n    uses: someorg/.github/.github/workflows/go-ci.yml@abc123", '  "c\\u202ei":\n    uses: "someorg/.github/.github/workflows/go\\e-ci.yml@abc123"');
+    const root = setup(PIN("go", `"go-mod", "setup-go"`, `local = "off"\n`), { "go.mod": "module x\n\ngo 1.26.1\n", ".github/workflows/ci.yml": wf, ".github/workflows/release.yml": REL });
+    const note = NOTE.replace("job ci", "job c\u202ei").replace("go-ci.yml", "go\u001b-ci.yml");
+    expect(check(root).lines[1]).toBe(`INFO a.pins.go  ${note.replace("\u202e", "\\u202e").replace("\u001b", "\\u001b")}`);
+    const raw = check(root, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u202e]/);
+    expect((JSON.parse(raw) as { results: { message: string }[] }).results[1]!.message).toBe(note);
+  });
+
   it("a reusable-only workflow as the only match stays a FAIL, with a fix that says reusable inputs are not read", () => {
     const r = check(setup(PIN("go", `"setup-go"`, `local = "off"\n`), { ".github/workflows/ci.yml": REUSE }));
     expect(r.code).toBe(1);
@@ -280,13 +308,46 @@ describe("pins and local toolchains", () => {
 
 describe("--static", () => {
   const cfg = `${GO_PIN}local = "fail"\n[shared_checkout]\nhint = "use a worktree"\n[harness]\ntools = ["nope-tool"]\n`;
-  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j reads files only: no toolchain, tool or worktree probes", (args, env) => {
+  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j reads files only: no toolchain, tool or worktree-list probes", (args, env) => {
     const never = shim("go", "exit 9");
-    const r = check(setup(cfg, GO_FILES), args, { ...withPath(never), ...env });
+    const calls: string[][] = [];
+    const rec: Runner = (cmd, a, opts) => (calls.push([cmd, ...a]), run(cmd, a, opts));
+    const r = check(setup(cfg, GO_FILES), args, { ...withPath(never), ...env }, rec);
     expect(r.code).toBe(0);
     expect(r.out).toContain("SKIP c.shared  not checked in --static mode");
     expect(r.out).not.toContain("a.local");
     expect(r.out).not.toContain("d.tools");
+    // One rev-parse pair (then ls-files, which may read a hook's own index), no `git worktree list`.
+    expect(calls.filter((c) => c[0] === "git").map((c) => c.slice(1, 3))).toEqual([["rev-parse", "--show-toplevel"], ["rev-parse", "--git-dir"], ["rev-parse", "--git-common-dir"], ["ls-files", "-z"]]);
+  });
+
+  // A static [[local]] that prints what env-check tells it about the worktree.
+  const echoWt = (extra = "") => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + extra + local(root, "d.x", 'echo "PASS d.x wt=$ENV_CHECK_WORKTREE"', "static = true\n"));
+    commit(root);
+    return root;
+  };
+  it.each([[["--static"], {}], [[], { CI: "true" }]])("%j %j tells a [[local]] the same ENV_CHECK_WORKTREE full mode does", (args, env) => {
+    const root = echoWt();
+    const wt = worktree(root, "feat-s");
+    expect(check(wt, args, env).lines[0]).toBe("PASS d.x  wt=1");
+    expect(check(wt).lines[0]).toBe("PASS d.x  wt=1");
+    expect(check(root, args, env).lines[0]).toBe("PASS d.x  wt=0");
+  });
+
+  it.each([
+    ["--static", "--git-dir", ["--static"], {}],
+    ["CI=true", "--git-common-dir", [], { CI: "true" }],
+  ] as [string, string, string[], Record<string, string>][])("%s: a failed rev-parse %s FAILs c.shared and tells a [[local]] nothing", (_n, flag, args, env) => {
+    const root = echoWt(`[shared_checkout]\nhint = "use a worktree"\n`);
+    const wt = worktree(root, "feat-u");
+    const nul: Runner = (cmd, a, opts) => (cmd === "git" && a[0] === "rev-parse" && a[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, a, opts));
+    // Empty, set explicitly: an inherited ENV_CHECK_WORKTREE never wins.
+    expect(check(wt, args, { ...env, ENV_CHECK_WORKTREE: "1" }, nul)).toMatchObject({
+      code: 1,
+      lines: ["FAIL c.shared  could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why", "PASS d.x  wt=", "env-check: 1 FAIL, 0 WARN, 1 PASS, 0 SKIP"],
+    });
   });
 });
 
@@ -300,6 +361,261 @@ describe("c.shared", () => {
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "0" }).code).toBe(1); // only "1" allows it
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 0, out: expect.stringContaining("INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN") });
     expect(check(worktree(root, "feat-x")).lines[0]).toBe("PASS c.shared  in a linked worktree");
+  });
+
+  const PASS = "PASS c.shared  in a linked worktree";
+  const COPIED = "FAIL c.shared  this folder shares another worktree's git metadata (copied?) — fix: recreate it with git worktree add; do not run git worktree repair here";
+  const committed = (): string => {
+    const root = setup(cfg);
+    commit(root);
+    return root;
+  };
+  const cpR = (from: string, to: string): void => void execFileSync("cp", ["-R", from, to]);
+
+  it("fails a cp -R copy of a worktree as copied, even with ENV_CHECK_ALLOW_MAIN=1", () => {
+    const wt = worktree(committed(), "feat-a");
+    const copy = join(tmp(), "feat-a-copy");
+    cpR(wt, copy);
+    expect(check(copy)).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+    expect(check(copy, [], { ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+    expect(check(join(copy, ".loops")).lines).toContain(COPIED); // from a subdirectory too
+    expect(check(wt).lines).toContain(PASS); // the original is still fine
+  });
+
+  it("still tells a copy's [[local]] ENV_CHECK_WORKTREE=1 (not the main checkout); c.shared fails the run", () => {
+    const root = setup(cfg);
+    put(root, CFG, cfg + local(root, "d.x", 'echo "PASS d.x wt=$ENV_CHECK_WORKTREE"', "static = true\n"));
+    commit(root);
+    const copy = join(tmp(), "feat-w-copy");
+    cpR(worktree(root, "feat-w"), copy);
+    for (const args of [[], ["--static"]]) expect(check(copy, args)).toMatchObject({ code: args.length ? 0 : 1, lines: expect.arrayContaining(["PASS d.x  wt=1"]) });
+    expect(check(copy).lines).toContain(COPIED);
+  });
+
+  it("fails worktree A copied over registered worktree B: B is listed, but its .git points at A's metadata", () => {
+    const root = committed();
+    const a = worktree(root, "feat-a");
+    const b = worktree(root, "feat-b");
+    rmSync(b, { recursive: true });
+    cpR(a, b);
+    expect(sh(root, "worktree", "list", "--porcelain")).toContain(`worktree ${b}\n`);
+    expect(check(b)).toMatchObject({ code: 1, lines: expect.arrayContaining([COPIED]) });
+  });
+
+  it("passes a worktree with relative paths, one reached through a symlink, and one run from a subdirectory", () => {
+    const root = committed();
+    const rel = join(tmp(), "feat-rel");
+    sh(root, "worktree", "add", "-q", "--relative-paths", "-b", `b${n++}`, rel);
+    expect(readFileSync(join(rel, ".git"), "utf8")).toMatch(/^gitdir: \.\./); // git did store it relative
+    expect(check(rel).lines).toContain(PASS);
+    const link = join(tmp(), "link");
+    symlinkSync(tmp(), link);
+    const viaLink = worktree(root, "feat-link", link);
+    expect(check(viaLink).lines).toContain(PASS);
+    expect(check(join(viaLink, ".loops")).lines).toContain(PASS);
+    // git stores real paths, so the symlink that matters is in a hook-style GIT_DIR: equal once both are real paths.
+    const rootLink = join(tmp(), "root-link");
+    symlinkSync(root, rootLink);
+    expect(check(viaLink, [], { GIT_DIR: join(rootLink, ".git", "worktrees", "feat-link") }).lines).toContain(PASS);
+  });
+
+  it("tells a moved worktree to run git worktree repair", () => {
+    const wt = worktree(committed(), "feat-m");
+    const moved = join(tmp(), "feat-m-moved");
+    execFileSync("mv", [wt, moved]);
+    expect(check(moved)).toMatchObject({ code: 1, lines: expect.arrayContaining([`FAIL c.shared  worktree moved: git has it registered at ${wt}, which is missing — fix: run git worktree repair here`]) });
+  });
+
+  it("fails an inherited GIT_DIR or GIT_WORK_TREE that points at another checkout, even with ENV_CHECK_ALLOW_MAIN=1", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-g");
+    const gd = join(root, ".git", "worktrees", "feat-g");
+    const msg = `FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${gd} — fix: unset GIT_DIR GIT_WORK_TREE`;
+    expect(check(root, [], { GIT_DIR: gd })).toMatchObject({ code: 1, lines: expect.arrayContaining([msg]) });
+    expect(check(root, [], { GIT_DIR: gd, ENV_CHECK_ALLOW_MAIN: "1" })).toMatchObject({ code: 1, lines: expect.arrayContaining([msg]) });
+    expect(check(wt, [], { GIT_WORK_TREE: root }).lines).toContain(`FAIL c.shared  GIT_WORK_TREE points at another checkout's files; git commands here act on ${root} — fix: unset GIT_DIR GIT_WORK_TREE`);
+  });
+
+  it("says nothing about the GIT_DIR git sets inside a hook: it names this checkout's own metadata", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-h");
+    const dump = join(tmp(), "hook-env");
+    put(root, ".git/hooks/pre-commit", `#!/bin/sh\n{ pwd; env | grep '^GIT_'; } > '${dump}'\n`, true);
+    // An explicit hooks path: a developer's global core.hooksPath would skip this one.
+    sh(wt, "-c", `core.hooksPath=${join(root, ".git", "hooks")}`, "commit", "-q", "--allow-empty", "-m", "hooked");
+    const [cwd, ...vars] = readFileSync(dump, "utf8").trim().split("\n");
+    const env = Object.fromEntries(vars.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    expect(env.GIT_DIR).toBeTruthy(); // git did set one
+    expect(check(cwd!, [], env).lines).toContain(PASS);
+    expect(check(root, [], { GIT_DIR: ".git" }).lines[0]).toMatch(/^FAIL c\.shared {2}this is the shared checkout/); // the main checkout's own, relative
+  });
+
+  // Value: protects=R3's "FAIL only when it points elsewhere" for a GIT_DIR naming this checkout's own .git gitfile or
+  // a relative one from a subdirectory; fails_when=the compare skips git's gitfile hop (verified: red at T5, a worktree's
+  // GIT_DIR=$PWD/.git FAILed) or resolves against the root, not cwd; why_new=the hook row sets the resolved git-dir
+  // only, from the root; seam=real worktree and main checkout; no_claim=GIT_DIR naming a bare repo
+  it("follows a GIT_DIR that names a .git gitfile, and resolves a relative one from cwd, as git does", () => {
+    const root = committed();
+    const wt = worktree(root, "feat-f");
+    expect(readFileSync(join(wt, ".git"), "utf8")).toMatch(/^gitdir: /); // a gitfile, not a directory
+    for (const gd of [join(wt, ".git"), ".git"]) expect(check(wt, [], { GIT_DIR: gd }).lines).toContain(PASS);
+    expect(check(join(wt, ".loops"), [], { GIT_DIR: "../.git" }).lines).toContain(PASS);
+    const sub = join(root, ".loops");
+    expect(check(sub, [], { GIT_DIR: "../.git" }).lines[0]).toMatch(/^FAIL c\.shared {2}this is the shared checkout/);
+    expect(check(sub, [], { GIT_DIR: ".git" }).lines[0]).toBe(`FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${join(sub, ".git")} — fix: unset GIT_DIR GIT_WORK_TREE`);
+    expect(check(join(wt, ".loops"), [], { GIT_DIR: join(root, ".git") }).lines[0]).toBe(`FAIL c.shared  GIT_DIR points at another checkout's git metadata; git commands here act on ${join(root, ".git")} — fix: unset GIT_DIR GIT_WORK_TREE`);
+  });
+
+  it.each(["--git-dir", "--git-common-dir"])("fails when git rev-parse %s fails, instead of guessing a worktree", (flag) => {
+    const wt = worktree(committed(), "feat-n");
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "rev-parse" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, args, opts));
+    expect(check(wt, [], {}, nul)).toMatchObject({ code: 1, lines: expect.arrayContaining(["FAIL c.shared  could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why"]) });
+  });
+
+  it("fails a worktree when git worktree list fails: its registration cannot be checked", () => {
+    const wt = worktree(committed(), "feat-l");
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : run(cmd, args, opts));
+    expect(check(wt, [], {}, nul).lines).toContain("FAIL c.shared  could not read git metadata — fix: rerun git worktree list --porcelain to see why");
+  });
+});
+
+describe("git env", () => {
+  // `git rev-parse --local-env-vars` (git 2.56): what points git at a repo other than the one cwd is in. env-check's git
+  // drops these but the two command-scope config ones, as git's prepare_other_repo_env does, and keeps GIT_INDEX_FILE
+  // only when it names an index of this checkout's own git-dir.
+  const LOCAL = "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR".split(" ");
+  const CMD_CFG = { GIT_CONFIG_PARAMETERS: "'loops.p'='1'", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "loops.mark", GIT_CONFIG_VALUE_0: "1" };
+  const STRIPPED = LOCAL.filter((k) => !Object.hasOwn(CMD_CFG, k));
+
+  it("every env-check git spawn gets the caller's env without git's repo-local variables, command-scope config kept", () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\nsparse = "warn"\n[shared_checkout]\nhint = "h"\n`);
+    const elsewhere = setup(HEAD);
+    const env = { ...Object.fromEntries(LOCAL.map((k) => [k, join(elsewhere, ".git")])), ...CMD_CFG, LOOPS_MARK: "1" };
+    const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+    const r = check(root, [], env, (cmd, args, opts) => (cmd === "git" && seen.push(opts?.env), run(cmd, args, opts)));
+    expect(r.out).toContain("PASS d.tracked");
+    expect(seen.length).toBeGreaterThanOrEqual(7);
+    for (const e of seen) {
+      expect(e).toMatchObject({ LOOPS_MARK: "1", HOME: "/nonexistent-home", ...CMD_CFG });
+      expect(Object.keys(e ?? {}).filter((k) => STRIPPED.includes(k))).toEqual([]);
+    }
+  });
+
+  // Value: protects=D-CFG, command-scope config (safe.directory in CI or a container, a `git -c`) reaching env-check's
+  // git; fails_when=gitEnv strips GIT_CONFIG_COUNT or GIT_CONFIG_PARAMETERS again (verified: red before the amend, d.sparse
+  // read "off"); why_new=the recording row above sees the vars, this one sees real git obey them; seam=real git;
+  // no_claim=safe.directory itself (a repo another uid owns cannot be faked here)
+  it("lets git obey command-scope config from GIT_CONFIG_COUNT and GIT_CONFIG_PARAMETERS, and drops GIT_CONFIG as git does", () => {
+    const root = setup(`${HEAD}[harness]\nsparse = "warn"\n`);
+    const on = "WARN d.sparse  sparse checkout is enabled; tools may not see every file — fix: git sparse-checkout disable";
+    expect(check(root, [], { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sparseCheckout", GIT_CONFIG_VALUE_0: "true" }).lines).toContain(on);
+    expect(check(root, [], { GIT_CONFIG_PARAMETERS: "'core.sparsecheckout'='true'" }).lines).toContain(on);
+    // GIT_CONFIG makes `git config` read that one file instead of the repo's; git's own submodule env unsets it too.
+    const file = join(tmp(), "other.config");
+    put(dirname(file), basename(file), "[core]\n\tsparseCheckout = true\n");
+    expect(check(root, [], { GIT_CONFIG: file }).lines).toContain("PASS d.sparse  sparse checkout is off");
+  });
+
+  /**
+   * `git commit -a` in `cwd`, whose pre-commit hook (in the main checkout's .git/hooks) records its cwd and GIT_* env
+   * and waits; env-check runs in that env while git holds the commit's index.lock, then the hook is let go.
+   */
+  async function inHook(root: string, cwd: string): Promise<{ env: Record<string, string>; r: ReturnType<typeof check> }> {
+    const t = tmp();
+    const [dump, go] = [join(t, "hook-env"), join(t, "go")];
+    put(root, ".git/hooks/pre-commit", `#!/bin/sh\n{ pwd; env | grep '^GIT_'; } > '${dump}.tmp' && mv '${dump}.tmp' '${dump}'\ni=0\nwhile [ ! -e '${go}' ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done\n`, true);
+    const child = spawn("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${join(root, ".git", "hooks")}`, "commit", "-q", "-a", "-m", "hooked"], { cwd, stdio: "ignore" });
+    const done = new Promise<number | null>((ok) => child.on("close", ok));
+    try {
+      expect(until(() => existsSync(dump), 10_000)).toBe(true);
+      const [at, ...vars] = readFileSync(dump, "utf8").trim().split("\n");
+      const env = Object.fromEntries(vars.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+      return { env, r: check(at!, [], env) };
+    } finally {
+      put(t, "go", "");
+      expect(await done).toBe(0);
+    }
+  }
+
+  // Value: protects=D-IDX, a pre-commit hook of `git commit -a` that deletes a tracked file; fails_when=gitEnv strips
+  // GIT_INDEX_FILE again (verified: red before the amend, "FAIL d.tracked  deleted: a.txt" in both checkouts);
+  // why_new=no row ran env-check inside a hook while git holds the commit's index; seam=real git commit, real hook;
+  // no_claim=other hook managers' own temporary indexes
+  it("reads the index git commits from in a `git commit -a` pre-commit hook, in the main checkout and a linked worktree", async () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { "a.txt": "a\n", "b.txt": "b\n" });
+    commit(root);
+    const wt = worktree(root, "feat-i");
+    rmSync(join(root, "a.txt"));
+    rmSync(join(wt, "b.txt"));
+    const ok = "PASS d.tracked  no tracked file deleted, exec bits intact";
+    for (const [cwd, gd] of [[root, join(root, ".git")], [wt, join(root, ".git", "worktrees", "feat-i")]] as const) {
+      const { env, r } = await inHook(root, cwd);
+      expect(r.lines).toContain(ok);
+      expect(join(rp(dirname(env.GIT_INDEX_FILE!)), basename(env.GIT_INDEX_FILE!))).toBe(join(rp(gd), "index.lock")); // gone since
+    }
+    expect(sh(root, "show", "--name-status", "--format=", "HEAD")).toBe("D\ta.txt\n");
+  });
+
+  // Value: protects=D-IDX's "own git-dir only": an index of another checkout or anywhere else is still dropped, and
+  // discovery never sees one; fails_when=gitEnv keeps any GIT_INDEX_FILE, keeps one under <git-dir>/worktrees/, keeps
+  // an absent one (git reads it as empty, a false PASS), or discovery passes the git-dir (verified: each made a row
+  // here red); why_new=the hook row only keeps; seam=real git plus a recording Runner; no_claim=none
+  it("keeps a GIT_INDEX_FILE only directly in this checkout's own git-dir, and never for git-dir discovery", () => {
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { "a.txt": "a\n" });
+    commit(root);
+    const wt = worktree(root, "feat-j");
+    // .git/alt holds the deletion of a.txt, staged; the real index still lists it.
+    sh(root, "rm", "-q", "--cached", "a.txt");
+    execFileSync("cp", [join(root, ".git", "index"), join(root, ".git", "alt")]);
+    execFileSync("cp", [join(root, ".git", "index"), join(root, ".git", "worktrees", "feat-j", "alt")]);
+    const loose = join(tmp(), "alt");
+    execFileSync("cp", [join(root, ".git", "index"), loose]);
+    sh(root, "reset", "-q");
+    rmSync(join(root, "a.txt"));
+    const ok = "PASS d.tracked  no tracked file deleted, exec bits intact";
+    const gone = "FAIL d.tracked  deleted: a.txt — fix: git checkout -- <path> to restore, chmod +x for exec bits";
+    expect(check(root).lines).toContain(gone);
+    // Relative, git reads it from the worktree top, whatever directory env-check starts in.
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "alt") }).lines).toContain(ok);
+    expect(check(join(root, ".loops"), [], { GIT_INDEX_FILE: ".git/alt" }).lines).toContain(ok);
+    // A linked worktree's index, under the main git-dir but another checkout's; one outside any git-dir.
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "worktrees", "feat-j", "alt") }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: loose }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: join(setup(HEAD), ".git", "index") }).lines).toContain(gone);
+    // Absent in its own git-dir (a hook outliving its commit, a leftover export): git would read it as empty.
+    expect(check(root, [], { GIT_INDEX_FILE: ".git/index.lock" }).lines).toContain(gone);
+    expect(check(root, [], { GIT_INDEX_FILE: join(root, ".git", "next-index-123.lock") }).lines).toContain(gone);
+    const seen: [string[], NodeJS.ProcessEnv | undefined][] = [];
+    const r = check(root, [], { GIT_INDEX_FILE: join(root, ".git", "alt") }, (cmd, args, opts) => (cmd === "git" && seen.push([args, opts?.env]), run(cmd, args, opts)));
+    expect(r.lines).toContain(ok);
+    for (const [args, e] of seen) expect([args.join(" "), e?.GIT_INDEX_FILE]).toEqual([args.join(" "), args[0] === "rev-parse" ? undefined : join(root, ".git", "alt")]);
+  });
+
+  // One way to spawn git: through gitEnv, in every module but zone, which reviews whatever index the caller's git env
+  // selects (a tool's temporary GIT_INDEX_FILE), so it keeps that env. Git-dir discovery (repoRoot, rev-parse) passes
+  // no git-dir, so no GIT_INDEX_FILE; every later spawn passes one, so a hook's own index reaches it. proc.ts holds the
+  // helpers; testkit.ts sets up repos.
+  it("every git spawn passes gitEnv, with the git-dir after discovery, except zone's, which never does", () => {
+    const src = join(HERE, "..");
+    const spawns = (text: string): string[] =>
+      [...text.matchAll(/(?<!function )\b(?:git|repoRoot)\(|\b\w+\(\s*"git",/g)].map((m) => {
+        let i = m.index + m[0].indexOf("(");
+        for (let depth = 0; i < text.length; i++) if (text[i] === "(") depth++;
+        else if (text[i] === ")" && --depth === 0) break;
+        return text.slice(m.index, i + 1);
+      });
+    const found = Object.fromEntries(
+      ["lib", "bin"].flatMap((d) =>
+        readdirSync(join(src, d))
+          .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !["proc.ts", "testkit.ts"].includes(f))
+          .map((f) => [`${d}/${f}`, spawns(readFileSync(join(src, d, f), "utf8"))] as const)
+          .filter(([, s]) => s.length),
+      ),
+    );
+    expect(Object.keys(found).sort()).toEqual(expect.arrayContaining(["lib/env-check.ts", "lib/env-checks.ts", "lib/zone-cli.ts"]));
+    for (const [file, calls] of Object.entries(found)) {
+      for (const c of calls) expect(`${file}: ${c}`).toMatch(file === "lib/zone-cli.ts" ? /^[^:]+: (?![^]*gitEnv\()/ : /repoRoot\(|"rev-parse"/.test(c) ? /gitEnv\(\w+\.env\)/ : /gitEnv\(\w+\.env, /);
+    }
   });
 });
 
@@ -384,6 +700,36 @@ describe("harness", () => {
       expect(go('["fakelint"]', bare(gone)).out).toContain("fakelint (asdf not found at /nonexistent-dir/bin/asdf)");
     });
 
+    it("says an asdf whose #! interpreter is missing could not start, by path and on PATH", () => {
+      const abs = tmp();
+      const home = tmp();
+      const asdf = noInterp(join(home, "bin"), "asdf");
+      asdfShim(abs, "fakelint", asdf);
+      expect(go('["fakelint"]', bare(abs)).out).toContain(`fakelint (asdf at ${asdf} ${MISSING_INTERP})`);
+      const shims = tmp();
+      asdfShim(shims, "fakelint");
+      expect(go('["fakelint"]', bare(shims, join(home, "bin"))).out).toContain(`fakelint (asdf at ${asdf} ${MISSING_INTERP})`);
+    });
+
+    it("relays a shim diagnostic and a shim's manager path escaped in text and raw in --json", () => {
+      const shims = tmp();
+      const bin = tmp();
+      asdfShim(shims, "fakelint");
+      manager(bin, "asdf", "printf 'No version\\033[2K\\302\\233 set\\n' >&2; exit 126");
+      const root = setup(`${HEAD}[harness]\ntools = ["fakelint"]\n`);
+      commit(root);
+      expect(check(root, [], bare(shims, bin)).out).toContain("(asdf which fakelint exited 126: No version\\u001b[2K\\u009b set)");
+      const raw = check(root, ["--json"], bare(shims, bin)).out;
+      expect(raw).not.toMatch(/[\u001b\u009b]/);
+      const tools = (JSON.parse(raw) as { results: { id: string; message: string }[] }).results.find((x) => x.id === "d.tools");
+      expect(tools?.message).toContain("(asdf which fakelint exited 126: No version\u001b[2K\u009b set)");
+      const gone = tmp();
+      asdfShim(gone, "fakelint", "/nonexistent-dir/\u001b[2Kbin/asdf");
+      const g = check(root, [], bare(gone));
+      expect(g.out).toContain("fakelint (asdf not found at /nonexistent-dir/\\u001b[2Kbin/asdf)");
+      expect(g.out).not.toContain("\u001b");
+    });
+
     it("asks mise about a symlink to the mise binary, and does not treat mise itself as a shim", () => {
       const bin = tmp();
       const shims = tmp();
@@ -398,6 +744,60 @@ describe("harness", () => {
       rmSync(join(bin, "mise.log"));
       expect(go('["mise"]', bare(bin)).out).toContain("PASS d.tools  present: mise");
       expect(existsSync(join(bin, "mise.log"))).toBe(false);
+    });
+
+    // Value: protects=the mise PATH fallback the T13 Docker probe recorded (mise 2026.11.0: a shim with no active version
+    // runs the next non-shim copy on PATH while mise which exits 1); fails_when=shimProblem FAILs on mise which's exit alone
+    // (verified: red before the fix, the shim-then-copy run exits 1 with "mise which fakelint exited 1"); why_new=no row had a
+    // copy of the tool after a mise shim; seam=shimProblem; no_claim=which copy mise would pick when one is itself a shim
+    it("PASSes a mise shim with no active version when an executable non-shim copy follows it on PATH, as mise falls back to it", () => {
+      const bin = tmp();
+      const shims = tmp();
+      const sys = tmp();
+      manager(bin, "mise", 'echo "mise ERROR $2 is a mise bin however it is not currently active" >&2; exit 1');
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      const NOT_ACTIVE = "fakelint (mise which fakelint exited 1: mise ERROR fakelint is a mise bin however it is not currently active)";
+      // Nothing after the shim: mise errors, so d.tools FAILs.
+      expect(go('["fakelint"]', bare(shims)).out).toContain(NOT_ACTIVE);
+      put(sys, "fakelint", `#!/bin/sh\ntouch "${sys}/ran-fakelint"\n`, true);
+      const r = go('["fakelint"]', bare(shims, sys));
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("PASS d.tools  present: fakelint");
+      expect(readFileSync(join(bin, "mise.log"), "utf8").endsWith(`\n${r.root} which fakelint\n`)).toBe(true); // mise is still asked first
+      expect(existsSync(join(sys, "ran-fakelint"))).toBe(false); // the copy is found, never run
+      // Only a copy after the shim's own directory counts, and only an executable one that is no shim.
+      expect(go('["fakelint"]', bare(sys, shims)).out).toContain("PASS d.tools  present: fakelint"); // the copy itself is first
+      const noexec = tmp();
+      put(noexec, "fakelint", "#!/bin/sh\n");
+      expect(go('["fakelint"]', bare(shims, noexec)).out).toContain(NOT_ACTIVE);
+      const again = tmp();
+      symlinkSync(join(bin, "mise"), join(again, "fakelint"));
+      expect(go('["fakelint"]', bare(shims, again)).out).toContain(NOT_ACTIVE);
+      const asdfShims = tmp();
+      asdfShim(asdfShims, "fakelint");
+      expect(go('["fakelint"]', bare(shims, asdfShims)).out).toContain(NOT_ACTIVE);
+      // A mise which that prints no path is no fallback; nor is asdf, which has none.
+      manager(bin, "mise", "exit 0");
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("fakelint (mise which fakelint printed no path)");
+      const aShims = tmp();
+      asdfShim(aShims, "fakelint");
+      manager(bin, "asdf", NO_VERSION);
+      expect(go('["fakelint"]', bare(aShims, bin, sys)).out).toContain("fakelint (asdf which fakelint exited 126: No version is set for command fakelint)");
+    });
+
+    // Value: protects=only the verified "not currently active" state falls back to a later copy; fails_when=any non-zero mise
+    // which (an untrusted config, a mise error) PASSes beside a later copy, though the shim fails the same way; why_new=the
+    // fallback row used only the inactive message; seam=shimProblem; no_claim=every mise error message
+    it("FAILs a mise shim whose mise which fails for another reason, even with a non-shim copy after it on PATH", () => {
+      const bin = tmp();
+      const shims = tmp();
+      const sys = tmp();
+      symlinkSync(join(bin, "mise"), join(shims, "fakelint"));
+      put(sys, "fakelint", "#!/bin/sh\n", true);
+      manager(bin, "mise", 'echo "mise ERROR Config files in /x/mise.toml are not trusted." >&2; exit 1');
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("fakelint (mise which fakelint exited 1: mise ERROR Config files in /x/mise.toml are not trusted.)");
+      manager(bin, "mise", 'echo "mise ERROR $2 is a mise bin however it is not currently active" >&2; exit 2');
+      expect(go('["fakelint"]', bare(shims, sys)).out).toContain("FAIL d.tools");
     });
 
     it("FAILs a manager that times out, prints no path, or cannot run", () => {
@@ -493,6 +893,20 @@ describe("harness", () => {
     // A tracked workflow deleted from the worktree is d.tracked's finding, not a crash.
     const gone = run('entrypoints = "auto"\ntracked = true', files, (root) => rmSync(join(root, ".github/workflows/ci.yml")));
     expect([gone.code, gone.out]).toEqual([1, expect.stringContaining("FAIL d.tracked  deleted: .github/workflows/ci.yml")]);
+  });
+
+  it("d.tracked escapes a tracked name in text and keeps it raw in --json, JSON-escaped", () => {
+    const name = "a\u001b[2Kb\u009bc\u202e.txt";
+    const root = setup(`${HEAD}[harness]\ntracked = true\n`, { [name]: "x\n" });
+    commit(root);
+    rmSync(join(root, name));
+    const r = check(root);
+    expect(r.out).toContain("FAIL d.tracked  deleted: a\\u001b[2Kb\\u009bc\\u202e.txt — fix: ");
+    expect(r.out).not.toMatch(/[\u001b\u009b\u202e]/);
+    const raw = check(root, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u009b\u202e]/);
+    const rows = (JSON.parse(raw) as { results: { id: string; message: string }[] }).results;
+    expect(rows.find((x) => x.id === "d.tracked")?.message).toBe(`deleted: ${name}`);
   });
 
   it("d.tracked catches a deleted tracked file and a lost exec bit", () => {
@@ -751,7 +1165,7 @@ describe("compose", () => {
     const w = checkC(wt, { [wt]: old, [root]: "app-prod" }, [], { COMPOSE_PROJECT_NAME: "mine" });
     expect([w.code, w.out]).toEqual([1, expect.stringContaining(`FAIL e.project  ${why("this worktree's")} — fix: ${fix}`)]);
     const wp = checkC(wt, { [wt]: old, [root]: "app-prod" }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "mine" });
-    expect([wp.code, wp.out, wp.err]).toEqual([0, "mine", expect.stringContaining(`env-check: warning: ${why("this worktree's")}; fix: ${fix}`)]);
+    expect([wp.code, wp.out, wp.err]).toEqual([0, "mine", expect.stringContaining(`env-check: warning: ${why("this worktree's")} — fix: ${fix}`)]);
   });
 
   it("holds a peer worktree's derived name and every answer, probing a peer without the configured files plainly, and a gone peer's derived name", () => {
@@ -883,7 +1297,7 @@ describe("compose", () => {
     const at = (dir: string, cfg: ComposeAnswer): ComposeAnswers => ({ [dir]: { cfg, plain: NO_FILE }, [join(dir, "docker")]: NO_FILE });
     const r = checkC(ws, { ...at(sub, "app-node"), ...at(ws, "docker") }, ["--compose-project"]);
     const n = "app-node-feat-s-[0-9a-f]{6}";
-    expect([r.code, r.out, r.err]).toEqual([0, expect.stringMatching(new RegExp(`^${n}$`)), expect.stringMatching(new RegExp(`env-check: warning: configured run would use project docker, not ${n}; fix: add COMPOSE_PROJECT_NAME=${n} to ${ws}/docker/\\.env, or export it, or always pass -p ${n}`))]);
+    expect([r.code, r.out, r.err]).toEqual([0, expect.stringMatching(new RegExp(`^${n}$`)), expect.stringMatching(new RegExp(`env-check: warning: configured run would use project docker, not ${n} — fix: add COMPOSE_PROJECT_NAME=${n} to ${ws}/docker/\\.env, or export it, or always pass -p ${n}`))]);
     // From the root, the worktree's own directory name (Compose's default) is an own name.
     const root2 = setup(test('derive = "slug-hash"\n'), { "compose.yml": "services: {}\n" });
     commit(root2);
@@ -900,6 +1314,22 @@ describe("compose", () => {
     const r = check(root, ["--compose-project"], {}, composeStub({ [root]: "app-node" }, calls));
     expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: this checkout would use project app-node, which worktree ${wt} uses — fix: export another COMPOSE_PROJECT_NAME, set derive = "slug-hash" in ${CFG}, or rename worktree ${wt}`)]);
     expect(calls.every((c) => rp(c.cwd) === root)).toBe(true);
+  });
+
+  // Value: protects=Check 0c's guard when git's metadata cannot be read; fails_when=composeProject takes a worktree
+  // whose rev-parse failed for the main checkout and hands out the main checkout's name (verified: red at T5, exit 0 and
+  // app-prod); why_new=the rev-parse failure tests covered c.shared and ENV_CHECK_WORKTREE only; seam=a stubbed failing
+  // rev-parse --git-common-dir in a real worktree; no_claim=what Compose itself would name the run
+  it.each(["--git-dir", "--git-common-dir"])("withholds the name when git rev-parse %s fails, instead of taking a worktree for the main checkout", (flag) => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-rp");
+    const stub = composeStub({ [root]: "app-prod", [wt]: "app-prod" });
+    const nul: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "rev-parse" && args[1] === flag ? { code: 128, stdout: "", stderr: "fatal: boom", timedOut: false } : stub(cmd, args, opts));
+    const fail = "could not read git metadata — fix: rerun git rev-parse --git-dir --git-common-dir to see why";
+    expect(check(wt, ["--compose-project"], {}, nul)).toMatchObject({ code: 1, out: "", err: `env-check: ${fail}` });
+    expect(check(wt, [], {}, nul)).toMatchObject({ code: 1, lines: expect.arrayContaining([`FAIL e.project  ${fail}`]) });
+    expect(check(wt, [], {}, nul).out).not.toContain("PASS e.project");
   });
 
   it("probes the main checkout's plain run even when it lacks this branch's configured files", () => {
@@ -1026,7 +1456,7 @@ describe("compose", () => {
     // A .env naming the main checkout's project: -p feat-a stays safe, but a run without -p lands on prod.
     put(wt, ".env", `COMPOSE_PROJECT_NAME=${prod}\n`);
     const env = checkC(wt, { [root]: prod, [wt]: prod }, ["--compose-project"]);
-    expect([env.code, env.out, env.err]).toEqual([0, "feat-a", expect.stringContaining(`env-check: warning: configured run would use project ${prod}, which the main checkout uses; fix: add COMPOSE_PROJECT_NAME=feat-a to ${wt}/.env`)]);
+    expect([env.code, env.out, env.err]).toEqual([0, "feat-a", expect.stringContaining(`env-check: warning: configured run would use project ${prod}, which the main checkout uses — fix: add COMPOSE_PROJECT_NAME=feat-a to ${wt}/.env`)]);
     rmSync(join(wt, ".env"));
     // Its own name: is not the main checkout's, but docker compose there without -p still runs as feat-stack, not feat-a.
     const own = checkC(wt, { [root]: prod, [wt]: "feat-stack" });
@@ -1196,7 +1626,7 @@ describe("compose", () => {
     put(root, ".env", "STACK_NAME=live\n");
     // The worktree has no .env, so Compose cannot name its run: a FAIL, but -p feat-r is still safe, so the name is kept.
     const own = checkC(wt, { [wt]: EMPTY, [root]: "live" }, ["--compose-project"]);
-    expect([own.code, own.out, own.err]).toEqual([0, "feat-r", expect.stringContaining(`env-check: warning: this worktree's configured run: docker compose config exited 1; fix: ${RERUN(wt)}`)]);
+    expect([own.code, own.out, own.err]).toEqual([0, "feat-r", expect.stringContaining(`env-check: warning: this worktree's configured run: docker compose config exited 1 — fix: ${RERUN(wt)}`)]);
     // With its own COMPOSE_PROJECT_NAME that name: is irrelevant, and the prod name is main's resolved one.
     put(wt, ".env", "COMPOSE_PROJECT_NAME=feat-r\n");
     expect(checkC(wt, { [wt]: "feat-r", [root]: "live" }).out).toContain("PASS e.project  feat-r (derived: dirname)");
@@ -1409,7 +1839,7 @@ describe("compose", () => {
     // -p s3-wt is safe there, so --compose-project still hands it over, warning on stderr.
     const p = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" }, ["--compose-project"]);
     expect([p.code, p.out]).toEqual([0, "s3-wt"]);
-    expect(p.err).toContain(`env-check: warning: configured run would use project app-prod, which the main checkout uses; fix: add COMPOSE_PROJECT_NAME=s3-wt to ${wt}/.env`);
+    expect(p.err).toContain(`env-check: warning: configured run would use project app-prod, which the main checkout uses — fix: add COMPOSE_PROJECT_NAME=s3-wt to ${wt}/.env`);
     // A real reuse of the prod name yields no name, and stderr carries the fix.
     const reuse = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "app-prod" });
     expect([reuse.code, reuse.out, reuse.err]).toEqual([1, "", expect.stringContaining("env-check: this worktree would use project app-prod, which the main checkout uses — fix: export another COMPOSE_PROJECT_NAME")]);
@@ -1723,6 +2153,18 @@ describe("e.project running stacks", () => {
     expect(stacks(root, answers, listing(at(join(wt, "sub"), "app-node"))).text).toContain(`FAIL e.project  project app-node was started from project directory ${wt}/sub (worktree ${wt})`);
     expect(stacks(wt, answers, listing(at(join(wt, "sub"), "w1"))).text).toBe("PASS e.project  w1 (derived: dirname)");
     expect(stacks(wt, answers, listing(at(root, "w1"))).text).toContain(`FAIL e.project  project w1 was started from project directory ${root} (the main checkout)`);
+  });
+
+  it("escapes a working_dir label in text rows and the --compose-project stderr line, which uses the text fix separator", () => {
+    const root = setup(cfg(), files);
+    commit(root);
+    const away = join(tmp(), "x\u001b[2Ky");
+    const r = stacks(root, { [root]: "app-node" }, listing(at(away, "app-node")));
+    expect(r).toMatchObject({ exit: 1, name: "" });
+    for (const t of [r.text, r.err]) {
+      expect(t).toMatch(/x\\u001b\[2Ky \(outside every checkout\) — fix: export another COMPOSE_PROJECT_NAME/);
+      expect(t).not.toContain("\u001b");
+    }
   });
 
   it("withholds the name for a stack of the name, keeps it for a stack of another answer, and reports check 5 first", () => {
@@ -2197,6 +2639,36 @@ describe("local checks", () => {
     expect(t.out).toContain("WARN d.x  timed out after 0.2s (not a pass)");
   });
 
+  it("a check whose #! interpreter is missing could not start, and one killed by a signal says so", () => {
+    const root = setup(HEAD);
+    noInterp(join(root, ".loops/checks"), "d_x.sh");
+    put(root, CFG, `${HEAD}[[local]]\nid = "d.x"\nrun = ".loops/checks/d_x.sh"\n`);
+    expect(check(root).lines[0]).toBe(`FAIL d.x  ${MISSING_INTERP} — fix: run .loops/checks/d_x.sh by hand`);
+    expect(run("kill -KILL $$").lines[0]).toBe("FAIL d.x  could not run (SIGKILL) — fix: run .loops/checks/d_x.sh by hand");
+  });
+
+  it("kills the check's whole process group at its timeout, so a child it started is not left running", () => {
+    const mark = `loops-sleeper-${process.pid}-${n++}`;
+    try {
+      // `; :` keeps the child shell (and the mark in its argv) alive beside its sleep.
+      const t = run(`sh -c 'sleep 30; : ${mark}' &\nwait`, "timeout_s = 1\n");
+      expect(t.out).toContain("WARN d.x  timed out after 1s (not a pass)");
+      expect(until(() => running(mark) === false, 2_000)).toBe(true);
+    } finally {
+      spawnSync("pkill", ["-KILL", "-f", mark]);
+    }
+  }, 15_000);
+
+  it("turns mise auto-install off for the a.local probe and for local checks", () => {
+    const root = setup(`${GO_PIN}local = "warn"\n`, GO_FILES);
+    put(root, CFG, `${GO_PIN}local = "warn"\n${local(root, "d.x", 'echo "PASS d.x mise=$MISE_AUTO_INSTALL"')}`);
+    const seen: [string, string | undefined][] = [];
+    const rec: Runner = (cmd, args, opts) => (cmd === "go" || cmd.endsWith("d_x.sh") ? seen.push([basename(cmd), opts?.env?.MISE_AUTO_INSTALL]) : 0, procRun(cmd, args, opts));
+    const r = check(root, [], withPath(goShim()), rec);
+    expect(seen).toEqual([["go", "0"], ["d_x.sh", "0"]]);
+    expect(r.out).toContain("PASS d.x  mise=0");
+  });
+
   it("exports ENV_CHECK_PROJECT: the resolved project, else empty", () => {
     const project = (compose: string, args: string[] = []) => {
       const root = setup(HEAD, { "compose.yml": "name: app-prod\nservices: {}\n" });
@@ -2233,28 +2705,31 @@ describe("local checks", () => {
     expect(check(root).lines.slice(0, 4).map((l) => l.split(" ")[1])).toEqual(["a.c", "d.b", "d.a", "x.z"]);
   });
 
-  it("splits a line at its first fix separator, accepts -- as one, and reads an empty fix as none", () => {
+  it("splits a line at its first fix separator, accepts -- as one, defuses later ones, and reads an empty fix as none", () => {
     const r = run([
       'echo "WARN d.x.dbl first — fix: a — fix: b"',
       'echo "WARN d.x.dd msg -- fix: ascii dashes"',
+      'echo "WARN d.x.add m -- fix: a -- fix: b; git checkout -- x"',
       'echo "PASS d.x.pe ok — fix: "',
       'echo "WARN d.x.we empty — fix:"',
       'printf "FAIL d.x.fe bad — fix:   \\n"',
     ].join("\n"));
     expect(r.lines).toEqual([
-      "WARN d.x.dbl  first — fix: a — fix: b",
+      "WARN d.x.dbl  first — fix: a \\u2014 fix: b",
       "WARN d.x.dd  msg — fix: ascii dashes",
+      "WARN d.x.add  m — fix: a \\u002d- fix: b; git checkout -- x",
       "PASS d.x.pe  ok",
       "WARN d.x.we  empty — fix: address the message above and re-run",
       "FAIL d.x.fe  bad — fix: address the message above and re-run",
-      "env-check: 1 FAIL, 3 WARN, 1 PASS, 0 SKIP",
+      "env-check: 1 FAIL, 4 WARN, 1 PASS, 0 SKIP",
     ]);
+    for (const l of r.lines) expect(l.split(/ (?:—|--) fix: /).length).toBeLessThanOrEqual(2);
   });
 
   it("accepts CRLF line endings but rejects a line with any other control character, echoed escaped in quotes", () => {
     const crlf = run('printf "PASS d.x fine\\r\\nWARN d.x.w tab\\there — fix: f\\r\\n"');
-    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
-    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    expect(crlf.lines).toEqual(["PASS d.x  fine", "WARN d.x.w  tab\\there — fix: f", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+    const fix = "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>";
     const cr = run('printf "WARN d.x.cr mid\\rcr here — fix: f\\n"');
     expect(cr.code).toBe(1);
     expect(cr.lines[0]).toBe(`FAIL d.x.protocol  unparseable line "WARN d.x.cr mid\\rcr here \\u2014 fix: f" — fix: ${fix}`);
@@ -2268,7 +2743,7 @@ describe("local checks", () => {
   });
 
   it("rejects a line that ends in, or is only, a control character other than CRLF's \\r, and a bidi control", () => {
-    const fix = "emit `LEVEL id message [— fix: ...]`, one line per result, id = the configured id or <id>.<name>";
+    const fix = "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>";
     const r = run('printf "PASS d.x ok\\v\\nPASS d.x fine\\n\\f\\nPASS d.x.r ok \\342\\200\\250\\nPASS d.x.b ok \\342\\200\\256lmth.exe\\n \\r\\n"');
     expect(r.lines).toEqual([
       `FAIL d.x.protocol  unparseable line "PASS d.x ok\\u000b" — fix: ${fix}`,
@@ -2293,6 +2768,14 @@ describe("local checks", () => {
     expect(err.out).not.toContain("\u001b");
   });
 
+  it("relays a stderr reason escaped in text and raw in --json", () => {
+    const script = "printf 'boom\\033[2K\\342\\200\\256x\\n' >&2\nexit 3";
+    expect(run(script).lines[0]).toBe("FAIL d.x  printed no results, exit 3 (boom\\u001b[2K\\u202ex) — fix: run .loops/checks/d_x.sh by hand");
+    const raw = run(script, "", {}, ["--json"]).out;
+    expect(raw).not.toMatch(/[\u001b\u202e]/);
+    expect((JSON.parse(raw) as { results: { message: string }[] }).results[0]!.message).toBe("printed no results, exit 3 (boom\u001b[2K\u202ex)");
+  });
+
   it("redacts $HOME before cutting a rejected line or the stderr excerpt, so a cut through home leaks no part of it", () => {
     const env = { HOME: "/home/someuser" };
     // "WARN d.x.c " + 63 zeros + " " puts home at code point 75, across the 80-code-point cut.
@@ -2311,6 +2794,36 @@ describe("output and exit codes", () => {
     const root = setup(HEAD);
     put(root, CFG, HEAD + local(root, "d.a", 'echo "PASS d.a fine"\necho "WARN d.a.w hmm — fix: x"\necho "INFO d.a.i note"'));
     expect(check(root, ["--quiet"]).lines).toEqual(["WARN d.a.w  hmm — fix: x", "env-check: 0 FAIL, 1 WARN, 1 PASS, 0 SKIP"]);
+  });
+
+  it("escapes folded also ids like the rest of the row", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", 'echo "WARN d.a.x same"\necho "WARN d.a.y--fix: same"'));
+    expect(check(root).lines[0]).toBe("WARN d.a.x  same — fix: address the message above and re-run (also: d.a.y\\u002d-fix:)");
+    expect((JSON.parse(check(root, ["--json"]).out) as { results: { also: string[] }[] }).results[0]!.also).toEqual(["d.a.y--fix:"]);
+  });
+
+  // Escape once, at the edges: the text renderer (showRow), the JSON pass and the CLI's exit-2 line. A check that
+  // escapes its own text makes --json carry it escaped while other rows are raw.
+  it("no module but text.ts, the env-check renderer and the CLI error printer uses escapeCtl", () => {
+    const src = join(HERE, "..");
+    const users = ["lib", "bin"].flatMap((d) =>
+      readdirSync(join(src, d))
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && /\bescapeCtl\b/.test(readFileSync(join(src, d, f), "utf8")))
+        .map((f) => `${d}/${f}`),
+    );
+    expect(users.sort()).toEqual(["lib/env-check.ts", "lib/loops-cli.ts", "lib/text.ts"]);
+  });
+
+  // Value: protects=R26's raw --json values for text a producer quotes; fails_when=quote() escapes, so JSON.parse returns
+  // a literal `\u001b` (verified: red at T7, the guard above misses it since quote lives in text.ts); why_new=the guard
+  // checks direct escapeCtl imports only; seam=a real [[local]]; no_claim=the compose fix's quoted file names (same quote)
+  it("--json carries a quoted unparseable line raw, and text mode shows it escaped once", () => {
+    const root = setup(HEAD);
+    put(root, CFG, HEAD + local(root, "d.a", "printf 'bad \\033[2J \\\\ \"q\" line\\n'"));
+    const msg = (JSON.parse(check(root, ["--json"]).out) as { results: { id: string; message: string }[] }).results.find((r) => r.id === "d.a.protocol")!.message;
+    expect(msg).toBe('unparseable line "bad \u001b[2J \\\\ \\"q\\" line"');
+    expect(check(root).lines[0]).toBe('FAIL d.a.protocol  unparseable line "bad \\u001b[2J \\\\ \\"q\\" line" — fix: emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>');
   });
 
   it("--json carries results, summary and exit; INFO is not counted", () => {
@@ -2408,6 +2921,23 @@ describe("output and exit codes", () => {
     expect([r.code, r.err]).toEqual([2, expect.stringMatching(/git ls-files failed: \S/)]);
   });
 
+  it("redacts and escapes an exit-2 message relayed from git", () => {
+    const root = setup(HEAD);
+    const r = check(root, [], { HOME: "/home/bob" }, (cmd, args, opts) =>
+      cmd === "git" && args.join(" ") === "ls-files -z" ? { code: 128, stdout: "", stderr: "fatal: \u001b[2Jbad index /home/bob/r/.git/index\nmore", timedOut: false } : run(cmd, args, opts),
+    );
+    expect([r.code, r.err]).toEqual([2, "env-check: git ls-files failed: fatal: \\u001b[2Jbad index ~/r/.git/index"]);
+  });
+
+  it("redacts and escapes the whole exit-2 line, the command prefix too; the usage after it stays as is", () => {
+    const t = deps(tmp(), { HOME: "/home/bob" });
+    expect([main(["\u001b[2J\nboom"], t.d), main(["/home/bob/x\u202e"], t.d)]).toEqual([2, 2]);
+    const lines = t.err.join("\n").split("\n");
+    expect(lines.filter((l) => l.includes("unknown command"))).toEqual(["\\u001b[2J\\nboom: unknown command \\u001b[2J\\nboom", "~/x\\u202e: unknown command ~/x\\u202e"]);
+    expect(lines[1]).toMatch(/^loops [0-9.]+$/);
+    expect(lines[2]).toMatch(/^usage: loops <command>/);
+  });
+
   it("--compose-project exits 2 when compose mode is not test", () => {
     expect(check(setup(HEAD), ["--compose-project"]).code).toBe(2);
     expect(check(setup(`${HEAD}[compose]\nmode = "none"\n`), ["--compose-project"])).toMatchObject({ code: 2, out: "", err: expect.stringContaining("compose mode is not test") });
@@ -2448,9 +2978,28 @@ describe("x.none: a run that checks nothing", () => {
     const root = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
     commit(root);
     expect(check(root, [], { ENV_CHECK_ALLOW_MAIN: "1" }).lines).toEqual(["INFO c.shared  shared checkout allowed by ENV_CHECK_ALLOW_MAIN", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 0 SKIP"]);
-    expect(check(root, ["--static"]).out).not.toContain("x.none"); // SKIP c.shared counts
     expect(check(root).out).not.toContain("x.none");
     expect(check(setup(`${HEAD}[harness]\ntools = ["git"]\n`)).out).not.toContain("x.none");
+  });
+
+  it("counts a run of only SKIP rows as nothing checked, exit 0; one PASS beside a SKIP is enough", () => {
+    const shared = setup(`${HEAD}[shared_checkout]\nhint = "use a worktree"\n`);
+    commit(shared);
+    expect(check(shared, ["--static"])).toMatchObject({
+      code: 0,
+      lines: [
+        "SKIP c.shared  not checked in --static mode",
+        "WARN x.none  no check ran under --static (CI=true implies it) — fix: add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)",
+        "env-check: 0 FAIL, 1 WARN, 0 PASS, 1 SKIP",
+      ],
+    });
+    const only = (script: string) => {
+      const root = setup(HEAD);
+      put(root, CFG, HEAD + local(root, "d.x", script));
+      return check(root);
+    };
+    expect(only('echo "SKIP d.x n/a"\necho "SKIP d.x.two n/a either"')).toMatchObject({ code: 0, lines: ["SKIP d.x  n/a", "SKIP d.x.two  n/a either", NONE, "env-check: 0 FAIL, 1 WARN, 0 PASS, 2 SKIP"] });
+    expect(only('echo "SKIP d.x n/a"\necho "PASS d.x.two ok"').out).not.toContain("x.none");
   });
 });
 
@@ -2481,12 +3030,12 @@ describe("wrapper templates/env-check", () => {
     expect(sandbox({ PATH: nodeDir(), HOME: tmp(), LOOPS_BIN: join(dir, "loops.mjs") }, "--json").out).toBe("env-check --json");
   });
 
-  it("prints a hint and exits 3 when there is no engine or no node", () => {
+  it("prints a hint and exits 3 when there is no engine, and exits 1 when an engine exists but node does not run", () => {
     const none = sandbox({ PATH: nodeDir(), HOME: tmp() });
     expect(none).toMatchObject({ code: 3, out: "env-check: not run\n" });
     expect(none.err).toContain("engine not installed");
     const fake = shim("loops", "echo hi");
-    expect(sandbox({ PATH: tmp(), HOME: tmp(), LOOPS_BIN: join(fake, "loops") }).code).toBe(3);
+    expect(sandbox({ PATH: tmp(), HOME: tmp(), LOOPS_BIN: join(fake, "loops") })).toMatchObject({ code: 1, out: "" });
   });
 
   it("stays within 30 lines", () => {
@@ -2503,5 +3052,11 @@ describe("versions", () => {
     const t = deps(tmp());
     expect([main(["frobnicate"], t.d), main([], t.d)]).toEqual([2, 2]);
     expect(t.err.join("\n")).toMatch(/^frobnicate: unknown command frobnicate\nloops [0-9.]+\nusage: loops/);
+    // Value: protects=bare `loops` prints its version once, as the error line, then usage; fails_when=the usage slice drops or
+    // repeats the version line; why_new=main([]) asserted only its exit code; seam=none; no_claim=none beyond protects
+    const b = deps(tmp());
+    expect(main([], b.d)).toBe(2);
+    expect(b.err.join("\n")).toMatch(new RegExp(`^loops: loops ${VERSION.replace(/\./g, "\\.")}\nusage: loops`));
+    expect(b.err.join("\n").match(/loops \d+\.\d+\.\d+/g)).toHaveLength(1);
   });
 });

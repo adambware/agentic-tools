@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as glob from "./glob.js";
 import { cmp, disagreement, localOk, PinError, pinOf, readSource, ver, type PinValue } from "./pins.js";
@@ -72,7 +73,7 @@ const hits: [string, string, Record<string, string>, string[]][] = [
   ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - 'uses': 'actions/setup-node@v4'\n        \"with\":\n          \"node-version\": 18\n") }, ["18"]], // quoted keys
   ["setup-node", "node", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-node@v4\n        with: { cache: npm, node-version: 16 } # flow\n") }, ["16"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: { go-version-file: go.mod, cache: false }\n"), "go.mod": "go 1.26.1\n" }, ["1.26.1"]],
-  ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: {}\n      - uses: actions/setup-go@v5\n        with: { \"go-version\": '1.25.2', cache: \"a,b\" }\n") }, ["1.25.2"]],
+  ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: { \"go-version\": '1.25.2', cache: \"a,b\" }\n") }, ["1.25.2"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: go.work")), "go.work": "go 1.26\n\nuse ./svc\n" }, ["1.26"]],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version-file: .go-version")), ".go-version": "1.26.1\n" }, ["1.26.1"]],
   ["setup-python", "python", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-python@v5\n        with:\n          python-version-file: pyproject.toml\n"), "pyproject.toml": '[build-system]\nrequires = ["setuptools>=61.0"]\n\n[project]\nname = "app"\nrequires-python = ">=3.10, !=3.11.*, <4"\n' }, ["range >=3.10, !=3.11.*, <4"]], // requires-python is always a range
@@ -149,7 +150,7 @@ describe("readSource hits", () => {
   it("does not read a step's neighbours: go-version of the next step is not setup-go's", () => {
     const root = tmp();
     put(root, ".github/workflows/ci.yml", WF(SETUP_GO("cache: true") + "      - name: other\n        with:\n          go-version: 1.1\n"));
-    expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/no go version found/);
+    expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/setup-go step without a version in \.github\/workflows\/ci\.yml:6/);
   });
 
   it("reads a step written as a bare dash with its keys on the following lines (and CRLF)", () => {
@@ -181,7 +182,7 @@ describe("readSource hits", () => {
   it("does not read a with: that belongs to another step or a nested key", () => {
     const root = tmp();
     put(root, ".github/workflows/ci.yml", WF("      - with:\n          go-version: 1.1\n        uses: actions/checkout@v4\n      - uses: actions/setup-go@v5\n        env:\n          go-version: 1.2\n        with:\n          cache: true\n          extra:\n            go-version: 1.3\n"));
-    expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/no go version found/);
+    expect(() => readSource(root, [".github/workflows/ci.yml"], "go", "setup-go")).toThrow(/setup-go step without a version in \.github\/workflows\/ci\.yml:9/);
   });
 
   // One readable step must never hide another: either both values are read or the source fails.
@@ -230,6 +231,7 @@ const misses: [string, string, Record<string, string>, RegExp][] = [
   ["dockerfile", "go", { Dockerfile: "FROM golang:latest\n" }, /unsupported form "[^"]*latest" in Dockerfile:1; pin an exact version/], // a non-version tag of the tool image
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: ${{ matrix.go }}")) }, /go-version "\$\{\{ matrix\.go \}\}" is not a literal version/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: [1.25, 1.26]")) }, /go-version "\[1\.25, 1\.26\]" is not a literal version/],
+  ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: {}\n" + SETUP_GO("go-version: 1.25.2")) }, /setup-go step without a version in \.github\/workflows\/ci\.yml:6/], // an empty with: beside a pinned step is no longer skipped
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: { go-version: '${{ matrix.go }}', cache: true }\n") }, /is not a literal version/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF("      - uses: actions/setup-go@v5\n        with: *common\n") }, /alias \*common at line 7 has no anchor/],
   ["setup-go", "go", { ".github/workflows/ci.yml": WF(SETUP_GO("go-version: 1.26.1") + "      - uses: actions/setup-go@v5\n        with: { go-version: '${{ env.GO }}' }\n") }, /is not a literal version/], // one readable step does not excuse another
@@ -775,12 +777,133 @@ describe("reusable-workflow calls (jobs.<id>.uses) are noted, never read", () =>
     expect(e.fix).toBeUndefined();
   });
 
-  it("reads a job-level uses written as an alias, escapes control characters, and ignores a non-string uses", () => {
+  it("reads a job-level uses written as an alias, keeps control characters raw for the renderer, and ignores a non-string uses", () => {
     const root = tmp();
     put(root, CI, `x: &ref "org/r/.github/workflows/a.yml@v1\\e[2J"\njobs:\n  ci:\n    uses: *ref\n  odd:\n    uses: [a, b]\n`);
     put(root, REL, WF(SETUP_GO("go-version: 1.26.1")));
     const notes: string[] = [];
     readSource(root, [CI, REL], "go", "setup-go", notes);
-    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow org/r/.github/workflows/a.yml@v1\\u001b[2J (line 4), whose with: inputs are not read`]);
+    expect(notes).toEqual([`setup-go:${CI}: job ci calls reusable workflow org/r/.github/workflows/a.yml@v1\u001b[2J (line 4), whose with: inputs are not read`]);
   });
+});
+
+// Value: protects=a setup step with no version input FAILs (or reads the action's own default) instead of being skipped beside a
+// pinned sibling; fails_when=read() returns [] for such a step again; why_new=a lone unpinned step already FAILs "no ... version
+// found" at base, only the sibling case was silent; seam=none; no_claim=action defaults beyond the cited upstream releases
+describe("a setup step without a version is a FAIL, never skipped beside a pinned sibling", () => {
+  const CI = ".github/workflows/ci.yml";
+  const B = ".github/workflows/b.yml";
+  const noVersion = (action: string, file: string, line: number) =>
+    new RegExp(`${action} step without a version in ${file.replace(/[./]/g, "\\$&")}:${line}(?!\\d)`);
+  const step = (uses: string, w?: string) => `      - uses: ${uses}\n` + (w === undefined ? "" : `        with:${w}\n`);
+  // The unpinned step sits after the pinned one: its uses: is on line 9 of ci.yml, or line 6 of b.yml.
+  const sibling = (kind: string, tool: string, pinned: string, bare: string, action: string) => {
+    fails(kind, tool, { [CI]: WF(pinned + bare) }, noVersion(action, CI, 9));
+    fails(kind, tool, { [CI]: WF(pinned), [B]: WF(bare) }, noVersion(action, B, 6));
+  };
+
+  // K5: with: absent, null (empty or ~), or a mapping with neither go-version nor go-version-file.
+  it.each([
+    ["no with:", step("actions/setup-go@v5")],
+    ["an empty with:", step("actions/setup-go@v5", "")],
+    ["with: ~", step("actions/setup-go@v5", " ~")],
+    ["a cache-only with:", SETUP_GO("cache: true")],
+    ["a check-latest-only with:", SETUP_GO("check-latest: true")],
+  ])("setup-go with %s FAILs in the same file and in a second globbed file", (_n, bare) =>
+    sibling("setup-go", "go", SETUP_GO("go-version: 1.26.1"), bare, "setup-go"));
+
+  it.each([
+    ["no with:", step("actions/setup-node@v4")],
+    ["a cache-only with:", SETUP_NODE("cache: npm")],
+  ])("setup-node with %s FAILs: the action has no default version file", (_n, bare) =>
+    sibling("setup-node", "node", SETUP_NODE("node-version: 20"), bare, "setup-node"));
+
+  // actions/setup-python v7.1.0 src/setup-python.ts resolveVersionInputFromDefaultFile (since v4.7.0): with neither input it reads
+  // .python-version at the workspace root.
+  it("setup-python with no version FAILs when there is no .python-version", () =>
+    sibling("setup-python", "python", SETUP_PY("python-version: 3.12.1"), SETUP_PY("cache: pip"), "setup-python"));
+  it("setup-python with no version reads .python-version as its implicit file", () => {
+    expect(read("setup-python", "python", { [CI]: WF(SETUP_PY("python-version: 3.12.1") + SETUP_PY("cache: pip")), ".python-version": "3.11\n" })).toEqual(["3.12.1", "3.11"]);
+    expect(read("setup-python", "python", { [CI]: WF(step("actions/setup-python@v5")), ".python-version": "3.12.1\n" })).toEqual(["3.12.1"]);
+  });
+  it("setup-python before v4.7.0 does not read .python-version, so the step FAILs", () =>
+    fails("setup-python", "python", { [CI]: WF(step("actions/setup-python@v4.6.1")), ".python-version": "3.12.1\n" }, noVersion("setup-python", CI, 6)));
+
+  // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: with no version input it reads
+  // `github.com/golangci/golangci-lint/v2 vX` from <working-directory>/go.mod (v6 and earlier: the module path without /v2),
+  // and otherwise installs latest.
+  const GOLANGCI = (ref: string, w?: string) => step(`golangci/golangci-lint-action@${ref}`, w);
+  const PINNED_LINT = GOLANGCI("v8", "\n          version: v2.1.6");
+  it("golangci-lint-action with no version and no golangci-lint in go.mod FAILs (it installs latest)", () =>
+    sibling("golangci-action", "golangci-lint", PINNED_LINT, GOLANGCI("v8", "\n          args: --timeout=5m"), "golangci-lint-action"));
+  it("golangci-lint-action with no version reads go.mod as the action does", () => {
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(PINNED_LINT + GOLANGCI("v8")), "go.mod": MOD })).toEqual(["2.1.6", "2.1.5"]);
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v9", "\n          working-directory: tools")), "tools/go.mod": MOD })).toEqual(["2.1.5"]);
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v6.5.0")), "go.mod": "module x\n\nrequire github.com/golangci/golangci-lint v1.64.8\n" })).toEqual(["1.64.8"]);
+    fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v6")), "go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+  });
+  // Value: protects=a SHA- or branch-pinned step gets the current release's default, and an expression working-directory is no
+  // literal go.mod path; fails_when=refVer reads a SHA as a version, or `${{ }}` is read as a folder; why_new=every default row used
+  // an @vN ref and a literal working-directory; seam=none; no_claim=which release a SHA names
+  it("a SHA or branch ref is the current release; an expression working-directory FAILs", () => {
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    expect(read("setup-python", "python", { [CI]: WF(step("actions/setup-python@0a1b2c3d4e5f60718293a4b5c6d7e8f901234567")), ".python-version": "3.12.1\n" })).toEqual(["3.12.1"]);
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("main")), "go.mod": MOD })).toEqual(["2.1.5"]);
+    fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", "\n          working-directory: ${{ matrix.dir }}")), "go.mod": MOD, "${{ matrix.dir }}/go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+  });
+  // Value: protects=the go.mod default never reads outside the checkout; fails_when=a working-directory that leaves the root or
+  // is absolute is followed; why_new=only in-repo working-directories were read; seam=none; no_claim=symlinked folders
+  // Value: protects=go.mod is read only where the action reads it; fails_when=a pre-6.5 ref or a non-binary install-mode (which
+  // installs latest or nothing) records go.mod's line as a pin; why_new=only refs v6.5+ and the default install-mode were tested;
+  // seam=none; no_claim=which minor a bare @v6 names (read as the newest v6)
+  it("golangci-lint-action before v6.5.0 or in a non-binary install-mode FAILs, never reads go.mod", () => {
+    const V1 = "module x\n\nrequire github.com/golangci/golangci-lint v1.64.8\n";
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    for (const ref of ["v6.4.0", "v5"]) fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI(ref)), "go.mod": V1 }, noVersion("golangci-lint-action", CI, 6));
+    for (const m of ["goinstall", "none", "${{ matrix.mode }}"])
+      fails("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", `\n          install-mode: ${m}`)), "go.mod": MOD }, noVersion("golangci-lint-action", CI, 6));
+    expect(read("golangci-action", "golangci-lint", { [CI]: WF(GOLANGCI("v8", "\n          install-mode: Binary")), "go.mod": MOD })).toEqual(["2.1.5"]);
+  });
+  it("a working-directory outside the checkout FAILs, never reads that go.mod", () => {
+    const MOD = "module x\n\ngo 1.25\n\nrequire github.com/golangci/golangci-lint/v2 v2.1.5 // indirect\n";
+    for (const out of [(r: string) => `../${basename(r)}/tools`, (r: string) => `${r}/tools`]) {
+      const root = tmp();
+      const files = { [CI]: WF(GOLANGCI("v8", `\n          working-directory: ${out(root)}`)), "tools/go.mod": MOD, [`${root.slice(1)}/tools/go.mod`]: MOD };
+      for (const [f, c] of Object.entries(files)) put(root, f, c);
+      expect(() => readSource(root, Object.keys(files), "golangci-lint", "golangci-action")).toThrow(noVersion("golangci-lint-action", CI, 6));
+    }
+  });
+
+  // goreleaser/goreleaser-action v7.3.0 src/context.ts: `version` defaults to `~> v2` (v6.0.0 action.yml too); v5 and earlier
+  // default to `latest`. The default is a range: reported, never a pin.
+  it("goreleaser-action with no version is its default range from v6, and a FAIL (latest) before", () => {
+    const PINNED = step("goreleaser/goreleaser-action@v6", "\n          version: 2.5.0");
+    expect(read("goreleaser-action", "goreleaser", { [CI]: WF(PINNED + step("goreleaser/goreleaser-action@v6", "\n          args: release")) })).toEqual(["2.5.0", "range ~> v2"]);
+    sibling("goreleaser-action", "goreleaser", PINNED, step("goreleaser/goreleaser-action@v5"), "goreleaser-action");
+  });
+});
+
+// Value: protects=PR #25 review notes 1, 2 and 8: a Dockerfile pin hidden behind an escaped quote, a `-dev-${N}`/`-rc-${N}` tag
+// read as its bare version, and a `$` tag of another variable FAIL instead of passing on a pinned sibling; fails_when=the ARG
+// words, tagVer or the `$` tag rule regress; why_new=each was silent or a wrong pin at base; seam=none; no_claim=other
+// Dockerfile syntaxes
+describe("Dockerfile pins a variable or a quote could hide are FAILs", () => {
+  it.each([
+    // Note 1: `\"` is an escaped quote, so NODE_VERSION is the next pair, as Docker reads it.
+    ["an escaped quote before the pair", 'FROM node:20\nARG A=x\\" NODE_VERSION=lts\n', unsupported("lts", "Dockerfile", 2)],
+    ["an escaped quote inside a quoted value", 'FROM node:20\nARG A="x\\" y" NODE_VERSION=lts\n', unsupported("lts", "Dockerfile", 2)],
+    ["an unterminated quote on a line naming the variable", 'FROM node:20\nARG A="x NODE_VERSION=20\n', unsupported('A="x NODE_VERSION=20', "Dockerfile", 2)],
+    // Note 2: `${N}` may continue the prerelease (`20-dev-1`, `22-rc-1`), so the bare version is not the pin.
+    ["a -dev- tag continued by a variable", "ARG NODE_VERSION=20\nFROM node:20-dev-${N}\n", unsupported("node:20-dev-${N}", "Dockerfile", 2)],
+    ["an -rc- tag continued by a variable", "ARG NODE_VERSION=22\nFROM node:22-rc-${N}\n", unsupported("node:22-rc-${N}", "Dockerfile", 2)],
+    // Note 8: only a tag of <TOOL>_VERSION is skipped for its ARG.
+    ["a tag of another variable", "ARG NODE_VERSION=20\nFROM node:${OTHER}\n", unsupported("node:${OTHER}", "Dockerfile", 2)],
+    ["a bare $ tag of another variable", "ARG NODE_VERSION=20\nFROM node:$OTHER-alpine\n", unsupported("node:$OTHER-alpine", "Dockerfile", 2)],
+  ])("%s", (_n, dockerfile, re) => fails("dockerfile", "node", { Dockerfile: dockerfile }, re));
+  it.each([
+    ["an escaped quote before a pinned pair", 'ARG A=x\\" NODE_VERSION=20.11.0\n', ["20.11.0"]],
+    ["a tag of the tool's variable", "ARG NODE_VERSION=20.11.0\nFROM node:${NODE_VERSION}-alpine\nFROM node:$NODE_VERSION\n", ["20.11.0"]],
+    ["a variant word continued by a variable", "FROM node:20-alpine${X}\nFROM node:18-${DISTRO}\n", ["20", "18"]],
+  ])("%s still reads", (_n, dockerfile, want) => expect(read("dockerfile", "node", { Dockerfile: dockerfile })).toEqual(want));
 });

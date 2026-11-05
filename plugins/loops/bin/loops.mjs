@@ -3996,10 +3996,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4013,7 +4013,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4037,7 +4037,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4053,7 +4053,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4144,7 +4144,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4158,13 +4158,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -4207,18 +4207,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4272,8 +4272,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap3 && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap3 && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4285,7 +4285,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4296,8 +4296,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap3 && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4314,7 +4314,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4494,7 +4494,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4511,24 +4511,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4711,25 +4711,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res2 = match[1].replace(trimEnd, "");
-      let sep = " ";
+      let sep2 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep === "\n")
-            res2 += sep;
+          if (sep2 === "\n")
+            res2 += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res2 += sep + lm;
-          sep = " ";
+          res2 += sep2 + lm;
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res2 + sep + (match?.[1] ?? "");
+      return res2 + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res2 = "";
@@ -5539,14 +5539,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res2 = "";
       for (const st of start)
         res2 += st.source;
       if (key)
         res2 += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res2 += st.source;
       if (value)
         res2 += stringifyToken(value);
@@ -6713,18 +6713,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6877,15 +6877,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7079,13 +7079,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7365,14 +7365,15 @@ var require_dist = __commonJS({
 
 // src/lib/loops-cli.ts
 import { readFileSync as readFileSync5 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
 
 // src/lib/env-check.ts
 import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join4, resolve as resolve2 } from "node:path";
+import { join as join4, resolve as resolve3 } from "node:path";
 
 // src/lib/env-config.ts
-import { isAbsolute as isAbsolute2, normalize as normalize2 } from "node:path";
+import { isAbsolute as isAbsolute3, normalize as normalize2 } from "node:path";
 
 // node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
@@ -8135,10 +8136,54 @@ var HAS_WELLFORMED = !!"".isWellFormed;
 // src/lib/proc.ts
 import { spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 var UsageError = class extends Error {
 };
+var MAX_BUFFER = 64 * 1024 * 1024;
+var SUPERVISOR = `
+const { spawn } = require("node:child_process");
+const { readFileSync, writeSync } = require("node:fs");
+const { constants } = require("node:os");
+const o = JSON.parse(readFileSync(0, "utf8"));
+let child = null, error = null, timedOut = false, done = false, timer = null;
+const kill = () => { try { if (child && child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} };
+for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => { kill(); process.exit(128 + constants.signals[s]); });
+const orphan = () => process.ppid !== o.parent;
+setInterval(() => { if (orphan()) { kill(); process.exit(1); } }, 100).unref();
+// The pipes to the engine are non-blocking: a full one (64 KB) throws EAGAIN until the engine drains it, so wait a ms.
+const nap = new Int32Array(new SharedArrayBuffer(4));
+const put = (fd, b) => {
+  for (let at = 0; at < b.length; ) {
+    try { at += writeSync(fd, b, at, b.length - at); } catch (e) { if (e.code !== "EAGAIN") throw e; Atomics.wait(nap, 0, 0, 1); }
+  }
+};
+const bufs = [[], []], sizes = [0, 0];
+const finish = (code, signal) => {
+  if (done) return;
+  done = true;
+  clearTimeout(timer);
+  const st = timedOut || error ? { code: null, signal: null, error, timedOut } : { code, signal, error: null, timedOut };
+  put(2, Buffer.from(JSON.stringify(st) + "\\n"));
+  put(2, Buffer.concat(bufs[1]));
+  put(1, Buffer.concat(bufs[0]));
+  process.exit(0);
+};
+if (orphan()) process.exit(1);
+child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
+[child.stdout, child.stderr].forEach((s, i) => s.on("data", (b) => {
+  sizes[i] += b.length;
+  if (sizes[i] > o.max) { error = "ENOBUFS"; kill(); finish(null, null); } else bufs[i].push(b);
+}));
+child.on("close", finish);
+if (o.timeoutMs) timer = setTimeout(() => {
+  timedOut = true; error = "ETIMEDOUT"; kill();
+  // The kill closes the pipes; one held by a process that left the group would not.
+  setTimeout(() => finish(null, null), 500);
+}, o.timeoutMs);
+`;
 var run = (cmd, args, opts = {}) => {
+  if (opts.group) return runGroup(cmd, args, opts);
   const r = spawnSync(cmd, args, {
     cwd: opts.cwd,
     env: opts.env,
@@ -8146,28 +8191,85 @@ var run = (cmd, args, opts = {}) => {
     // SIGTERM can be trapped or ignored; a deadline has to hold.
     killSignal: "SIGKILL",
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024
+    maxBuffer: MAX_BUFFER
   });
   const errCode = r.error?.code;
-  const timedOut = errCode === "ETIMEDOUT";
   const abend = r.status === null ? errCode ?? r.signal ?? void 0 : void 0;
-  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, notFound: errCode === "ENOENT", abend };
+  return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend };
 };
+function runGroup(cmd, args, opts) {
+  const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid });
+  const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
+    cwd: opts.cwd,
+    env: {},
+    input,
+    // A backstop only: the supervisor keeps the deadline.
+    timeout: opts.timeoutMs === void 0 ? void 0 : opts.timeoutMs + 1e4,
+    killSignal: "SIGKILL",
+    encoding: "utf8",
+    maxBuffer: 2 * MAX_BUFFER
+  });
+  const errCode = r.error?.code;
+  const nl = (r.stderr ?? "").indexOf("\n");
+  let st = null;
+  try {
+    st = nl < 0 ? null : JSON.parse(r.stderr.slice(0, nl));
+  } catch {
+  }
+  if (!st || r.status !== 0) {
+    const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
+    return { code: null, stdout: "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why };
+  }
+  const abend = st.code === null ? st.error ?? st.signal ?? void 0 : void 0;
+  return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend };
+}
 function shQuote(s) {
   return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
+var SEGMENT = /[\p{L}\p{N}\p{M}._+@%~-]/u;
+var NAME = /[\p{L}\p{N}\p{M}]/u;
+function joined(s, i) {
+  for (; i < s.length && SEGMENT.test(s[i]); i++) if (NAME.test(s[i])) return true;
+  return false;
+}
 function redactHome(s, home) {
   home = home.replace(/\/+$/, "");
-  if (home.length <= 1) return s;
-  const q = `'${home}`;
-  return s.split(`${q}/`).join("~/'").split(`${q}'`).join("~").split(home).join("~");
+  if (home.length <= 1 || !home.startsWith("/")) return s;
+  let out = "";
+  let from = 0;
+  for (let i = s.indexOf(home); i !== -1; i = s.indexOf(home, Math.max(from, i + 1))) {
+    const before = s[i - 1] ?? "";
+    const after = s[i + home.length] ?? "";
+    if (before && SEGMENT.test(before) || joined(s, i + home.length)) continue;
+    const quoted = i > from && before === "'" && (after === "/" || after === "'");
+    out += `${s.slice(from, quoted ? i - 1 : i)}${quoted ? after === "/" ? "~/'" : "~" : "~"}`;
+    from = i + home.length + (quoted ? 1 : 0);
+  }
+  return out + s.slice(from);
 }
-function git(r, cwd, args) {
-  const res2 = r("git", args, { cwd });
+var GIT_LOCAL_ENV = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"];
+function realOrNull(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+function gitEnv(env, own) {
+  const out = { ...env };
+  for (const k of GIT_LOCAL_ENV) delete out[k];
+  const index = env.GIT_INDEX_FILE;
+  const gitDir = own?.gitDir ? realOrNull(own.gitDir) : null;
+  const file = index && own && gitDir ? realOrNull(resolve(own.root, index)) : null;
+  if (file && dirname(file) === gitDir) out.GIT_INDEX_FILE = index;
+  return out;
+}
+function git(r, cwd, args, env) {
+  const res2 = r("git", args, { cwd, env });
   return res2.code === 0 ? res2.stdout : null;
 }
-function repoRoot(r, cwd) {
-  return git(r, cwd, ["rev-parse", "--show-toplevel"])?.trim() || null;
+function repoRoot(r, cwd, env) {
+  return git(r, cwd, ["rev-parse", "--show-toplevel"], env)?.trim() || null;
 }
 function isExecutable(file) {
   try {
@@ -8241,7 +8343,7 @@ function parseFlags(argv, spec) {
 
 // src/lib/pins.ts
 import { existsSync, readFileSync } from "node:fs";
-import { basename as basename2, join as join2, normalize } from "node:path";
+import { basename as basename2, isAbsolute as isAbsolute2, join as join2, normalize, sep } from "node:path";
 var import_yaml = __toESM(require_dist(), 1);
 
 // src/lib/glob.ts
@@ -8319,14 +8421,18 @@ function cut(s, n) {
   }
   return s;
 }
-var CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
-var ESCAPED = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)/g;
+var CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+var ESCAPED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]|—(?=\s*fix:)|-(?=-\s*fix:)/g;
 var NAMED = { "	": "\\t", "\n": "\\n", "\r": "\\r" };
 function escapeCtl(s) {
   return s.replace(ESCAPED, (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 function quote(s, n = 80) {
-  return `"${escapeCtl(cut(s, n).replace(/[\\"]/g, "\\$&"))}"`;
+  return `"${cut(s, n).replace(/[\\"]/g, "\\$&")}"`;
+}
+var JSON_RAW = /[\u007f-\u009f\u061c\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+function jsonText(v) {
+  return JSON.stringify(v).replace(JSON_RAW, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 // src/lib/pins.ts
@@ -8446,9 +8552,10 @@ var pipfile = (text, tool, _root, file) => {
 };
 var imageTag = (t) => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
 var tagVer = (t) => {
-  const lit = imageTag(t.split("$")[0]);
+  const raw = t.split("$")[0];
+  const lit = imageTag(raw);
   const v = /^v?\d/i.test(lit) ? ver(lit) : null;
-  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length))) ? v : null;
+  return v !== null && (!t.includes("$") || /^[-_]/.test(lit.slice(lit.indexOf(v) + v.length)) && ver(imageTag(`${raw}1`)) === v) ? v : null;
 };
 var logicalLines = (text, file) => {
   const phys = text.replace(/^\uFEFF/, "").split("\n").map((l) => l.replace(/\r$/, ""));
@@ -8494,6 +8601,7 @@ var dockerfile = (text, tool, _root, file) => {
   const logical = logicalLines(text, file);
   const at = (l, index) => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out = [];
+  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -8502,19 +8610,22 @@ var dockerfile = (text, tool, _root, file) => {
     const [name = "", tag = ""] = image.split("@")[0].split("/").pop().split(":");
     const stageRef = image === name && stages.has(name.toLowerCase());
     if (m[3]) stages.add(m[3].toLowerCase());
-    if (stageRef || name !== (IMAGE[tool] ?? tool) || tag.startsWith("$")) continue;
+    if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
+    if (/^\$\{?(\w+)/.exec(tag)?.[1].toUpperCase() === key) continue;
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1].length));
     out.push({ v });
   }
-  const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   for (const l of logical) {
     const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
     if (!m) continue;
-    for (const p of m[2].matchAll(/(?:^|\s)([A-Za-z_]\w*)=((?:"[^"]*"?|'[^']*'?|[^\s"'])*)/g)) {
-      if (p[1].toUpperCase() !== key) continue;
-      const v = p[2].replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2");
-      out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + p[0].length - p[2].length)));
+    for (const p of m[2].matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+      if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]))
+        throw unsupported(m[2].trim(), file, at(l, m[1].length));
+      const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
+      if (pair?.[1].toUpperCase() !== key) continue;
+      const v = pair[2].replace(/^"([^"]*)"$|^'([^']*)'$/, "$1$2");
+      out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + pair[1].length + 1)));
     }
   }
   return out;
@@ -8538,6 +8649,32 @@ var ACTIONS = {
   "setup-python": ["actions/setup-python", "python", "python-version"],
   "golangci-action": ["golangci/golangci-lint-action", "golangci-lint", "version"],
   "goreleaser-action": ["goreleaser/goreleaser-action", "goreleaser", "version"]
+};
+var refVer = (uses) => {
+  const m = /@v(\d+)(?:\.(\d+))?/i.exec(uses);
+  return m ? [Number(m[1]), m[2] === void 0 ? Infinity : Number(m[2])] : null;
+};
+var DEFAULTS = {
+  // actions/setup-go v7.0.0 src/main.ts: no version installs nothing, and GOTOOLCHAIN=local keeps go.mod's toolchain out.
+  "setup-go": () => null,
+  // actions/setup-node v7.1.0 src/main.ts resolveVersionInput: no default version file.
+  "setup-node": () => null,
+  // actions/setup-python v7.1.0 src/setup-python.ts resolveVersionInputFromDefaultFile (added in v4.7.0): .python-version
+  // at the workspace root.
+  "setup-python": (root, tool, ref) => ref && (ref[0] < 4 || ref[0] === 4 && ref[1] < 7) || !existsSync(join2(root, ".python-version")) ? null : plain(readFileSync(join2(root, ".python-version"), "utf8"), tool, root, ".python-version"),
+  // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: the module's version in
+  // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest. Before v6.5.0, and
+  // in every install-mode but `binary` (goinstall installs latest, none installs nothing), go.mod is never read.
+  "golangci-action": (root, tool, ref, wd, mode) => {
+    if (ref && (ref[0] < 6 || ref[0] === 6 && ref[1] < 5) || mode !== "binary") return null;
+    const mod = wd === null ? null : normalize(join2(wd, "go.mod"));
+    if (mod === null || isAbsolute2(mod) || mod.startsWith(`..${sep}`) || !existsSync(join2(root, mod))) return null;
+    const text = readFileSync(join2(root, mod), "utf8");
+    const m = (ref && ref[0] <= 6 ? /github.com\/golangci\/golangci-lint\s(v\S+)/ : /github.com\/golangci\/golangci-lint\/v2\s(v\S+)/).exec(text);
+    return m ? pinAt(m[1], tool, mod, lineAt(text, m.index)) : null;
+  },
+  // goreleaser/goreleaser-action v7.3.0 src/context.ts (and v6.0.0 action.yml): `~> v2`, a range; v5.0.0 and earlier: latest.
+  "goreleaser-action": (_root, _tool, ref) => ref && ref[0] <= 5 ? null : [{ v: "~> v2", range: true }]
 };
 function setup(kind) {
   const [action, forTool, key] = ACTIONS[kind];
@@ -8573,15 +8710,32 @@ function setup(kind) {
     };
     const read = (step) => {
       const w = deref(step.get("with", true));
-      if (w === void 0 || (0, import_yaml.isScalar)(w) && w.value === null) return [];
-      if (!(0, import_yaml.isMap)(w)) throw new PinError(`with: of ${action} at ${line(w)} is not a mapping`);
       const ins = [];
-      for (const p of w.items) {
-        const k = keyOf(p.key)?.toLowerCase();
-        if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
-        if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos(deref(p.value)?.range?.[0] ?? 0).line]);
+      let wd = ".";
+      let mode = "binary";
+      if (w !== void 0 && !((0, import_yaml.isScalar)(w) && w.value === null)) {
+        if (!(0, import_yaml.isMap)(w)) throw new PinError(`with: of ${action} at ${line(w)} is not a mapping`);
+        for (const p of w.items) {
+          const k = keyOf(p.key)?.toLowerCase();
+          if (k === "<<") throw new PinError(`with: of ${action} at ${line(w)} uses a merge key, which Actions does not read`);
+          if (k === key || k === `${key}-file`) ins.push([k, scalar(k, p.value), lc.linePos(deref(p.value)?.range?.[0] ?? 0).line]);
+          if (k === "working-directory") {
+            const v = deref(p.value);
+            wd = (0, import_yaml.isScalar)(v) && typeof v.value === "string" && !v.value.includes("${{") ? v.value.trim() || "." : null;
+          }
+          if (k === "install-mode") {
+            const v = deref(p.value);
+            mode = (0, import_yaml.isScalar)(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null;
+          }
+        }
       }
-      if (ins.length && !ins.some(([, v]) => v)) throw new PinError(`${ins[0][0]} has no value`);
+      if (!ins.length) {
+        const u = deref(step.get("uses", true));
+        const found = DEFAULTS[kind](root, tool, refVer(u.value), wd, mode);
+        if (!found) throw new PinError(`${action.split("/")[1]} step without a version in ${file}:${lc.linePos(u.range[0]).line}`);
+        return found;
+      }
+      if (!ins.some(([, v]) => v)) throw new PinError(`${ins[0][0]} has no value`);
       const used = ins.some(([k, v]) => k === key && v) ? ins.filter(([k]) => k === key) : ins;
       const out2 = [];
       for (const [k, val, at] of used) {
@@ -8614,7 +8768,7 @@ function setup(kind) {
         const ref = job.get("uses", true);
         const v = deref(ref);
         if (ref && (0, import_yaml.isScalar)(v) && typeof v.value === "string")
-          calls?.push(`job ${escapeCtl(keyOf(p.key) ?? "?")} calls reusable workflow ${escapeCtl(v.value.trim())} (${line(ref)})`);
+          calls?.push(`job ${keyOf(p.key) ?? "?"} calls reusable workflow ${v.value.trim()} (${line(ref)})`);
       }
       const runs2 = deref(top.get("runs", true));
       if ((0, import_yaml.isMap)(runs2)) lists.push(runs2.get("steps", true));
@@ -8707,7 +8861,7 @@ function disagreement(vals, mode) {
 var localOk = (local, pin, mode) => cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.7.0";
+var VERSION = "0.7.1";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -8805,7 +8959,7 @@ function parseConfig(text, file) {
     const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v >= 1e-3 && Number.isSafeInteger(Math.round(v * 1e3)), "a positive number of seconds (at least 0.001)", 15);
     const timeoutMs = Math.round(timeoutS * 1e3);
     const run2 = pick(t, "run", where, isStr, "a path");
-    if (isAbsolute2(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
+    if (isAbsolute3(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
     return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
@@ -8815,7 +8969,7 @@ function parseConfig(text, file) {
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
-import { basename as basename3, dirname, isAbsolute as isAbsolute3, join as join3, normalize as normalize3, resolve } from "node:path";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join3, normalize as normalize3, resolve as resolve2 } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -8886,7 +9040,16 @@ var rp = (p) => {
     return p;
   }
 };
+var gitDirAt = (p) => {
+  try {
+    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync2(p, "utf8")) : null;
+    return m ? resolve2(dirname2(p), m[1].trim()) : p;
+  } catch {
+    return p;
+  }
+};
 var VERSION_CMD = { go: ["go", ["version"]], node: ["node", ["--version"]], python: ["python3", ["--version"]] };
+var NO_INTERP = "could not start (missing interpreter in its #! line?)";
 var PROBE_TIMEOUT_MS = 1e4;
 function installFix(root, tool, want, pins) {
   const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
@@ -8906,7 +9069,7 @@ function installFix(root, tool, want, pins) {
   if (file === void 0) return generic;
   if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
   if (basename3(file) !== ".tool-versions") return generic;
-  const dir = dirname(file);
+  const dir = dirname2(file);
   return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : shQuote(dir)}, which installs the ${file} pins`;
 }
 function pinChecks(c) {
@@ -8939,7 +9102,7 @@ function pinChecks(c) {
     out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
     if (c.static || pin.local === "off") continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool] : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const level = pin.local === "fail" ? "FAIL" : "WARN";
@@ -8947,22 +9110,41 @@ function pinChecks(c) {
     const cmd = [bin, ...args].join(" ");
     const said = (...texts) => {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
-      return l ? `: ${escapeCtl(cut(c.redact(l), 120))}` : "";
+      return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
     if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, fix));
-    else if (r.notFound) out.push(res(level, lid, `${bin} not found on PATH`, fix));
-    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
+    else if (r.notFound) {
+      const at = which(bin, c.env.PATH);
+      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
+    } else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
     else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
     else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
     else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
     else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
   }
-  return out.map((r) => ({ ...r, message: escapeCtl(r.message), fix: r.fix === void 0 ? void 0 : escapeCtl(r.fix) }));
+  return out;
 }
 function sharedCheck(c) {
   if (c.cfg.sharedHint === null) return [];
+  const unread = (cmd) => [res("FAIL", "c.shared", "could not read git metadata", `rerun ${cmd} to see why`)];
+  if (c.gitDir === null) return unread("git rev-parse --git-dir --git-common-dir");
   if (c.static) return [res("SKIP", "c.shared", "not checked in --static mode")];
-  if (c.isWorktree) return [res("PASS", "c.shared", "in a linked worktree")];
+  for (const [k, want, what] of [["GIT_DIR", c.gitDir, "git metadata"], ["GIT_WORK_TREE", c.root, "files"]]) {
+    const at = c.env[k] ? rp(k === "GIT_DIR" ? gitDirAt(resolve2(c.cwd, c.env[k])) : resolve2(c.cwd, c.env[k])) : null;
+    if (at && at !== rp(want)) return [res("FAIL", "c.shared", `${k} points at another checkout's ${what}; git commands here act on ${at}`, "unset GIT_DIR GIT_WORK_TREE")];
+  }
+  if (c.isWorktree) {
+    if (!c.worktreesRead) return unread("git worktree list --porcelain");
+    const me = rp(c.root);
+    let at = null;
+    try {
+      at = dirname2(resolve2(c.gitDir, readFileSync2(join3(c.gitDir, "gitdir"), "utf8").trim()));
+    } catch {
+    }
+    if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
+    if (at && rp(at) !== me && existsSync2(join3(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync2(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
+  }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
 }
@@ -8983,10 +9165,16 @@ function shimProblem(c, tool, p) {
   const how = `${s.manager} which ${tool}`;
   const said = [r.stderr, r.stdout].flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
   if (r.timedOut) return `${how} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`;
-  if (r.notFound) return `${s.manager} not found at ${cmd}`;
+  if (r.notFound) return isExecutable(cmd) ? `${s.manager} at ${cmd} ${NO_INTERP}` : `${s.manager} not found at ${cmd}`;
   if (r.code === null) return `${how} could not run (${r.abend ?? "killed"})`;
-  if (r.code !== 0) return `${how} exited ${r.code}${said ? `: ${escapeCtl(cut(c.redact(said), 120))}` : ""}`;
+  const inactive = s.manager === "mise" && r.code === 1 && /is a mise bin however it is not currently active/.test(r.stderr);
+  if (r.code !== 0) return inactive && fallsBackTo(c, tool, p) ? null : `${how} exited ${r.code}${said ? `: ${cut(c.redact(said), 120)}` : ""}`;
   return r.stdout.trim() ? null : `${how} printed no path`;
+}
+function fallsBackTo(c, tool, p) {
+  const dirs = (c.env.PATH ?? "").split(delimiter2);
+  const at = dirs.findIndex((d) => d && join3(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join3(d, tool)) && !shimOf(join3(d, tool)));
 }
 function harnessChecks(c) {
   const h = c.cfg.harness;
@@ -9035,7 +9223,7 @@ function harnessChecks(c) {
     const bad = entries.filter((e) => !isExecutable(join3(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
-  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"])) : [];
+  const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env, c))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ.split("\0").filter(Boolean);
@@ -9044,7 +9232,7 @@ function harnessChecks(c) {
     out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
   if (h.sparse && !c.static) {
-    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"])?.trim();
+    const on = git(c.run, c.root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"], gitEnv(c.env, c))?.trim();
     if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
@@ -9093,7 +9281,7 @@ function isComposeFile(c, f) {
 }
 var normProject = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
 var isProject = (s) => s !== "" && normProject(s) === s;
-var projectDir = (c, root) => dirname(resolve(root, c.cfg.compose.files[0]));
+var projectDir = (c, root) => dirname2(resolve2(root, c.cfg.compose.files[0]));
 function derive(c, root) {
   const main2 = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename3(projectDir(c, root)));
@@ -9103,7 +9291,7 @@ function derive(c, root) {
 function runs(c, root) {
   const { files } = c.cfg.compose;
   let dir = projectDir(c, root);
-  while (!existsSync2(dir) && dir !== root) dir = dirname(dir);
+  while (!existsSync2(dir) && dir !== root) dir = dirname2(dir);
   const atRoot = rp(dir) === rp(root);
   return [
     ...files.every((f) => existsSync2(join3(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
@@ -9128,12 +9316,12 @@ function listContainers(c) {
   }
 }
 function canon(p) {
-  if (!isAbsolute3(p)) return p;
-  for (let head = p, tail = ""; ; tail = `/${basename3(head)}${tail}`, head = dirname(head)) {
+  if (!isAbsolute4(p)) return p;
+  for (let head = p, tail = ""; ; tail = `/${basename3(head)}${tail}`, head = dirname2(head)) {
     try {
       return realpathSync2.native(head) + tail;
     } catch {
-      if (dirname(head) === head) return p;
+      if (dirname2(head) === head) return p;
     }
   }
 }
@@ -9161,6 +9349,7 @@ function composeProject(c) {
   if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
   const envName = c.env.COMPOSE_PROJECT_NAME || void 0;
   if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
+  if (c.gitDir === null) return one("FAIL", "could not read git metadata", "rerun git rev-parse --git-dir --git-common-dir to see why");
   if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
   const v = composeVersion(c.run, c.root, c.env);
   if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, void 0, envName ?? (c.isWorktree ? derive(c, c.root) : null));
@@ -9213,7 +9402,7 @@ function composeProject(c) {
       return ["ENOENT", "ENOTDIR"].includes(e.code ?? "");
     }
   };
-  const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute3(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
+  const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute4(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
   if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
   else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]) => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
@@ -9237,7 +9426,7 @@ function containersCheck(c, { name: project, results, ps }) {
   const files = c.tracked.filter((f) => matchers.some((re) => re.test(f)));
   if (!files.length) return [res("SKIP", id, "no commit touches the [compose] inputs")];
   const level = cfg.containers === "fail" ? "FAIL" : "WARN";
-  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files])?.trim();
+  const logged = git(c.run, c.root, ["log", "-1", "--no-show-signature", "--format=%ct", "--", ...files], gitEnv(c.env, c))?.trim();
   const ct = logged === void 0 || !/^\d*$/.test(logged) ? NaN : Number(logged);
   if (Number.isNaN(ct)) return [res(level, id, "loops cannot read the commit time of the compose inputs, so it cannot tell whether the running containers are older")];
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
@@ -9259,9 +9448,9 @@ function containersCheck(c, { name: project, results, ps }) {
   const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
   const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? JSON.parse([...agreed][0]) : [];
   const own = split2(started);
-  const fs = own.every((f) => isAbsolute3(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
+  const fs = own.every((f) => isAbsolute4(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
   const args = fs.map((f) => ` -f ${quote2(f)}`);
-  if (wd && rel(wd) !== normalize3(dirname(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
+  if (wd && rel(wd) !== normalize3(dirname2(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
   if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote2(rel(f))}`));
   const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
   const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
@@ -9294,25 +9483,29 @@ function runLocal(c, l, project) {
     ...c.env,
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
-    ENV_CHECK_WORKTREE: c.isWorktree ? "1" : "0",
+    // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
+    ENV_CHECK_WORKTREE: c.gitDir === null ? "" : c.isWorktree ? "1" : "0",
     ENV_CHECK_PROJECT: project ?? "",
     ENV_CHECK_ID: l.id,
     GOPROXY: "off",
     GOTOOLCHAIN: "local",
+    // A mise shim must not install a missing tool: auto_install off also turns off exec and not-found auto-install.
+    MISE_AUTO_INSTALL: "0",
     NO_COLOR: "1"
   };
-  const r = c.run(resolve(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs });
+  const r = c.run(resolve2(c.root, l.run), [], { cwd: c.root, env, timeoutMs: l.timeoutMs, group: true });
   const mk = (level, id, message, fix) => ({ level, id, message, fix, source: "local" });
   const out = [];
   for (const line of r.stdout.split("\n").map((s) => s.replace(/\r$/, "").replace(/[ \t]+$/, "")).filter(Boolean)) {
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]?.trim() || void 0));
-    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message [\u2014 fix: ...]`, one line per result, id = the configured id or <id>.<name>"));
+    else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>"));
   }
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
-  const why = stderr ? ` (${escapeCtl(cut(c.redact(stderr), 120))})` : "";
-  if (!out.length) return [mk("FAIL", l.id, `printed no results${r.code ? `, exit ${r.code}` : ""}${why}`, `run ${l.run} by hand`)];
+  const why = stderr ? ` (${cut(c.redact(stderr), 120)})` : "";
+  const none = r.notFound ? NO_INTERP : r.code === null ? `could not run (${r.abend ?? "killed"})` : `printed no results${r.code ? `, exit ${r.code}` : ""}`;
+  if (!out.length) return [mk("FAIL", l.id, `${none}${why}`, `run ${l.run} by hand`)];
   if (r.code !== 0 && !out.some((x) => x.level === "FAIL")) out.push(mk("FAIL", l.id, `exited ${r.code ?? "abnormally"} without a FAIL line${why}`, `run ${l.run} by hand`));
   return out;
 }
@@ -9334,9 +9527,16 @@ function collapse(rs) {
   }
   return out;
 }
+var mapText = (r, f) => ({
+  ...r,
+  id: f(r.id),
+  message: f(r.message),
+  fix: r.fix === void 0 ? void 0 : f(r.fix),
+  ...r.also ? { also: r.also.map(f) } : {}
+});
 function envCheckMain(argv, d) {
   const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
-  const root = repoRoot(d.run, d.cwd);
+  const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join4(root, ".loops", "env-check.toml");
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
@@ -9348,29 +9548,37 @@ function envCheckMain(argv, d) {
   }
   const cfg = parseConfig(text, ".loops/env-check.toml");
   for (const l of cfg.locals) {
-    if (!isExecutable(resolve2(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
+    if (!isExecutable(resolve3(root, l.run))) throw new UsageError(`local check ${l.id}: ${l.run} is missing or not executable`);
   }
   const isStatic = (f.static === true || d.env.CI === "true") && !f["compose-project"];
-  const ls = d.run("git", ["ls-files", "-z"], { cwd: root });
+  const dir = (flag) => {
+    const out = git(d.run, root, ["rev-parse", flag], gitEnv(d.env))?.trim();
+    return out ? resolve3(root, out) : null;
+  };
+  const [own, common] = [dir("--git-dir"), dir("--git-common-dir")];
+  const gitDir = own && common ? own : null;
+  const isWorktree = !!gitDir && own !== common;
+  const ls = d.run("git", ["ls-files", "-z"], { cwd: root, env: gitEnv(d.env, { gitDir, root }) });
   if (ls.code !== 0) throw new UsageError(`git ls-files failed${ls.stderr.trim() ? `: ${ls.stderr.trim().split("\n")[0]}` : ""}`);
   const tracked = ls.stdout.split("\0").filter(Boolean);
-  let isWorktree = false;
   let worktrees = [];
+  let worktreesRead = false;
   if (!isStatic) {
-    const dir = (flag) => resolve2(root, git(d.run, root, ["rev-parse", flag])?.trim() ?? flag);
-    isWorktree = dir("--git-dir") !== dir("--git-common-dir");
-    worktrees = (git(d.run, root, ["worktree", "list", "--porcelain"]) ?? "").split("\n").flatMap((l) => l.startsWith("worktree ") ? [l.slice(9)] : []);
+    const list2 = git(d.run, root, ["worktree", "list", "--porcelain"], gitEnv(d.env, { gitDir, root }));
+    worktreesRead = list2 !== null;
+    worktrees = (list2 ?? "").split("\n").flatMap((l) => l.startsWith("worktree ") ? [l.slice(9)] : []);
   }
   const home = d.env.HOME || homedir();
   const redact = (s) => redactHome(s, home);
-  const ctx = { run: d.run, root, env: d.env, static: isStatic, cfg, tracked, isWorktree, worktrees, redact };
+  const showRow = (r) => mapText(r, (s) => escapeCtl(redact(s)));
+  const ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact };
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
     const { name, results: results2 } = composeProject(ctx);
     if (name) d.out(redact(name));
     const fails = results2.filter((r) => r.level === "FAIL");
-    for (const r of fails) d.err(redact(`env-check: ${name ? "warning: " : ""}${r.message}${name ? "; fix: " : " \u2014 fix: "}${r.fix}`));
-    if (!fails.length && !name) d.err(redact(`env-check: ${results2[0].message}`));
+    for (const r of fails.map(showRow)) d.err(`env-check: ${name ? "warning: " : ""}${r.message} \u2014 fix: ${r.fix}`);
+    if (!fails.length && !name) d.err(`env-check: ${showRow(results2[0]).message}`);
     return name ? 0 : 1;
   }
   const compose = cfg.compose?.mode === "test" ? composeProject(ctx) : null;
@@ -9382,25 +9590,23 @@ function envCheckMain(argv, d) {
     ...composeChecks(ctx, compose),
     ...cfg.locals.flatMap((l) => runLocal(ctx, l, project))
   ].map((r, i) => ({ r, i })).sort((a, b) => group(a.r) - group(b.r) || a.i - b.i).map(({ r }) => r);
-  if (!results.some((r) => r.level !== "INFO")) {
+  if (!results.some((r) => r.level !== "INFO" && r.level !== "SKIP")) {
     results.push(
       isStatic ? { level: "WARN", id: "x.none", message: "no check ran under --static (CI=true implies it)", fix: "add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)", source: "builtin" } : { level: "WARN", id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", source: "builtin" }
     );
   }
-  const shown = collapse(results).map((r) => ({
-    ...r,
-    id: redact(r.id),
-    message: redact(r.message),
-    fix: redact(r.fix ?? (r.level === "WARN" || r.level === "FAIL" ? "address the message above and re-run" : "")) || void 0
-  }));
+  const shown = collapse(results).map((r) => {
+    const x = mapText({ ...r, fix: r.fix ?? (r.level === "WARN" || r.level === "FAIL" ? "address the message above and re-run" : "") }, redact);
+    return { ...x, fix: x.fix || void 0 };
+  });
   const n = (level) => shown.filter((r) => r.level === level).length;
   const summary = { fail: n("FAIL"), warn: n("WARN"), pass: n("PASS"), skip: n("SKIP") };
   const exit = summary.fail ? 1 : 0;
   if (f.json) {
     const rs = shown.map((r) => ({ level: r.level, id: r.id, message: r.message, fix: r.fix ?? null, also: r.also ?? [], source: r.source }));
-    d.out(JSON.stringify({ schema: 1, engine: VERSION, mode: isStatic ? "static" : "full", root: redact(root), results: rs, summary, exit }));
+    d.out(jsonText({ schema: 1, engine: VERSION, mode: isStatic ? "static" : "full", root: redact(root), results: rs, summary, exit }));
   } else {
-    const lines = shown.filter((r) => !f.quiet || r.level === "WARN" || r.level === "FAIL").map((r) => `${r.level} ${r.id}  ${r.message}${r.fix ? ` \u2014 fix: ${r.fix}` : ""}${r.also ? ` (also: ${r.also.join(", ")})` : ""}`);
+    const lines = shown.filter((r) => !f.quiet || r.level === "WARN" || r.level === "FAIL").map((r) => mapText(r, escapeCtl)).map((r) => `${r.level} ${r.id}  ${r.message}${r.fix ? ` \u2014 fix: ${r.fix}` : ""}${r.also ? ` (also: ${r.also.join(", ")})` : ""}`);
     lines.push(`env-check: ${summary.fail} FAIL, ${summary.warn} WARN, ${summary.pass} PASS, ${summary.skip} SKIP`);
     d.out(lines.join("\n"));
   }
@@ -9409,7 +9615,7 @@ function envCheckMain(argv, d) {
 
 // src/lib/zone-cli.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
-import { join as join5, relative, resolve as resolve3 } from "node:path";
+import { join as join5, relative, resolve as resolve4 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -9540,7 +9746,7 @@ function gitPaths(d, root, base, committed) {
     return r.stdout;
   };
   const tried = base ? [base] : ["origin/HEAD", "origin/main", "main"];
-  const ref = tried.find((x) => git(d.run, root, ["rev-parse", "--verify", "--quiet", `${x}^{commit}`]) !== null);
+  const ref = tried.find((x) => git(d.run, root, ["rev-parse", "--verify", "--quiet", `${x}^{commit}`], void 0) !== null);
   if (!ref) throw new UsageError(`no base ref found (tried ${tried.join(", ")}); pass --base`);
   const mergeBase = g(["merge-base", ref, "HEAD"]).trim();
   const diff = (...a) => parseNameStatus(g(["diff", "--ignore-submodules=untracked", "--no-ext-diff", "--name-status", "-M", "-z", ...a]));
@@ -9599,8 +9805,8 @@ function zoneMain(argv, d) {
     list: ["paths"]
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
-  const root = repoRoot(d.run, d.cwd) ?? d.cwd;
-  const filePath = typeof f.file === "string" ? resolve3(d.cwd, f.file) : join5(root, "risk-zones.md");
+  const root = repoRoot(d.run, d.cwd, void 0) ?? d.cwd;
+  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join5(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
@@ -9621,7 +9827,7 @@ function zoneMain(argv, d) {
     if (!f.z && input.includes("\0")) throw new UsageError("--stdin input contains NUL; pass -z for NUL-separated paths");
     if (f.z && !input.includes("\0") && input.includes("\n")) throw new UsageError("--stdin -z input has newlines but no NUL; drop -z for newline-separated paths");
     raw = oneEach(input.split(f.z ? "\0" : "\n").map((p) => f.z ? p : p.replace(/\r$/, "")));
-  } else if (repoRoot(d.run, d.cwd) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
+  } else if (repoRoot(d.run, d.cwd, void 0) === null) throw new UsageError("not a git repository; pass --paths or --stdin");
   else raw = gitPaths(d, root, typeof f.base === "string" ? f.base : void 0, f.committed === true);
   const paths = [...new Set(raw.map((p) => p.replace(/^\.\//, "")).filter(Boolean))].sort();
   const infos = paths.map((p) => classifyPath(rz, p));
@@ -9667,17 +9873,21 @@ function realDeps() {
 }
 function main(argv, d = realDeps()) {
   const [cmd, ...rest] = argv;
+  let usage;
   try {
     if (cmd === "--version" || cmd === "-V") d.out(`loops ${VERSION}`);
     else if (cmd === "-h" || cmd === "--help") d.out(USAGE);
     else if (cmd === "zone") return zoneMain(rest, d);
     else if (cmd === "env-check") return envCheckMain(rest, d);
-    else throw new UsageError(cmd ? `unknown command ${cmd}
-${USAGE}` : USAGE);
+    else {
+      usage = cmd ? USAGE : USAGE.slice(USAGE.indexOf("\n") + 1);
+      throw new UsageError(cmd ? `unknown command ${cmd}` : `loops ${VERSION}`);
+    }
     return 0;
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
-    d.err(`${cmd ?? "loops"}: ${e.message}`);
+    d.err(escapeCtl(redactHome(`${cmd ?? "loops"}: ${e.message}`, d.env.HOME || homedir2())));
+    if (usage) d.err(usage);
     return 2;
   }
 }

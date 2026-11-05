@@ -1,5 +1,5 @@
 // Test helpers: synthetic tmp git repos and worktrees, PATH shims, and injected Deps.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +8,21 @@ import { isComposeConfigCall, isComposeVersionCall, REMOTE_OFF } from "./compose
 import { run, type Deps, type Runner, type RunResult } from "./proc.js";
 
 export const tmp = (): string => realpathSync(mkdtempSync(join(tmpdir(), "loops-test-")));
+
+/** Whether a process whose command line contains `mark` is running: pgrep's yes (0) or no (1), null when pgrep failed. */
+export function running(mark: string): boolean | null {
+  const st = spawnSync("pgrep", ["-f", mark]).status;
+  return st === 0 ? true : st === 1 ? false : null;
+}
+
+/** True as soon as `ok` holds, polling every 50ms for up to `ms`; false if it never did. */
+export function until(ok: () => boolean, ms: number): boolean {
+  for (let t = 0; t <= ms; t += 50) {
+    if (ok()) return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  return false;
+}
 
 export function sh(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });

@@ -236,7 +236,29 @@
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
+- [ ] **loops 0.7.1: re-copy `templates/env-check` into the pilot repos** [P1 follow-up]
+  - **What:** After 0.7.1 merges, copy `plugins/loops/templates/env-check` over each of the four pilot repos' `bin/env-check`, then check that the wrapper exits 1 with no `node`, 2 for a bad `LOOPS_BIN`, and 2 for a dangling link.
+  - **Why:** 0.7.1 changed the wrapper's exit contract; the pilots keep running their 0.7.0 copy until it is re-copied.
+  - **Context:** Deferred from plan: loops-0.7.1-plan.md (T16, post-merge by design). Needs the merged bundle, so it cannot ship in the 0.7.1 PR.
+  - **Effort:** S
+  - **Depends on / blocked by:** loops 0.7.1 merged.
+
+- [ ] **loops 0.8.0 backlog: features the 0.7.1 pilots asked for** [P2 features]
+  - **What:** Eight items cut from 0.7.1 as features: opt-in `a.range` (compare ranges, not only exact pins); optional pin sources (`.nvmrc` and `.tool-versions`, "if present"); a built-in npm `node_modules`-vs-lockfile check; detect a workflow that runs Go with no `setup-go`; a "skip when absent" level for local checks; a compose test mode with `${VAR:?}` interpolation; split the pin check's local severity by major versus minor/patch; run `[[local]]` checks in parallel.
+  - **Why:** Each was asked for by one of the four pilot repos during the 0.7.1 review and cut as a feature, not a fix. Without this entry the list lives only in a session note.
+  - **Context:** 0.7.1 is fixes-only. Start from the 0.7.1 plan's out-of-scope list. Also open from the 0.7.1 review: a `[[local]]` child that leaves the check's group with `setsid` escapes both the timeout and the interrupt group kill (needs process-tree tracking); if the supervisor is SIGKILLed or its 10 s backstop fires, the local's group is orphaned because the engine does not know the check's pid; on an interrupt the supervisor sends SIGKILL at once instead of forwarding SIGINT with a grace period; CI still runs Node 20 with no `engines` field in `package.json`.
+  - **Effort:** L
+  - **Depends on / blocked by:** loops 0.7.1 merged.
+
 ## Completed
+
+- [x] **loops env-check: `d.tracked` FAILs a deletion being committed in a `git commit -a` pre-commit hook** [P2 correctness]
+  - Done: owner decision D-IDX (contract-4). `gitEnv` keeps `GIT_INDEX_FILE` when it names a file directly in this checkout's own git-dir; git-dir discovery runs without it. A real-hook test runs `commit -a` with a deletion in the main checkout and a linked worktree.
+  - **Completed:** 2026-11-04 (loops 0.7.1)
+
+- [x] **loops env-check: `safe.directory` passed through env makes env-check exit 2 "not a git repository"** [P2 correctness]
+  - Done: owner decision D-CFG (regressions-1). `gitEnv` keeps `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` (with its `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`) and drops `GIT_CONFIG`, as git's `prepare_other_repo_env` does.
+  - **Completed:** 2026-11-04 (loops 0.7.1)
 
 - [x] **loops: install the weekly launchd job and run the kickstart proof** [P1 ops]
   - Done: `~/bin/loop-metrics` links into a persistent `main` worktree; the plist runs Mondays 09:00 with an absolute node path. The kickstart exited 0 and wrote a fresh row, and a jq recount of `w7.workflows` matched it exactly. The stable checkout was fast-forwarded to 0.2.1 after PR #18.
