@@ -247,7 +247,7 @@ Author TypeScript in `src/`; the build bundles `src/bin/*.ts` into the committed
 Run from this plugin directory, not the repo root:
 
 ```bash
-cd plugins/loops && npm install && npm run check
+cd plugins/loops && npm ci && npm run check
 ```
 
 `npm run check` is typecheck, vitest, and build. Tests use synthetic fixtures only; never commit
@@ -720,6 +720,10 @@ after any lines printed before it (so a FAIL printed before the timeout still co
 | 3 | no engine is installed | a hint on stderr, `env-check: not run` on stdout; contributors without the engine can ignore it |
 
 Any other exit code comes from the engine.
+
+**Re-copy the wrapper after upgrading loops.** A repo keeps running the copy it took, so a release that changes
+`templates/env-check` (0.7.1 added exits 1 and 2) reaches a consumer only when it copies the template over its
+`bin/env-check` again (`chmod +x`). The CHANGELOG says when a release changes the template.
 
 ## Roadmap
 

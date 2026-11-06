@@ -24,6 +24,10 @@ This repository is a Claude Code plugin marketplace. Each plugin lives in `plugi
 
 Run `bash tests/dev-doctor-test.sh` before shipping plugin changes.
 
+For changes under `plugins/loops`, also run
+`(cd plugins/loops && npm ci && npm run check)` (typecheck, vitest, and the
+build; commit the rebuilt `bin/` with its source).
+
 See `TESTING.md` for conventions. New plugin manifests should have JSON
 validation, shell scripts should pass `bash -n`, and behavior that affects agent
 decisions should have a regression test.
