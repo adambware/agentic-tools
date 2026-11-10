@@ -7492,6 +7492,7 @@ function updateRegistryState(path, updates) {
     const upd = updates.get(id);
     if (!upd) continue;
     if (upd.last_reviewed !== void 0) item.set("last_reviewed", upd.last_reviewed);
+    if (upd.last_reviewed_sha !== void 0) item.set("last_reviewed_sha", upd.last_reviewed_sha);
     if (upd.status !== void 0) item.set("status", upd.status);
   }
   atomicWrite(path, String(doc));
@@ -7762,10 +7763,12 @@ function runRecord(opts) {
     appendJsonl(runsPath, runRecordRow);
     if (opts.registryPath && opts.reviewedIds.length > 0) {
       const openSurfaces = new Set(openFindings(opts.metricsDir).map((f) => f.dedupe_key.surface));
+      const last_reviewed_sha = opts.packSha && opts.packSha !== "no-git" ? opts.packSha : void 0;
       const updates = /* @__PURE__ */ new Map();
       for (const id of opts.reviewedIds) {
         updates.set(id, {
           last_reviewed: opts.date,
+          last_reviewed_sha,
           status: openSurfaces.has(id) ? "open-findings" : "green"
         });
       }

@@ -17,6 +17,17 @@ reporting. Tests write only to one per-run temporary directory under
 `${TMPDIR:-/tmp}`, removed on exit (set `KEEP_TMP=1` to keep it). CI runs every
 `tests/*-test.sh`.
 
+The `loops` plugin is TypeScript and has its own suite (CI runs it on Node 20):
+
+```bash
+(cd plugins/loops && npm ci && npm run check)
+```
+
+`npm run check` runs typecheck, vitest, and the build. CI fails when the
+committed `bin/*.mjs` bundle is stale, so commit the rebuilt `bin/` with its
+source. The Compose tests skip when Docker Compose is absent; set
+`LOOPS_REQUIRE_COMPOSE=1` to make a missing Compose fail instead, as CI does.
+
 When adding a plugin:
 
 - Validate every JSON manifest with `jq empty`.

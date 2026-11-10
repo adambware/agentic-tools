@@ -75,7 +75,7 @@
     {
       "name": "loops",
       "source": "./plugins/loops",
-      "description": "Loop metrics \u2014 `loop-metrics` reads local Claude Code transcripts and Workflow run records and appends one deduped baseline row (workflow phases, tokens, outcomes, per-model agents; session context peaks, compactions; gstack review-lens noise; per-repo merged PRs, escape proxy and tokens per PR from a private config) to ~/.claude/metrics/loops.jsonl",
+      "description": "Loop tooling \u2014 `loops zone` classifies a change against a repo's risk-zones.md, `loops env-check` runs a repo's .loops/env-check.toml environment checks, and `loop-metrics` reads local Claude Code transcripts and Workflow run records and appends one deduped baseline row (workflow phases, tokens, outcomes, per-model agents; session context peaks, compactions; gstack review-lens noise; per-repo merged PRs, escape proxy and tokens per PR from a private config) to ~/.claude/metrics/loops.jsonl",
       "keywords": [
         "metrics",
         "workflows",

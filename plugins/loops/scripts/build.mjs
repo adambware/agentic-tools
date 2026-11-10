@@ -6,7 +6,7 @@
 //   src/bin/<name>.ts   -> bin/<name>.mjs
 
 import { build } from "esbuild";
-import { readdirSync, mkdirSync } from "node:fs";
+import { chmodSync, readdirSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -26,6 +26,9 @@ const banner = {
     "const require = __loops_createRequire(import.meta.url);",
   ].join("\n"),
 };
+
+// Bundles meant to be run directly from PATH (`loops`), not via `node ~/bin/<name>`.
+const executable = new Set(["loops"]);
 
 for (const { srcDir, outDir } of targets) {
   let entries;
@@ -49,6 +52,7 @@ for (const { srcDir, outDir } of targets) {
       legalComments: "none",
       minify: false,
     });
+    if (executable.has(name)) chmodSync(join(outDir, `${name}.mjs`), 0o755);
     console.log(`built ${name}.mjs`);
   }
 }
