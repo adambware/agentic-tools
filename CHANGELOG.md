@@ -9,6 +9,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **nightshift: change detection diffs from the reviewed sha, not a date.** `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD` made any commit landing later on the same day as a review its own baseline, so its changes never reached `change_flag` until the surface went stale on age alone (up to 90 days for a low-weight vector). Registry entries now carry an engine-managed `last_reviewed_sha`, stamped by `bin/record` from `run.json.pack_sha` (left untouched when the run had no git), and `bin/select` / `bin/due` diff `<sha>..HEAD` directly. The date baseline remains only as a fallback for entries recorded before this field existed or a sha that no longer resolves (shallow clone, rewritten history). The sha comes from a registry committed in the reviewed repo, so anything that is not hex is refused both by `validate` and by the git runner itself: a value like `--output=<path>` would otherwise be parsed by `git diff` as an option.
 
+## [ship-lean 1.0.0] - 2026-11-09
+
+New plugin: a lean overlay for gstack's `/ship` skill, packaged from a
+previously hand-installed set of `~/.claude` files so the hook and agent register
+natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
+`settings.json` edit.
+
+### Added
+
+- `UserPromptSubmit` hook (`hooks/ship-playbook-hook`, python3, fail-open) that
+  injects a short overlay note when the prompt is an interactive `/ship`. Trigger
+  is `^/ship(\s|$)` only; the natural-language form is off unless `SHIP_HOOK_NL=1`.
+  Overlay and reviewers-workflow paths are resolved from `${CLAUDE_PLUGIN_ROOT}`;
+  on a non-match, unset root, or any error it emits nothing and exits 0 — it never
+  blocks or alters a prompt.
+- `ship-lean-reviewer` agent, addressed as `ship-lean:ship-lean-reviewer` (`Read, Grep, Glob` only — read-only is harness-enforced)
+  and `playbooks/ship-lean/reviewers.workflow.js`, the parallel read-only fan-out
+  (per-lens `{lens, ok, findings}`, no silent lens drops, severity `CRITICAL|INFORMATIONAL`).
+- `playbooks/ship.md`, the ~1-page overlay. `SKILL.md` stays authoritative; it
+  overrides only Step 9 specialist dispatch + Step 11 adversarial pass (as a read-only
+  parallel Workflow over an out-of-repo patch) and the push gate, which fails toward
+  "Stop here — nothing pushed." Includes a degrade-to-standard path for when the
+  Workflow can't run (lean is interactive-only).
+- `scripts/migrate-from-manual-install.sh` (dry-run by default) and a README
+  MIGRATION section: enabling the plugin while the old manual install is present
+  double-fires the hook and duplicates the agent, so the manual files and the untagged
+  `settings.json` `UserPromptSubmit` entry must be removed first. The script removes only the
+  `ship-playbook-hook` command, so other hooks in the same matcher group stay.
+- `test/ship-lean-test.sh`: hermetic, no-auth checks of the plugin's hook via
+  `${CLAUDE_PLUGIN_ROOT}` (trigger matrix, fail-open, plugin-resolved paths), static
+  manifest/JSON/syntax validation, and the `W` invariant (conditional on `gstack-wtree`).
+  Wired into CI via `tests/ship-lean-test.sh`.
+
 ## [loops 0.7.1] - 2026-11-04
 
 `loops env-check` 0.7.1 is a fixes-only release. Every row is escaped once, at the output edges. `c.shared` proves a worktree owns its git metadata instead of trusting `git rev-parse`. Several checks that used to pass or skip silently now fail or say why. Features the pilots asked for are listed in `TODOS.md` for 0.8.0.
