@@ -83,7 +83,7 @@ if (STAGE === 'review') {
     agent(lensPrompt(lens), {
       label: `review:${lens}`,
       phase: 'Review',
-      agentType: 'ship-lean-reviewer',
+      agentType: 'ship-lean:ship-lean-reviewer',
       model: 'sonnet',
       schema: LENS_SCHEMA,
     }).then(r => r || { lens, ok: false, rationale: 'agent returned null / died', findings: [] })))
@@ -110,7 +110,7 @@ Finding: [${f.severity}] ${f.specialist} ${f.path}:${f.line || '?'} — ${f.summ
 Patch file (read it): ${PATCH}
 Repo root (read-only context): ${ROOT}
 Is this a real, exploitable/relevant problem in THIS diff, or a false positive?`,
-          { label: `verify:${f.fingerprint || f.path}#${k}`, phase: 'Verify', agentType: 'ship-lean-reviewer', model: 'opus', schema: VERDICT_SCHEMA })))
+          { label: `verify:${f.fingerprint || f.path}#${k}`, phase: 'Verify', agentType: 'ship-lean:ship-lean-reviewer', model: 'opus', schema: VERDICT_SCHEMA })))
         .then(vs => {
           const live = vs.filter(Boolean)
           // Drop only on a confident majority refutation; keep when verifiers died (fail-safe toward reporting).
@@ -140,7 +140,7 @@ Diff base: ${BASE}
 
 Try hard to find a real problem the first-pass review would miss, through your
 angle. Apply NO fixes. Return {lens, ok, rationale, findings[]} with lens="${angle}".`,
-      { label: `adversarial:${angle}`, phase: 'Adversarial', agentType: 'ship-lean-reviewer', model: 'opus', schema: LENS_SCHEMA })
+      { label: `adversarial:${angle}`, phase: 'Adversarial', agentType: 'ship-lean:ship-lean-reviewer', model: 'opus', schema: LENS_SCHEMA })
       .then(r => r || { lens: angle, ok: false, rationale: 'agent returned null / died', findings: [] })))
 
   const lenses = skeptics.map((angle, i) => {

@@ -53,7 +53,7 @@ Procedure for Step 9 (repeat the analogous shape for each Step 11 attempt):
    ```
    Use that **absolute** scriptPath exactly as the note gives it (no `~` — the host does not
    expand it). If the host cannot load that scriptPath, Read the file and pass its contents via
-   `script:` inline instead. Reviewers are the `ship-lean-reviewer` agent (Read/Grep/Glob only)
+   `script:` inline instead. Reviewers are the `ship-lean:ship-lean-reviewer` agent (Read/Grep/Glob only)
    — read-only is **harness-enforced**, so no reviewer can flip `W` mid-review. Await the
    Workflow **within the same turn** (never end the turn mid-ship except at a native
    AskUserQuestion). Running `/ship` with this overlay is the skill-driven opt-in for the

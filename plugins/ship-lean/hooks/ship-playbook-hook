@@ -32,7 +32,7 @@ def build_note(overlay, script):
         "(outside the repo; do NOT add an rm -rf / trap EXIT cleanup — it trips the host safety "
         "check; the scratchpad is auto-cleaned) "
         "(absolute scriptPath " + script + ", "
-        "agentType ship-lean-reviewer). If the Workflow cannot run here (script won't load, or "
+        "agentType ship-lean:ship-lean-reviewer). If the Workflow cannot run here (script won't load, or "
         "an unattended/headless/spawned session can't approve a dynamic workflow), do NOT stop — "
         "fall back to SKILL.md's standard in-context Step 9/11 reviewers (lean is interactive-only). "
         "Freeze/commit first; capture the review-log --start token "

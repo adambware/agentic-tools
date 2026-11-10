@@ -71,7 +71,8 @@ overlay) rather than stopping ship. Do not claim ship is "always lean."
 ```
 
 The plugin registers the `UserPromptSubmit` hook and the `ship-lean-reviewer` agent
-natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
+(addressed as `ship-lean:ship-lean-reviewer`, because Claude Code prefixes plugin
+agents with the plugin name) natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
 `settings.json` edit. Then just type `/ship` in an interactive session; on your first
 run, approve the one-time "review dynamic workflow" prompt and watch for the
 `review:correctness` / `review:security` / … reviewer agents and a Step 11.5 Review

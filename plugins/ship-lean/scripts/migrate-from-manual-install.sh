@@ -95,26 +95,32 @@ except Exception as e:
 
 hooks = (data.get("hooks") or {}).get("UserPromptSubmit") or []
 
-def matches(entry):
-    for h in (entry.get("hooks") or []):
-        cmd = h.get("command") or ""
-        if "ship-playbook-hook" in cmd:
-            return True
-    return False
+def is_ship_hook(h):
+    return "ship-playbook-hook" in (h.get("command") or "")
 
+# Remove only the ship-playbook-hook command itself. A matcher group can hold
+# other hooks too; those stay. A group is dropped only when nothing is left.
 kept, removed = [], []
 for entry in hooks:
-    (removed if matches(entry) else kept).append(entry)
+    inner = entry.get("hooks") or []
+    gone = [h for h in inner if is_ship_hook(h)]
+    if not gone:
+        kept.append(entry)
+        continue
+    removed.extend(gone)
+    rest = [h for h in inner if not is_ship_hook(h)]
+    if rest:
+        entry = dict(entry)
+        entry["hooks"] = rest
+        kept.append(entry)
 
 if not removed:
     print("  [absent]  no UserPromptSubmit entry referencing ship-playbook-hook")
     sys.exit(0)
 
-for entry in removed:
-    for h in (entry.get("hooks") or []):
-        if "ship-playbook-hook" in (h.get("command") or ""):
-            tag = "  [removed] " if apply else "  [dry-run] would remove: "
-            print(tag + (h.get("command") or ""))
+for h in removed:
+    tag = "  [removed] " if apply else "  [dry-run] would remove: "
+    print(tag + (h.get("command") or ""))
 
 if not apply:
     sys.exit(0)

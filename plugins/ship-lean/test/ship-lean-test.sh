@@ -115,6 +115,52 @@ tools={x.strip() for x in mt.group(1).strip().lstrip('[').rstrip(']').split(',')
 assert tools=={"Read","Grep","Glob"}, "exactly Read, Grep, Glob (got %r)" % tools
 PY
 
+# agentType: Claude Code addresses a plugin agent as "<plugin>:<agent>". A bare
+# "ship-lean-reviewer" only resolves while the old manual ~/.claude install
+# exists, so after migration every lens would fail. Every agentType in the
+# workflow, and the one the hook note names, must be the prefixed form.
+python3 - "$ROOT" <<'PY' && ok "agentType is <plugin>:<agent> everywhere (workflow + hook note)" || no "agentType not plugin-prefixed"
+import json,re,sys,os
+root=sys.argv[1]
+plugin=json.load(open(os.path.join(root,".claude-plugin","plugin.json")))["name"]
+fm=open(os.path.join(root,"agents","ship-lean-reviewer.md")).read().split('---',2)[1]
+agent=re.search(r'^name:\s*(\S+)\s*$', fm, re.M).group(1)
+want="%s:%s" % (plugin, agent)
+wf=open(os.path.join(root,"playbooks","ship-lean","reviewers.workflow.js")).read()
+types=re.findall(r"agentType:\s*['\"]([^'\"]+)['\"]", wf)
+assert len(types)>=3, "expected >=3 agentType uses, got %d" % len(types)
+assert all(t==want for t in types), "workflow agentTypes %r != %r" % (types, want)
+hook=open(os.path.join(root,"hooks","ship-playbook-hook")).read()
+assert ("agentType " + want) in hook, "hook note must name " + want
+PY
+
+# migrate script: removes only the ship hook from a shared matcher group, keeps
+# unrelated hooks, backs up, and changes nothing in dry-run.
+MIG="$ROOT/scripts/migrate-from-manual-install.sh"
+MC="$WORK/claude-mig"; mkdir -p "$MC"
+cat > "$MC/settings.json" <<'JSON'
+{"hooks":{"UserPromptSubmit":[
+  {"hooks":[{"type":"command","command":"python3 ~/.claude/hooks/ship-playbook-hook"},{"type":"command","command":"other-hook --keep"}]},
+  {"hooks":[{"type":"command","command":"python3 ~/.claude/hooks/ship-playbook-hook"}]},
+  {"matcher":"x","hooks":[{"type":"command","command":"unrelated"}]}
+]},"theme":"dark"}
+JSON
+BEFORE="$(cat "$MC/settings.json")"
+CLAUDE_CONFIG_DIR="$MC" bash "$MIG" >/dev/null 2>&1
+[ "$(cat "$MC/settings.json")" = "$BEFORE" ] && ok "migrate dry-run leaves settings.json untouched" || no "migrate dry-run changed settings.json"
+CLAUDE_CONFIG_DIR="$MC" bash "$MIG" --apply >/dev/null 2>&1
+python3 - "$MC/settings.json" <<'PY' && ok "migrate --apply drops only ship-playbook-hook, keeps neighbours" || no "migrate --apply removed unrelated hooks"
+import json,sys
+d=json.load(open(sys.argv[1]))
+ups=d["hooks"]["UserPromptSubmit"]
+cmds=[h["command"] for e in ups for h in e["hooks"]]
+assert not any("ship-playbook-hook" in c for c in cmds), cmds
+assert cmds==["other-hook --keep","unrelated"], cmds
+assert len(ups)==2 and ups[1].get("matcher")=="x", ups
+assert d["theme"]=="dark"
+PY
+ls "$MC"/settings.json.bak.*.shiphook-migrate >/dev/null 2>&1 && ok "migrate --apply wrote a backup" || no "migrate --apply wrote no backup"
+
 echo "========== HOOK BEHAVIOR (plugin path, no auth) =========="
 
 # /ship: emits the envelope; note carries the plugin-resolved overlay + scriptPath.
