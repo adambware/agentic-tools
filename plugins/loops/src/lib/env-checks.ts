@@ -541,6 +541,8 @@ function peerWarnings(_c: Ctx, _ps: Peer[]): Result[] {
 export type ComposeProject = { name: string | null; results: Result[]; withheld: boolean; answers: string[]; ps?: Listing };
 
 const UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
+const interpFix = (v: string, pdir: string): string =>
+  `set ${v} in ${join(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
 // Compose exited 0 there, so the rerun (config -q) prints nothing.
 const NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 
@@ -573,7 +575,9 @@ export function composeProject(c: Ctx): ComposeProject {
   // every other checkout runs from its own shell, so without this one's COMPOSE_*.
   const failed = (p: Cell): Result => {
     const e = p.r as ComposeError;
-    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`);
+    // A required variable this checkout lacks is fixed here; another checkout's is fixed there (its own row says how).
+    const fix = e.kind === "interp" && own.includes(p) ? interpFix(e.variable!, p.pdir) : e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`;
+    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, fix);
   };
   const own = cellsOf(c, c.root, c.isWorktree ? "this worktree's " : "this checkout's ", shellCompose(c).length ? [false, true] : [false]);
   // name(X): the shell's, else a worktree's derived one, else the main checkout's configured run as is (own[0], as

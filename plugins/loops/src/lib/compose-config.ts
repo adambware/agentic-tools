@@ -1,13 +1,14 @@
 // The one place loops talks to Compose: `docker compose version` says whether Compose is there at all, and
 // `docker compose config` says what one run's project name is. No result carries Compose's own text (it can echo an
-// interpolated secret); a failed probe carries the command to rerun instead, as `config -q`, which never prints the
+// interpolated secret); a failed probe carries the command to rerun instead, and a required variable's name, which is
+// the one piece of Compose's stderr ever read into a result, as `config -q`, which never prints the
 // model. Every probe, and every rerun, runs with Compose's remote loaders off. The policy lives in env-checks.ts.
 import { shQuote, type RunResult, type Runner } from "./proc.js";
 
 /** Whether Compose can be asked at all: `unavailable` is a SKIP upstream, `error` a FAIL. */
 export type ComposeVersion = { version: string } | { unavailable: string } | { error: string };
 
-export type ComposeErrorKind = "timeout" | "abend" | "gone" | "tooOld" | "exit" | "json" | "noName";
+export type ComposeErrorKind = "timeout" | "abend" | "gone" | "tooOld" | "exit" | "interp" | "json" | "noName";
 /** A `docker compose config` probe that failed: how, in loops' words, and where to rerun it to see Compose's own message. */
 export interface ComposeError {
   error: string;
@@ -18,6 +19,8 @@ export interface ComposeError {
   cwd: string;
   /** The COMPOSE_* names `scrub` removed for this probe; absent when none were. */
   scrubbed?: string[];
+  /** kind "interp": the variable a `${VAR:?}` or `${VAR?}` reference requires (only its name, never a value). */
+  variable?: string;
 }
 /** What `docker compose config` says the project name is, that it found no compose file, or why it could not say. */
 export type ComposeName = { name: string } | { noFile: true } | ComposeError;
@@ -55,6 +58,11 @@ const WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
 const NO_PLUGIN = /^(?:docker: )?(?:unknown flag:? --short\b|'compose' is not a docker command|unknown command: docker compose)/m;
 // Plain `docker compose` (no -f) found no compose file in the cwd or above it. The corpus pins this wording.
 const NO_FILE = "no configuration file provided: not found";
+// `${VAR:?msg}` or `${VAR?msg}` with VAR unset (or empty, for `:?`). Compose 5.5 prints one line, `error while
+// interpolating <path>: required variable VAR is missing a value[: msg]`, where msg is interpolated and so can hold a
+// secret (even a lookalike "required variable <secret> is missing"): only the first match on that line is read, and
+// only the name in it.
+const REQUIRED = /^(?:error while interpolating [^\n]*?: )?required variable (\w+) is missing a value/;
 
 /** True for a Runner call that is a `composeName` probe (for test stubs). */
 export function isComposeConfigCall(cmd: string, args: string[]): boolean {
@@ -103,12 +111,13 @@ export function composeName(o: ComposeNameOpts): ComposeName {
   const fileArgs = (o.files ?? []).flatMap((f) => ["-f", f]);
   const args = ["compose", ...fileArgs, "config", "--no-env-resolution", "--format", "json"];
   const r = o.run("docker", args, { cwd: o.root, env, timeoutMs: COMPOSE_CONFIG_TIMEOUT_MS });
-  const fail = (kind: ComposeErrorKind, how: string): ComposeError => ({
+  const fail = (kind: ComposeErrorKind, how: string, variable?: string): ComposeError => ({
     error: `docker compose config ${how}`,
     kind,
     cmd: ["docker", "compose", ...fileArgs, "config", "--no-env-resolution", "-q"].map(shQuote).join(" "),
     cwd: o.root,
     ...(scrubbed.length ? { scrubbed } : {}),
+    ...(variable ? { variable } : {}),
   });
   // A timed-out process also has code null, so this check comes first.
   if (r.timedOut) return fail("timeout", `timed out after ${seconds}`);
@@ -118,7 +127,9 @@ export function composeName(o: ComposeNameOpts): ComposeName {
   if (r.code !== 0) {
     if (TOO_OLD.test(r.stderr)) return fail("tooOld", "is too old (needs --no-env-resolution)");
     const rest = r.stderr.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n").trim();
-    return rest === NO_FILE ? { noFile: true } : fail("exit", `exited ${r.code}`);
+    if (rest === NO_FILE) return { noFile: true };
+    const v = REQUIRED.exec(rest.split("\n")[0]!)?.[1];
+    return v ? fail("interp", `exited ${r.code}: required variable ${v} is missing a value`, v) : fail("exit", `exited ${r.code}`);
   }
   let parsed: unknown;
   try {

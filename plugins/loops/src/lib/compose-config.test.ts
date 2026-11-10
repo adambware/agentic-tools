@@ -187,6 +187,22 @@ describe("composeName with a stubbed runner", () => {
     expect(composeName({ root: "/r", env: {}, run: stub(res({ code: 1, stderr: echoed })).run })).toEqual(failed("exit", "docker compose config exited 1"));
   });
 
+  it("reads a required variable's name from Compose's interpolation error, and nothing else from stderr", () => {
+    const at = (stderr: string) => composeName({ root: "/r", env: { SECRET: "hunter2hunter2" }, run: stub(res({ code: 1, stderr })).run });
+    const interp = (v: string) => ({ ...failed("interp", `docker compose config exited 1: required variable ${v} is missing a value`), variable: v });
+    expect(at("error while interpolating services.web.image: required variable DB_URL is missing a value\n")).toEqual(interp("DB_URL"));
+    // ${VAR?} prints the same line as ${VAR:?}; the bare form (no "error while interpolating") is read too.
+    expect(at("required variable PN is missing a value: set it\n")).toEqual(interp("PN"));
+    expect(at('time=2026-01-01T00:00:00Z level=warning msg="a"\nerror while interpolating name: required variable PN is missing a value\n')).toEqual(interp("PN"));
+    // The message after the name is interpolated: a secret there, even one shaped like another variable, is never read.
+    const spoof = at("error while interpolating services.web.image: required variable X is missing a value: required variable hunter2hunter2 is missing a value\n");
+    expect(spoof).toEqual(interp("X"));
+    expect(JSON.stringify(spoof)).not.toContain("hunter2");
+    // Only Compose's first line counts, and only at its start: a later line or mid-line text is an ordinary exit.
+    expect(at("services.web.ports: invalid port\nrequired variable hunter2hunter2 is missing a value\n")).toEqual(failed("exit", "docker compose config exited 1"));
+    expect(at("invalid image \"required variable hunter2hunter2 is missing a value\"\n")).toEqual(failed("exit", "docker compose config exited 1"));
+  });
+
   it("never copies Compose's stderr, even a line holding an interpolated secret", () => {
     const stderr = "services.db.ports: invalid port hunter2hunter2:5432\n";
     const out = composeName({ root: "/r", env: { DB_PASSWORD: "hunter2hunter2" }, run: stub(res({ code: 1, stderr })).run });
@@ -259,8 +275,8 @@ type Row = {
   /** The answer another Compose version gives for the same fixture (both recorded, either accepted). */
   alt?: Want;
 };
-/** A failure is compared by its kind only: composeName never copies Compose's text. */
-type Want = { name: string } | { noFile: true } | { kind: ComposeErrorKind };
+/** A failure is compared by its kind (and an interp failure's variable) only: composeName never copies Compose's text. */
+type Want = { name: string } | { noFile: true } | { kind: ComposeErrorKind; variable?: string };
 
 const rows: Row[] = [
   // --- directory normalization (no name: anywhere) ---
@@ -328,7 +344,13 @@ const rows: Row[] = [
   // v5.1.2 skips the missing env_file under --no-env-resolution; v2.38.2 (the ubuntu-latest runner) still fails on it, so there e.project FAILs as `docker compose up` would.
   { title: "missing env_file passes with --no-env-resolution on v5; v2.38 still fails", files: { "compose.yaml": named("app-env") .replace("image: nginx\n", "image: nginx\n    env_file: .env.local\n") }, want: { name: "app-env" }, alt: { kind: "exit" } },
   // Recorded line: "error while interpolating services.web.image: required variable X is missing a value".
-  { title: "service image ${X:?} with X unset is Compose's error", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n" }, want: { kind: "exit" } },
+  { title: "service image ${X:?} with X unset is interp, naming X", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n" }, want: { kind: "interp", variable: "X" } },
+  { title: "${X?} (no colon) with X unset is interp too", files: { "compose.yaml": "services:\n  web:\n    image: \"${X?}\"\n" }, want: { kind: "interp", variable: "X" } },
+  { title: "${X:?} with X empty in .env is interp", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?}\"\n", ".env": "X=\n" }, want: { kind: "interp", variable: "X" } },
+  { title: "name: ${PN:?} with PN unset is interp, naming PN", files: { "compose.yaml": named("${PN:?}") }, want: { kind: "interp", variable: "PN" } },
+  // Recorded line: "... required variable X is missing a value: required variable <SECRET's value> is missing" (the
+  // message is interpolated); only the first variable on the line is read.
+  { title: "a lookalike message holding a secret still names only the required variable", files: { "compose.yaml": "services:\n  web:\n    image: \"${X:?required variable ${SECRET} is missing}\"\n" }, env: { SECRET: "loopscanary7f3a" }, want: { kind: "interp", variable: "X" } },
 ];
 
 describe.skipIf(!composeAvailable)("composeName against real docker compose config", () => {
@@ -362,7 +384,7 @@ describe.skipIf(!composeAvailable)("composeName against real docker compose conf
       env.DOCKER_CONFIG = cfg;
     }
     const got = composeName({ root, files: row.composeFiles, env, run });
-    const shown = "error" in got ? { kind: got.kind } : got;
+    const shown = "error" in got ? { kind: got.kind, ...(got.variable ? { variable: got.variable } : {}) } : got;
     // `alt` is the answer another Compose version gives for the same fixture; both are recorded, either is the oracle.
     expect([row.want, ...(row.alt ? [row.alt] : [])]).toContainEqual(shown);
   });
@@ -394,7 +416,7 @@ describe.skipIf(!composeAvailable)("composeName against real docker compose conf
     const root = at(`rerun${m++}`, row.files);
     const env = { ...baseEnv(), ...row.env };
     const got = composeName({ root, files: row.composeFiles, env, run });
-    expect(got).toMatchObject({ kind: "exit" });
+    expect(got).toMatchObject(row.want);
     const r = sh(rerun(got as ComposeError), env);
     expect(r.status).not.toBe(0);
     expect(r.stdout).toBe("");

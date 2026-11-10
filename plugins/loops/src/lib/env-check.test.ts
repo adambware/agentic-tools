@@ -1534,10 +1534,23 @@ describe("compose", () => {
     const answers = { [root]: "app-prod", [a]: "feat-a", [b]: { error: "required variable STACK is missing a value: set it" } };
     // The peer's own shell decides its name, so the rerun command drops this shell's COMPOSE_*; the name is withheld.
     const r = checkC(a, answers, ["--compose-project"], { COMPOSE_PROJECT_NAME: "feat-a" });
-    expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: worktree ${b}'s configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${b} && env -u COMPOSE_PROJECT_NAME ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`)]);
+    expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: worktree ${b}'s configured run: docker compose config exited 1: required variable STACK is missing a value — fix: rerun to see Compose's error: cd ${b} && env -u COMPOSE_PROJECT_NAME ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`)]);
     // The main checkout does not probe peers: their derived names are all it holds against (each peer reports the rest).
     const m = checkC(root, answers);
     expect([m.code, m.out, m.calls.every((c) => rp(c.cwd) === root)]).toEqual([0, expect.stringContaining("PASS e.project  app-prod (compose)"), true]);
+  });
+
+  it("names a required variable this checkout lacks and says where to set it, relaying nothing else from Compose", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-i");
+    const why = { error: "error while interpolating services.db.image: required variable DB_TAG is missing a value: hunter2hunter2" };
+    const fix = (dir: string) => `set DB_TAG in ${join(dir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
+    const m = checkC(root, { [root]: why });
+    expect([m.code, m.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this checkout's configured run: docker compose config exited 1: required variable DB_TAG is missing a value — fix: ${fix(root)}`)]);
+    const w = checkC(wt, { [root]: "app-prod", [wt]: why });
+    expect(w.out).toContain(`FAIL e.project  this worktree's configured run: docker compose config exited 1: required variable DB_TAG is missing a value — fix: ${fix(wt)}`);
+    for (const r of [m, w]) expect(r.out + r.err).not.toContain("hunter2");
   });
 
   it("interpolates name: against the checkout's .env too, and a COMPOSE_PROJECT_NAME there beats the file", () => {
