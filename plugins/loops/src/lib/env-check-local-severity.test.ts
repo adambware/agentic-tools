@@ -48,6 +48,15 @@ describe("local severity table (B3)", () => {
     expect(r.local.map((l) => l.split(" — fix: ")[0])).toEqual([row]);
   });
 
+  // The level comes from the numeric cores alone, so a prerelease of the same release is patch for every tool.
+  it("a prerelease-only difference is reported at the patch level", () => {
+    const one = (mod: string, have: string) => check(`${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\nlocal = ${SPLIT}\n`, { "go.mod": `module x\n\ngo ${mod}\n` }, withShim(goShim(have)));
+    const rc = one("1.26", "1.26rc1");
+    expect([rc.code, rc.local.map((l) => l.split(" — fix: ")[0])]).toEqual([0, ["INFO a.local.go  local go 1.26rc1 does not match pin 1.26"]]);
+    const pin = one("1.26rc1", "1.26.0");
+    expect([pin.code, pin.local.map((l) => l.split(" — fix: ")[0])]).toEqual([0, ["INFO a.local.go  local go 1.26.0 does not match pin 1.26rc1"]]);
+  });
+
   it("a missing component is warn, and off drops the row for that difference", () => {
     expect(check(GO("exact", '{ patch = "off" }'), GO_FILES, withShim(goShim("1.26.0"))).local).toEqual([]);
     expect(check(GO("exact", '{ patch = "off" }'), GO_FILES, withShim(goShim("1.25.0"))).local).toEqual([expect.stringMatching(/^WARN a\.local\.go  local go 1\.25\.0 does not match/)]);
@@ -84,6 +93,7 @@ describe("local severity table (B3)", () => {
     expect(local('{ minor = "info" }')).toEqual({ major: "warn", minor: "info", patch: "warn" });
     expect(parseConfig(`${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\n`, CFG).pins[0]!.local).toEqual({ major: "warn", minor: "warn", patch: "warn" });
     for (const bad of ['"info"', '{ major = "error" }', '{ build = "warn" }', "3"]) expect(() => local(bad)).toThrow(UsageError);
+    for (const bad of ["1979-05-27", "1979-05-27T07:32:00Z", "3"]) expect(() => local(bad)).toThrow(/\[\[pins\]\] #1: local must be fail\|warn\|off or a \{ major, minor, patch \} table/);
     const r = check(GO("exact", '{ major = "loud" }'), GO_FILES, withShim(goShim("1.26.1")));
     expect([r.code, r.err]).toEqual([2, expect.stringContaining("[[pins]] #1: local.major must be fail|warn|info|off")]);
   });

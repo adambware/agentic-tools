@@ -64,6 +64,14 @@ describe("Dockerfile FROM ${ARG} through the global ARG scope", () => {
   ])("%s is INFO image set at build time, not FAIL", (_n, text, image, line) =>
     expect(read("dockerfile", "node", D(text))).toEqual([["20"], [BUILD_TIME(image, line)]]));
 
+  // A build-time note never stands in for a pin when a stage of the tool's own image has none.
+  it("a tool stage with no pinned version still FAILs beside an image set at build time", () => {
+    fails("node", D("ARG NODE_VERSION\nARG RUNTIME\nFROM node:${NODE_VERSION} AS build\nFROM ${RUNTIME}\n"), /no node version found in Dockerfile/);
+    const root = tmp();
+    const files = { "web/Dockerfile": "FROM node:${NODE_VERSION}\n", "base/Dockerfile": "ARG BASE\nFROM ${BASE}\n" };
+    for (const [f, c] of Object.entries(files)) put(root, f, c);
+    expect(() => readSource(root, Object.keys(files), "node", "dockerfile:**/Dockerfile")).toThrow(/no node version found in 2 files/);
+  });
   it("a Dockerfile whose only tool FROM is set at build time yields no pin and no FAIL of its own", () => {
     expect(read("dockerfile", "node", D("ARG BASE\nFROM ${BASE}\n"))).toEqual([[], [BUILD_TIME("${BASE}", 2)]]);
   });

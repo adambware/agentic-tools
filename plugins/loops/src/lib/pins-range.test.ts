@@ -47,6 +47,7 @@ describe("semverRange: the range forms range = \"check\" reads", () => {
     ["!=20", false],
     ["===20.11.1", false],
     ["~=3.12", false], // a PEP 440 operator outside a Python packaging file: semver would read it as ~3.12
+    ["==3.12", false], // likewise: semver would read it as 3.12.x, PEP 440 as 3.12.0
     [">=3.10, <3.12", false], // `,` is not semver
     [">=22.0.0-rc.1", false], // a prerelease
     ["lts/*", false], // an alias: not a range isRange accepts
@@ -93,6 +94,12 @@ describe("inRange: a pin against a range", () => {
     ["3.12.4", "==3.12", true, "outside"], // PEP 440: ==3.12 is 3.12.0
     ["3.13", ">=3.10, <3.13", true, "outside"],
     ["3.12.1", ">=3.10, <3.13", true, "inside"],
+    // A series covered only by the union of `||` alternatives is inside; a gap between them leaves it partly inside.
+    ["20", ">=20.0.0 <20.5.0 || >=20.5.0 <21", false, "inside"],
+    ["20.11", "20.11.0 - 20.11.4 || >=20.11.5", false, "inside"],
+    ["20", "<20.5.0 || >20.5.0", false, "partly"],
+    ["20", ">=20.0.0 <20.5.0 || >=20.6.0 <21", false, "partly"],
+    ["3.12", ">=3.12, <3.12.5 || >=3.12.5", true, "inside"],
   ])("pin %s vs %s (PEP 440: %s) is %s", (pin, range, pep, want) => {
     expect(inRange(pin, range, pep)).toBe(want);
   });
@@ -103,6 +110,8 @@ describe("inRange: a pin against a range", () => {
     ["22.0.0-rc.1", ">=22", false], // a prerelease pin
     ["3.13.0rc1", ">=3.12", true],
     ["3.12", ">=3.10, !=3.11.*", true],
+    ["20.01.0", ">=20", false], // a leading zero: no semver version
+    ["2024.01", ">=2024", false],
   ])("pin %s vs %s (PEP 440: %s) is not checked", (pin, range, pep) => {
     expect(inRange(pin, range, pep)).toBeNull();
   });
@@ -160,6 +169,38 @@ describe('[[pins]] range = "check" (B1)', () => {
     const r = check(NODE("check").replace('"nvmrc", "engines"', '"nvmrc", "node-version", "engines"'), { ".nvmrc": "20\n", ".node-version": "22\n", "package.json": ENGINES(">=20") });
     expect(r.code).toBe(1);
     expect(r.heads[1]).toBe('INFO a.pins.node  engines:package.json: ">=20" is a range, not compared (the pins disagree)');
+  });
+
+  it("a pin with a leading zero stays INFO, never a crash", () => {
+    const r = check(NODE("check"), { ".nvmrc": "20.01.0\n", "package.json": ENGINES(">=20") });
+    expect([r.code, r.heads[1]]).toEqual([0, 'INFO a.pins.node  engines:package.json: ">=20" is a range, not compared (not a form range = "check" reads)']);
+  });
+
+  // Every distinct pin is checked, not only the most specific one, so the verdict never depends on source order.
+  it.each([
+    [["nvmrc", "dockerfile", "engines"]],
+    [["dockerfile", "nvmrc", "engines"]],
+  ])("under compare = major each agreeing pin is checked (sources %j)", (sources) => {
+    const cfg = `${HEAD}[[pins]]\ntool = "node"\nsources = ${JSON.stringify(sources)}\ncompare = "major"\nlocal = "off"\nrange = "check"\n`;
+    const r = check(cfg, { ".nvmrc": "20.12.0\n", Dockerfile: "FROM node:20.1.0\n", "package.json": ENGINES(">=20.11") });
+    expect(r.code).toBe(1);
+    expect(r.heads[1]).toBe('FAIL a.pins.node  engines:package.json: pin 20.1.0 (dockerfile:Dockerfile) is outside ">=20.11"');
+  });
+  it.each([
+    [["tool-versions", "nvmrc", "engines"]],
+    [["nvmrc", "tool-versions", "engines"]],
+  ])("a CI pin outside the range FAILs in either source order (sources %j)", (sources) => {
+    const cfg = `${HEAD}[[pins]]\ntool = "node"\nsources = ${JSON.stringify(sources)}\ncompare = "major"\nlocal = "off"\nrange = "check"\n`;
+    const r = check(cfg, { ".nvmrc": "20.5.0\n", ".tool-versions": "nodejs 20.11.1\n", "package.json": ENGINES(">=20.11") });
+    expect(r.code).toBe(1);
+    expect(r.heads[1]).toBe('FAIL a.pins.node  engines:package.json: pin 20.5.0 (nvmrc:.nvmrc) is outside ">=20.11"');
+  });
+  it("under compare = exact a series pin that agrees is checked too: partly inside is a WARN; all inside names each pin", () => {
+    const cfg = `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "dockerfile", "engines"]\nlocal = "off"\nrange = "check"\n`;
+    const warn = check(cfg, { ".nvmrc": "20.12.0\n", Dockerfile: "FROM node:20\n", "package.json": ENGINES(">=20.11") });
+    expect([warn.code, warn.heads[1]]).toEqual([0, 'WARN a.pins.node  engines:package.json: pin 20 (dockerfile:Dockerfile) is only partly inside ">=20.11"']);
+    const pass = check(cfg, { ".nvmrc": "20.12.0\n", Dockerfile: "FROM node:20\n", "package.json": ENGINES(">=20") });
+    expect([pass.code, pass.heads[1]]).toEqual([0, 'PASS a.pins.node  engines:package.json: pins 20.12.0 (nvmrc:.nvmrc), 20 (dockerfile:Dockerfile) are inside ">=20"']);
   });
 
   it("a setup-node range input is checked", () => {

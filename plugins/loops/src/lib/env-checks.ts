@@ -8,7 +8,7 @@ import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type Comp
 import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck, Severity } from "./env-config.js";
-import { ALIAS, cmp, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
+import { ALIAS, diffPart, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -132,15 +132,22 @@ export function pinChecks(c: Ctx): Result[] {
     }
     const bad = disagreement(vals, pin.compare);
     const want = pinOf(vals);
-    // B1: under range = "check", each range against the pin (as the set of versions a series names).
+    // B1: under range = "check", each distinct pin against each range (a series as the set of versions it names), so the
+    // verdict never depends on which pin is the most specific: the row is the worst, FAIL outside, WARN partly inside,
+    // INFO when a pin cannot be checked, else PASS. With more than one distinct pin, the row names the pin's sources.
+    const distinct = [...new Set(pins.map((v) => v.v))];
+    const named = (w: string) => (distinct.length > 1 ? `${w} (${srcs(pins.filter((v) => v.v === w))})` : w);
     const ranged = (v: PinValue): Result => {
       if (pin.range === "info") return info(v);
       if (bad) return info(v, " (the pins disagree)");
-      const at = inRange(want, v.v, v.pep440);
-      return at === null ? info(v, ' (not a form range = "check" reads)')
-        : at === "inside" ? res("PASS", id, `${v.src}: pin ${want} is inside "${v.v}"`)
-        : at === "partly" ? res("WARN", id, `${v.src}: pin ${want} is only partly inside "${v.v}"`, `pin a version the range wholly allows (a series pin names every version in it), or widen the range`)
-        : res("FAIL", id, `${v.src}: pin ${want} is outside "${v.v}"`, `pin a version inside the range, or change the range`);
+      const at = distinct.map((w) => [w, inRange(w, v.v, v.pep440)] as const);
+      const first = (k: string | null) => at.find(([, a]) => a === k)?.[0];
+      const outside = first("outside");
+      const partly = first("partly");
+      return outside !== undefined ? res("FAIL", id, `${v.src}: pin ${named(outside)} is outside "${v.v}"`, `pin a version inside the range, or change the range`)
+        : partly !== undefined ? res("WARN", id, `${v.src}: pin ${named(partly)} is only partly inside "${v.v}"`, `pin a version the range wholly allows (a series pin names every version in it), or widen the range`)
+        : first(null) !== undefined ? info(v, ' (not a form range = "check" reads)')
+        : res("PASS", id, `${v.src}: ${distinct.length > 1 ? `pins ${distinct.map(named).join(", ")} are` : `pin ${want} is`} inside "${v.v}"`);
     };
     out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...ranges.map(ranged), ...noted);
     const sev = pin.local;
@@ -170,10 +177,11 @@ export function pinChecks(c: Ctx): Result[] {
       : null;
     if (failed !== null || have === null) row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
     else {
-      // compare decides; only a rejected version picks a level, by the first component that differs.
+      // compare decides; only a rejected version picks a level, by the first numeric component that differs (patch for a
+      // prerelease-only difference).
       for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
         if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
-        else row(sev[cmp(have, w, 1) ? "major" : cmp(have, w, 2) ? "minor" : "patch"], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
+        else row(sev[diffPart(have, w)], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
       }
     }
     const amb = ambiguousShim(c, bin);

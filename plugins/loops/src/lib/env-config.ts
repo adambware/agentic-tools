@@ -38,7 +38,7 @@ export interface Config {
 
 type T = Record<string, unknown>;
 function table(v: unknown, where: string, allowed: string[]): T {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) throw new UsageError(`${where} must be a table`);
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where} must be a table`);
   for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}" (a key from a newer loops needs a newer engine: update agentic-tools, and set engine = ">=0.8.0" or the version that added it, so an older engine says so)`);
   return v as T;
 }
@@ -69,7 +69,9 @@ const list = (v: unknown, where: string): unknown[] => {
 /** `local`: "fail" | "warn" | "off" sets every component; a { major, minor, patch } table sets each (missing: warn). */
 function localOf(v: unknown, where: string): Pin["local"] {
   const all = (s: Severity) => ({ major: s, minor: s, patch: s });
-  if (v === undefined || typeof v === "string") return all(pick({ local: v }, "local", where, oneOf<Severity>("fail", "warn", "off"), 'fail|warn|off or a { major, minor, patch } table', "warn"));
+  const what = "fail|warn|off or a { major, minor, patch } table";
+  if (v === undefined || typeof v === "string") return all(pick({ local: v }, "local", where, oneOf<Severity>("fail", "warn", "off"), what, "warn"));
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where}: local must be ${what}`);
   const t = table(v, `${where}: local`, ["major", "minor", "patch"]);
   const part = (k: Part): Severity => {
     const s = t[k] ?? "warn";

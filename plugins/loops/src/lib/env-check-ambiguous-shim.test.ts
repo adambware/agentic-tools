@@ -79,6 +79,13 @@ describe("ambiguous asdf shim (B6)", () => {
     expect(check({ ".tool-versions": "golang 1.26.1\ngolangci-lint 2.13.2\n" }, {}, { shimDir: shim("golangci-lint", 'echo "golangci-lint has version 2.13.2"') }).local).toEqual([PASS]);
   });
 
+  // asdf writes the header in reverse lexical order: many golangci-lint lines can push golang's past the first 4 KiB.
+  it("a provider line past the first 4 KiB of the shim is read", () => {
+    const many = Array.from({ length: 150 }, (_, i) => `golangci-lint 1.${i}.0`);
+    const r = check({ ".tool-versions": "golang 1.26.1\ngolangci-lint 2.13.2\n" }, {}, { shimDir: lintShim(["golangci-lint 2.13.2", ...many, "golang 1.26.1"]) });
+    expect(r.local).toEqual([PASS, ambiguous(r.dir, "golangci-lint 2.13.2 and golang 1.26.1")]);
+  });
+
   it("three active providers are all named", () => {
     const r = check({ ".tool-versions": "golang 1.26.1\ngolangci-lint 2.13.2\nnodejs 22.1.0\n" }, {}, { shimDir: lintShim([...HEADER, "nodejs 22.1.0"]) });
     expect(r.local).toEqual([PASS, ambiguous(r.dir, "golang 1.26.1, golangci-lint 2.13.2 and nodejs 22.1.0")]);

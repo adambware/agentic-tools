@@ -500,7 +500,12 @@ row into the pin checked against that range, still with the id `a.pins.<tool>`, 
 series pin is the set of versions it names (`20` is `20.x`, `1.26` is `1.26.x`): `PASS <source>: pin <pin> is inside
 "<range>"` when the whole set is inside; `WARN ... is only partly inside` when part of it is (pin `20` against
 `>=20.11`; fix: pin a version the range wholly allows, or widen the range); `FAIL ... is outside` when none of it is
-(fix: pin a version inside the range, or change the range). The range forms are exactly the "range" column below.
+(fix: pin a version inside the range, or change the range). The set is covered when the union of a range's `||`
+alternatives covers it (`20` is inside `>=20.0.0 <20.5.0 || >=20.5.0 <21`). Every distinct pin is checked, not only the
+most specific one, and the row reports the worst result (FAIL if any pin is outside, else WARN if any is only partly
+inside, else INFO when a pin cannot be checked, else PASS), so it never depends on source order. With more than one
+distinct pin, the row names the pin and its sources: `pin 20.1.0 (dockerfile:Dockerfile) is outside ">=20.11"`, `pins
+20.12.0 (nvmrc:.nvmrc), 20 (dockerfile:Dockerfile) are inside ">=20"`. The range forms are exactly the "range" column below.
 `engines` and workflow range inputs are read as npm semver (`<=20` is every 20.x, `~> v2` is `~2`); `requires-python`,
 Poetry's `python` and a Pipfile range are read as PEP 440:
 
@@ -513,9 +518,10 @@ Poetry's `python` and a Pipfile range are read as PEP 440:
 | `>=3.10, <3.13` | both (`,` is and) |
 | `^3.11`, `~3.11` (Poetry) | as semver |
 
-A range with `!=` or `===`, a prerelease (`>=3.13.0rc1`, `>=22.0.0-rc.1`), a PEP 440 operator or `,` outside Python
-packaging metadata, an exact-looking value (`engines.node = "20"`, which is no range form), or any form semver rejects
-stays INFO `... is a range, not compared (not a form range = "check" reads)`; so does a prerelease pin. While the pins disagree, each range stays INFO
+A range with `!=` or `===`, a prerelease (`>=3.13.0rc1`, `>=22.0.0-rc.1`), a PEP 440 operator (`~=`, `==`) or `,`
+outside Python packaging metadata, an exact-looking value (`engines.node = "20"`, which is no range form), or any form semver rejects
+stays INFO `... is a range, not compared (not a form range = "check" reads)`; so does a prerelease pin, or one semver
+cannot read (a leading zero, `20.01.0`). While the pins disagree, each range stays INFO
 `(the pins disagree)`; with no exact pin, each range stays INFO.
 
 **Optional sources (0.8.0).** `optional = [...]` in a `[[pins]]` entry lists sources that are read when present and
@@ -539,7 +545,7 @@ exactly these forms; where the matrix lists no range, a range is a FAIL.
 | `python-version` | `.python-version` | as `nvmrc`, without node's `=` (`=3.12.1` is a range) | none (FAIL, as `nvmrc`) | FAIL unsupported: `system`, `pypy3.9-7.3.11` |
 | `go-mod` | `go.mod` | `toolchain goX`, else `go X`, in any pin form; the whole value up to a `//` comment is classified | none | FAIL unsupported: a range (`go >=1.20`), `go stable`, a version followed by other text (`go 1.26 latest`) |
 | `engines` | `package.json` | none | `engines.<tool>`, always, even an exact-looking `20.11.0` | missing or not a string: FAIL |
-| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; an `ARG` line is split into shell words as Docker splits them, so an escaped quote (`ARG A=x\" NODE_VERSION=20`) does not hide the next pair; a tag that starts with `$<TOOL>_VERSION` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped; an image whose name is a variable (`FROM ${BASE}`, `FROM $IMG:20`, `FROM ${BASE:-node:20}`) is expanded through the `ARG`s before the first `FROM` and then read as that literal image (0.8.0) | none; INFO `FROM <image> (line <n>): image set at build time, not compared` when that variable has no value there (no default, or an `ARG` declared only inside a stage) | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`), a `$` tag of another variable (`node:${OTHER}`), a prerelease the `$` may continue (`node:20-dev-${N}`, `node:22-rc-${N}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `ARG` line naming `<TOOL>_VERSION` with an unterminated quote; an `escape` parser directive other than `\` |
+| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; an `ARG` line is split into shell words as Docker splits them, so an escaped quote (`ARG A=x\" NODE_VERSION=20`) does not hide the next pair; a tag that starts with `$<TOOL>_VERSION` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped; an image whose name is a variable (`FROM ${BASE}`, `FROM $IMG:20`, `FROM ${BASE:-node:20}`) is expanded through the `ARG`s before the first `FROM` and then read as that literal image (0.8.0) | none; INFO `FROM <image> (line <n>): image set at build time, not compared` when that variable has no value there (no default, or an `ARG` declared only inside a stage); that INFO never stands in for a pin, so a stage of the tool image tagged `$<TOOL>_VERSION` whose `ARG` has no value still leaves the source with no version (FAIL `no <tool> version found`), also across a glob's files | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`), a `$` tag of another variable (`node:${OTHER}`), a prerelease the `$` may continue (`node:20-dev-${N}`, `node:22-rc-${N}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `ARG` line naming `<TOOL>_VERSION` with an unterminated quote; an `escape` parser directive other than `\` |
 | `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable`; FAIL `setup-go step without a version in <file>:<line>` for a step with neither `go-version` nor `go-version-file` (no `with:`, an empty `with:`, or only `cache:`/`check-latest:`) |
 | `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current`; FAIL `setup-node step without a version in <file>:<line>` for a step with neither `node-version` nor `node-version-file` (the action has no default file) |
 | `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table); a step with neither input reads `.python-version` at the repo root, as the action does from v4.7.0 | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0`; FAIL `setup-python step without a version in <file>:<line>` when that file is absent or the action ref is older than v4.7.0 |
@@ -587,7 +593,8 @@ not answer in 10s is killed and reported as timed out at the pin's `local` level
 match the pin at the `compare` depth; ranges do not bind it. `local` is one level for every difference (`"warn"`,
 `"fail"`, `"off"`), or a table that picks one per component (0.8.0): `compare` decides first, so a patch difference
 `compare = "minor"` accepts stays PASS; a rejected version is reported at the level of the first component that
-differs (`major`, `minor`, then `patch`, which also covers a prerelease of the same release); `info` makes it an INFO
+differs, by the numeric components alone (`major`, `minor`, then `patch`, which also covers a prerelease of the same
+release, so `1.26rc1` against `1.26` is `patch`); `info` makes it an INFO
 row and `off` drops the row. A probe that gives no version (below) is reported at the `major` level; with every
 component `off` the tool is not run. When the pins disagree (`a.pins.<tool>` FAILs), the tool is still probed (0.8.0)
 and reported against each distinct pin, one row each at its own level, naming the pin's sources: `local <tool> <v>
@@ -601,7 +608,7 @@ line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf i
 `asdf install` (or `mise install`) in that file's directory. Any other pin source, and a prerelease written as is
 (`golangci-lint 2.0.0-rc.1`), keeps the generic install fix.
 When the probed command resolves on PATH to an asdf shim, `a.local` also reads the shim's `# asdf-plugin: <plugin>
-<version>` header lines (0.8.0) and keeps those whose version is active here: `ASDF_<PLUGIN>_VERSION` (upper-cased,
+<version>` header lines (0.8.0; the whole shim, up to 1 MiB) and keeps those whose version is active here: `ASDF_<PLUGIN>_VERSION` (upper-cased,
 dashes as underscores), else the nearest `.tool-versions` that lists the plugin walking up from the checkout, else
 `$HOME/.tool-versions`; every version on a line counts. When more than one plugin provides the command (a tool
 `go install`ed inside an asdf Go next to the tool's own plugin), the shim may run either copy, so a WARN row follows

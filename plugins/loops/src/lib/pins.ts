@@ -5,7 +5,7 @@
 // form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, sep } from "node:path";
-import { intersects, subset, validRange } from "semver";
+import { inc, intersects, lt, Range, satisfies, SemVer, validRange } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -28,8 +28,10 @@ export interface PinValue {
 }
 type Found = { v: string; range?: boolean; pep440?: boolean }[];
 /** `file` is the repo-relative file `text` came from, for messages. A workflow parser adds each job-level reusable-workflow
- * call it skipped to `calls`; a parser adds each value it cannot know (reported as INFO, never compared) to `notes`. */
-type Parser = (text: string, tool: string, root: string, file: string, calls?: string[], notes?: string[]) => Found;
+ * call it skipped to `calls`; a parser adds each value it cannot know (reported as INFO, never compared) to `notes`, and
+ * each place the tool is set up with no version it can read (a Dockerfile stage of the tool's image whose version ARG has
+ * no value) to `bare`, so a note elsewhere never stands in for that missing pin. */
+type Parser = (text: string, tool: string, root: string, file: string, calls?: string[], notes?: string[], bare?: string[]) => Found;
 
 /** The first version in `s`, keeping a prerelease suffix (`22.0.0-rc.1`, `-beta-30`, `3.13.0rc1`, `1.26rc1`, `3.14.0.dev0`).
  * Only known prerelease shapes count, so an image variant (`-alpine`, `-slim-bookworm`), a patchlevel (`3.1.4p223`), a
@@ -71,7 +73,7 @@ export function semverRange(range: string, pep440: boolean): string | null {
   if (!isRange(range) || /!=|===/.test(range)) return null;
   const toks = range.replace(/(~>|==|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1");
   if (toks.split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/).some((t) => /[a-z]/i.test(exact(t.replace(OP, "")) ?? ""))) return null;
-  if (!pep440) return /~=|,/.test(toks) ? null : validRange(toks);
+  if (!pep440) return /~=|==|,/.test(toks) ? null : validRange(toks);
   if (/\s-\s|~>/.test(toks)) return null;
   const one = (c: string): string | null => {
     const [, op = "==", v] = /^(~=|==|<=|>=|[<>=^~])?(.*)$/.exec(c)!;
@@ -90,13 +92,32 @@ export function semverRange(range: string, pep440: boolean): string | null {
   const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
   return alts.some((a) => a.includes(null)) ? null : validRange(alts.map((a) => a.join(" ")).join(" || "));
 }
+/** Whether every release in the series `pin` names (`20` is [20.0.0, 21.0.0)) satisfies `r`, also when only the union of
+ * its `||` alternatives covers it (semver's `subset` wants one alternative to). Which releases satisfy `r` changes only
+ * at its comparators' versions, so the series' first release and the first release at and after each of them decide. */
+const covers = (pin: string, r: string): boolean => {
+  const n = pin.split(".").map(Number);
+  const lo = [...n, 0, 0].slice(0, 3).join(".");
+  const up = [...n];
+  up[up.length - 1]! += 1;
+  const hi = [...up, 0, 0].slice(0, 3).join(".");
+  const at = new Set([lo]);
+  for (const alt of new Range(r).set)
+    for (const c of alt) {
+      if (!(c.semver instanceof SemVer)) continue; // `*`
+      const core = `${c.semver.major}.${c.semver.minor}.${c.semver.patch}`;
+      at.add(core).add(inc(core, "patch")!);
+    }
+  return [...at].every((v) => lt(v, lo) || !lt(v, hi) || satisfies(v, r));
+};
 /** Where the set of versions `pin` names (a series `20` is `20.x`) sits against `range`; null when either cannot be
- * checked (`semverRange`, or a prerelease pin). */
+ * checked (`semverRange`, a prerelease pin, or one semver cannot read, such as a leading zero). */
 export function inRange(pin: string, range: string, pep440 = false): "inside" | "partly" | "outside" | null {
   const r = semverRange(range, pep440);
   if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
   const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
-  return !intersects(set, r) ? "outside" : subset(set, r) ? "inside" : "partly";
+  if (validRange(set) === null) return null;
+  return !intersects(set, r) ? "outside" : covers(pin, r) ? "inside" : "partly";
 }
 /** A version spec as a pin, the series it installs (`1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`, node's `=20.11.1`);
  * as a range when it is wider than its stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`), kept as written;
@@ -310,7 +331,7 @@ const expand = (w: string, env: Map<string, string>): string | null => {
  * `"20"${SUFFIX}`). An image whose name is a variable (`${BASE}`, `$IMG:20`, `${BASE:-node:20}`) is expanded through the
  * ARGs declared before the first FROM (the only ones FROM sees; the last definition wins) and then read as that literal
  * image; one only the build can name (an ARG with no value, or declared only inside a stage) is a note, never a FAIL. */
-const dockerfile: Parser = (text, tool, _root, file, _calls, notes) => {
+const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
@@ -327,6 +348,7 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes) => {
       else if (name) global.delete(name);
     }
   }
+  const skipped: string[] = []; // tool-image FROM lines whose tag is the version ARG
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -347,7 +369,10 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes) => {
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
     // A tag of <TOOL>_VERSION is skipped: its ARG is the pin. Any other variable there is unsupported.
-    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) continue;
+    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) {
+      skipped.push(`FROM ${image} (line ${at(l, m[1]!.length)})`);
+      continue;
+    }
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
@@ -367,6 +392,8 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes) => {
       out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + pair[1]!.length + 1)));
     }
   }
+  // A stage skipped for its version ARG with no ARG value anywhere in the file installs a version only the build names.
+  if (!out.length) bare?.push(...skipped);
   return out;
 };
 
@@ -585,7 +612,7 @@ export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, spli
 /** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. A matched workflow that yields no
  * value but calls a reusable workflow adds a note to `notes` (when the source still yields a value), or is named in the
  * error (when it does not). A value a parser cannot know (a Dockerfile image set at build time) is always a note: a source
- * that yields only such notes is no error. */
+ * that yields only such notes is no error, unless one of its files also sets the tool up with no version (`bare`). */
 /** The file `spec` names (its path, else its kind's default file), and the files it reads: a glob's tracked matches. */
 function sourceFiles(tracked: string[], spec: string): { target: string; files: string[] } {
   const [kind, path] = splitSource(spec);
@@ -609,13 +636,14 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
   const out: PinValue[] = [];
   const skipped: [string, string][] = []; // [file, its reusable calls]
   const unknown: string[] = [];
+  const bare: string[] = [];
   for (const f of files) {
     if (!existsSync(join(root, f))) throw new PinError(`${spec}: ${f} not found`);
     const calls: string[] = [];
     const said: string[] = [];
     let found: Found;
     try {
-      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls, said);
+      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls, said, bare);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
@@ -623,7 +651,8 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
     unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
     if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length && !unknown.length) {
+  // A note stands in for a value only when nothing set the tool up without one.
+  if (!out.length && (!unknown.length || bare.length)) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
     if (!skipped.length) throw new PinError(msg);
     throw new PinError(
@@ -658,6 +687,15 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
   const pins = pinsOf(vals);
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
   return bad ? pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+}
+
+/** The component a rejected local version is reported at: the first numeric core component that differs (a component
+ * only one of them states never differs), else `patch`, which also covers a prerelease-only difference. */
+export function diffPart(a: string, b: string): "major" | "minor" | "patch" {
+  const [x] = split(a);
+  const [y] = split(b);
+  if (x[0] !== y[0]) return "major";
+  return x.length > 1 && y.length > 1 && x[1] !== y[1] ? "minor" : "patch";
 }
 
 /** Does a local toolchain version match the pin at the compare depth? */

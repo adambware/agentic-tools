@@ -1,7 +1,7 @@
 // Process and flag helpers shared by `loops zone` and `loops env-check`. Commands that spawn
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
 import { spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Bad usage, bad config or an unreadable repo: the CLI prints it to stderr and exits 2. */
@@ -263,6 +263,8 @@ export interface Shim {
   providers: { plugin: string; version: string }[];
 }
 
+/** The most of a shim `shimOf` reads. */
+const SHIM_MAX = 1 << 20;
 /**
  * The version manager behind `file`, read from the file and never run, or null for anything else. An asdf shim is a
  * script with a `# asdf-plugin:` line in its header that execs asdf, by an absolute path in older shims (that asdf is
@@ -279,16 +281,27 @@ export function shimOf(file: string): Shim | null {
   if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real, providers: [] };
   const buf = Buffer.alloc(4096);
   let head: string;
+  let n: number;
   let fd: number | undefined;
   try {
     fd = openSync(file, "r");
-    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+    n = readSync(fd, buf, 0, buf.length, 0);
+    head = buf.subarray(0, n).toString("utf8");
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
   if (!/^# asdf-plugin:/m.test(head)) return null;
+  // An asdf shim has one header line per installed version, so it can run past the head: then read all of it, up to
+  // 1 MiB (a bigger file keeps the head).
+  if (n === buf.length) {
+    try {
+      if (statSync(file).size <= SHIM_MAX) head = readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  }
   const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
   const cmd = m?.[1] ?? m?.[2];
   const providers = [...head.matchAll(/^# asdf-plugin:[ \t]+(\S+)[ \t]+(\S+)/gm)].map((p) => ({ plugin: p[1]!, version: p[2]! }));

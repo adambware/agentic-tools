@@ -20,6 +20,16 @@ describe("shimOf", () => {
     expect(shimOf(join(d, "varpath"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "x", version: "1" }] }); // not a plain absolute path: PATH lookup
   });
 
+  it("reads every header line and the exec line of an asdf shim longer than 4 KiB", () => {
+    const d = tmp();
+    const lines = Array.from({ length: 200 }, (_, i) => `# asdf-plugin: lint 1.${i}.0`).join("\n");
+    put(d, "long", `#!/usr/bin/env bash\n${lines}\n# asdf-plugin: golang 1.26.1\nexec /home/u/.asdf/bin/asdf exec "long" "$@"\n`, true);
+    const s = shimOf(join(d, "long"));
+    expect(s?.providers.length).toBe(201);
+    expect(s?.providers.at(-1)).toEqual({ plugin: "golang", version: "1.26.1" });
+    expect(s?.cmd).toBe("/home/u/.asdf/bin/asdf");
+  });
+
   it("never takes an exec'd program not named asdf as the asdf to ask, so a planted shim cannot pick what runs", () => {
     const d = tmp();
     put(d, "evil", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec /tmp/payload exec "evil" "$@"\n', true);
