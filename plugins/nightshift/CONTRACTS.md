@@ -62,7 +62,7 @@ chain is part of this contract.
 The reviewer also writes `reviewed.json` — the surface ids it **actually** reviewed,
 never all-selected. `bin/run-meta` gates it (every id unique and ⊆ the selected
 surfaces, abort otherwise) and copies it into `run.json` as `reviewed_ids`;
-`bin/record` stamps `last_reviewed`/`status` for those ids **only**, so a
+`bin/record` stamps `last_reviewed`/`last_reviewed_sha`/`status` for those ids **only**, so a
 selected-but-unreviewed surface (K > 1) stays stale and is re-selected next run
 instead of being silently marked fresh.
 

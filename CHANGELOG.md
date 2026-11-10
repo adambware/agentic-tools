@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **nightshift: change detection diffs from the reviewed sha, not a date.** `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD` made any commit landing later on the same day as a review its own baseline, so its changes never reached `change_flag` until the surface went stale on age alone (up to 90 days for a low-weight vector). Registry entries now carry an engine-managed `last_reviewed_sha`, stamped by `bin/record` from `run.json.pack_sha` (left untouched when the run had no git), and `bin/select` / `bin/due` diff `<sha>..HEAD` directly. The date baseline remains only as a fallback for entries recorded before this field existed or a sha that no longer resolves (shallow clone, rewritten history). The sha comes from a registry committed in the reviewed repo, so anything that is not hex is refused both by `validate` and by the git runner itself: a value like `--output=<path>` would otherwise be parsed by `git diff` as an option.
+
 ## [loops 0.7.1] - 2026-11-04
 
 `loops env-check` 0.7.1 is a fixes-only release. Every row is escaped once, at the output edges. `c.shared` proves a worktree owns its git metadata instead of trusting `git rev-parse`. Several checks that used to pass or skip silently now fail or say why. Features the pilots asked for are listed in `TODOS.md` for 0.8.0.
