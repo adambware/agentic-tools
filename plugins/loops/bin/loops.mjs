@@ -33,6 +33,1936 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
+// node_modules/semver/internal/constants.js
+var require_constants = __commonJS({
+  "node_modules/semver/internal/constants.js"(exports, module) {
+    "use strict";
+    var SEMVER_SPEC_VERSION = "2.0.0";
+    var MAX_LENGTH = 256;
+    var MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER || /* istanbul ignore next */
+    9007199254740991;
+    var MAX_SAFE_COMPONENT_LENGTH = 16;
+    var MAX_SAFE_BUILD_LENGTH = MAX_LENGTH - 6;
+    var RELEASE_TYPES = [
+      "major",
+      "premajor",
+      "minor",
+      "preminor",
+      "patch",
+      "prepatch",
+      "prerelease"
+    ];
+    module.exports = {
+      MAX_LENGTH,
+      MAX_SAFE_COMPONENT_LENGTH,
+      MAX_SAFE_BUILD_LENGTH,
+      MAX_SAFE_INTEGER,
+      RELEASE_TYPES,
+      SEMVER_SPEC_VERSION,
+      FLAG_INCLUDE_PRERELEASE: 1,
+      FLAG_LOOSE: 2
+    };
+  }
+});
+
+// node_modules/semver/internal/debug.js
+var require_debug = __commonJS({
+  "node_modules/semver/internal/debug.js"(exports, module) {
+    "use strict";
+    var debug = typeof process === "object" && process.env && process.env.NODE_DEBUG && /\bsemver\b/i.test(process.env.NODE_DEBUG) ? (...args) => console.error("SEMVER", ...args) : () => {
+    };
+    module.exports = debug;
+  }
+});
+
+// node_modules/semver/internal/re.js
+var require_re = __commonJS({
+  "node_modules/semver/internal/re.js"(exports, module) {
+    "use strict";
+    var {
+      MAX_SAFE_COMPONENT_LENGTH,
+      MAX_SAFE_BUILD_LENGTH,
+      MAX_LENGTH
+    } = require_constants();
+    var debug = require_debug();
+    exports = module.exports = {};
+    var re = exports.re = [];
+    var safeRe = exports.safeRe = [];
+    var src = exports.src = [];
+    var safeSrc = exports.safeSrc = [];
+    var t = exports.t = {};
+    var R = 0;
+    var LETTERDASHNUMBER = "[a-zA-Z0-9-]";
+    var safeRegexReplacements = [
+      ["\\s", 1],
+      ["\\d", MAX_LENGTH],
+      [LETTERDASHNUMBER, MAX_SAFE_BUILD_LENGTH]
+    ];
+    var makeSafeRegex = (value) => {
+      for (const [token, max] of safeRegexReplacements) {
+        value = value.split(`${token}*`).join(`${token}{0,${max}}`).split(`${token}+`).join(`${token}{1,${max}}`);
+      }
+      return value;
+    };
+    var createToken = (name, value, isGlobal) => {
+      const safe = makeSafeRegex(value);
+      const index = R++;
+      debug(name, index, value);
+      t[name] = index;
+      src[index] = value;
+      safeSrc[index] = safe;
+      re[index] = new RegExp(value, isGlobal ? "g" : void 0);
+      safeRe[index] = new RegExp(safe, isGlobal ? "g" : void 0);
+    };
+    createToken("NUMERICIDENTIFIER", "0|[1-9]\\d*");
+    createToken("NUMERICIDENTIFIERLOOSE", "\\d+");
+    createToken("NONNUMERICIDENTIFIER", `\\d*[a-zA-Z-]${LETTERDASHNUMBER}*`);
+    createToken("MAINVERSION", `(${src[t.NUMERICIDENTIFIER]})\\.(${src[t.NUMERICIDENTIFIER]})\\.(${src[t.NUMERICIDENTIFIER]})`);
+    createToken("MAINVERSIONLOOSE", `(${src[t.NUMERICIDENTIFIERLOOSE]})\\.(${src[t.NUMERICIDENTIFIERLOOSE]})\\.(${src[t.NUMERICIDENTIFIERLOOSE]})`);
+    createToken("PRERELEASEIDENTIFIER", `(?:${src[t.NONNUMERICIDENTIFIER]}|${src[t.NUMERICIDENTIFIER]})`);
+    createToken("PRERELEASEIDENTIFIERLOOSE", `(?:${src[t.NONNUMERICIDENTIFIER]}|${src[t.NUMERICIDENTIFIERLOOSE]})`);
+    createToken("PRERELEASE", `(?:-(${src[t.PRERELEASEIDENTIFIER]}(?:\\.${src[t.PRERELEASEIDENTIFIER]})*))`);
+    createToken("PRERELEASELOOSE", `(?:-?(${src[t.PRERELEASEIDENTIFIERLOOSE]}(?:\\.${src[t.PRERELEASEIDENTIFIERLOOSE]})*))`);
+    createToken("BUILDIDENTIFIER", `${LETTERDASHNUMBER}+`);
+    createToken("BUILD", `(?:\\+(${src[t.BUILDIDENTIFIER]}(?:\\.${src[t.BUILDIDENTIFIER]})*))`);
+    createToken("FULLPLAIN", `v?${src[t.MAINVERSION]}${src[t.PRERELEASE]}?${src[t.BUILD]}?`);
+    createToken("FULL", `^${src[t.FULLPLAIN]}$`);
+    createToken("LOOSEPLAIN", `[v=\\s]*${src[t.MAINVERSIONLOOSE]}${src[t.PRERELEASELOOSE]}?${src[t.BUILD]}?`);
+    createToken("LOOSE", `^${src[t.LOOSEPLAIN]}$`);
+    createToken("GTLT", "((?:<|>)?=?)");
+    createToken("XRANGEIDENTIFIERLOOSE", `${src[t.NUMERICIDENTIFIERLOOSE]}|x|X|\\*`);
+    createToken("XRANGEIDENTIFIER", `${src[t.NUMERICIDENTIFIER]}|x|X|\\*`);
+    createToken("XRANGEPLAIN", `[v=\\s]*(${src[t.XRANGEIDENTIFIER]})(?:\\.(${src[t.XRANGEIDENTIFIER]})(?:\\.(${src[t.XRANGEIDENTIFIER]})(?:${src[t.PRERELEASE]})?${src[t.BUILD]}?)?)?`);
+    createToken("XRANGEPLAINLOOSE", `[v=\\s]*(${src[t.XRANGEIDENTIFIERLOOSE]})(?:\\.(${src[t.XRANGEIDENTIFIERLOOSE]})(?:\\.(${src[t.XRANGEIDENTIFIERLOOSE]})(?:${src[t.PRERELEASELOOSE]})?${src[t.BUILD]}?)?)?`);
+    createToken("XRANGE", `^${src[t.GTLT]}\\s*${src[t.XRANGEPLAIN]}$`);
+    createToken("XRANGELOOSE", `^${src[t.GTLT]}\\s*${src[t.XRANGEPLAINLOOSE]}$`);
+    createToken("COERCEPLAIN", `${"(^|[^\\d])(\\d{1,"}${MAX_SAFE_COMPONENT_LENGTH}})(?:\\.(\\d{1,${MAX_SAFE_COMPONENT_LENGTH}}))?(?:\\.(\\d{1,${MAX_SAFE_COMPONENT_LENGTH}}))?`);
+    createToken("COERCE", `${src[t.COERCEPLAIN]}(?:$|[^\\d])`);
+    createToken("COERCEFULL", src[t.COERCEPLAIN] + `(?:${src[t.PRERELEASE]})?(?:${src[t.BUILD]})?(?:$|[^\\d])`);
+    createToken("COERCERTL", src[t.COERCE], true);
+    createToken("COERCERTLFULL", src[t.COERCEFULL], true);
+    createToken("LONETILDE", "(?:~>?)");
+    createToken("TILDETRIM", `(\\s*)${src[t.LONETILDE]}\\s+`, true);
+    exports.tildeTrimReplace = "$1~";
+    createToken("TILDE", `^${src[t.LONETILDE]}${src[t.XRANGEPLAIN]}$`);
+    createToken("TILDELOOSE", `^${src[t.LONETILDE]}${src[t.XRANGEPLAINLOOSE]}$`);
+    createToken("LONECARET", "(?:\\^)");
+    createToken("CARETTRIM", `(\\s*)${src[t.LONECARET]}\\s+`, true);
+    exports.caretTrimReplace = "$1^";
+    createToken("CARET", `^${src[t.LONECARET]}${src[t.XRANGEPLAIN]}$`);
+    createToken("CARETLOOSE", `^${src[t.LONECARET]}${src[t.XRANGEPLAINLOOSE]}$`);
+    createToken("COMPARATORLOOSE", `^${src[t.GTLT]}\\s*(${src[t.LOOSEPLAIN]})$|^$`);
+    createToken("COMPARATOR", `^${src[t.GTLT]}\\s*(${src[t.FULLPLAIN]})$|^$`);
+    createToken("COMPARATORTRIM", `(\\s*)${src[t.GTLT]}\\s*(${src[t.LOOSEPLAIN]}|${src[t.XRANGEPLAIN]})`, true);
+    exports.comparatorTrimReplace = "$1$2$3";
+    createToken("HYPHENRANGE", `^\\s*(${src[t.XRANGEPLAIN]})\\s+-\\s+(${src[t.XRANGEPLAIN]})\\s*$`);
+    createToken("HYPHENRANGELOOSE", `^\\s*(${src[t.XRANGEPLAINLOOSE]})\\s+-\\s+(${src[t.XRANGEPLAINLOOSE]})\\s*$`);
+    createToken("STAR", "(<|>)?=?\\s*\\*");
+    createToken("GTE0", "^\\s*>=\\s*0\\.0\\.0\\s*$");
+    createToken("GTE0PRE", "^\\s*>=\\s*0\\.0\\.0-0\\s*$");
+  }
+});
+
+// node_modules/semver/internal/parse-options.js
+var require_parse_options = __commonJS({
+  "node_modules/semver/internal/parse-options.js"(exports, module) {
+    "use strict";
+    var looseOption = Object.freeze({ loose: true });
+    var emptyOpts = Object.freeze({});
+    var parseOptions = (options) => {
+      if (!options) {
+        return emptyOpts;
+      }
+      if (typeof options !== "object") {
+        return looseOption;
+      }
+      return options;
+    };
+    module.exports = parseOptions;
+  }
+});
+
+// node_modules/semver/internal/identifiers.js
+var require_identifiers = __commonJS({
+  "node_modules/semver/internal/identifiers.js"(exports, module) {
+    "use strict";
+    var numeric = /^[0-9]+$/;
+    var compareIdentifiers = (a, b) => {
+      if (typeof a === "number" && typeof b === "number") {
+        return a === b ? 0 : a < b ? -1 : 1;
+      }
+      const anum = numeric.test(a);
+      const bnum = numeric.test(b);
+      if (anum && bnum) {
+        a = +a;
+        b = +b;
+      }
+      return a === b ? 0 : anum && !bnum ? -1 : bnum && !anum ? 1 : a < b ? -1 : 1;
+    };
+    var rcompareIdentifiers = (a, b) => compareIdentifiers(b, a);
+    module.exports = {
+      compareIdentifiers,
+      rcompareIdentifiers
+    };
+  }
+});
+
+// node_modules/semver/classes/semver.js
+var require_semver = __commonJS({
+  "node_modules/semver/classes/semver.js"(exports, module) {
+    "use strict";
+    var debug = require_debug();
+    var { MAX_LENGTH, MAX_SAFE_INTEGER } = require_constants();
+    var { safeRe: re, t } = require_re();
+    var parseOptions = require_parse_options();
+    var { compareIdentifiers } = require_identifiers();
+    var SemVer2 = class _SemVer {
+      constructor(version, options) {
+        options = parseOptions(options);
+        if (version instanceof _SemVer) {
+          if (version.loose === !!options.loose && version.includePrerelease === !!options.includePrerelease) {
+            return version;
+          } else {
+            version = version.version;
+          }
+        } else if (typeof version !== "string") {
+          throw new TypeError(`Invalid version. Must be a string. Got type "${typeof version}".`);
+        }
+        if (version.length > MAX_LENGTH) {
+          throw new TypeError(
+            `version is longer than ${MAX_LENGTH} characters`
+          );
+        }
+        debug("SemVer", version, options);
+        this.options = options;
+        this.loose = !!options.loose;
+        this.includePrerelease = !!options.includePrerelease;
+        const m = version.trim().match(options.loose ? re[t.LOOSE] : re[t.FULL]);
+        if (!m) {
+          throw new TypeError(`Invalid Version: ${version}`);
+        }
+        this.raw = version;
+        this.major = +m[1];
+        this.minor = +m[2];
+        this.patch = +m[3];
+        if (this.major > MAX_SAFE_INTEGER || this.major < 0) {
+          throw new TypeError("Invalid major version");
+        }
+        if (this.minor > MAX_SAFE_INTEGER || this.minor < 0) {
+          throw new TypeError("Invalid minor version");
+        }
+        if (this.patch > MAX_SAFE_INTEGER || this.patch < 0) {
+          throw new TypeError("Invalid patch version");
+        }
+        if (!m[4]) {
+          this.prerelease = [];
+        } else {
+          this.prerelease = m[4].split(".").map((id) => {
+            if (/^[0-9]+$/.test(id)) {
+              const num = +id;
+              if (num >= 0 && num < MAX_SAFE_INTEGER) {
+                return num;
+              }
+            }
+            return id;
+          });
+        }
+        this.build = m[5] ? m[5].split(".") : [];
+        this.format();
+      }
+      format() {
+        this.version = `${this.major}.${this.minor}.${this.patch}`;
+        if (this.prerelease.length) {
+          this.version += `-${this.prerelease.join(".")}`;
+        }
+        return this.version;
+      }
+      toString() {
+        return this.version;
+      }
+      compare(other) {
+        debug("SemVer.compare", this.version, this.options, other);
+        if (!(other instanceof _SemVer)) {
+          if (typeof other === "string" && other === this.version) {
+            return 0;
+          }
+          other = new _SemVer(other, this.options);
+        }
+        if (other.version === this.version) {
+          return 0;
+        }
+        return this.compareMain(other) || this.comparePre(other);
+      }
+      compareMain(other) {
+        if (!(other instanceof _SemVer)) {
+          other = new _SemVer(other, this.options);
+        }
+        if (this.major < other.major) {
+          return -1;
+        }
+        if (this.major > other.major) {
+          return 1;
+        }
+        if (this.minor < other.minor) {
+          return -1;
+        }
+        if (this.minor > other.minor) {
+          return 1;
+        }
+        if (this.patch < other.patch) {
+          return -1;
+        }
+        if (this.patch > other.patch) {
+          return 1;
+        }
+        return 0;
+      }
+      comparePre(other) {
+        if (!(other instanceof _SemVer)) {
+          other = new _SemVer(other, this.options);
+        }
+        if (this.prerelease.length && !other.prerelease.length) {
+          return -1;
+        } else if (!this.prerelease.length && other.prerelease.length) {
+          return 1;
+        } else if (!this.prerelease.length && !other.prerelease.length) {
+          return 0;
+        }
+        let i = 0;
+        do {
+          const a = this.prerelease[i];
+          const b = other.prerelease[i];
+          debug("prerelease compare", i, a, b);
+          if (a === void 0 && b === void 0) {
+            return 0;
+          } else if (b === void 0) {
+            return 1;
+          } else if (a === void 0) {
+            return -1;
+          } else if (a === b) {
+            continue;
+          } else {
+            return compareIdentifiers(a, b);
+          }
+        } while (++i);
+      }
+      compareBuild(other) {
+        if (!(other instanceof _SemVer)) {
+          other = new _SemVer(other, this.options);
+        }
+        let i = 0;
+        do {
+          const a = this.build[i];
+          const b = other.build[i];
+          debug("build compare", i, a, b);
+          if (a === void 0 && b === void 0) {
+            return 0;
+          } else if (b === void 0) {
+            return 1;
+          } else if (a === void 0) {
+            return -1;
+          } else if (a === b) {
+            continue;
+          } else {
+            return compareIdentifiers(a, b);
+          }
+        } while (++i);
+      }
+      // preminor will bump the version up to the next minor release, and immediately
+      // down to pre-release. premajor and prepatch work the same way.
+      inc(release, identifier, identifierBase) {
+        if (release.startsWith("pre")) {
+          if (!identifier && identifierBase === false) {
+            throw new Error("invalid increment argument: identifier is empty");
+          }
+          if (identifier) {
+            const match = `-${identifier}`.match(this.options.loose ? re[t.PRERELEASELOOSE] : re[t.PRERELEASE]);
+            if (!match || match[1] !== identifier) {
+              throw new Error(`invalid identifier: ${identifier}`);
+            }
+          }
+        }
+        switch (release) {
+          case "premajor":
+            this.prerelease.length = 0;
+            this.patch = 0;
+            this.minor = 0;
+            this.major++;
+            this.inc("pre", identifier, identifierBase);
+            break;
+          case "preminor":
+            this.prerelease.length = 0;
+            this.patch = 0;
+            this.minor++;
+            this.inc("pre", identifier, identifierBase);
+            break;
+          case "prepatch":
+            this.prerelease.length = 0;
+            this.inc("patch", identifier, identifierBase);
+            this.inc("pre", identifier, identifierBase);
+            break;
+          // If the input is a non-prerelease version, this acts the same as
+          // prepatch.
+          case "prerelease":
+            if (this.prerelease.length === 0) {
+              this.inc("patch", identifier, identifierBase);
+            }
+            this.inc("pre", identifier, identifierBase);
+            break;
+          case "release":
+            if (this.prerelease.length === 0) {
+              throw new Error(`version ${this.raw} is not a prerelease`);
+            }
+            this.prerelease.length = 0;
+            break;
+          case "major":
+            if (this.minor !== 0 || this.patch !== 0 || this.prerelease.length === 0) {
+              this.major++;
+            }
+            this.minor = 0;
+            this.patch = 0;
+            this.prerelease = [];
+            break;
+          case "minor":
+            if (this.patch !== 0 || this.prerelease.length === 0) {
+              this.minor++;
+            }
+            this.patch = 0;
+            this.prerelease = [];
+            break;
+          case "patch":
+            if (this.prerelease.length === 0) {
+              this.patch++;
+            }
+            this.prerelease = [];
+            break;
+          // This probably shouldn't be used publicly.
+          // 1.0.0 'pre' would become 1.0.0-0 which is the wrong direction.
+          case "pre": {
+            const base = Number(identifierBase) ? 1 : 0;
+            if (this.prerelease.length === 0) {
+              this.prerelease = [base];
+            } else {
+              let i = this.prerelease.length;
+              while (--i >= 0) {
+                if (typeof this.prerelease[i] === "number") {
+                  this.prerelease[i]++;
+                  i = -2;
+                }
+              }
+              if (i === -1) {
+                if (identifier === this.prerelease.join(".") && identifierBase === false) {
+                  throw new Error("invalid increment argument: identifier already exists");
+                }
+                this.prerelease.push(base);
+              }
+            }
+            if (identifier) {
+              let prerelease = [identifier, base];
+              if (identifierBase === false) {
+                prerelease = [identifier];
+              }
+              if (compareIdentifiers(this.prerelease[0], identifier) === 0) {
+                if (isNaN(this.prerelease[1])) {
+                  this.prerelease = prerelease;
+                }
+              } else {
+                this.prerelease = prerelease;
+              }
+            }
+            break;
+          }
+          default:
+            throw new Error(`invalid increment argument: ${release}`);
+        }
+        this.raw = this.format();
+        if (this.build.length) {
+          this.raw += `+${this.build.join(".")}`;
+        }
+        return this;
+      }
+    };
+    module.exports = SemVer2;
+  }
+});
+
+// node_modules/semver/functions/parse.js
+var require_parse = __commonJS({
+  "node_modules/semver/functions/parse.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var parse2 = (version, options, throwErrors = false) => {
+      if (version instanceof SemVer2) {
+        return version;
+      }
+      try {
+        return new SemVer2(version, options);
+      } catch (er) {
+        if (!throwErrors) {
+          return null;
+        }
+        throw er;
+      }
+    };
+    module.exports = parse2;
+  }
+});
+
+// node_modules/semver/functions/valid.js
+var require_valid = __commonJS({
+  "node_modules/semver/functions/valid.js"(exports, module) {
+    "use strict";
+    var parse2 = require_parse();
+    var valid = (version, options) => {
+      const v = parse2(version, options);
+      return v ? v.version : null;
+    };
+    module.exports = valid;
+  }
+});
+
+// node_modules/semver/functions/clean.js
+var require_clean = __commonJS({
+  "node_modules/semver/functions/clean.js"(exports, module) {
+    "use strict";
+    var parse2 = require_parse();
+    var clean = (version, options) => {
+      const s = parse2(version.trim().replace(/^[=v]+/, ""), options);
+      return s ? s.version : null;
+    };
+    module.exports = clean;
+  }
+});
+
+// node_modules/semver/functions/inc.js
+var require_inc = __commonJS({
+  "node_modules/semver/functions/inc.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var inc2 = (version, release, options, identifier, identifierBase) => {
+      if (typeof options === "string") {
+        identifierBase = identifier;
+        identifier = options;
+        options = void 0;
+      }
+      try {
+        return new SemVer2(
+          version instanceof SemVer2 ? version.version : version,
+          options
+        ).inc(release, identifier, identifierBase).version;
+      } catch (er) {
+        return null;
+      }
+    };
+    module.exports = inc2;
+  }
+});
+
+// node_modules/semver/functions/diff.js
+var require_diff = __commonJS({
+  "node_modules/semver/functions/diff.js"(exports, module) {
+    "use strict";
+    var parse2 = require_parse();
+    var diff = (version1, version2) => {
+      const v1 = parse2(version1, null, true);
+      const v2 = parse2(version2, null, true);
+      const comparison = v1.compare(v2);
+      if (comparison === 0) {
+        return null;
+      }
+      const v1Higher = comparison > 0;
+      const highVersion = v1Higher ? v1 : v2;
+      const lowVersion = v1Higher ? v2 : v1;
+      const highHasPre = !!highVersion.prerelease.length;
+      const lowHasPre = !!lowVersion.prerelease.length;
+      if (lowHasPre && !highHasPre) {
+        if (!lowVersion.patch && !lowVersion.minor) {
+          return "major";
+        }
+        if (lowVersion.compareMain(highVersion) === 0) {
+          if (lowVersion.minor && !lowVersion.patch) {
+            return "minor";
+          }
+          return "patch";
+        }
+      }
+      const prefix = highHasPre ? "pre" : "";
+      if (v1.major !== v2.major) {
+        return prefix + "major";
+      }
+      if (v1.minor !== v2.minor) {
+        return prefix + "minor";
+      }
+      if (v1.patch !== v2.patch) {
+        return prefix + "patch";
+      }
+      return "prerelease";
+    };
+    module.exports = diff;
+  }
+});
+
+// node_modules/semver/functions/major.js
+var require_major = __commonJS({
+  "node_modules/semver/functions/major.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var major = (a, loose) => new SemVer2(a, loose).major;
+    module.exports = major;
+  }
+});
+
+// node_modules/semver/functions/minor.js
+var require_minor = __commonJS({
+  "node_modules/semver/functions/minor.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var minor = (a, loose) => new SemVer2(a, loose).minor;
+    module.exports = minor;
+  }
+});
+
+// node_modules/semver/functions/patch.js
+var require_patch = __commonJS({
+  "node_modules/semver/functions/patch.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var patch = (a, loose) => new SemVer2(a, loose).patch;
+    module.exports = patch;
+  }
+});
+
+// node_modules/semver/functions/prerelease.js
+var require_prerelease = __commonJS({
+  "node_modules/semver/functions/prerelease.js"(exports, module) {
+    "use strict";
+    var parse2 = require_parse();
+    var prerelease = (version, options) => {
+      const parsed = parse2(version, options);
+      return parsed && parsed.prerelease.length ? parsed.prerelease : null;
+    };
+    module.exports = prerelease;
+  }
+});
+
+// node_modules/semver/functions/compare.js
+var require_compare = __commonJS({
+  "node_modules/semver/functions/compare.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var compare = (a, b, loose) => new SemVer2(a, loose).compare(new SemVer2(b, loose));
+    module.exports = compare;
+  }
+});
+
+// node_modules/semver/functions/rcompare.js
+var require_rcompare = __commonJS({
+  "node_modules/semver/functions/rcompare.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var rcompare = (a, b, loose) => compare(b, a, loose);
+    module.exports = rcompare;
+  }
+});
+
+// node_modules/semver/functions/compare-loose.js
+var require_compare_loose = __commonJS({
+  "node_modules/semver/functions/compare-loose.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var compareLoose = (a, b) => compare(a, b, true);
+    module.exports = compareLoose;
+  }
+});
+
+// node_modules/semver/functions/compare-build.js
+var require_compare_build = __commonJS({
+  "node_modules/semver/functions/compare-build.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var compareBuild = (a, b, loose) => {
+      const versionA = new SemVer2(a, loose);
+      const versionB = new SemVer2(b, loose);
+      return versionA.compare(versionB) || versionA.compareBuild(versionB);
+    };
+    module.exports = compareBuild;
+  }
+});
+
+// node_modules/semver/functions/sort.js
+var require_sort = __commonJS({
+  "node_modules/semver/functions/sort.js"(exports, module) {
+    "use strict";
+    var compareBuild = require_compare_build();
+    var sort = (list2, loose) => list2.sort((a, b) => compareBuild(a, b, loose));
+    module.exports = sort;
+  }
+});
+
+// node_modules/semver/functions/rsort.js
+var require_rsort = __commonJS({
+  "node_modules/semver/functions/rsort.js"(exports, module) {
+    "use strict";
+    var compareBuild = require_compare_build();
+    var rsort = (list2, loose) => list2.sort((a, b) => compareBuild(b, a, loose));
+    module.exports = rsort;
+  }
+});
+
+// node_modules/semver/functions/gt.js
+var require_gt = __commonJS({
+  "node_modules/semver/functions/gt.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var gt = (a, b, loose) => compare(a, b, loose) > 0;
+    module.exports = gt;
+  }
+});
+
+// node_modules/semver/functions/lt.js
+var require_lt = __commonJS({
+  "node_modules/semver/functions/lt.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var lt2 = (a, b, loose) => compare(a, b, loose) < 0;
+    module.exports = lt2;
+  }
+});
+
+// node_modules/semver/functions/eq.js
+var require_eq = __commonJS({
+  "node_modules/semver/functions/eq.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var eq = (a, b, loose) => compare(a, b, loose) === 0;
+    module.exports = eq;
+  }
+});
+
+// node_modules/semver/functions/neq.js
+var require_neq = __commonJS({
+  "node_modules/semver/functions/neq.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var neq = (a, b, loose) => compare(a, b, loose) !== 0;
+    module.exports = neq;
+  }
+});
+
+// node_modules/semver/functions/gte.js
+var require_gte = __commonJS({
+  "node_modules/semver/functions/gte.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var gte = (a, b, loose) => compare(a, b, loose) >= 0;
+    module.exports = gte;
+  }
+});
+
+// node_modules/semver/functions/lte.js
+var require_lte = __commonJS({
+  "node_modules/semver/functions/lte.js"(exports, module) {
+    "use strict";
+    var compare = require_compare();
+    var lte = (a, b, loose) => compare(a, b, loose) <= 0;
+    module.exports = lte;
+  }
+});
+
+// node_modules/semver/functions/cmp.js
+var require_cmp = __commonJS({
+  "node_modules/semver/functions/cmp.js"(exports, module) {
+    "use strict";
+    var eq = require_eq();
+    var neq = require_neq();
+    var gt = require_gt();
+    var gte = require_gte();
+    var lt2 = require_lt();
+    var lte = require_lte();
+    var cmp2 = (a, op, b, loose) => {
+      switch (op) {
+        case "===":
+          if (typeof a === "object") {
+            a = a.version;
+          }
+          if (typeof b === "object") {
+            b = b.version;
+          }
+          return a === b;
+        case "!==":
+          if (typeof a === "object") {
+            a = a.version;
+          }
+          if (typeof b === "object") {
+            b = b.version;
+          }
+          return a !== b;
+        case "":
+        case "=":
+        case "==":
+          return eq(a, b, loose);
+        case "!=":
+          return neq(a, b, loose);
+        case ">":
+          return gt(a, b, loose);
+        case ">=":
+          return gte(a, b, loose);
+        case "<":
+          return lt2(a, b, loose);
+        case "<=":
+          return lte(a, b, loose);
+        default:
+          throw new TypeError(`Invalid operator: ${op}`);
+      }
+    };
+    module.exports = cmp2;
+  }
+});
+
+// node_modules/semver/functions/coerce.js
+var require_coerce = __commonJS({
+  "node_modules/semver/functions/coerce.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var parse2 = require_parse();
+    var { safeRe: re, t } = require_re();
+    var coerce = (version, options) => {
+      if (version instanceof SemVer2) {
+        return version;
+      }
+      if (typeof version === "number") {
+        version = String(version);
+      }
+      if (typeof version !== "string") {
+        return null;
+      }
+      options = options || {};
+      let match = null;
+      if (!options.rtl) {
+        match = version.match(options.includePrerelease ? re[t.COERCEFULL] : re[t.COERCE]);
+      } else {
+        const coerceRtlRegex = options.includePrerelease ? re[t.COERCERTLFULL] : re[t.COERCERTL];
+        let next;
+        while ((next = coerceRtlRegex.exec(version)) && (!match || match.index + match[0].length !== version.length)) {
+          if (!match || next.index + next[0].length !== match.index + match[0].length) {
+            match = next;
+          }
+          coerceRtlRegex.lastIndex = next.index + next[1].length + next[2].length;
+        }
+        coerceRtlRegex.lastIndex = -1;
+      }
+      if (match === null) {
+        return null;
+      }
+      const major = match[2];
+      const minor = match[3] || "0";
+      const patch = match[4] || "0";
+      const prerelease = options.includePrerelease && match[5] ? `-${match[5]}` : "";
+      const build = options.includePrerelease && match[6] ? `+${match[6]}` : "";
+      return parse2(`${major}.${minor}.${patch}${prerelease}${build}`, options);
+    };
+    module.exports = coerce;
+  }
+});
+
+// node_modules/semver/internal/lrucache.js
+var require_lrucache = __commonJS({
+  "node_modules/semver/internal/lrucache.js"(exports, module) {
+    "use strict";
+    var LRUCache = class {
+      constructor() {
+        this.max = 1e3;
+        this.map = /* @__PURE__ */ new Map();
+      }
+      get(key) {
+        const value = this.map.get(key);
+        if (value === void 0) {
+          return void 0;
+        } else {
+          this.map.delete(key);
+          this.map.set(key, value);
+          return value;
+        }
+      }
+      delete(key) {
+        return this.map.delete(key);
+      }
+      set(key, value) {
+        const deleted = this.delete(key);
+        if (!deleted && value !== void 0) {
+          if (this.map.size >= this.max) {
+            const firstKey = this.map.keys().next().value;
+            this.delete(firstKey);
+          }
+          this.map.set(key, value);
+        }
+        return this;
+      }
+    };
+    module.exports = LRUCache;
+  }
+});
+
+// node_modules/semver/classes/range.js
+var require_range = __commonJS({
+  "node_modules/semver/classes/range.js"(exports, module) {
+    "use strict";
+    var SPACE_CHARACTERS = /\s+/g;
+    var Range2 = class _Range {
+      constructor(range, options) {
+        options = parseOptions(options);
+        if (range instanceof _Range) {
+          if (range.loose === !!options.loose && range.includePrerelease === !!options.includePrerelease) {
+            return range;
+          } else {
+            return new _Range(range.raw, options);
+          }
+        }
+        if (range instanceof Comparator) {
+          this.raw = range.value;
+          this.set = [[range]];
+          this.formatted = void 0;
+          return this;
+        }
+        this.options = options;
+        this.loose = !!options.loose;
+        this.includePrerelease = !!options.includePrerelease;
+        this.raw = range.trim().replace(SPACE_CHARACTERS, " ");
+        this.set = this.raw.split("||").map((r) => this.parseRange(r.trim())).filter((c) => c.length);
+        if (!this.set.length) {
+          throw new TypeError(`Invalid SemVer Range: ${this.raw}`);
+        }
+        if (this.set.length > 1) {
+          const first = this.set[0];
+          this.set = this.set.filter((c) => !isNullSet(c[0]));
+          if (this.set.length === 0) {
+            this.set = [first];
+          } else if (this.set.length > 1) {
+            for (const c of this.set) {
+              if (c.length === 1 && isAny(c[0])) {
+                this.set = [c];
+                break;
+              }
+            }
+          }
+        }
+        this.formatted = void 0;
+      }
+      get range() {
+        if (this.formatted === void 0) {
+          this.formatted = "";
+          for (let i = 0; i < this.set.length; i++) {
+            if (i > 0) {
+              this.formatted += "||";
+            }
+            const comps = this.set[i];
+            for (let k = 0; k < comps.length; k++) {
+              if (k > 0) {
+                this.formatted += " ";
+              }
+              this.formatted += comps[k].toString().trim();
+            }
+          }
+        }
+        return this.formatted;
+      }
+      format() {
+        return this.range;
+      }
+      toString() {
+        return this.range;
+      }
+      parseRange(range) {
+        const memoOpts = (this.options.includePrerelease && FLAG_INCLUDE_PRERELEASE) | (this.options.loose && FLAG_LOOSE);
+        const memoKey = memoOpts + ":" + range;
+        const cached = cache.get(memoKey);
+        if (cached) {
+          return cached;
+        }
+        const loose = this.options.loose;
+        const hr = loose ? re[t.HYPHENRANGELOOSE] : re[t.HYPHENRANGE];
+        range = range.replace(hr, hyphenReplace(this.options.includePrerelease));
+        debug("hyphen replace", range);
+        range = range.replace(re[t.COMPARATORTRIM], comparatorTrimReplace);
+        debug("comparator trim", range);
+        range = range.replace(re[t.TILDETRIM], tildeTrimReplace);
+        debug("tilde trim", range);
+        range = range.replace(re[t.CARETTRIM], caretTrimReplace);
+        debug("caret trim", range);
+        let rangeList = range.split(" ").map((comp) => parseComparator(comp, this.options)).join(" ").split(/\s+/).map((comp) => replaceGTE0(comp, this.options));
+        if (loose) {
+          rangeList = rangeList.filter((comp) => {
+            debug("loose invalid filter", comp, this.options);
+            return !!comp.match(re[t.COMPARATORLOOSE]);
+          });
+        }
+        debug("range list", rangeList);
+        const rangeMap = /* @__PURE__ */ new Map();
+        const comparators = rangeList.map((comp) => new Comparator(comp, this.options));
+        for (const comp of comparators) {
+          if (isNullSet(comp)) {
+            return [comp];
+          }
+          rangeMap.set(comp.value, comp);
+        }
+        if (rangeMap.size > 1 && rangeMap.has("")) {
+          rangeMap.delete("");
+        }
+        const result = [...rangeMap.values()];
+        cache.set(memoKey, result);
+        return result;
+      }
+      intersects(range, options) {
+        if (!(range instanceof _Range)) {
+          throw new TypeError("a Range is required");
+        }
+        return this.set.some((thisComparators) => {
+          return isSatisfiable(thisComparators, options) && range.set.some((rangeComparators) => {
+            return isSatisfiable(rangeComparators, options) && thisComparators.every((thisComparator) => {
+              return rangeComparators.every((rangeComparator) => {
+                return thisComparator.intersects(rangeComparator, options);
+              });
+            });
+          });
+        });
+      }
+      // if ANY of the sets match ALL of its comparators, then pass
+      test(version) {
+        if (!version) {
+          return false;
+        }
+        if (typeof version === "string") {
+          try {
+            version = new SemVer2(version, this.options);
+          } catch (er) {
+            return false;
+          }
+        }
+        for (let i = 0; i < this.set.length; i++) {
+          if (testSet(this.set[i], version, this.options)) {
+            return true;
+          }
+        }
+        return false;
+      }
+    };
+    module.exports = Range2;
+    var LRU = require_lrucache();
+    var cache = new LRU();
+    var parseOptions = require_parse_options();
+    var Comparator = require_comparator();
+    var debug = require_debug();
+    var SemVer2 = require_semver();
+    var {
+      safeRe: re,
+      t,
+      comparatorTrimReplace,
+      tildeTrimReplace,
+      caretTrimReplace
+    } = require_re();
+    var { FLAG_INCLUDE_PRERELEASE, FLAG_LOOSE } = require_constants();
+    var isNullSet = (c) => c.value === "<0.0.0-0";
+    var isAny = (c) => c.value === "";
+    var isSatisfiable = (comparators, options) => {
+      let result = true;
+      const remainingComparators = comparators.slice();
+      let testComparator = remainingComparators.pop();
+      while (result && remainingComparators.length) {
+        result = remainingComparators.every((otherComparator) => {
+          return testComparator.intersects(otherComparator, options);
+        });
+        testComparator = remainingComparators.pop();
+      }
+      return result;
+    };
+    var parseComparator = (comp, options) => {
+      comp = comp.replace(re[t.BUILD], "");
+      debug("comp", comp, options);
+      comp = replaceCarets(comp, options);
+      debug("caret", comp);
+      comp = replaceTildes(comp, options);
+      debug("tildes", comp);
+      comp = replaceXRanges(comp, options);
+      debug("xrange", comp);
+      comp = replaceStars(comp, options);
+      debug("stars", comp);
+      return comp;
+    };
+    var isX = (id) => !id || id.toLowerCase() === "x" || id === "*";
+    var replaceTildes = (comp, options) => {
+      return comp.trim().split(/\s+/).map((c) => replaceTilde(c, options)).join(" ");
+    };
+    var replaceTilde = (comp, options) => {
+      const r = options.loose ? re[t.TILDELOOSE] : re[t.TILDE];
+      return comp.replace(r, (_, M, m, p, pr) => {
+        debug("tilde", comp, _, M, m, p, pr);
+        let ret;
+        if (isX(M)) {
+          ret = "";
+        } else if (isX(m)) {
+          ret = `>=${M}.0.0 <${+M + 1}.0.0-0`;
+        } else if (isX(p)) {
+          ret = `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`;
+        } else if (pr) {
+          debug("replaceTilde pr", pr);
+          ret = `>=${M}.${m}.${p}-${pr} <${M}.${+m + 1}.0-0`;
+        } else {
+          ret = `>=${M}.${m}.${p} <${M}.${+m + 1}.0-0`;
+        }
+        debug("tilde return", ret);
+        return ret;
+      });
+    };
+    var replaceCarets = (comp, options) => {
+      return comp.trim().split(/\s+/).map((c) => replaceCaret(c, options)).join(" ");
+    };
+    var replaceCaret = (comp, options) => {
+      debug("caret", comp, options);
+      const r = options.loose ? re[t.CARETLOOSE] : re[t.CARET];
+      const z = options.includePrerelease ? "-0" : "";
+      return comp.replace(r, (_, M, m, p, pr) => {
+        debug("caret", comp, _, M, m, p, pr);
+        let ret;
+        if (isX(M)) {
+          ret = "";
+        } else if (isX(m)) {
+          ret = `>=${M}.0.0${z} <${+M + 1}.0.0-0`;
+        } else if (isX(p)) {
+          if (M === "0") {
+            ret = `>=${M}.${m}.0${z} <${M}.${+m + 1}.0-0`;
+          } else {
+            ret = `>=${M}.${m}.0${z} <${+M + 1}.0.0-0`;
+          }
+        } else if (pr) {
+          debug("replaceCaret pr", pr);
+          if (M === "0") {
+            if (m === "0") {
+              ret = `>=${M}.${m}.${p}-${pr} <${M}.${m}.${+p + 1}-0`;
+            } else {
+              ret = `>=${M}.${m}.${p}-${pr} <${M}.${+m + 1}.0-0`;
+            }
+          } else {
+            ret = `>=${M}.${m}.${p}-${pr} <${+M + 1}.0.0-0`;
+          }
+        } else {
+          debug("no pr");
+          if (M === "0") {
+            if (m === "0") {
+              ret = `>=${M}.${m}.${p}${z} <${M}.${m}.${+p + 1}-0`;
+            } else {
+              ret = `>=${M}.${m}.${p}${z} <${M}.${+m + 1}.0-0`;
+            }
+          } else {
+            ret = `>=${M}.${m}.${p} <${+M + 1}.0.0-0`;
+          }
+        }
+        debug("caret return", ret);
+        return ret;
+      });
+    };
+    var replaceXRanges = (comp, options) => {
+      debug("replaceXRanges", comp, options);
+      return comp.split(/\s+/).map((c) => replaceXRange(c, options)).join(" ");
+    };
+    var replaceXRange = (comp, options) => {
+      comp = comp.trim();
+      const r = options.loose ? re[t.XRANGELOOSE] : re[t.XRANGE];
+      return comp.replace(r, (ret, gtlt, M, m, p, pr) => {
+        debug("xRange", comp, ret, gtlt, M, m, p, pr);
+        const xM = isX(M);
+        const xm = xM || isX(m);
+        const xp = xm || isX(p);
+        const anyX = xp;
+        if (gtlt === "=" && anyX) {
+          gtlt = "";
+        }
+        pr = options.includePrerelease ? "-0" : "";
+        if (xM) {
+          if (gtlt === ">" || gtlt === "<") {
+            ret = "<0.0.0-0";
+          } else {
+            ret = "*";
+          }
+        } else if (gtlt && anyX) {
+          if (xm) {
+            m = 0;
+          }
+          p = 0;
+          if (gtlt === ">") {
+            gtlt = ">=";
+            if (xm) {
+              M = +M + 1;
+              m = 0;
+              p = 0;
+            } else {
+              m = +m + 1;
+              p = 0;
+            }
+          } else if (gtlt === "<=") {
+            gtlt = "<";
+            if (xm) {
+              M = +M + 1;
+            } else {
+              m = +m + 1;
+            }
+          }
+          if (gtlt === "<") {
+            pr = "-0";
+          }
+          ret = `${gtlt + M}.${m}.${p}${pr}`;
+        } else if (xm) {
+          ret = `>=${M}.0.0${pr} <${+M + 1}.0.0-0`;
+        } else if (xp) {
+          ret = `>=${M}.${m}.0${pr} <${M}.${+m + 1}.0-0`;
+        }
+        debug("xRange return", ret);
+        return ret;
+      });
+    };
+    var replaceStars = (comp, options) => {
+      debug("replaceStars", comp, options);
+      return comp.trim().replace(re[t.STAR], "");
+    };
+    var replaceGTE0 = (comp, options) => {
+      debug("replaceGTE0", comp, options);
+      return comp.trim().replace(re[options.includePrerelease ? t.GTE0PRE : t.GTE0], "");
+    };
+    var hyphenReplace = (incPr) => ($0, from, fM, fm, fp, fpr, fb, to, tM, tm, tp, tpr) => {
+      if (isX(fM)) {
+        from = "";
+      } else if (isX(fm)) {
+        from = `>=${fM}.0.0${incPr ? "-0" : ""}`;
+      } else if (isX(fp)) {
+        from = `>=${fM}.${fm}.0${incPr ? "-0" : ""}`;
+      } else if (fpr) {
+        from = `>=${from}`;
+      } else {
+        from = `>=${from}${incPr ? "-0" : ""}`;
+      }
+      if (isX(tM)) {
+        to = "";
+      } else if (isX(tm)) {
+        to = `<${+tM + 1}.0.0-0`;
+      } else if (isX(tp)) {
+        to = `<${tM}.${+tm + 1}.0-0`;
+      } else if (tpr) {
+        to = `<=${tM}.${tm}.${tp}-${tpr}`;
+      } else if (incPr) {
+        to = `<${tM}.${tm}.${+tp + 1}-0`;
+      } else {
+        to = `<=${to}`;
+      }
+      return `${from} ${to}`.trim();
+    };
+    var testSet = (set, version, options) => {
+      for (let i = 0; i < set.length; i++) {
+        if (!set[i].test(version)) {
+          return false;
+        }
+      }
+      if (version.prerelease.length && !options.includePrerelease) {
+        for (let i = 0; i < set.length; i++) {
+          debug(set[i].semver);
+          if (set[i].semver === Comparator.ANY) {
+            continue;
+          }
+          if (set[i].semver.prerelease.length > 0) {
+            const allowed = set[i].semver;
+            if (allowed.major === version.major && allowed.minor === version.minor && allowed.patch === version.patch) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+      return true;
+    };
+  }
+});
+
+// node_modules/semver/classes/comparator.js
+var require_comparator = __commonJS({
+  "node_modules/semver/classes/comparator.js"(exports, module) {
+    "use strict";
+    var ANY = Symbol("SemVer ANY");
+    var Comparator = class _Comparator {
+      static get ANY() {
+        return ANY;
+      }
+      constructor(comp, options) {
+        options = parseOptions(options);
+        if (comp instanceof _Comparator) {
+          if (comp.loose === !!options.loose) {
+            return comp;
+          } else {
+            comp = comp.value;
+          }
+        }
+        comp = comp.trim().split(/\s+/).join(" ");
+        debug("comparator", comp, options);
+        this.options = options;
+        this.loose = !!options.loose;
+        this.parse(comp);
+        if (this.semver === ANY) {
+          this.value = "";
+        } else {
+          this.value = this.operator + this.semver.version;
+        }
+        debug("comp", this);
+      }
+      parse(comp) {
+        const r = this.options.loose ? re[t.COMPARATORLOOSE] : re[t.COMPARATOR];
+        const m = comp.match(r);
+        if (!m) {
+          throw new TypeError(`Invalid comparator: ${comp}`);
+        }
+        this.operator = m[1] !== void 0 ? m[1] : "";
+        if (this.operator === "=") {
+          this.operator = "";
+        }
+        if (!m[2]) {
+          this.semver = ANY;
+        } else {
+          this.semver = new SemVer2(m[2], this.options.loose);
+        }
+      }
+      toString() {
+        return this.value;
+      }
+      test(version) {
+        debug("Comparator.test", version, this.options.loose);
+        if (this.semver === ANY || version === ANY) {
+          return true;
+        }
+        if (typeof version === "string") {
+          try {
+            version = new SemVer2(version, this.options);
+          } catch (er) {
+            return false;
+          }
+        }
+        return cmp2(version, this.operator, this.semver, this.options);
+      }
+      intersects(comp, options) {
+        if (!(comp instanceof _Comparator)) {
+          throw new TypeError("a Comparator is required");
+        }
+        if (this.operator === "") {
+          if (this.value === "") {
+            return true;
+          }
+          return new Range2(comp.value, options).test(this.value);
+        } else if (comp.operator === "") {
+          if (comp.value === "") {
+            return true;
+          }
+          return new Range2(this.value, options).test(comp.semver);
+        }
+        options = parseOptions(options);
+        if (options.includePrerelease && (this.value === "<0.0.0-0" || comp.value === "<0.0.0-0")) {
+          return false;
+        }
+        if (!options.includePrerelease && (this.value.startsWith("<0.0.0") || comp.value.startsWith("<0.0.0"))) {
+          return false;
+        }
+        if (this.operator.startsWith(">") && comp.operator.startsWith(">")) {
+          return true;
+        }
+        if (this.operator.startsWith("<") && comp.operator.startsWith("<")) {
+          return true;
+        }
+        if (this.semver.version === comp.semver.version && this.operator.includes("=") && comp.operator.includes("=")) {
+          return true;
+        }
+        if (cmp2(this.semver, "<", comp.semver, options) && this.operator.startsWith(">") && comp.operator.startsWith("<")) {
+          return true;
+        }
+        if (cmp2(this.semver, ">", comp.semver, options) && this.operator.startsWith("<") && comp.operator.startsWith(">")) {
+          return true;
+        }
+        return false;
+      }
+    };
+    module.exports = Comparator;
+    var parseOptions = require_parse_options();
+    var { safeRe: re, t } = require_re();
+    var cmp2 = require_cmp();
+    var debug = require_debug();
+    var SemVer2 = require_semver();
+    var Range2 = require_range();
+  }
+});
+
+// node_modules/semver/functions/satisfies.js
+var require_satisfies = __commonJS({
+  "node_modules/semver/functions/satisfies.js"(exports, module) {
+    "use strict";
+    var Range2 = require_range();
+    var satisfies2 = (version, range, options) => {
+      try {
+        range = new Range2(range, options);
+      } catch (er) {
+        return false;
+      }
+      return range.test(version);
+    };
+    module.exports = satisfies2;
+  }
+});
+
+// node_modules/semver/ranges/to-comparators.js
+var require_to_comparators = __commonJS({
+  "node_modules/semver/ranges/to-comparators.js"(exports, module) {
+    "use strict";
+    var Range2 = require_range();
+    var toComparators = (range, options) => new Range2(range, options).set.map((comp) => comp.map((c) => c.value).join(" ").trim().split(" "));
+    module.exports = toComparators;
+  }
+});
+
+// node_modules/semver/ranges/max-satisfying.js
+var require_max_satisfying = __commonJS({
+  "node_modules/semver/ranges/max-satisfying.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var Range2 = require_range();
+    var maxSatisfying = (versions, range, options) => {
+      let max = null;
+      let maxSV = null;
+      let rangeObj = null;
+      try {
+        rangeObj = new Range2(range, options);
+      } catch (er) {
+        return null;
+      }
+      versions.forEach((v) => {
+        if (rangeObj.test(v)) {
+          if (!max || maxSV.compare(v) === -1) {
+            max = v;
+            maxSV = new SemVer2(max, options);
+          }
+        }
+      });
+      return max;
+    };
+    module.exports = maxSatisfying;
+  }
+});
+
+// node_modules/semver/ranges/min-satisfying.js
+var require_min_satisfying = __commonJS({
+  "node_modules/semver/ranges/min-satisfying.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var Range2 = require_range();
+    var minSatisfying = (versions, range, options) => {
+      let min = null;
+      let minSV = null;
+      let rangeObj = null;
+      try {
+        rangeObj = new Range2(range, options);
+      } catch (er) {
+        return null;
+      }
+      versions.forEach((v) => {
+        if (rangeObj.test(v)) {
+          if (!min || minSV.compare(v) === 1) {
+            min = v;
+            minSV = new SemVer2(min, options);
+          }
+        }
+      });
+      return min;
+    };
+    module.exports = minSatisfying;
+  }
+});
+
+// node_modules/semver/ranges/min-version.js
+var require_min_version = __commonJS({
+  "node_modules/semver/ranges/min-version.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var Range2 = require_range();
+    var gt = require_gt();
+    var minVersion = (range, loose) => {
+      range = new Range2(range, loose);
+      let minver = new SemVer2("0.0.0");
+      if (range.test(minver)) {
+        return minver;
+      }
+      minver = new SemVer2("0.0.0-0");
+      if (range.test(minver)) {
+        return minver;
+      }
+      minver = null;
+      for (let i = 0; i < range.set.length; ++i) {
+        const comparators = range.set[i];
+        let setMin = null;
+        comparators.forEach((comparator) => {
+          const compver = new SemVer2(comparator.semver.version);
+          switch (comparator.operator) {
+            case ">":
+              if (compver.prerelease.length === 0) {
+                compver.patch++;
+              } else {
+                compver.prerelease.push(0);
+              }
+              compver.raw = compver.format();
+            /* fallthrough */
+            case "":
+            case ">=":
+              if (!setMin || gt(compver, setMin)) {
+                setMin = compver;
+              }
+              break;
+            case "<":
+            case "<=":
+              break;
+            /* istanbul ignore next */
+            default:
+              throw new Error(`Unexpected operation: ${comparator.operator}`);
+          }
+        });
+        if (setMin && (!minver || gt(minver, setMin))) {
+          minver = setMin;
+        }
+      }
+      if (minver && range.test(minver)) {
+        return minver;
+      }
+      return null;
+    };
+    module.exports = minVersion;
+  }
+});
+
+// node_modules/semver/ranges/valid.js
+var require_valid2 = __commonJS({
+  "node_modules/semver/ranges/valid.js"(exports, module) {
+    "use strict";
+    var Range2 = require_range();
+    var validRange2 = (range, options) => {
+      try {
+        return new Range2(range, options).range || "*";
+      } catch (er) {
+        return null;
+      }
+    };
+    module.exports = validRange2;
+  }
+});
+
+// node_modules/semver/ranges/outside.js
+var require_outside = __commonJS({
+  "node_modules/semver/ranges/outside.js"(exports, module) {
+    "use strict";
+    var SemVer2 = require_semver();
+    var Comparator = require_comparator();
+    var { ANY } = Comparator;
+    var Range2 = require_range();
+    var satisfies2 = require_satisfies();
+    var gt = require_gt();
+    var lt2 = require_lt();
+    var lte = require_lte();
+    var gte = require_gte();
+    var outside = (version, range, hilo, options) => {
+      version = new SemVer2(version, options);
+      range = new Range2(range, options);
+      let gtfn, ltefn, ltfn, comp, ecomp;
+      switch (hilo) {
+        case ">":
+          gtfn = gt;
+          ltefn = lte;
+          ltfn = lt2;
+          comp = ">";
+          ecomp = ">=";
+          break;
+        case "<":
+          gtfn = lt2;
+          ltefn = gte;
+          ltfn = gt;
+          comp = "<";
+          ecomp = "<=";
+          break;
+        default:
+          throw new TypeError('Must provide a hilo val of "<" or ">"');
+      }
+      if (satisfies2(version, range, options)) {
+        return false;
+      }
+      for (let i = 0; i < range.set.length; ++i) {
+        const comparators = range.set[i];
+        let high = null;
+        let low = null;
+        comparators.forEach((comparator) => {
+          if (comparator.semver === ANY) {
+            comparator = new Comparator(">=0.0.0");
+          }
+          high = high || comparator;
+          low = low || comparator;
+          if (gtfn(comparator.semver, high.semver, options)) {
+            high = comparator;
+          } else if (ltfn(comparator.semver, low.semver, options)) {
+            low = comparator;
+          }
+        });
+        if (high.operator === comp || high.operator === ecomp) {
+          return false;
+        }
+        if ((!low.operator || low.operator === comp) && ltefn(version, low.semver)) {
+          return false;
+        } else if (low.operator === ecomp && ltfn(version, low.semver)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    module.exports = outside;
+  }
+});
+
+// node_modules/semver/ranges/gtr.js
+var require_gtr = __commonJS({
+  "node_modules/semver/ranges/gtr.js"(exports, module) {
+    "use strict";
+    var outside = require_outside();
+    var gtr = (version, range, options) => outside(version, range, ">", options);
+    module.exports = gtr;
+  }
+});
+
+// node_modules/semver/ranges/ltr.js
+var require_ltr = __commonJS({
+  "node_modules/semver/ranges/ltr.js"(exports, module) {
+    "use strict";
+    var outside = require_outside();
+    var ltr = (version, range, options) => outside(version, range, "<", options);
+    module.exports = ltr;
+  }
+});
+
+// node_modules/semver/ranges/intersects.js
+var require_intersects = __commonJS({
+  "node_modules/semver/ranges/intersects.js"(exports, module) {
+    "use strict";
+    var Range2 = require_range();
+    var intersects2 = (r1, r2, options) => {
+      r1 = new Range2(r1, options);
+      r2 = new Range2(r2, options);
+      return r1.intersects(r2, options);
+    };
+    module.exports = intersects2;
+  }
+});
+
+// node_modules/semver/ranges/simplify.js
+var require_simplify = __commonJS({
+  "node_modules/semver/ranges/simplify.js"(exports, module) {
+    "use strict";
+    var satisfies2 = require_satisfies();
+    var compare = require_compare();
+    module.exports = (versions, range, options) => {
+      const set = [];
+      let first = null;
+      let prev = null;
+      const v = versions.sort((a, b) => compare(a, b, options));
+      for (const version of v) {
+        const included = satisfies2(version, range, options);
+        if (included) {
+          prev = version;
+          if (!first) {
+            first = version;
+          }
+        } else {
+          if (prev) {
+            set.push([first, prev]);
+          }
+          prev = null;
+          first = null;
+        }
+      }
+      if (first) {
+        set.push([first, null]);
+      }
+      const ranges = [];
+      for (const [min, max] of set) {
+        if (min === max) {
+          ranges.push(min);
+        } else if (!max && min === v[0]) {
+          ranges.push("*");
+        } else if (!max) {
+          ranges.push(`>=${min}`);
+        } else if (min === v[0]) {
+          ranges.push(`<=${max}`);
+        } else {
+          ranges.push(`${min} - ${max}`);
+        }
+      }
+      const simplified = ranges.join(" || ");
+      const original = typeof range.raw === "string" ? range.raw : String(range);
+      return simplified.length < original.length ? simplified : range;
+    };
+  }
+});
+
+// node_modules/semver/ranges/subset.js
+var require_subset = __commonJS({
+  "node_modules/semver/ranges/subset.js"(exports, module) {
+    "use strict";
+    var Range2 = require_range();
+    var Comparator = require_comparator();
+    var { ANY } = Comparator;
+    var satisfies2 = require_satisfies();
+    var compare = require_compare();
+    var subset = (sub, dom, options = {}) => {
+      if (sub === dom) {
+        return true;
+      }
+      sub = new Range2(sub, options);
+      dom = new Range2(dom, options);
+      let sawNonNull = false;
+      OUTER: for (const simpleSub of sub.set) {
+        for (const simpleDom of dom.set) {
+          const isSub = simpleSubset(simpleSub, simpleDom, options);
+          sawNonNull = sawNonNull || isSub !== null;
+          if (isSub) {
+            continue OUTER;
+          }
+        }
+        if (sawNonNull) {
+          return false;
+        }
+      }
+      return true;
+    };
+    var minimumVersionWithPreRelease = [new Comparator(">=0.0.0-0")];
+    var minimumVersion = [new Comparator(">=0.0.0")];
+    var simpleSubset = (sub, dom, options) => {
+      if (sub === dom) {
+        return true;
+      }
+      if (sub.length === 1 && sub[0].semver === ANY) {
+        if (dom.length === 1 && dom[0].semver === ANY) {
+          return true;
+        } else if (options.includePrerelease) {
+          sub = minimumVersionWithPreRelease;
+        } else {
+          sub = minimumVersion;
+        }
+      }
+      if (dom.length === 1 && dom[0].semver === ANY) {
+        if (options.includePrerelease) {
+          return true;
+        } else {
+          dom = minimumVersion;
+        }
+      }
+      const eqSet = /* @__PURE__ */ new Set();
+      let gt, lt2;
+      for (const c of sub) {
+        if (c.operator === ">" || c.operator === ">=") {
+          gt = higherGT(gt, c, options);
+        } else if (c.operator === "<" || c.operator === "<=") {
+          lt2 = lowerLT(lt2, c, options);
+        } else {
+          eqSet.add(c.semver);
+        }
+      }
+      if (eqSet.size > 1) {
+        return null;
+      }
+      let gtltComp;
+      if (gt && lt2) {
+        gtltComp = compare(gt.semver, lt2.semver, options);
+        if (gtltComp > 0) {
+          return null;
+        } else if (gtltComp === 0 && (gt.operator !== ">=" || lt2.operator !== "<=")) {
+          return null;
+        }
+      }
+      for (const eq of eqSet) {
+        if (gt && !satisfies2(eq, String(gt), options)) {
+          return null;
+        }
+        if (lt2 && !satisfies2(eq, String(lt2), options)) {
+          return null;
+        }
+        for (const c of dom) {
+          if (!satisfies2(eq, String(c), options)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      let higher, lower;
+      let hasDomLT, hasDomGT;
+      let needDomLTPre = lt2 && !options.includePrerelease && lt2.semver.prerelease.length ? lt2.semver : false;
+      let needDomGTPre = gt && !options.includePrerelease && gt.semver.prerelease.length ? gt.semver : false;
+      if (needDomLTPre && needDomLTPre.prerelease.length === 1 && lt2.operator === "<" && needDomLTPre.prerelease[0] === 0) {
+        needDomLTPre = false;
+      }
+      for (const c of dom) {
+        hasDomGT = hasDomGT || c.operator === ">" || c.operator === ">=";
+        hasDomLT = hasDomLT || c.operator === "<" || c.operator === "<=";
+        if (gt) {
+          if (needDomGTPre) {
+            if (c.semver.prerelease && c.semver.prerelease.length && c.semver.major === needDomGTPre.major && c.semver.minor === needDomGTPre.minor && c.semver.patch === needDomGTPre.patch) {
+              needDomGTPre = false;
+            }
+          }
+          if (c.operator === ">" || c.operator === ">=") {
+            higher = higherGT(gt, c, options);
+            if (higher === c && higher !== gt) {
+              return false;
+            }
+          } else if (gt.operator === ">=" && !satisfies2(gt.semver, String(c), options)) {
+            return false;
+          }
+        }
+        if (lt2) {
+          if (needDomLTPre) {
+            if (c.semver.prerelease && c.semver.prerelease.length && c.semver.major === needDomLTPre.major && c.semver.minor === needDomLTPre.minor && c.semver.patch === needDomLTPre.patch) {
+              needDomLTPre = false;
+            }
+          }
+          if (c.operator === "<" || c.operator === "<=") {
+            lower = lowerLT(lt2, c, options);
+            if (lower === c && lower !== lt2) {
+              return false;
+            }
+          } else if (lt2.operator === "<=" && !satisfies2(lt2.semver, String(c), options)) {
+            return false;
+          }
+        }
+        if (!c.operator && (lt2 || gt) && gtltComp !== 0) {
+          return false;
+        }
+      }
+      if (gt && hasDomLT && !lt2 && gtltComp !== 0) {
+        return false;
+      }
+      if (lt2 && hasDomGT && !gt && gtltComp !== 0) {
+        return false;
+      }
+      if (needDomGTPre || needDomLTPre) {
+        return false;
+      }
+      return true;
+    };
+    var higherGT = (a, b, options) => {
+      if (!a) {
+        return b;
+      }
+      const comp = compare(a.semver, b.semver, options);
+      return comp > 0 ? a : comp < 0 ? b : b.operator === ">" && a.operator === ">=" ? b : a;
+    };
+    var lowerLT = (a, b, options) => {
+      if (!a) {
+        return b;
+      }
+      const comp = compare(a.semver, b.semver, options);
+      return comp < 0 ? a : comp > 0 ? b : b.operator === "<" && a.operator === "<=" ? b : a;
+    };
+    module.exports = subset;
+  }
+});
+
+// node_modules/semver/index.js
+var require_semver2 = __commonJS({
+  "node_modules/semver/index.js"(exports, module) {
+    "use strict";
+    var internalRe = require_re();
+    var constants2 = require_constants();
+    var SemVer2 = require_semver();
+    var identifiers = require_identifiers();
+    var parse2 = require_parse();
+    var valid = require_valid();
+    var clean = require_clean();
+    var inc2 = require_inc();
+    var diff = require_diff();
+    var major = require_major();
+    var minor = require_minor();
+    var patch = require_patch();
+    var prerelease = require_prerelease();
+    var compare = require_compare();
+    var rcompare = require_rcompare();
+    var compareLoose = require_compare_loose();
+    var compareBuild = require_compare_build();
+    var sort = require_sort();
+    var rsort = require_rsort();
+    var gt = require_gt();
+    var lt2 = require_lt();
+    var eq = require_eq();
+    var neq = require_neq();
+    var gte = require_gte();
+    var lte = require_lte();
+    var cmp2 = require_cmp();
+    var coerce = require_coerce();
+    var Comparator = require_comparator();
+    var Range2 = require_range();
+    var satisfies2 = require_satisfies();
+    var toComparators = require_to_comparators();
+    var maxSatisfying = require_max_satisfying();
+    var minSatisfying = require_min_satisfying();
+    var minVersion = require_min_version();
+    var validRange2 = require_valid2();
+    var outside = require_outside();
+    var gtr = require_gtr();
+    var ltr = require_ltr();
+    var intersects2 = require_intersects();
+    var simplifyRange = require_simplify();
+    var subset = require_subset();
+    module.exports = {
+      parse: parse2,
+      valid,
+      clean,
+      inc: inc2,
+      diff,
+      major,
+      minor,
+      patch,
+      prerelease,
+      compare,
+      rcompare,
+      compareLoose,
+      compareBuild,
+      sort,
+      rsort,
+      gt,
+      lt: lt2,
+      eq,
+      neq,
+      gte,
+      lte,
+      cmp: cmp2,
+      coerce,
+      Comparator,
+      Range: Range2,
+      satisfies: satisfies2,
+      toComparators,
+      maxSatisfying,
+      minSatisfying,
+      minVersion,
+      validRange: validRange2,
+      outside,
+      gtr,
+      ltr,
+      intersects: intersects2,
+      simplifyRange,
+      subset,
+      SemVer: SemVer2,
+      re: internalRe.re,
+      src: internalRe.src,
+      tokens: internalRe.t,
+      SEMVER_SPEC_VERSION: constants2.SEMVER_SPEC_VERSION,
+      RELEASE_TYPES: constants2.RELEASE_TYPES,
+      compareIdentifiers: identifiers.compareIdentifiers,
+      rcompareIdentifiers: identifiers.rcompareIdentifiers
+    };
+  }
+});
+
 // node_modules/yaml/dist/nodes/identity.js
 var require_identity = __commonJS({
   "node_modules/yaml/dist/nodes/identity.js"(exports) {
@@ -7364,11 +9294,11 @@ var require_dist = __commonJS({
 });
 
 // src/lib/loops-cli.ts
-import { readFileSync as readFileSync6 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 
 // src/lib/env-check.ts
-import { readFileSync as readFileSync4, existsSync as existsSync3 } from "node:fs";
+import { readFileSync as readFileSync5, existsSync as existsSync3 } from "node:fs";
 import { homedir } from "node:os";
 import { join as join5, resolve as resolve3 } from "node:path";
 
@@ -8135,7 +10065,7 @@ var HAS_WELLFORMED = !!"".isWellFormed;
 
 // src/lib/proc.ts
 import { spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 var UsageError = class extends Error {
 };
@@ -8286,6 +10216,7 @@ function which(name, pathVar) {
   }
   return null;
 }
+var SHIM_MAX = 1 << 20;
 function shimOf(file) {
   let real;
   try {
@@ -8293,22 +10224,32 @@ function shimOf(file) {
   } catch {
     return null;
   }
-  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real };
+  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real, providers: [] };
   const buf = Buffer.alloc(4096);
   let head;
+  let n;
   let fd;
   try {
     fd = openSync(file, "r");
-    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString("utf8");
+    n = readSync(fd, buf, 0, buf.length, 0);
+    head = buf.subarray(0, n).toString("utf8");
   } catch {
     return null;
   } finally {
     if (fd !== void 0) closeSync(fd);
   }
   if (!/^# asdf-plugin:/m.test(head)) return null;
+  if (n === buf.length) {
+    try {
+      if (statSync(file).size <= SHIM_MAX) head = readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  }
   const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
   const cmd = m?.[1] ?? m?.[2];
-  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null };
+  const providers = [...head.matchAll(/^# asdf-plugin:[ \t]+(\S+)[ \t]+(\S+)/gm)].map((p) => ({ plugin: p[1], version: p[2] }));
+  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null, providers };
 }
 function parseFlags(argv, spec) {
   const out = {};
@@ -8342,7 +10283,8 @@ function parseFlags(argv, spec) {
 }
 
 // src/lib/pins.ts
-import { existsSync, readFileSync } from "node:fs";
+var import_semver = __toESM(require_semver2(), 1);
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
 import { basename as basename2, isAbsolute as isAbsolute2, join as join2, normalize, sep } from "node:path";
 var import_yaml = __toESM(require_dist(), 1);
 
@@ -8460,6 +10402,51 @@ var isRange = (s) => {
   const toks = s.replace(/(~>|===?|!=|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1").split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/);
   return (toks.length > 1 || OP.test(s)) && toks.every((t) => exact(t.replace(OP, "")) !== null);
 };
+function semverRange(range, pep440) {
+  if (!isRange(range) || /!=|===/.test(range)) return null;
+  const toks = range.replace(/(~>|==|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1");
+  if (toks.split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/).some((t) => /[a-z]/i.test(exact(t.replace(OP, "")) ?? ""))) return null;
+  if (!pep440) return /~=|==|,/.test(toks) ? null : (0, import_semver.validRange)(toks);
+  if (/\s-\s|~>/.test(toks)) return null;
+  const one = (c) => {
+    const [, op = "==", v] = /^(~=|==|<=|>=|[<>=^~])?(.*)$/.exec(c);
+    const wild = /\.[xX*]$/.test(v);
+    const n = exact(v).split(".").map(Number);
+    const pad = [...n, 0, 0].slice(0, 3).join(".");
+    if (op === "^" || op === "~") return c;
+    if (op === "==") return wild ? `${n.join(".")}.x` : pad;
+    if (op === "=" || wild) return null;
+    if (op !== "~=") return `${op}${pad}`;
+    if (n.length < 2) return null;
+    const up = n.slice(0, -1);
+    up[up.length - 1] += 1;
+    return `>=${pad} <${[...up, 0, 0].slice(0, 3).join(".")}`;
+  };
+  const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
+  return alts.some((a) => a.includes(null)) ? null : (0, import_semver.validRange)(alts.map((a) => a.join(" ")).join(" || "));
+}
+var covers = (pin, r) => {
+  const n = pin.split(".").map(Number);
+  const lo = [...n, 0, 0].slice(0, 3).join(".");
+  const up = [...n];
+  up[up.length - 1] += 1;
+  const hi = [...up, 0, 0].slice(0, 3).join(".");
+  const at = /* @__PURE__ */ new Set([lo]);
+  for (const alt of new import_semver.Range(r).set)
+    for (const c of alt) {
+      if (!(c.semver instanceof import_semver.SemVer)) continue;
+      const core = `${c.semver.major}.${c.semver.minor}.${c.semver.patch}`;
+      at.add(core).add((0, import_semver.inc)(core, "patch"));
+    }
+  return [...at].every((v) => (0, import_semver.lt)(v, lo) || !(0, import_semver.lt)(v, hi) || (0, import_semver.satisfies)(v, r));
+};
+function inRange(pin, range, pep440 = false) {
+  const r = semverRange(range, pep440);
+  if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
+  const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
+  if ((0, import_semver.validRange)(set) === null) return null;
+  return !(0, import_semver.intersects)(set, r) ? "outside" : covers(pin, r) ? "inside" : "partly";
+}
 var classify = (raw, tool) => {
   const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw;
   const t = /^(~>?|\^)\s*v?(\d+(?:\.\d+)?)(?:\.[xX*])?$/.exec(s);
@@ -8533,12 +10520,12 @@ var pyproject = (text) => {
     const rp2 = table(doc.project)?.["requires-python"];
     if (rp2 === void 0) throw new PinError("no project.requires-python");
     if (typeof rp2 !== "string") throw new PinError("requires-python is not a string");
-    return [{ v: rp2.trim(), range: true }];
+    return [{ v: rp2.trim(), range: true, pep440: true }];
   }
   const py = table(table(table(doc.tool)?.poetry)?.dependencies)?.python;
   if (py === void 0) throw new PinError("no project.requires-python or tool.poetry.dependencies.python");
   if (typeof py !== "string") throw new PinError("tool.poetry.dependencies.python is not a string");
-  return [{ v: py.trim(), range: true }];
+  return [{ v: py.trim(), range: true, pep440: true }];
 };
 var pipfile = (text, tool, _root, file) => {
   const req = table(toml(text).requires);
@@ -8548,7 +10535,7 @@ var pipfile = (text, tool, _root, file) => {
   if (typeof v !== "string") throw new PinError(`requires.${key} is not a string`);
   const f = classify(v.trim(), tool);
   if (!f) throw unsupported(v.trim(), file, lineAt(text, text.search(new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m"))));
-  return [f];
+  return [f.range ? { ...f, pep440: true } : f];
 };
 var imageTag = (t) => t.replace(/^(v?\d+(?:\.\d+)*)-dev(?![.-]?\d)/i, "$1");
 var tagVer = (t) => {
@@ -8597,21 +10584,74 @@ var logicalLines = (text, file) => {
   if (cur) close(cur, end);
   return out;
 };
-var dockerfile = (text, tool, _root, file) => {
+var expand = (w, env) => {
+  let out = "";
+  let q = "";
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i];
+    if (q !== "'" && c === "\\") out += w[++i] ?? "";
+    else if ((c === '"' || c === "'") && (!q || q === c)) q = q ? "" : c;
+    else if (c !== "$" || q === "'") out += c;
+    else if (w[i + 1] === "{") {
+      let j = i + 2;
+      for (let depth = 1; j < w.length && (depth += w[j] === "{" ? 1 : w[j] === "}" ? -1 : 0); j++) ;
+      const m = /^([A-Za-z_]\w*)(?:(:?[-+])(.*))?$/s.exec(w.slice(i + 2, j));
+      if (!m || j >= w.length) return null;
+      const v = env.get(m[1]);
+      const set = m[2]?.startsWith(":") ? !!v : v !== void 0;
+      const r = !m[2] ? v ?? null : m[2].endsWith("-") ? set ? v : expand(m[3], env) : set ? expand(m[3], env) : "";
+      if (r === null) return null;
+      out += r;
+      i = j;
+    } else {
+      const name = /^[A-Za-z_]\w*/.exec(w.slice(i + 1))?.[0];
+      if (!name) out += c;
+      else if (!env.has(name)) return null;
+      else out += env.get(name), i += name.length;
+    }
+  }
+  return out;
+};
+var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   const logical = logicalLines(text, file);
   const at = (l, index) => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out = [];
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
+  const words = (s) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
+  const global = /* @__PURE__ */ new Map();
+  for (const l of logical) {
+    if (/^\s*FROM\s/i.test(l.text)) break;
+    const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
+    for (const p of m ? words(m[1]) : []) {
+      const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
+      const v = name && eq ? expand(val, global) : null;
+      if (name && v !== null) global.set(name, v);
+      else if (name) global.delete(name);
+    }
+  }
+  const skipped = [];
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
     if (!m) continue;
-    const image = m[2];
+    let image = m[2];
+    if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0].split("/").pop().split(":")[0].includes("$")) {
+      const r = expand(image, global);
+      if (!r) {
+        notes?.push(`FROM ${image} (line ${at(l, m[1].length)}): image set at build time, not compared`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
+      image = r;
+    }
     const [name = "", tag = ""] = image.split("@")[0].split("/").pop().split(":");
     const stageRef = image === name && stages.has(name.toLowerCase());
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
-    if (/^\$\{?(\w+)/.exec(tag)?.[1].toUpperCase() === key) continue;
+    if (/^\$\{?(\w+)/.exec(tag)?.[1].toUpperCase() === key) {
+      skipped.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+      continue;
+    }
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1].length));
     out.push({ v });
@@ -8619,7 +10659,7 @@ var dockerfile = (text, tool, _root, file) => {
   for (const l of logical) {
     const m = /^(\s*ARG\s+)(.*)$/is.exec(l.text);
     if (!m) continue;
-    for (const p of m[2].matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+    for (const p of words(m[2])) {
       if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]))
         throw unsupported(m[2].trim(), file, at(l, m[1].length));
       const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
@@ -8628,6 +10668,7 @@ var dockerfile = (text, tool, _root, file) => {
       out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + pair[1].length + 1)));
     }
   }
+  if (!out.length) bare?.push(...skipped);
   return out;
 };
 var BY_NAME = {
@@ -8661,7 +10702,7 @@ var DEFAULTS = {
   "setup-node": () => null,
   // actions/setup-python v7.1.0 src/setup-python.ts resolveVersionInputFromDefaultFile (added in v4.7.0): .python-version
   // at the workspace root.
-  "setup-python": (root, tool, ref) => ref && (ref[0] < 4 || ref[0] === 4 && ref[1] < 7) || !existsSync(join2(root, ".python-version")) ? null : plain(readFileSync(join2(root, ".python-version"), "utf8"), tool, root, ".python-version"),
+  "setup-python": (root, tool, ref) => ref && (ref[0] < 4 || ref[0] === 4 && ref[1] < 7) || !existsSync(join2(root, ".python-version")) ? null : plain(readFileSync2(join2(root, ".python-version"), "utf8"), tool, root, ".python-version"),
   // golangci/golangci-lint-action v9.3.0 src/version.ts getRequestedVersion: the module's version in
   // <working-directory>/go.mod (`golangci-lint/v2` from v7.0.0, `golangci-lint` in v6.5.0), else latest. Before v6.5.0, and
   // in every install-mode but `binary` (goinstall installs latest, none installs nothing), go.mod is never read.
@@ -8669,7 +10710,7 @@ var DEFAULTS = {
     if (ref && (ref[0] < 6 || ref[0] === 6 && ref[1] < 5) || mode !== "binary") return null;
     const mod = wd === null ? null : normalize(join2(wd, "go.mod"));
     if (mod === null || isAbsolute2(mod) || mod.startsWith(`..${sep}`) || !existsSync(join2(root, mod))) return null;
-    const text = readFileSync(join2(root, mod), "utf8");
+    const text = readFileSync2(join2(root, mod), "utf8");
     const m = (ref && ref[0] <= 6 ? /github.com\/golangci\/golangci-lint\s(v\S+)/ : /github.com\/golangci\/golangci-lint\/v2\s(v\S+)/).exec(text);
     return m ? pinAt(m[1], tool, mod, lineAt(text, m.index)) : null;
   },
@@ -8725,7 +10766,7 @@ function setup(kind) {
           }
           if (k === "install-mode") {
             const v = deref(p.value);
-            mode = (0, import_yaml.isScalar)(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null;
+            mode = (0, import_yaml.isScalar)(v) && (v.value === null || typeof v.value === "string") ? (v.value ?? "").trim().toLowerCase() || "binary" : null;
           }
         }
       }
@@ -8750,7 +10791,7 @@ function setup(kind) {
         else if (!Object.hasOwn(BY_NAME, basename2(val)))
           throw new PinError(`unsupported form: ${k} ${val} in ${file}:${at} is not a supported version file (${VERSION_FILES.join(", ")}); pin an exact version`);
         else {
-          const found = BY_NAME[basename2(val)](readFileSync(join2(root, val), "utf8"), tool, root, normalize(val));
+          const found = BY_NAME[basename2(val)](readFileSync2(join2(root, val), "utf8"), tool, root, normalize(val));
           if (!found.length) throw new PinError(`${key}-file ${val} has no ${tool} version`);
           out2.push(...found);
         }
@@ -8811,28 +10852,40 @@ var splitSource = (spec) => {
   return i < 0 ? [spec, void 0] : [spec.slice(0, i), spec.slice(i + 1)];
 };
 var isSourceKind = (spec) => Object.hasOwn(KINDS, splitSource(spec)[0]);
-function readSource(root, tracked, tool, spec, notes) {
+function sourceFiles(tracked, spec) {
   const [kind, path] = splitSource(spec);
-  const k = KINDS[kind];
-  const target = path ?? k.file;
+  const target = path ?? KINDS[kind].file;
   const res2 = isGlob(target) ? compileGlob(target) : null;
-  const files = res2 ? tracked.filter((f) => res2.some((re) => re.test(f))) : [target];
+  return { target, files: res2 ? tracked.filter((f) => res2.some((re) => re.test(f))) : [target] };
+}
+function sourceAbsent(root, tracked, spec) {
+  const { target, files } = sourceFiles(tracked, spec);
+  return !files.length || !isGlob(target) && !existsSync(join2(root, target));
+}
+function readSource(root, tracked, tool, spec, notes) {
+  const [kind] = splitSource(spec);
+  const k = KINDS[kind];
+  const { target, files } = sourceFiles(tracked, spec);
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out = [];
   const skipped = [];
+  const unknown = [];
+  const bare = [];
   for (const f of files) {
     if (!existsSync(join2(root, f))) throw new PinError(`${spec}: ${f} not found`);
     const calls = [];
+    const said = [];
     let found;
     try {
-      found = k.parse(readFileSync(join2(root, f), "utf8"), tool, root, f, calls);
+      found = k.parse(readFileSync2(join2(root, f), "utf8"), tool, root, f, calls, said, bare);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${e.message}`);
     }
-    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false, ...x.pep440 && { pep440: true } });
+    unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
     if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length) {
+  if (!out.length && (!unknown.length || bare.length)) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
     if (!skipped.length) throw new PinError(msg);
     throw new PinError(
@@ -8840,7 +10893,7 @@ function readSource(root, tracked, tool, spec, notes) {
       `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`
     );
   }
-  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`));
+  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
   return out;
 }
 var DEPTH = { exact: 3, minor: 2, major: 1 };
@@ -8858,6 +10911,12 @@ function disagreement(vals, mode) {
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
   return bad ? pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
 }
+function diffPart(a, b) {
+  const [x] = split(a);
+  const [y] = split(b);
+  if (x[0] !== y[0]) return "major";
+  return x.length > 1 && y.length > 1 && x[1] !== y[1] ? "minor" : "patch";
+}
 var localOk = (local, pin, mode) => cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
@@ -8865,7 +10924,7 @@ var VERSION = "0.7.1";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) throw new UsageError(`${where} must be a table`);
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where} must be a table`);
   for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}" (a key from a newer loops needs a newer engine: update agentic-tools, and set engine = ">=0.8.0" or the version that added it, so an older engine says so)`);
   return v;
 }
@@ -8888,6 +10947,19 @@ var list = (v, where) => {
   if (!Array.isArray(v)) throw new UsageError(`${where} must be an array of tables`);
   return v;
 };
+function localOf(v, where) {
+  const all = (s) => ({ major: s, minor: s, patch: s });
+  const what = "fail|warn|off or a { major, minor, patch } table";
+  if (v === void 0 || typeof v === "string") return all(pick({ local: v }, "local", where, oneOf("fail", "warn", "off"), what, "warn"));
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where}: local must be ${what}`);
+  const t = table2(v, `${where}: local`, ["major", "minor", "patch"]);
+  const part = (k) => {
+    const s = t[k] ?? "warn";
+    if (!oneOf("fail", "warn", "info", "off")(s)) throw new UsageError(`${where}: local.${k} must be fail|warn|info|off`);
+    return s;
+  };
+  return { major: part("major"), minor: part("minor"), patch: part("patch") };
+}
 function checkEngine(range) {
   const m = /^>=\s*(\d+)\.(\d+)\.(\d+)$/.exec(range);
   if (!m) throw new UsageError(`engine must look like ">=0.4.0", found "${range}"`);
@@ -8917,17 +10989,21 @@ function parseConfig(text, file) {
   const sharedHint = shared && pick(shared, "hint", "[shared_checkout]", isStr, "a string", "use a git worktree");
   const pins = list(top.pins ?? [], "[[pins]]").map((p, i) => {
     const where = `[[pins]] #${i + 1}`;
-    const t = table2(p, where, ["tool", "sources", "compare", "local"]);
+    const t = table2(p, where, ["tool", "sources", "optional", "compare", "local", "range"]);
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
+    const optional = pick(t, "optional", where, isStrs, "a list of strings", []);
+    for (const s of optional) if (!sources.includes(s)) throw new UsageError(`${where}: optional "${s}" is not in sources (list a source exactly as written there)`);
     if (t.compare === "floor")
-      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: ranges are no longer compared (a later a.range check will cover a pin inside a range); use exact, minor or major`);
+      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: compare no longer reads ranges; use exact, minor or major, and set range = "check" (0.8.0) to check the pin against each range`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
+      optional,
       compare: pick(t, "compare", where, oneOf("exact", "minor", "major"), "exact|minor|major", "exact"),
-      local: pick(t, "local", where, oneOf("fail", "warn", "off"), "fail|warn|off", "warn")
+      local: localOf(t.local, where),
+      range: pick(t, "range", where, oneOf("check", "info"), "check|info", "info")
     };
   });
   const h = table2(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse"]);
@@ -8974,7 +11050,7 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync4, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
 import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join4, normalize as normalize3, resolve as resolve2 } from "node:path";
 
 // src/lib/compose-config.ts
@@ -9052,7 +11128,7 @@ function composeNameRaw(o) {
 }
 
 // src/lib/compose-env.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 var NAME2 = /[A-Za-z_][A-Za-z0-9_]*/y;
 var KEY = /(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*([=:]?)[ \t]*/y;
@@ -9178,7 +11254,7 @@ function parseDotEnv(s) {
 }
 function readDotEnv(pdir) {
   try {
-    return parseDotEnv(readFileSync2(join3(pdir, ".env"), "utf8"));
+    return parseDotEnv(readFileSync3(join3(pdir, ".env"), "utf8"));
   } catch {
     return /* @__PURE__ */ new Map();
   }
@@ -9196,7 +11272,7 @@ var rp = (p) => {
 };
 var gitDirAt = (p) => {
   try {
-    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync3(p, "utf8")) : null;
+    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync4(p, "utf8")) : null;
     return m ? resolve2(dirname2(p), m[1].trim()) : p;
   } catch {
     return p;
@@ -9210,7 +11286,7 @@ function installFix(root, tool, want, pins) {
   const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
   const written = (file2) => {
     try {
-      return readFileSync3(join4(root, file2), "utf8").split("\n").some((l) => {
+      return readFileSync4(join4(root, file2), "utf8").split("\n").some((l) => {
         const m = /^\s*(\S+)\s+(\S+)/.exec(l);
         return !!m && names.includes(m[1]) && m[2] === want;
       });
@@ -9232,8 +11308,13 @@ function pinChecks(c) {
     const id = `a.pins.${pin.tool}`;
     let vals;
     const notes = [];
+    const present = pin.sources.filter((s) => !pin.optional.includes(s) || !sourceAbsent(c.root, c.tracked, s));
+    if (!present.length) {
+      out.push(res("SKIP", id, `no source present (all optional: ${pin.sources.join(", ")})`));
+      continue;
+    }
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
+      vals = present.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
       out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
@@ -9242,41 +11323,88 @@ function pinChecks(c) {
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = /* @__PURE__ */ new Set();
-    const info = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`)).map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`)).concat([...new Set(notes)].map((n) => res("INFO", id, n)));
+    const ranges = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`));
+    const info = (v, why = "") => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared${why}`);
+    const noted = [...new Set(notes)].map((n) => res("INFO", id, n));
     if (!pins.length) {
-      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || present.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...ranges.map((v) => info(v)), ...noted);
       continue;
     }
     const bad = disagreement(vals, pin.compare);
-    if (bad) {
-      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`), ...info);
-      continue;
-    }
     const want = pinOf(vals);
-    out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
-    if (c.static || pin.local === "off") continue;
+    const distinct = [...new Set(pins.map((v) => v.v))];
+    const named2 = (w) => distinct.length > 1 ? `${w} (${srcs(pins.filter((v) => v.v === w))})` : w;
+    const ranged = (v) => {
+      if (pin.range === "info") return info(v);
+      if (bad) return info(v, " (the pins disagree)");
+      const at2 = distinct.map((w) => [w, inRange(w, v.v, v.pep440)]);
+      const first = (k) => at2.find(([, a]) => a === k)?.[0];
+      const outside = first("outside");
+      const partly = first("partly");
+      return outside !== void 0 ? res("FAIL", id, `${v.src}: pin ${named2(outside)} is outside "${v.v}"`, `pin a version inside the range, or change the range`) : partly !== void 0 ? res("WARN", id, `${v.src}: pin ${named2(partly)} is only partly inside "${v.v}"`, `pin a version the range wholly allows (a series pin names every version in it), or widen the range`) : first(null) !== void 0 ? info(v, ' (not a form range = "check" reads)') : res("PASS", id, `${v.src}: ${distinct.length > 1 ? `pins ${distinct.map(named2).join(", ")} are` : `pin ${want} is`} inside "${v.v}"`);
+    };
+    out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...ranges.map(ranged), ...noted);
+    const sev = pin.local;
+    if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool] : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
-    const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = installFix(c.root, pin.tool, want, pins);
+    const row = (s, message, fix) => void (s !== "off" && out.push(res(s.toUpperCase(), lid, message, fix)));
+    const fixFor = (w) => bad ? `align the pins first (${id}); env-check then names the version to install` : installFix(c.root, pin.tool, w, pins);
+    const of = (w) => bad ? ` (${srcs(pins.filter((v) => v.v === w))})` : "";
     const cmd = [bin, ...args].join(" ");
     const said = (...texts) => {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
       return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
-    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1e3}s`, fix));
-    else if (r.notFound) {
-      const at = which(bin, c.env.PATH);
-      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
-    } else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
-    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
-    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
-    else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
-    else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
+    const at = r.notFound ? which(bin, c.env.PATH) : null;
+    const failed = r.timedOut ? `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1e3}s` : r.notFound ? at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH` : r.code === null ? `${cmd} could not run (${r.abend ?? "killed"})` : r.code !== 0 ? `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}` : null;
+    if (failed !== null || have === null) row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
+    else {
+      for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
+        if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
+        else row(sev[diffPart(have, w)], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
+      }
+    }
+    const amb = ambiguousShim(c, bin);
+    if (amb) out.push(res("WARN", lid, amb, `find the stray copy (asdf which ${bin}, then the bin dir of each listed provider; a Go-installed tool is in that Go install's bin dir), remove it, then run asdf reshim; ask the machine owner if unsure`));
   }
   return out;
+}
+function ambiguousShim(c, bin) {
+  const p = which(bin, c.env.PATH);
+  const s = p ? shimOf(p) : null;
+  if (!s || s.manager !== "asdf") return null;
+  const found = [...new Set(s.providers.map((x) => x.plugin))].flatMap((plugin) => {
+    const v = asdfActive(c, plugin).find((a) => s.providers.some((x) => x.plugin === plugin && x.version === a));
+    return v ? [`${plugin} ${v}`] : [];
+  });
+  if (found.length < 2) return null;
+  return `ambiguous shim: provided by ${found.slice(0, -1).join(", ")} and ${found.at(-1)} (shim ${p})`;
+}
+function asdfActive(c, plugin) {
+  const env = c.env[`ASDF_${plugin.toUpperCase().replace(/-/g, "_")}_VERSION`]?.trim();
+  if (env) return env.split(/\s+/);
+  const listed = (dir) => {
+    let text;
+    try {
+      text = readFileSync4(join4(dir, ".tool-versions"), "utf8");
+    } catch {
+      return null;
+    }
+    for (const l of text.split("\n")) {
+      const [name, ...vs] = l.replace(/#.*/, "").trim().split(/\s+/);
+      if (name === plugin && vs.length) return vs;
+    }
+    return null;
+  };
+  for (let d = c.root; ; d = dirname2(d)) {
+    const v = listed(d);
+    if (v) return v;
+    if (dirname2(d) === d) break;
+  }
+  return c.env.HOME && listed(c.env.HOME) || [];
 }
 function sharedCheck(c) {
   if (c.cfg.sharedHint === null) return [];
@@ -9292,7 +11420,7 @@ function sharedCheck(c) {
     const me = rp(c.root);
     let at = null;
     try {
-      at = dirname2(resolve2(c.gitDir, readFileSync3(join4(c.gitDir, "gitdir"), "utf8").trim()));
+      at = dirname2(resolve2(c.gitDir, readFileSync4(join4(c.gitDir, "gitdir"), "utf8").trim()));
     } catch {
     }
     if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
@@ -9306,7 +11434,7 @@ function autoEntrypoints(c) {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = /* @__PURE__ */ new Set();
   for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join4(c.root, t)))) {
-    for (const m of readFileSync3(join4(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
+    for (const m of readFileSync4(join4(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
   }
   return [...found].sort();
 }
@@ -9401,7 +11529,7 @@ var isMetaKey = (k) => k === "name" || k === "version" || k.startsWith("x-");
 function readCompose(file) {
   let text;
   try {
-    text = readFileSync3(file, "utf8");
+    text = readFileSync4(file, "utf8");
   } catch {
     return "cannot be read";
   }
@@ -9785,7 +11913,7 @@ function envCheckMain(argv, d) {
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
   let text;
   try {
-    text = readFileSync4(cfgFile, "utf8");
+    text = readFileSync5(cfgFile, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${cfgFile}: ${e.message}`);
   }
@@ -9858,7 +11986,7 @@ function envCheckMain(argv, d) {
 }
 
 // src/lib/zone-cli.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync6 } from "node:fs";
 import { join as join6, relative, resolve as resolve4 } from "node:path";
 
 // src/lib/zone.ts
@@ -10022,8 +12150,8 @@ function renderText(rz, ship, infos, s, explain) {
     const shown = paths.slice(0, LIST_CAP).map(showPath).join(", ") + (paths.length > LIST_CAP ? `, (+${paths.length - LIST_CAP} more)` : "");
     lines.push(`  ${s.zone}  ${row ? `\`${row.glob}\`` : "(no row: default yellow)"}  ${plural(paths.length, "path")}: ${shown}`);
   }
-  const inc = s.unmatched ? ` incl. ${s.unmatched} unmatched` : "";
-  lines.push(`paths: ${infos.length} (red ${s.counts.red}, yellow ${s.counts.yellow}${inc}, green ${s.counts.green})`);
+  const inc2 = s.unmatched ? ` incl. ${s.unmatched} unmatched` : "";
+  lines.push(`paths: ${infos.length} (red ${s.counts.red}, yellow ${s.counts.yellow}${inc2}, green ${s.counts.green})`);
   lines.push(`ship: ${ship}`);
   if (s.zone === "green") {
     const alt = ["docs-only", "trivial S0"].flatMap((k) => rz.ship[k] ? [`${k}: ${rz.ship[k]}`] : []);
@@ -10055,7 +12183,7 @@ function zoneMain(argv, d) {
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
   try {
-    text = readFileSync5(filePath, "utf8");
+    text = readFileSync6(filePath, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${filePath}: ${e.message}`);
   }
@@ -10108,7 +12236,7 @@ function realDeps() {
     run,
     cwd: process.cwd(),
     env: process.env,
-    readStdin: () => readFileSync6(0, "utf8"),
+    readStdin: () => readFileSync7(0, "utf8"),
     out: (s) => process.stdout.write(`${s}
 `),
     err: (s) => process.stderr.write(`${s}
