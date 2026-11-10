@@ -100,6 +100,10 @@ describe("inRange: a pin against a range", () => {
     ["20", "<20.5.0 || >20.5.0", false, "partly"],
     ["20", ">=20.0.0 <20.5.0 || >=20.6.0 <21", false, "partly"],
     ["3.12", ">=3.12, <3.12.5 || >=3.12.5", true, "inside"],
+    // Value: protects=a range semver reads as `*` (`>=0`) is checked, never a crash; fails_when=covers() drops its guard for
+    // semver's ANY comparator and throws Invalid Version; why_new=no row reached the `*` comparator; seam=none; no_claim=row text
+    ["20", ">=0", false, "inside"],
+    ["3.12", ">=0.0.0", true, "inside"],
   ])("pin %s vs %s (PEP 440: %s) is %s", (pin, range, pep, want) => {
     expect(inRange(pin, range, pep)).toBe(want);
   });
@@ -215,6 +219,20 @@ describe('[[pins]] range = "check" (B1)', () => {
     const cfg = `${HEAD}[[pins]]\ntool = "python"\nsources = ["python-version", "setup-python"]\nlocal = "off"\nrange = "check"\n`;
     const r = check(cfg, { ".python-version": "3.11\n", ".github/workflows/ci.yml": wf, "pyproject.toml": '[project]\nrequires-python = ">=3.10, <=3.11"\n' });
     expect(r.heads[1]).toBe('WARN a.pins.python  setup-python:.github/workflows/ci.yml: pin 3.11 is only partly inside ">=3.10, <=3.11"');
+  });
+
+  // Value: protects=Poetry and Pipfile ranges are read as PEP 440 too; fails_when=the poetry or pipfile parser stops tagging its
+  // range pep440, so `,` reads as no form (INFO) or `<=3.11` as every 3.11.x; why_new=only requires-python was checked end to
+  // end; seam=none; no_claim=the operator table (semverRange rows above)
+  it.each([
+    ["Poetry", "pyproject.toml", '[tool.poetry.dependencies]\npython = ">=3.9,<3.11"\n', "3.12", 1, 'FAIL a.pins.python  setup-python:.github/workflows/ci.yml: pin 3.12 is outside ">=3.9,<3.11"'],
+    ["Poetry", "pyproject.toml", '[tool.poetry.dependencies]\npython = "<=3.11"\n', "3.11", 0, 'WARN a.pins.python  setup-python:.github/workflows/ci.yml: pin 3.11 is only partly inside "<=3.11"'],
+    ["Pipfile", "Pipfile", '[requires]\npython_version = ">=3.9, <3.11"\n', "3.12", 1, 'FAIL a.pins.python  setup-python:.github/workflows/ci.yml: pin 3.12 is outside ">=3.9, <3.11"'],
+  ])("a %s range (%s) is read as PEP 440", (_n, file, text, pin, code, row) => {
+    const wf = `jobs:\n  ci:\n    steps:\n      - uses: actions/setup-python@v5\n        with:\n          python-version-file: ${file}\n`;
+    const cfg = `${HEAD}[[pins]]\ntool = "python"\nsources = ["python-version", "setup-python"]\nlocal = "off"\nrange = "check"\n`;
+    const r = check(cfg, { ".python-version": `${pin}\n`, ".github/workflows/ci.yml": wf, [file]: text });
+    expect([r.code, r.heads[1]]).toEqual([code, row]);
   });
 });
 

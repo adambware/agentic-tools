@@ -1,4 +1,6 @@
 // 0.8.0 B2: `[[pins]] optional = [...]`, sources that are read when present and skipped when absent.
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "./env-config.js";
 import { main } from "./loops-cli.js";
@@ -84,6 +86,21 @@ describe("optional pin sources (B2)", () => {
     const glob = "setup-go:.github/workflows/*.yml";
     const r = check(PIN("go", ["go-mod", glob], [glob]), { "go.mod": "module x\n\ngo 1.26.1\n" });
     expect([r.code, r.pins]).toEqual([0, ["PASS a.pins.go  go 1.26.1 (go-mod:go.mod)"]]);
+  });
+
+  // Value: protects=B2 only skips absence: a glob whose tracked match is deleted from the working tree still FAILs;
+  // fails_when=sourceAbsent treats a match missing on disk as absent and skips the source; why_new=only zero-match globs
+  // were tested; seam=none; no_claim=which files a glob matches
+  it("an optional glob whose tracked match is missing on disk FAILs, never skips", () => {
+    const glob = "setup-go:.github/workflows/*.yml";
+    const wf = "jobs:\n  ci:\n    steps:\n      - uses: actions/setup-go@v5\n        with:\n          go-version: 1.26.1\n";
+    const root = repo({ "README.md": "x\n", "go.mod": "module x\n\ngo 1.26.1\n", ".github/workflows/ci.yml": wf });
+    rmSync(join(root, ".github/workflows/ci.yml")); // still in git ls-files
+    put(root, CFG, PIN("go", ["go-mod", glob], [glob]));
+    const t = deps(root);
+    expect(main(["env-check"], t.d)).toBe(1);
+    const pins = t.out.join("\n").split("\n").filter((l) => / a\.pins\./.test(l));
+    expect(pins).toEqual([expect.stringMatching(/^FAIL a\.pins\.go  setup-go:\.github\/workflows\/\*\.yml: \.github\/workflows\/ci\.yml not found/)]);
   });
 
   it("a non-optional glob with zero matches still FAILs", () => {

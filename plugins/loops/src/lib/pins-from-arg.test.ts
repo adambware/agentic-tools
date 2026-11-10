@@ -40,6 +40,12 @@ describe("Dockerfile FROM ${ARG} through the global ARG scope", () => {
     ["a default with a registry path", "FROM ${BASE:-docker.io/library/node:20}\n", ["20"]],
     ["the tool's version ARG inside the global value", "ARG NODE_VERSION=20.11.0\nARG BASE=node:${NODE_VERSION}\nFROM ${BASE}\n", ["20.11.0", "20.11.0"]],
     ["the go image", "ARG GO_IMAGE=golang:1.26.1\nFROM ${GO_IMAGE} AS build\n", ["1.26.1"], "go"],
+    // Value: protects=each shell modifier keeps Docker's meaning (`:` tests empty, `+` the alternate, single quotes);
+    // fails_when=`-`/`:-` or `+`/`:+` swap or single quotes are kept; why_new=only `:-` was read; seam=none; no_claim=other modifiers
+    ["`${A:-default}` with A set empty (empty counts as unset)", "ARG BASE=\nFROM ${BASE:-node:20}\n", ["20"]],
+    ["`${A+alt}` with A set empty (set, so the alternate)", "ARG BASE=\nFROM ${BASE+node:20}\n", ["20"]],
+    ["`${A:+alt}` with A set", "ARG T=1\nFROM ${T:+node:20.11.0}\n", ["20.11.0"]],
+    ["a single-quoted value", "ARG BASE='node:20.11.0'\nFROM ${BASE}\n", ["20.11.0"]],
   ])("reads %s", (_n, text, want, tool = "node") => expect(read("dockerfile", tool, D(text))).toEqual([want, []]));
 
   // A resolved image that is not the tool's image is handled as that literal image would be.
@@ -61,6 +67,10 @@ describe("Dockerfile FROM ${ARG} through the global ARG scope", () => {
     ["an empty value", "ARG BASE=\nFROM ${BASE}\nFROM node:20\n", "${BASE}", 2],
     ["a global value built from an unset ARG", "ARG BASE=node:${V}\nFROM ${BASE}\nFROM node:20\n", "${BASE}", 2],
     ["another modifier", "ARG BASE=node:18\nFROM ${BASE%:*}:20\nFROM node:20\n", "${BASE%:*}:20", 2],
+    // Value: protects=a modifier that expands to an empty image is a note, never a read of its fallback; fails_when=`${A-w}`
+    // is read as `${A:-w}` or `${A:+w}` as `${A+w}` on an empty A; why_new=no row had an empty A; seam=none; no_claim=none beyond
+    ["`${A-default}` with A set empty", "ARG BASE=\nFROM ${BASE-node:18}\nFROM node:20\n", "${BASE-node:18}", 2],
+    ["`${A:+alt}` with A set empty", "ARG T=\nFROM ${T:+node:18}\nFROM node:20\n", "${T:+node:18}", 2],
   ])("%s is INFO image set at build time, not FAIL", (_n, text, image, line) =>
     expect(read("dockerfile", "node", D(text))).toEqual([["20"], [BUILD_TIME(image, line)]]));
 
