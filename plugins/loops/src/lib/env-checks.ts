@@ -8,7 +8,7 @@ import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type Comp
 import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck, Severity } from "./env-config.js";
-import { ALIAS, cmp, disagreement, inRange, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { ALIAS, cmp, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -104,8 +104,14 @@ export function pinChecks(c: Ctx): Result[] {
     const id = `a.pins.${pin.tool}`;
     let vals: PinValue[];
     const notes: string[] = [];
+    // B2: an absent optional source is skipped; when every source is optional and none is present, there is no pin.
+    const present = pin.sources.filter((s) => !pin.optional.includes(s) || !sourceAbsent(c.root, c.tracked, s));
+    if (!present.length) {
+      out.push(res("SKIP", id, `no source present (all optional: ${pin.sources.join(", ")})`));
+      continue;
+    }
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
+      vals = present.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
       out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
@@ -121,7 +127,7 @@ export function pinChecks(c: Ctx): Result[] {
     const info = (v: PinValue, why = "") => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared${why}`);
     const noted = [...new Set(notes)].map((n) => res("INFO", id, n));
     if (!pins.length) {
-      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || pin.sources.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...ranges.map((v) => info(v)), ...noted);
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || present.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...ranges.map((v) => info(v)), ...noted);
       continue;
     }
     const bad = disagreement(vals, pin.compare);

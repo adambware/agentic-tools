@@ -458,6 +458,8 @@ sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
 compare = "exact"                       # engines is a range: never compared with the pins
 range = "check"                         # 0.8.0: info (default): one INFO row per range | check: the pin against
                                         # each range (PASS inside, WARN partly inside, FAIL outside)
+optional = ["dockerfile:build/Dockerfile"]  # 0.8.0: sources (exactly as written in sources) read if present,
+                                        # skipped if absent (a subset of sources, else exit 2); all absent = SKIP
 
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
@@ -515,6 +517,14 @@ A range with `!=` or `===`, a prerelease (`>=3.13.0rc1`, `>=22.0.0-rc.1`), a PEP
 packaging metadata, an exact-looking value (`engines.node = "20"`, which is no range form), or any form semver rejects
 stays INFO `... is a range, not compared (not a form range = "check" reads)`; so does a prerelease pin. While the pins disagree, each range stays INFO
 `(the pins disagree)`; with no exact pin, each range stays INFO.
+
+**Optional sources (0.8.0).** `optional = [...]` in a `[[pins]]` entry lists sources that are read when present and
+skipped when absent. Each entry is a source specification exactly as written in `sources` (`"nvmrc"`,
+`"tool-versions:.tool-versions"`), not a filename; one that is not in `sources` is a config error (exit 2) naming it.
+Only absence is skipped: a missing file, or a glob that matches no tracked file. A present optional source that holds no
+valid pin still FAILs, and a missing source not listed in `optional` still FAILs `<source>: <file> not found`. When
+every source is optional and none is present, the row is `SKIP a.pins.<tool> no source present (all optional: ...)` and
+no `a.local.<tool>` row runs. (Not a trailing `?` on the source: `?` is a glob character.)
 
 Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files). A pin is one version or one
 series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2` (and node's `=20.11.1`). Every reader that takes a pin

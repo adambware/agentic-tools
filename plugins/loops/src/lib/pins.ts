@@ -586,12 +586,25 @@ export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, spli
  * value but calls a reusable workflow adds a note to `notes` (when the source still yields a value), or is named in the
  * error (when it does not). A value a parser cannot know (a Dockerfile image set at build time) is always a note: a source
  * that yields only such notes is no error. */
-export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
+/** The file `spec` names (its path, else its kind's default file), and the files it reads: a glob's tracked matches. */
+function sourceFiles(tracked: string[], spec: string): { target: string; files: string[] } {
   const [kind, path] = splitSource(spec);
-  const k = KINDS[kind]!;
-  const target = path ?? k.file;
+  const target = path ?? KINDS[kind]!.file;
   const res = isGlob(target) ? compileGlob(target) : null;
-  const files = res ? tracked.filter((f) => res.some((re) => re.test(f))) : [target];
+  return { target, files: res ? tracked.filter((f) => res.some((re) => re.test(f))) : [target] };
+}
+
+/** Whether `spec` is absent (B2: an optional source is then skipped): its file is missing, or its glob matches no tracked
+ * file. Only absence: a present file that holds no pin, or a glob match missing on disk, is read and FAILs as usual. */
+export function sourceAbsent(root: string, tracked: string[], spec: string): boolean {
+  const { target, files } = sourceFiles(tracked, spec);
+  return !files.length || (!isGlob(target) && !existsSync(join(root, target)));
+}
+
+export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
+  const [kind] = splitSource(spec);
+  const k = KINDS[kind]!;
+  const { target, files } = sourceFiles(tracked, spec);
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out: PinValue[] = [];
   const skipped: [string, string][] = []; // [file, its reusable calls]

@@ -9,6 +9,8 @@ import { VERSION } from "./version.js";
 export interface Pin {
   tool: string;
   sources: string[];
+  /** Sources (as written in sources) read when present and skipped when absent (0.8.0); a subset of sources. */
+  optional: string[];
   compare: Compare;
   /** The a.local level for a version that differs first in each component (0.8.0); a probe failure uses major. */
   local: Record<Part, Severity>;
@@ -110,15 +112,18 @@ export function parseConfig(text: string, file: string): Config {
 
   const pins = list(top.pins ?? [], "[[pins]]").map((p, i): Pin => {
     const where = `[[pins]] #${i + 1}`;
-    const t = table(p, where, ["tool", "sources", "compare", "local", "range"]);
+    const t = table(p, where, ["tool", "sources", "optional", "compare", "local", "range"]);
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
+    const optional = pick(t, "optional", where, isStrs, "a list of strings", []);
+    for (const s of optional) if (!sources.includes(s)) throw new UsageError(`${where}: optional "${s}" is not in sources (list a source exactly as written there)`);
     if (t.compare === "floor")
       throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: compare no longer reads ranges; use exact, minor or major, and set range = "check" (0.8.0) to check the pin against each range`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
+      optional,
       compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major"), "exact|minor|major", "exact"),
       local: localOf(t.local, where),
       range: pick(t, "range", where, oneOf<"check" | "info">("check", "info"), "check|info", "info"),
