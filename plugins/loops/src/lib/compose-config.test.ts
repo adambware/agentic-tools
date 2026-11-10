@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { composeName, composeVersion, isComposeConfigCall, isComposeVersionCall, rerun, type ComposeError, type ComposeErrorKind } from "./compose-config.js";
+import { composeName, composeNameRaw, composeVersion, isComposeConfigCall, isComposeVersionCall, rerun, type ComposeError, type ComposeErrorKind } from "./compose-config.js";
 import { run, type RunResult, type Runner } from "./proc.js";
 import { canary } from "./testkit.js";
 
@@ -241,6 +241,44 @@ describe("composeName with a stubbed runner", () => {
     expect(isComposeConfigCall("docker", ["ps"])).toBe(false);
     expect(isComposeConfigCall("docker", ["compose", "up"])).toBe(false);
     expect(isComposeConfigCall("git", ["compose", "config"])).toBe(false);
+  });
+});
+
+describe("composeNameRaw with a stubbed runner (the peer fallback)", () => {
+  it("asks config --no-env-resolution --no-interpolate --no-normalize --format json, -f files first, never -p or -q", () => {
+    const { run, calls } = stub(json({ name: "${PN:-x}" }));
+    expect(composeNameRaw({ root: "/r", files: ["a.yml", "b.yml"], env: {}, run })).toEqual({ raw: "${PN:-x}" });
+    expect(calls[0]!.cmd).toBe("docker");
+    expect(calls[0]!.args).toEqual(["compose", "-f", "a.yml", "-f", "b.yml", "config", "--no-env-resolution", "--no-interpolate", "--no-normalize", "--format", "json"]);
+    for (const bad of ["-p", "--project-name", "-q", "--quiet"]) expect(calls[0]!.args).not.toContain(bad);
+    expect(isComposeConfigCall(calls[0]!.cmd, calls[0]!.args)).toBe(true);
+  });
+
+  it("with normalize, drops only --no-normalize (still uninterpolated)", () => {
+    const { run, calls } = stub(json({ name: "other" }));
+    expect(composeNameRaw({ root: "/r", env: {}, run, normalize: true })).toEqual({ raw: "other" });
+    expect(calls[0]!.args).toEqual(["compose", "config", "--no-env-resolution", "--no-interpolate", "--format", "json"]);
+  });
+
+  it("scrubs COMPOSE_* and sets the remote loaders off over the shell's, with the 10s timeout", () => {
+    const env = { PATH: "/bin", COMPOSE_PROJECT_NAME: "mine", COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" };
+    const { run, calls } = stub(json({}));
+    expect(composeNameRaw({ root: "/p", env, scrub: true, run })).toEqual({ raw: null });
+    expect(calls[0]!.opts).toEqual({ cwd: "/p", env: { PATH: "/bin", ...OFF }, timeoutMs: 10_000 });
+  });
+
+  it("fails on a Compose without --no-normalize, a timeout, invalid JSON or no compose file, relaying none of Compose's text", () => {
+    const rows: [RunResult, ComposeErrorKind][] = [
+      [res({ code: 1, stderr: "unknown flag: --no-normalize\n" }), "exit"],
+      [res({ code: null, timedOut: true }), "timeout"],
+      [res({ stdout: "nope" }), "json"],
+      [res({ code: 1, stderr: "no configuration file provided: not found\n" }), "exit"],
+    ];
+    for (const [r, kind] of rows) {
+      const out = composeNameRaw({ root: "/r", env: {}, run: stub(r).run });
+      expect(out).toMatchObject({ kind });
+      expect(JSON.stringify(out)).not.toMatch(/unknown flag|nope|not found/);
+    }
   });
 });
 

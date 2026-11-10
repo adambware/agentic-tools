@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { isMap, parseAllDocuments } from "yaml";
-import { composeName, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
+import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
@@ -495,18 +495,75 @@ interface Peer {
   /** Its runs as another shell would start them (without this shell's COMPOSE_*). Probed only from a worktree, and
    * only while the directory exists: from the main checkout each worktree reports its own collisions. */
   cells: Cell[];
-  /** Names a fallback probe recovered for cells that failed; empty until that fallback runs. */
-  fallback: string[];
+  /** Its cells whose probe failed, in order: each is a gap in what this checkout can check against (the peer WARN). */
+  failed: Cell[];
+  /** Names held for those gaps: the main checkout's derived name when any of its cells failed, and what the fallback
+   * (`recover`) read from the failed cells' files without interpolating them. */
+  recovered: string[];
+  /** A failed cell's `name:` is a template the fallback cannot resolve (only that checkout's shell can). */
+  templated: boolean;
+}
+
+/** What the fallback read from one failed run's files: the names it holds, and whether `name:` was a template. */
+type Recovered = { names: string[]; templated: boolean };
+const NOTHING: Recovered = { names: [], templated: false };
+
+/**
+ * The fallback for a peer's failed run (kind interp or exit only: a Compose that hangs, crashes or is too old gives no
+ * second answer): `config --no-interpolate --no-normalize` reads `name:` as written. A literal one is held as Compose
+ * normalizes it; then the normalizing run (still uninterpolated) adds the project directory's `.env`
+ * COMPOSE_PROJECT_NAME, or with no `name:` the directory default. For a templated `name:` that run's answer is held
+ * only when it is not just the template normalized (a `.env` name beat it); otherwise nothing is, and the peer is
+ * marked templated. Any failure holds nothing. Runs are deduped by (cwd, files), and after one times out the rest of
+ * this e.project run skips the fallback (each could hang as long).
+ */
+function recoverer(c: Ctx): (p: Cell) => Recovered {
+  const seen = new Map<string, Recovered>();
+  let timedOut = false;
+  const once = (p: Cell): Recovered => {
+    const o = { root: p.dir, files: p.files, env: c.env, scrub: true, run: c.run };
+    const raw = composeNameRaw(o);
+    if ("error" in raw) {
+      timedOut ||= raw.kind === "timeout";
+      return NOTHING;
+    }
+    const literal = raw.raw !== null && !raw.raw.includes("$") ? normProject(raw.raw) : null;
+    const norm = composeNameRaw({ ...o, normalize: true });
+    if ("error" in norm) timedOut ||= norm.kind === "timeout";
+    const answer = "error" in norm ? null : norm.raw;
+    const names = new Set(literal ? [literal] : []);
+    if (raw.raw !== null && literal === null) {
+      if (answer === null || answer === normProject(raw.raw)) return { names: [], templated: true };
+      names.add(answer);
+    } else if (answer) names.add(answer);
+    return { names: [...names], templated: false };
+  };
+  return (p) => {
+    const kind = (p.r as ComposeError).kind;
+    if (kind !== "interp" && kind !== "exit") return NOTHING;
+    const key = `${rp(p.dir)}\0${(p.files ?? []).join("\0")}`;
+    const hit = seen.get(key);
+    if (hit) return hit;
+    const got = timedOut ? NOTHING : once(p);
+    seen.set(key, got);
+    return got;
+  };
 }
 
 function peers(c: Ctx): Peer[] {
   const main = rp(c.worktrees[0] ?? c.root);
+  const recover = recoverer(c);
   return c.worktrees.filter((w) => rp(w) !== rp(c.root)).map((w) => {
     const isMain = rp(w) === main;
     const holder = isMain ? "the main checkout" : `worktree ${w}`;
     const exists = existsSync(w);
     const cells = c.isWorktree && exists ? cellsOf(c, w, `${holder}'s `, [true]) : [];
-    return { root: w, holder, isMain, exists, files: c.cfg.compose!.files, derived: isMain ? null : derive(c, w), cells, fallback: [] };
+    const failed = cells.filter((p) => "error" in p.r);
+    const got = failed.map(recover);
+    // From a worktree the main checkout is a peer too: when its name is unknown, the name plain Compose derives for it
+    // is held, so a worktree named like the main checkout never shares (and `down -v`s) its volumes.
+    const recovered = [...(isMain && failed.length ? [derive(c, w)] : []), ...got.flatMap((g) => g.names)];
+    return { root: w, holder, isMain, exists, files: c.cfg.compose!.files, derived: isMain ? null : derive(c, w), cells, failed, recovered, templated: got.some((g) => g.templated) };
   });
 }
 
@@ -514,20 +571,34 @@ const named = (p: Cell): string | undefined => ("name" in p.r ? p.r.name : undef
 
 /**
  * Held names and who holds each, the first holder winning: every worktree's derived name (a gone one's included, as
- * git still lists it), then each peer's answers and fallback names, peer by peer in git's order.
+ * git still lists it), then each peer's answers and recovered names, peer by peer in git's order.
  */
 function heldOf(ps: Peer[]): Map<string, string> {
   const held = new Map<string, string>();
   for (const p of ps) {
     if (p.derived !== null && !held.has(p.derived)) held.set(p.derived, p.exists ? p.holder : `${p.holder} (gone, until git worktree prune)`);
-    for (const n of [...p.cells.map(named), ...p.fallback]) if (n && !held.has(n)) held.set(n, p.holder);
+    for (const n of [...p.cells.map(named), ...p.recovered]) if (n && !held.has(n)) held.set(n, p.holder);
   }
   return held;
 }
 
-/** The WARNs for peers whose probes left gaps in the held names. None yet: every failed peer cell is a FAIL (check 2). */
-function peerWarnings(_c: Ctx, _ps: Peer[]): Result[] {
-  return [];
+/**
+ * One WARN per peer whose probe failed somewhere (its first failed run, then how many more): its names that loops
+ * could know are held, but a name only that checkout's shell sets is not, until its stack runs (check 5 sees it then).
+ * The fix is that checkout's own run, whose e.project row says what to fix there.
+ */
+function peerWarnings(ps: Peer[], name: string, kept: boolean): Result[] {
+  return ps.flatMap((p) => {
+    const [first, ...more] = p.failed;
+    if (!first) return [];
+    const where = p.isMain ? "checkout" : "worktree";
+    const also = more.length ? `, and ${more.length} more run${more.length > 1 ? "s" : ""}` : "";
+    const keep = kept ? `this checkout keeps project ${name} (checked against every name loops can know)` : `this checkout's project ${name} was checked against every name loops can know`;
+    const tpl = p.templated ? "; its name: is a template only that shell resolves" : "";
+    const message = `${p.isMain ? "main checkout" : "peer worktree"} ${p.root}: ${first.label}: ${(first.r as ComposeError).error}${also}; ${keep}, but a name set only in that ${where}'s shell cannot be checked until its stack runs${tpl}`;
+    const fix = `run bin/env-check in ${p.root} (its e.project row names the fix there)${p.isMain ? "" : `; if that worktree is abandoned, git worktree remove ${shQuote(p.root)} (refuses when it has changes)`}`;
+    return [res("WARN", "e.project", message, fix)];
+  });
 }
 
 /**
@@ -536,9 +607,10 @@ function peerWarnings(_c: Ctx, _ps: Peer[]): Result[] {
  * that keep it (`-p name` is safe; only a run without -p is not); `results[0]` is the row that decides. `withheld` is
  * whether any FAIL withholds. `answers` are the names Compose gave this checkout's own runs (b.containers and the
  * running-stack check read them). `ps` is the run's `docker ps` (b.containers reads it too), absent when evaluation
- * stopped before the running-stack check.
+ * stopped before the running-stack check. `warnings` are the peer WARNs (one per other checkout whose probe failed),
+ * shown after `results`; they never withhold the name or decide the row.
  */
-export type ComposeProject = { name: string | null; results: Result[]; withheld: boolean; answers: string[]; ps?: Listing };
+export type ComposeProject = { name: string | null; results: Result[]; withheld: boolean; answers: string[]; ps?: Listing; warnings: Result[] };
 
 const UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
 const interpFix = (v: string, pdir: string): string =>
@@ -553,7 +625,7 @@ const NO_NAME_FIX = "Compose exited 0 without a usable project name; check `dock
 export function composeProject(c: Ctx): ComposeProject {
   const id = "e.project";
   const { files, derive: how } = c.cfg.compose!;
-  const one = (level: Level, message: string, fix?: string, name: string | null = null): ComposeProject => ({ name, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [] });
+  const one = (level: Level, message: string, fix?: string, name: string | null = null): ComposeProject => ({ name, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [], warnings: [] });
   // Check 0: this checkout lacks a configured file.
   const missing = files.filter((f) => !existsSync(join(c.root, f)));
   if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
@@ -582,7 +654,7 @@ export function composeProject(c: Ctx): ComposeProject {
   const own = cellsOf(c, c.root, c.isWorktree ? "this worktree's " : "this checkout's ", shellCompose(c).length ? [false, true] : [false]);
   // name(X): the shell's, else a worktree's derived one, else the main checkout's configured run as is (own[0], as
   // check 0 found every file). That probe failing leaves nothing to check.
-  if (!envName && !c.isWorktree && "error" in own[0]!.r) return { name: null, results: [failed(own[0]!)], withheld: true, answers: [] };
+  if (!envName && !c.isWorktree && "error" in own[0]!.r) return { name: null, results: [failed(own[0]!)], withheld: true, answers: [], warnings: [] };
   if (!envName && !c.isWorktree && "noFile" in own[0]!.r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
   const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]!));
   if (!name) return one("FAIL", `no project name derives from directory ${basename(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
@@ -592,11 +664,11 @@ export function composeProject(c: Ctx): ComposeProject {
   const held = heldOf(others);
   // Every check runs; each FAIL says whether it withholds the name (true) or keeps it.
   const fails: [Result, boolean][] = [];
-  // Check 2: a probe that failed. Any peer's failed run withholds: what Compose would name that run is unknown, so it
-  // may be this checkout's name. So does the main checkout's own configured run, in a main-checkout run (it is where
-  // the name came from). This checkout's other runs keep the name: only that run without -p is unknown.
+  // Check 2: this checkout's own probe that failed. The main checkout's configured run, in a main-checkout run,
+  // withholds (it is where the name came from); this checkout's other runs keep the name: only that run without -p is
+  // unknown. A peer's failed run is no FAIL here: every name loops can know for it is held (its derived name, the
+  // main checkout's derived name, the fallback's), the rest is its own run's FAIL, and here it is a peer WARN.
   for (const p of own) if ("error" in p.r) fails.push([failed(p), !c.isWorktree && !!p.files]);
-  for (const p of others.flatMap((o) => o.cells)) if ("error" in p.r) fails.push([failed(p), true]);
   // Checks 3 and 6: the name itself is another checkout's.
   const holder = held.get(name);
   const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
@@ -632,11 +704,11 @@ export function composeProject(c: Ctx): ComposeProject {
   else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]): [Result, boolean] => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
   const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
   const note = Array.isArray(ps) || ps.timedOut ? "" : `; running stacks not checked (${ps.failed})`;
-  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps };
+  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps, warnings: peerWarnings(others, name, true) };
   const withheld = fails.some(([, w]) => w);
   const results = [...fails.filter(([, w]) => w), ...fails.filter(([, w]) => !w)].map(([r]) => r);
   results[0] = { ...results[0]!, message: results[0]!.message + note };
-  return { name: withheld ? null : name, results, withheld, answers, ps };
+  return { name: withheld ? null : name, results, withheld, answers, ps, warnings: peerWarnings(others, name, !withheld) };
 }
 
 /**
@@ -727,6 +799,7 @@ export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] 
   if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
     ...project.results,
+    ...project.warnings,
     ...(c.static || project.results.some((r) => r.level === "FAIL") ? [] : containersCheck(c, project)),
     unread.length
       ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it")
