@@ -7560,10 +7560,8 @@ function catches(f, p, slack) {
   for (const cited of parseLocations(f.location)) {
     for (const loc of p.locations) {
       if (!sameFile(cited.file, loc.file)) continue;
-      if (cited.line === void 0) {
-        if (f.surface === p.vector) return true;
-        continue;
-      }
+      if (f.surface !== p.vector) continue;
+      if (cited.line === void 0) return true;
       const citedEnd = cited.lineEnd ?? cited.line;
       if (cited.line <= loc.lines[1] + slack && citedEnd >= loc.lines[0] - slack) return true;
     }
