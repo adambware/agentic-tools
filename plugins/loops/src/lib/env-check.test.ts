@@ -2899,7 +2899,7 @@ describe("output and exit codes", () => {
     ["inherited source kind", `${HEAD}[[pins]]\ntool = "go"\nsources = ["constructor"]\n`, /unknown source kind in "constructor"/],
     ["bad compare", `${HEAD}[[pins]]\ntool = "go"\nsources = ["go-mod"]\ncompare = "close"\n`, /compare must be exact\|minor\|major(?!\|)/],
     // 0.6.0: compare = "floor" was accepted; ranges are no longer compared, so it is a config error that says why. // pregate-literal: VERSION=0.6.0 names the release that removed floor
-    ["compare floor (removed in 0.6.0)", `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "floor"\n`, /\[\[pins\]\] #1: .*floor was removed in loops 0\.6\.0.*ranges are no longer compared.*a\.range.*exact, minor or major/],
+    ["compare floor (removed in 0.6.0)", `${HEAD}[[pins]]\ntool = "node"\nsources = ["nvmrc", "engines"]\ncompare = "floor"\n`, /\[\[pins\]\] #1: .*floor was removed in loops 0\.6\.0.*compare no longer reads ranges.*exact, minor or major.*range = "check"/],
     ["engine too new", `engine = ">=9.0.0"\n${HEAD}`, new RegExp(`needs loops >=9\\.0\\.0, this is ${V}; update agentic-tools`)],
     ["engine odd form", `engine = "^0.4"\n${HEAD}`, /engine must look like ">=0\.4\.0"/],
     ["compose test without files", `${HEAD}[compose]\nmode = "test"\n`, /mode test needs files/],

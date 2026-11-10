@@ -1,9 +1,11 @@
 // Version pins for `loops env-check`: read one tool's version out of the files that pin it, then
-// compare them. Every value a source yields is a pin (compared), a range (reported, never compared)
+// compare them. Every value a source yields is a pin (compared), a range (reported; checked against the pin only under
+// `range = "check"`, never compared with the pins)
 // or an unsupported form. A configured source that cannot be read or parsed, or holds an unsupported
 // form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, sep } from "node:path";
+import { intersects, subset, validRange } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -19,10 +21,12 @@ export interface PinValue {
   src: string;
   /** The pinned version, or a range's value as written. */
   v: string;
-  /** A range (engines, requires-python, a range input): reported, never compared. */
+  /** A range (engines, requires-python, a range input): reported, and compared only under `range = "check"`. */
   range: boolean;
+  /** A range from Python packaging metadata (requires-python, Poetry, Pipfile), read as PEP 440; else semver. */
+  pep440?: boolean;
 }
-type Found = { v: string; range?: boolean }[];
+type Found = { v: string; range?: boolean; pep440?: boolean }[];
 /** `file` is the repo-relative file `text` came from, for messages. A workflow parser adds each job-level reusable-workflow
  * call it skipped to `calls`; a parser adds each value it cannot know (reported as INFO, never compared) to `notes`. */
 type Parser = (text: string, tool: string, root: string, file: string, calls?: string[], notes?: string[]) => Found;
@@ -58,6 +62,42 @@ const isRange = (s: string): boolean => {
   const toks = s.replace(/(~>|===?|!=|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1").split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/);
   return (toks.length > 1 || OP.test(s)) && toks.every((t) => exact(t.replace(OP, "")) !== null);
 };
+/** `range` (one `isRange` accepts) in semver's grammar, or null when it cannot be checked exactly: `!=`, `===`, a
+ * prerelease, or anything semver rejects. npm and Actions ranges go to semver as written, but never with a PEP 440
+ * operator or `,`. PEP 440 (`pep440`) zero-pads a partial version (`>3.11` is `>3.11.0`, `<=3.11` `<=3.11.0`, `==3.11`
+ * `3.11.0`), reads `==3.11.*` as `3.11.x`, `~=3.11` as `>=3.11.0 <4.0.0` and `~=3.11.2` as `>=3.11.2 <3.12.0`, and `,` as
+ * and; Poetry's `^` and `~` mean what semver's do. */
+export function semverRange(range: string, pep440: boolean): string | null {
+  if (!isRange(range) || /!=|===/.test(range)) return null;
+  const toks = range.replace(/(~>|==|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1");
+  if (toks.split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/).some((t) => /[a-z]/i.test(exact(t.replace(OP, "")) ?? ""))) return null;
+  if (!pep440) return /~=|,/.test(toks) ? null : validRange(toks);
+  if (/\s-\s|~>/.test(toks)) return null;
+  const one = (c: string): string | null => {
+    const [, op = "==", v] = /^(~=|==|<=|>=|[<>=^~])?(.*)$/.exec(c)!;
+    const wild = /\.[xX*]$/.test(v!);
+    const n = exact(v!)!.split(".").map(Number);
+    const pad = [...n, 0, 0].slice(0, 3).join(".");
+    if (op === "^" || op === "~") return c;
+    if (op === "==") return wild ? `${n.join(".")}.x` : pad;
+    if (op === "=" || wild) return null;
+    if (op !== "~=") return `${op}${pad}`;
+    if (n.length < 2) return null;
+    const up = n.slice(0, -1);
+    up[up.length - 1]! += 1;
+    return `>=${pad} <${[...up, 0, 0].slice(0, 3).join(".")}`;
+  };
+  const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
+  return alts.some((a) => a.includes(null)) ? null : validRange(alts.map((a) => a.join(" ")).join(" || "));
+}
+/** Where the set of versions `pin` names (a series `20` is `20.x`) sits against `range`; null when either cannot be
+ * checked (`semverRange`, or a prerelease pin). */
+export function inRange(pin: string, range: string, pep440 = false): "inside" | "partly" | "outside" | null {
+  const r = semverRange(range, pep440);
+  if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
+  const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
+  return !intersects(set, r) ? "outside" : subset(set, r) ? "inside" : "partly";
+}
 /** A version spec as a pin, the series it installs (`1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`, node's `=20.11.1`);
  * as a range when it is wider than its stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`), kept as written;
  * null for anything else. */
@@ -150,12 +190,12 @@ const pyproject: Parser = (text) => {
     const rp = table(doc.project)?.["requires-python"];
     if (rp === undefined) throw new PinError("no project.requires-python");
     if (typeof rp !== "string") throw new PinError("requires-python is not a string");
-    return [{ v: rp.trim(), range: true }];
+    return [{ v: rp.trim(), range: true, pep440: true }];
   }
   const py = table(table(table(doc.tool)?.poetry)?.dependencies)?.python;
   if (py === undefined) throw new PinError("no project.requires-python or tool.poetry.dependencies.python");
   if (typeof py !== "string") throw new PinError("tool.poetry.dependencies.python is not a string");
-  return [{ v: py.trim(), range: true }];
+  return [{ v: py.trim(), range: true, pep440: true }];
 };
 /** `python-version-file: Pipfile` reads `[requires] python_full_version`, else `python_version`, as setup-python does. */
 const pipfile: Parser = (text, tool, _root, file) => {
@@ -166,7 +206,7 @@ const pipfile: Parser = (text, tool, _root, file) => {
   if (typeof v !== "string") throw new PinError(`requires.${key} is not a string`);
   const f = classify(v.trim(), tool);
   if (!f) throw unsupported(v.trim(), file, lineAt(text, text.search(new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m"))));
-  return [f];
+  return [f.range ? { ...f, pep440: true } : f];
 };
 /** In an image tag a bare `-dev` right after the version is the Chainguard/Wolfi dev variant (`20-dev`, `3.12-dev-slim`),
  * not a prerelease; `-dev.1` still is one. */
@@ -566,7 +606,7 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
-    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false, ...(x.pep440 && { pep440: true }) });
     unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
     if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }

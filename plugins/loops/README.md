@@ -455,7 +455,9 @@ local = "warn"                          # warn (default) | fail | off: one level
 [[pins]]
 tool = "node"
 sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
-compare = "exact"                       # engines is a range: one INFO row, never compared
+compare = "exact"                       # engines is a range: never compared with the pins
+range = "check"                         # 0.8.0: info (default): one INFO row per range | check: the pin against
+                                        # each range (PASS inside, WARN partly inside, FAIL outside)
 
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
@@ -482,14 +484,37 @@ timeout_s = 15
 ```
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
-depth, and the pin is the most specific one. A range is never compared: after the verdict, each distinct
+depth, and the pin is the most specific one. A range is never compared with the pins: after the verdict, each distinct
 (source, value) range adds one INFO row `<source>: "<value>" is a range, not compared`. When every source yields only ranges,
 `a.pins.<tool>` is a FAIL (`no exact pin among sources (...); pin an exact version in a supported source`) and no
 `a.local.<tool>` row runs. A value in the "anything else" column is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact
 version`; a `<tool>-version-file` name missing from the second table is a FAIL `unsupported form: <tool>-version-file
 <name> in <workflow>:<line> is not a supported version file (...); pin an exact version`. `compare =
-"floor"` was removed in 0.6.0 (exit 2); checking that a pin falls inside a range is a later `a.range` check.
+"floor"` was removed in 0.6.0 (exit 2); use `range = "check"` instead.
 These two tables are the only list of supported forms.
+
+**Range check (0.8.0).** `range = "check"` in a `[[pins]]` entry (default `"info"`, today's INFO row) turns each range
+row into the pin checked against that range, still with the id `a.pins.<tool>`, evaluated with semver (bundled). A
+series pin is the set of versions it names (`20` is `20.x`, `1.26` is `1.26.x`): `PASS <source>: pin <pin> is inside
+"<range>"` when the whole set is inside; `WARN ... is only partly inside` when part of it is (pin `20` against
+`>=20.11`; fix: pin a version the range wholly allows, or widen the range); `FAIL ... is outside` when none of it is
+(fix: pin a version inside the range, or change the range). The range forms are exactly the "range" column below.
+`engines` and workflow range inputs are read as npm semver (`<=20` is every 20.x, `~> v2` is `~2`); `requires-python`,
+Poetry's `python` and a Pipfile range are read as PEP 440:
+
+| PEP 440 | read as |
+|---|---|
+| `>=3.10`, `<3.13` | `>=3.10.0`, `<3.13.0` |
+| `>3.11`, `<=3.11` | `>3.11.0`, `<=3.11.0` (a partial version is zero-padded, so pin `3.11` is only partly inside `<=3.11`) |
+| `==3.12`, `==3.12.*` | `3.12.0`, `3.12.x` |
+| `~=3.11`, `~=3.11.2` | `>=3.11.0 <4.0.0`, `>=3.11.2 <3.12.0` |
+| `>=3.10, <3.13` | both (`,` is and) |
+| `^3.11`, `~3.11` (Poetry) | as semver |
+
+A range with `!=` or `===`, a prerelease (`>=3.13.0rc1`, `>=22.0.0-rc.1`), a PEP 440 operator or `,` outside Python
+packaging metadata, an exact-looking value (`engines.node = "20"`, which is no range form), or any form semver rejects
+stays INFO `... is a range, not compared (not a form range = "check" reads)`; so does a prerelease pin. While the pins disagree, each range stays INFO
+`(the pins disagree)`; with no exact pin, each range stays INFO.
 
 Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files). A pin is one version or one
 series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2` (and node's `=20.11.1`). Every reader that takes a pin

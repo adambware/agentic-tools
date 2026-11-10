@@ -8,7 +8,7 @@ import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type Comp
 import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck, Severity } from "./env-config.js";
-import { ALIAS, cmp, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import { ALIAS, cmp, disagreement, inRange, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -111,22 +111,32 @@ export function pinChecks(c: Ctx): Result[] {
       out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict, then one per
-    // distinct workflow skipped for its reusable-workflow calls.
+    // Only exact pins are compared with each other; each distinct (source, value) range is one row after the verdict
+    // (INFO, or under range = "check" the pin against that range), then one INFO per distinct workflow skipped for its
+    // reusable-workflow calls.
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs: PinValue[]) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = new Set<string>();
-    const info = vals
-      .filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`))
-      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`))
-      .concat([...new Set(notes)].map((n) => res("INFO", id, n)));
+    const ranges = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`));
+    const info = (v: PinValue, why = "") => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared${why}`);
+    const noted = [...new Set(notes)].map((n) => res("INFO", id, n));
     if (!pins.length) {
-      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || pin.sources.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || pin.sources.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...ranges.map((v) => info(v)), ...noted);
       continue;
     }
     const bad = disagreement(vals, pin.compare);
     const want = pinOf(vals);
-    out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
+    // B1: under range = "check", each range against the pin (as the set of versions a series names).
+    const ranged = (v: PinValue): Result => {
+      if (pin.range === "info") return info(v);
+      if (bad) return info(v, " (the pins disagree)");
+      const at = inRange(want, v.v, v.pep440);
+      return at === null ? info(v, ' (not a form range = "check" reads)')
+        : at === "inside" ? res("PASS", id, `${v.src}: pin ${want} is inside "${v.v}"`)
+        : at === "partly" ? res("WARN", id, `${v.src}: pin ${want} is only partly inside "${v.v}"`, `pin a version the range wholly allows (a series pin names every version in it), or widen the range`)
+        : res("FAIL", id, `${v.src}: pin ${want} is outside "${v.v}"`, `pin a version inside the range, or change the range`);
+    };
+    out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...ranges.map(ranged), ...noted);
     const sev = pin.local;
     if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];

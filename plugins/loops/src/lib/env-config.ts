@@ -12,6 +12,8 @@ export interface Pin {
   compare: Compare;
   /** The a.local level for a version that differs first in each component (0.8.0); a probe failure uses major. */
   local: Record<Part, Severity>;
+  /** "check" compares the pin against each range a source yields (0.8.0); "info" reports the range only. */
+  range: "check" | "info";
 }
 export type Severity = "fail" | "warn" | "info" | "off";
 export type Part = "major" | "minor" | "patch";
@@ -108,17 +110,18 @@ export function parseConfig(text: string, file: string): Config {
 
   const pins = list(top.pins ?? [], "[[pins]]").map((p, i): Pin => {
     const where = `[[pins]] #${i + 1}`;
-    const t = table(p, where, ["tool", "sources", "compare", "local"]);
+    const t = table(p, where, ["tool", "sources", "compare", "local", "range"]);
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
     if (t.compare === "floor")
-      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: ranges are no longer compared (a later a.range check will cover a pin inside a range); use exact, minor or major`);
+      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: compare no longer reads ranges; use exact, minor or major, and set range = "check" (0.8.0) to check the pin against each range`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
       compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major"), "exact|minor|major", "exact"),
       local: localOf(t.local, where),
+      range: pick(t, "range", where, oneOf<"check" | "info">("check", "info"), "check|info", "info"),
     };
   });
 
