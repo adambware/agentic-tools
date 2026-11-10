@@ -56,9 +56,10 @@ as JSON, and `--slack <n>` (default 3) widens each planted line range.
 
 ## Scoring
 
-- **Caught** — a logged finding's `location` cites a planted file with a line inside the
-  planted range (± slack), or cites the file with no line while filed under the planted
-  vector. Score what was *logged*: a vuln the refuter killed is a miss to the operator.
+- **Caught** — a logged finding filed under the planted vector whose `location` cites a
+  planted file with a line inside the planted range (± slack), or cites the file with no
+  line. A finding under a different vector never catches, even on a planted line (the
+  planted vulns sit close together); it scores as other. Score what was *logged*: a vuln the refuter killed is a miss to the operator.
 - **False positive on clean** — any finding filed under a clean vector, or citing a clean file.
 - **Other** — everything else (findings on the planted surfaces' other lines, on
   unkeyed files). Reported, not scored.

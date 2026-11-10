@@ -268,10 +268,10 @@ function catches(f: ScoredFinding, p: PlantedEntry, slack: number): boolean {
   for (const cited of parseLocations(f.location)) {
     for (const loc of p.locations) {
       if (!sameFile(cited.file, loc.file)) continue;
-      if (cited.line === undefined) {
-        if (f.surface === p.vector) return true;
-        continue;
-      }
+      // A catch needs the planted vector either way: the planted vulns sit close together
+      // in the same files, so a location match alone credits the wrong finding.
+      if (f.surface !== p.vector) continue;
+      if (cited.line === undefined) return true;
       const citedEnd = cited.lineEnd ?? cited.line;
       if (cited.line <= loc.lines[1] + slack && citedEnd >= loc.lines[0] - slack) return true;
     }

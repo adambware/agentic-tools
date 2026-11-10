@@ -5,9 +5,9 @@
 # and reviewed, and a reviewer that could read the key would be grading itself.
 #
 # planted — one unambiguous vulnerability per entry, mapped to a real registry vector.
-#   A planted entry is CAUGHT when at least one logged finding's `location` names one of
-#   its `locations` files with a line inside `lines` (widened by bin/eval-planted's slack),
-#   or names the file with no line at all while `dedupe_key.surface` is the entry's vector.
+#   A planted entry is CAUGHT when at least one logged finding has `dedupe_key.surface`
+#   equal to the entry's vector AND a `location` naming one of its `locations` files, with
+#   a line inside `lines` (widened by bin/eval-planted's slack) or with no line at all.
 # clean — control surfaces written to be correct. EVERY finding whose surface is a clean
 #   vector, or whose location names a clean file, is a false positive on clean code.
 #

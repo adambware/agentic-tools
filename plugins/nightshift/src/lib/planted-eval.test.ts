@@ -200,9 +200,35 @@ describe("scorePlanted against the shipped key", () => {
     expect(r.other_findings).toBe(0);
   });
 
-  it("a catch is by location, so a finding filed under a neighbouring vector still counts", () => {
+  it("a finding filed under a neighbouring vector does not catch, even on the planted line", () => {
     const r = scorePlanted(key, asScored([finding("ASVS-INPV-04", "app/controllers/tickets_controller.rb:7")]));
-    expect(r.planted.find((p) => p.id === "PV-03")!.caught).toBe(true);
+    expect(r.planted.find((p) => p.id === "PV-03")!.caught).toBe(false);
+    expect(r.caught).toBe(0);
+    expect(r.other_findings).toBe(1);
+  });
+
+  it("F1 repro: an INPV-04 finding at tickets_controller.rb:3 does not credit PV-03 (or anything)", () => {
+    const r = scorePlanted(key, asScored([finding("ASVS-INPV-04", "app/controllers/tickets_controller.rb:3")]));
+    expect(r.planted.find((p) => p.id === "PV-03")!.caught).toBe(false);
+    expect(r.planted.find((p) => p.id === "PV-01")!.caught).toBe(false);
+    expect(r.caught).toBe(0);
+  });
+
+  it("an authz finding inside PV-02's controller range does not credit PV-02", () => {
+    const r = scorePlanted(key, asScored([finding("ND-SEC-05", "app/controllers/webhook_monitors_controller.rb:5")]));
+    expect(r.planted.find((p) => p.id === "PV-02")!.caught).toBe(false);
+    expect(r.caught).toBe(0);
+  });
+
+  it("a correct-vector finding inside the slack window (above and below the range) still catches", () => {
+    // PV-02 controller range 3-7, slack 3
+    expect(scorePlanted(key, asScored([finding("ND-SEC-03", "app/controllers/webhook_monitors_controller.rb:10")])).caught).toBe(1);
+    expect(scorePlanted(key, asScored([finding("ND-SEC-03", "app/controllers/webhook_monitors_controller.rb:1")])).caught).toBe(1);
+  });
+
+  it("a correct-vector finding with no line still catches", () => {
+    const r = scorePlanted(key, asScored([finding("ND-SEC-03", "app/controllers/webhook_monitors_controller.rb")]));
+    expect(r.planted.find((p) => p.id === "PV-02")!.caught).toBe(true);
   });
 
   it("the right file but a line far from the planted range is not a catch", () => {

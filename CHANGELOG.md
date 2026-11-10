@@ -13,7 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   vulnerabilities on real registry vectors + 3 clean control surfaces, no hints in the
   source) with an answer key kept outside the reviewed tree. `bin/eval-planted` scores a
   finished run's logged findings: caught/total and false-positives-on-clean. Report-only:
-  it exits 0 whatever the score and nothing in CI runs a paid review.
+  it exits 0 whatever the score and nothing in CI runs a paid review. A planted vuln is
+  credited as caught only to a finding filed under its own vector; a finding on a planted
+  line under another vector no longer counts (it scores as other).
 
 ## [3.0.0] - 2026-08-23
 
