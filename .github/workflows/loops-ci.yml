@@ -75,7 +75,15 @@ jobs:
         run: |
           set -euo pipefail
           docker compose version
-          docker compose config --help | grep -- --no-env-resolution
+          # e.project's name probe needs --no-env-resolution; the peer fallback
+          # (composeNameRaw) needs --no-interpolate and --no-normalize.
+          help=$(docker compose config --help)
+          for flag in --no-env-resolution --no-interpolate --no-normalize; do
+            if ! printf '%s\n' "$help" | grep -q -- "$flag"; then
+              echo "::error::docker compose config has no $flag; the compose corpora need it" >&2
+              exit 1
+            fi
+          done
       - name: install
         run: npm ci --no-audit --no-fund
       - name: differential and policy corpora
