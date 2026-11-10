@@ -7,8 +7,8 @@ import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
-import type { Config, LocalCheck } from "./env-config.js";
-import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import type { Config, LocalCheck, Severity } from "./env-config.js";
+import { ALIAS, cmp, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -125,19 +125,18 @@ export function pinChecks(c: Ctx): Result[] {
       continue;
     }
     const bad = disagreement(vals, pin.compare);
-    if (bad) {
-      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`), ...info);
-      continue;
-    }
     const want = pinOf(vals);
-    out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
-    if (c.static || pin.local === "off") continue;
+    out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
+    const sev = pin.local;
+    if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
-    const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = installFix(c.root, pin.tool, want, pins);
+    const row = (s: Severity, message: string, fix: string) => void (s !== "off" && out.push(res(s.toUpperCase() as Level, lid, message, fix)));
+    // When the pins disagree (B5), each distinct pin gets its own row, named by its sources, and the fix is to align them.
+    const fixFor = (w: string) => (bad ? `align the pins first (${id}); env-check then names the version to install` : installFix(c.root, pin.tool, w, pins));
+    const of = (w: string) => (bad ? ` (${srcs(pins.filter((v) => v.v === w))})` : "");
     const cmd = [bin, ...args].join(" ");
     // The tool's first output line, redacted then cut; the renderer escapes it, so it stays on this row and cannot read as
     // a second fix.
@@ -145,17 +144,23 @@ export function pinChecks(c: Ctx): Result[] {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
       return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
-    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (r.notFound) {
-      // ENOENT for a file that is on PATH is its #! interpreter, which spawn reports as it does a missing file.
-      const at = which(bin, c.env.PATH);
-      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
+    // A probe that gives no version is reported at the major level. ENOENT for a file that is on PATH is its #!
+    // interpreter, which spawn reports as it does a missing file.
+    const at = r.notFound ? which(bin, c.env.PATH) : null;
+    const failed = r.timedOut ? `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`
+      : r.notFound ? (at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`)
+      : r.code === null ? `${cmd} could not run (${r.abend ?? "killed"})`
+      : r.code !== 0 ? `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`
+      : null;
+    if (failed !== null || have === null) {
+      row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
+      continue;
     }
-    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
-    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
-    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
-    else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
-    else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
+    // compare decides; only a rejected version picks a level, by the first component that differs.
+    for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
+      if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
+      else row(sev[cmp(have, w, 1) ? "major" : cmp(have, w, 2) ? "minor" : "patch"], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
+    }
   }
   return out;
 }

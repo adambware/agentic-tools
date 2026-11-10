@@ -95,11 +95,11 @@ describe("pins and local toolchains", () => {
     ]);
   });
 
-  it("fails on disagreeing sources and on an unparseable source, without probing", () => {
+  it("fails on disagreeing sources (still probing, against each pin) and on an unparseable source", () => {
     const drift = check(setup(GO_PIN.replace("minor", "exact"), { ...GO_FILES, ".tool-versions": "go 1.25.0\n" }), [], withPath(goShim()));
     expect(drift.code).toBe(1);
     expect(drift.out).toContain("FAIL a.pins.go  go-mod:go.mod=1.26, tool-versions:.tool-versions=1.25.0 disagree (exact) — fix:");
-    expect(drift.out).not.toContain("a.local");
+    expect(drift.lines.filter((l) => l.includes("a.local")).map((l) => l.split("  ")[0])).toEqual(["PASS a.local.go", "WARN a.local.go"]);
     const miss = check(setup(GO_PIN, { "go.mod": "module x\n" }));
     expect([miss.code, miss.out]).toEqual([1, expect.stringContaining("FAIL a.pins.go  go-mod: no go version found in go.mod")]);
   });
@@ -158,11 +158,11 @@ describe("pins and local toolchains", () => {
     expect(r.out).not.toContain("a.local");
   });
 
-  it("a disagreement names only the pins, then reports the ranges, and skips a.local", () => {
+  it("a disagreement names only the pins, then reports the ranges, then a.local against each pin", () => {
     const files = { ".nvmrc": "20.11.0\n", ".tool-versions": "nodejs 22.1.0\n", "package.json": ENGINES(">=20") };
     const r = check(setup(PIN("node", `"nvmrc", "engines", "tool-versions"`), files), [], withPath(nodeShim("20.11.0")));
     expect(r.code).toBe(1);
-    expect(heads(r.lines)).toEqual(["FAIL a.pins.node", "INFO a.pins.node"]);
+    expect(heads(r.lines)).toEqual(["FAIL a.pins.node", "INFO a.pins.node", "PASS a.local.node", "WARN a.local.node"]);
     expect(r.lines[0]).toMatch(/^FAIL a\.pins\.node  nvmrc:\.nvmrc=20\.11\.0, tool-versions:\.tool-versions=22\.1\.0 disagree \(exact\)/);
   });
 

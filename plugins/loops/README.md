@@ -448,7 +448,9 @@ hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
 tool = "go"
 sources = ["go-mod:go.mod", "tool-versions", "setup-go:.github/workflows/*.yml"]
 compare = "minor"                       # exact (default) | minor | major
-local = "warn"                          # warn (default) | fail | off
+local = "warn"                          # warn (default) | fail | off: one level for any difference
+# local = { major = "fail", minor = "warn", patch = "info" }  # 0.8.0: a level per first differing component
+                                        # (each fail | warn | info | off; a missing one is warn)
 
 [[pins]]
 tool = "node"
@@ -546,8 +548,16 @@ pin from that `FROM`. The resolved image is the Dockerfile's default only: a Com
 `docker build --build-arg`) can override it, and that override is not read.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off MISE_AUTO_INSTALL=0` (`go version`, `node --version`,
 `python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain and a mise shim installs no missing version; a probe that does
-not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
-match the pin at the `compare` depth; ranges do not bind it. A probe that gives no version says why: `<tool> not found on
+not answer in 10s is killed and reported as timed out at the pin's `local` level (`major` for a table). The local version must
+match the pin at the `compare` depth; ranges do not bind it. `local` is one level for every difference (`"warn"`,
+`"fail"`, `"off"`), or a table that picks one per component (0.8.0): `compare` decides first, so a patch difference
+`compare = "minor"` accepts stays PASS; a rejected version is reported at the level of the first component that
+differs (`major`, `minor`, then `patch`, which also covers a prerelease of the same release); `info` makes it an INFO
+row and `off` drops the row. A probe that gives no version (below) is reported at the `major` level; with every
+component `off` the tool is not run. When the pins disagree (`a.pins.<tool>` FAILs), the tool is still probed (0.8.0)
+and reported against each distinct pin, one row each at its own level, naming the pin's sources: `local <tool> <v>
+does not match pin <pin> (<sources>)`, fix `align the pins first (a.pins.<tool>); env-check then names the version
+to install`. A probe that gives no version says why: `<tool> not found on
 PATH`, `<path> could not start (missing interpreter in its #! line?)` (a file on PATH whose `#!` interpreter is not
 there, which the OS reports as it does a missing file), `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
 <first output line>`; the output line is cut to 120 characters with control characters escaped. When a `.tool-versions`

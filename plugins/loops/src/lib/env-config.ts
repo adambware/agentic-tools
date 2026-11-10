@@ -10,8 +10,11 @@ export interface Pin {
   tool: string;
   sources: string[];
   compare: Compare;
-  local: "fail" | "warn" | "off";
+  /** The a.local level for a version that differs first in each component (0.8.0); a probe failure uses major. */
+  local: Record<Part, Severity>;
 }
+export type Severity = "fail" | "warn" | "info" | "off";
+export type Part = "major" | "minor" | "patch";
 export interface LocalCheck {
   id: string;
   run: string;
@@ -59,6 +62,19 @@ const list = (v: unknown, where: string): unknown[] => {
   return v;
 };
 
+/** `local`: "fail" | "warn" | "off" sets every component; a { major, minor, patch } table sets each (missing: warn). */
+function localOf(v: unknown, where: string): Pin["local"] {
+  const all = (s: Severity) => ({ major: s, minor: s, patch: s });
+  if (v === undefined || typeof v === "string") return all(pick({ local: v }, "local", where, oneOf<Severity>("fail", "warn", "off"), 'fail|warn|off or a { major, minor, patch } table', "warn"));
+  const t = table(v, `${where}: local`, ["major", "minor", "patch"]);
+  const part = (k: Part): Severity => {
+    const s = t[k] ?? "warn";
+    if (!oneOf<Severity>("fail", "warn", "info", "off")(s)) throw new UsageError(`${where}: local.${k} must be fail|warn|info|off`);
+    return s;
+  };
+  return { major: part("major"), minor: part("minor"), patch: part("patch") };
+}
+
 /** `>=X.Y.Z` is the only range form; anything else is a config error. */
 function checkEngine(range: string): void {
   const m = /^>=\s*(\d+)\.(\d+)\.(\d+)$/.exec(range);
@@ -102,7 +118,7 @@ export function parseConfig(text: string, file: string): Config {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
       compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major"), "exact|minor|major", "exact"),
-      local: pick(t, "local", where, oneOf<Pin["local"]>("fail", "warn", "off"), "fail|warn|off", "warn"),
+      local: localOf(t.local, where),
     };
   });
 
