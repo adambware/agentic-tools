@@ -1104,12 +1104,13 @@ describe("compose", () => {
     expect(w.out).toContain("SKIP e.project  compose unavailable (docker compose version exited 125); nothing to collide with");
     expect(checkC(wt, { [wt]: plugin }, ["--compose-project"])).toMatchObject({ code: 0, out: "feat-u" });
     expect(checkC(wt, { [wt]: plugin }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "mine" })).toMatchObject({ code: 0, out: "mine" });
-    // Once Compose answers here, a probe of another checkout that cannot start is a FAIL that withholds the name, never a SKIP.
+    // Once Compose answers here, a probe of another checkout that cannot start is a peer WARN, never a SKIP; the main
+    // checkout's derived name is held for it, and this worktree's derived name is not that one, so it is kept.
     const stub = composeStub({ [wt]: "feat-u" });
     const lost: Runner = (cmd, args, opts) => (isComposeConfigCall(cmd, args) && rp(opts?.cwd ?? "") === root ? { code: null, stdout: "", stderr: "", timedOut: false, notFound: true } : stub(cmd, args, opts));
     const s = check(wt, [], {}, lost);
-    expect([s.code, s.out]).toEqual([1, expect.stringContaining("FAIL e.project  the main checkout's configured run: docker compose config could not start (its directory is gone) — fix: rerun to see Compose's error: cd ")]);
-    expect(check(wt, ["--compose-project"], {}, lost)).toMatchObject({ code: 1, out: "" });
+    expect([s.code, s.out]).toEqual([0, expect.stringContaining(`WARN e.project  main checkout ${root}: configured run: docker compose config could not start (its directory is gone), and 1 more run; this checkout keeps project feat-u`)]);
+    expect(check(wt, ["--compose-project"], {}, lost)).toMatchObject({ code: 0, out: "feat-u" });
   });
 
   it("fails, withholding the name, when `docker compose version` exits non-zero for a reason other than a missing plugin", () => {
@@ -1231,8 +1232,8 @@ describe("compose", () => {
     const unlisted: Runner = (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 128, stdout: "", stderr: "fatal: worktree list broke", timedOut: false } : stub(cmd, args, opts));
     const entry = (dir: string): string => `worktree ${dir}\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/x\n\n`;
     const listed = (stdout: string): Runner => (cmd, args, opts) => (cmd === "git" && args[0] === "worktree" && args[1] === "list" ? { code: 0, stdout, stderr: "", timedOut: false } : stub(cmd, args, opts));
-    // [source, cwd, answers or a runner, shell env, e.project FAILs, the name kept (null: withheld or unknown)]
-    const rows: [string, string, ComposeAnswers | Runner, Record<string, string>, boolean, string | null][] = [
+    // [source, cwd, answers or a runner, shell env, e.project FAILs, the name kept (null: withheld or unknown), a peer WARN]
+    const rows: [string, string, ComposeAnswers | Runner, Record<string, string>, boolean, string | null, boolean?][] = [
       ["PASS", wt, ok, {}, false, n],
       ["check 0: a configured file missing", lost, ok, {}, true, null],
       ["check 1: docker compose version timed out", wt, slow, {}, true, null],
@@ -1240,7 +1241,8 @@ describe("compose", () => {
       ["check 1 SKIP in a worktree: the derived name", wt, { [wt]: { unavailable: "plugin" } }, {}, false, n],
       ["check 2: this worktree's own run failed", wt, { ...ok, [wt]: { cfg: { error: "boom" }, plain: "feat-t" } }, {}, true, n],
       ["check 2: the run that names the main checkout failed", root, { ...ok, [root]: { error: "boom" } }, {}, true, null],
-      ["check 2: the main checkout's run failed, seen from a worktree", wt, { ...ok, [root]: { error: "boom" } }, {}, true, null],
+      // A peer's failure is a WARN (its derived name and the main checkout's are still held): the name is kept.
+      ["check 2: the main checkout's run failed, seen from a worktree", wt, { ...ok, [root]: { error: "boom" } }, {}, false, n, true],
       ["check 3: the name is held", wt, ok, { COMPOSE_PROJECT_NAME: "app-prod" }, true, null],
       ["check 4: a run without -p lands on a held name", wt, { ...ok, [wt]: "app-prod" }, {}, true, n],
       ["check 5: a stack of the name runs elsewhere", wt, ps(n), {}, true, null],
@@ -1256,12 +1258,12 @@ describe("compose", () => {
       ["check 0c: git worktree list leads with this worktree", wt, listed(`${entry(wt)}${entry(root)}`), {}, true, null],
       ["check 0c: git worktree list holds only the main checkout, in a worktree", wt, listed(entry(root)), {}, true, null],
     ];
-    for (const [source, cwd, how, env, fails, name] of rows) {
+    for (const [source, cwd, how, env, fails, name, warns = false] of rows) {
       const go = (args: string[]) => (typeof how === "function" ? check(cwd, args, env, how) : checkC(cwd, how, args, env));
       const p = go(["--compose-project"]);
       const full = go([]);
       const got = { exit: p.code, out: p.out, warned: p.err.includes("env-check: warning: "), full: full.code, local: full.lines.find((l) => l.startsWith("PASS d.p")) };
-      expect([source, got]).toEqual([source, { exit: name ? 0 : 1, out: name ?? "", warned: fails && name !== null, full: fails ? 1 : 0, local: `PASS d.p  project=[${name ?? ""}]` }]);
+      expect([source, got]).toEqual([source, { exit: name ? 0 : 1, out: name ?? "", warned: (fails && name !== null) || warns, full: fails ? 1 : 0, local: `PASS d.p  project=[${name ?? ""}]` }]);
     }
   });
 
@@ -1425,7 +1427,9 @@ describe("compose", () => {
     commit(root);
     const wt = worktree(root, "app-prod");
     const prod = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" });
-    expect([prod.code, prod.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this worktree would use project app-prod, which the main checkout uses — fix: export another COMPOSE_PROJECT_NAME, set derive = "slug-hash" in ${CFG}, or rename the main checkout`)]);
+    // The main checkout's app-prod is its literal name:, not its directory's (app-node): no "derive one name" claim, but
+    // the same fixes (the move, and slug-hash's cost) as A3.
+    expect([prod.code, prod.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this worktree would use project app-prod, which the main checkout uses — fix: rename this worktree's directory: git worktree move ${wt} <new-path>; or set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`)]);
     const plain = setup(test(), { "compose.yml": "services: {}\n" });
     commit(plain);
     const d1 = worktree(plain, "dup");
@@ -1520,24 +1524,41 @@ describe("compose", () => {
     const fw = worktree(mainBad, "feat-w");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  configured run would use project x, which the main checkout uses");
     expect(checkC(fw, { [mainBad]: "x", [fw]: "feat-w" }, [], { STACK_NAME: "x", COMPOSE_PROJECT_NAME: "feat-w" }).code).toBe(0);
-    // The main checkout's name: cannot resolve: that probe's failure is the FAIL (earlier releases said "cannot be resolved").
+    // The main checkout's name: cannot resolve: that probe's failure is a peer WARN (0.7 made it a FAIL that withheld);
+    // fv's own run still lands on x, which feat-w's run holds.
     put(mainBad, "compose.yml", "name: ${OTHER}\nservices: {}\n");
     const fv = worktree(mainBad, "feat-v");
-    expect(checkC(fv, { [mainBad]: EMPTY, [fv]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out).toContain("FAIL e.project  the main checkout's configured run: docker compose config exited 1");
+    const bv = checkC(fv, { [mainBad]: EMPTY, [fv]: "x", [fw]: "x" }, [], { STACK_NAME: "x" }).out;
+    expect(bv).toContain(`WARN e.project  main checkout ${mainBad}: configured run: docker compose config exited 1`);
+    expect(bv).toContain(`FAIL e.project  configured run would use project x, which worktree ${fw} uses`);
   });
 
-  it("fails e.project in every other worktree, not in the main checkout, when Compose fails on a peer worktree's files", () => {
+  it("warns in every other worktree, keeping its name, and does not probe from the main checkout, when Compose fails on a peer worktree's files", () => {
     const root = setup(test(), { "compose.yml": COMPOSE });
     commit(root);
     const a = worktree(root, "feat-a");
     const b = worktree(root, "feat-b");
     const answers = { [root]: "app-prod", [a]: "feat-a", [b]: { error: "required variable STACK is missing a value: set it" } };
-    // The peer's own shell decides its name, so the rerun command drops this shell's COMPOSE_*; the name is withheld.
+    // 0.8.0 (U1): the peer's failure is a WARN, the name is kept; its own run FAILs and names the variable there.
     const r = checkC(a, answers, ["--compose-project"], { COMPOSE_PROJECT_NAME: "feat-a" });
-    expect([r.code, r.out, r.err]).toEqual([1, "", expect.stringContaining(`env-check: worktree ${b}'s configured run: docker compose config exited 1 — fix: rerun to see Compose's error: cd ${b} && env -u COMPOSE_PROJECT_NAME ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`)]);
+    expect([r.code, r.out, r.err]).toEqual([0, "feat-a", `env-check: warning: peer worktree ${b}: configured run: docker compose config exited 1: required variable STACK is missing a value, and 1 more run; this checkout keeps project feat-a (checked against every name loops can know), but a name set only in that worktree's shell cannot be checked until its stack runs — fix: run bin/env-check in ${b} (its e.project row names the fix there); if that worktree is abandoned, git worktree remove ${b} (refuses when it has changes)`]);
+    expect(checkC(b, answers).out).toContain(`FAIL e.project  this worktree's configured run: docker compose config exited 1: required variable STACK is missing a value — fix: set STACK in ${join(b, ".env")} or export it`);
     // The main checkout does not probe peers: their derived names are all it holds against (each peer reports the rest).
     const m = checkC(root, answers);
     expect([m.code, m.out, m.calls.every((c) => rp(c.cwd) === root)]).toEqual([0, expect.stringContaining("PASS e.project  app-prod (compose)"), true]);
+  });
+
+  it("names a required variable this checkout lacks and says where to set it, relaying nothing else from Compose", () => {
+    const root = setup(test(), { "compose.yml": COMPOSE });
+    commit(root);
+    const wt = worktree(root, "feat-i");
+    const why = { error: "error while interpolating services.db.image: required variable DB_TAG is missing a value: hunter2hunter2" };
+    const fix = (dir: string) => `set DB_TAG in ${join(dir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
+    const m = checkC(root, { [root]: why });
+    expect([m.code, m.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this checkout's configured run: docker compose config exited 1: required variable DB_TAG is missing a value — fix: ${fix(root)}`)]);
+    const w = checkC(wt, { [root]: "app-prod", [wt]: why });
+    expect(w.out).toContain(`FAIL e.project  this worktree's configured run: docker compose config exited 1: required variable DB_TAG is missing a value — fix: ${fix(wt)}`);
+    for (const r of [m, w]) expect(r.out + r.err).not.toContain("hunter2");
   });
 
   it("interpolates name: against the checkout's .env too, and a COMPOSE_PROJECT_NAME there beats the file", () => {
@@ -1749,7 +1770,9 @@ describe("compose", () => {
     expect(checkC(wt, { [wt]: invalid("My.App"), [root]: "app-prod" }).code).toBe(1);
     rmSync(join(wt, ".env"));
     put(root, ".env", "COMPOSE_PROJECT_NAME=Prod.App\n");
-    expect(checkC(wt, { [wt]: "feat-c", [root]: invalid("Prod.App") }).out).toContain("FAIL e.project  the main checkout's configured run: docker compose config exited 1");
+    // The main checkout's own run fails there (its row says so); from here that is a peer WARN, feat-c kept.
+    const pv = checkC(wt, { [wt]: "feat-c", [root]: invalid("Prod.App") });
+    expect([pv.code, pv.out]).toEqual([0, expect.stringContaining(`WARN e.project  main checkout ${root}: configured run: docker compose config exited 1`)]);
   });
 
   it("reads name: through anchors, aliases, tags, merge keys, explicit keys, flow mappings and an indented root, as Compose does", () => {
@@ -1799,8 +1822,9 @@ describe("compose", () => {
       const own = checkC(w, { [w]: { error: why }, [root]: "app-prod" }, ["--compose-project"], { COMPOSE_PROJECT_NAME: "mine" });
       expect([doc, own.code, own.out, own.err]).toEqual([doc, 0, "mine", expect.stringContaining("env-check: warning: this worktree's configured run: docker compose config exited 1")]);
       put(w, "compose.yml", "services: {}\n");
+      // The main checkout's broken copy is its own run's FAIL; from here it is a peer WARN (nothing more is knowable).
       const wt = checkC(w, { [w]: "app-prod", [root]: { error: why } }, [], { COMPOSE_PROJECT_NAME: "app-prod" });
-      expect([doc, wt.code, wt.out]).toEqual([doc, 1, expect.stringContaining("FAIL e.project  the main checkout's configured run: docker compose config exited 1")]);
+      expect([doc, wt.code, wt.out]).toEqual([doc, 0, expect.stringContaining(`WARN e.project  main checkout ${root}: configured run: docker compose config exited 1`)]);
     }
     // Compose: a binary-tagged scalar decodes to the string app, which is a valid name.
     const bin = setup(test(), { "compose.yml": "name: !!binary YXBw\nservices: {}\n" });
@@ -1933,7 +1957,10 @@ describe("compose", () => {
     // An override Compose cannot read fails closed, without Compose's line.
     put(root, "compose.override.yml", "name: [x]\n");
     const badOvr = { cfg: "app-node", plain: { error: "line 1: cannot construct !!seq into string" } };
-    expect(checkC(wt, { [root]: badOvr, [wt]: "feat-two" }, [], { COMPOSE_PROJECT_NAME: "feat-two" }).out).toContain("FAIL e.project  the main checkout's root plain run: docker compose config exited 1");
+    // From the worktree that is a peer WARN, without Compose's line; the main checkout's own run FAILs.
+    const ovr = checkC(wt, { [root]: badOvr, [wt]: "feat-two" }, [], { COMPOSE_PROJECT_NAME: "feat-two" }).out;
+    expect(ovr).toContain(`WARN e.project  main checkout ${root}: root plain run: docker compose config exited 1`);
+    expect(ovr).not.toContain("cannot construct");
 
     // Compose discovers compose.yaml before the configured compose.yml.
     const yaml = setup(test(), { "compose.yml": "services: {web: {image: x}}\n" });

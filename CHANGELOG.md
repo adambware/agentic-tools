@@ -59,6 +59,30 @@ natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
   manifest/JSON/syntax validation, and the `W` invariant (conditional on `gstack-wtree`).
   Wired into CI via `tests/ship-lean-test.sh`.
 
+## [Unreleased] (loops)
+
+`loops env-check` 0.8.0, PR A: Compose project policy v2. One worktree's broken Compose file no longer withholds the project name in every other checkout, and two `[compose]` keys cover a main checkout that runs other files or a wrapper-supplied `-p`.
+
+### Changed
+
+- Behavior change (exit code): a failed `docker compose config` probe of another checkout (a peer worktree, or the main checkout seen from a worktree) is no longer a FAIL that withholds `e.project`. It is one `WARN e.project` per peer ("... and N more runs"), the name is kept, and the fix says to run `bin/env-check` in that checkout or `git worktree remove` it when abandoned. The peer's own run still FAILs. `ComposeProject` gains `warnings`, shown after `results`, so `results[0]` keeps its meaning.
+- Behavior change (output): `--compose-project` prints each peer WARN as an `env-check: warning: <message> — fix: <fix>` line on stderr, after any FAIL lines; it still prints the name, and a WARN never changes its exit.
+- From a worktree, the main checkout's plain derived name is held when any of its runs fails, so a worktree whose directory shares the main checkout's basename never shares its volumes.
+- For a peer's run that fails on interpolation or a non-zero exit, a fallback `docker compose config --no-env-resolution --no-interpolate --no-normalize --format json` (scrubbed env, remote loaders off, 10 s) reads `name:` as written. A literal name is held; a templated one is resolved from the peer project directory's `.env` alone (never the process env), with Compose's `:-` and `-` defaults, and held when every variable resolves, plus a `.env` `COMPOSE_PROJECT_NAME` that beats it; only when a variable stays unresolved is nothing held for it (the WARN says its name reads a variable loops could not resolve from that checkout's `.env`); with no `name:` the `.env` or directory name is held. Its answer is only ever held, never this checkout's name. Any fallback failure, including a Compose without `--no-normalize`, holds nothing; runs are deduped, and after one timeout the rest skip it.
+- A Compose failure on a required variable (`${VAR:?}` or `${VAR?}`) is the new error kind `interp`. Only the variable's name is read from Compose's stderr; in this checkout the fix is to set it in the project directory's `.env` or export it, copying it from `.env.example` or asking the repo owner for a secret.
+- When a worktree's `derive = "dirname"` name equals the main checkout's, the FAIL names both paths and the fix offers `git worktree move` (when the project directory is the worktree root) or `derive = "slug-hash"`, warning that slug-hash renames every worktree's project, so their stacks stop first (`down`, without `-v`).
+- New `[compose] main_project = "<name>"`: the `-p` name the repo's wrappers give the main checkout. It is the main checkout's name (Compose's answer need not match) for `e.project`, `b.containers` and `ENV_CHECK_PROJECT`, and it is always held from worktrees. A main-checkout shell `COMPOSE_PROJECT_NAME` that differs is a FAIL that withholds the name. The value must be a Compose project name (exit 2 otherwise). In a main-checkout run with `main_project` set, a failure of the main checkout's own configured run is still a FAIL but no longer withholds the name (the wrapper supplies `-p`), a deliberate reading of A4.
+- New `[compose] main_files = [...]`: the main checkout's file set (default `files`), used by its runs, project directory, derived name, the missing-file check, the `container_name` scan and the `b.containers` fix, also when a worktree probes the main checkout.
+- The unknown-key config error says a newer key needs a newer engine and an `engine = ">=0.8.0"` floor; the engine-floor error adds "stable checkout: git pull; CI: bump the action's pinned SHA".
+- CI's compose-differential preflight fails unless `docker compose config --help` lists `--no-env-resolution`, `--no-interpolate` and `--no-normalize`.
+
+### Upgrade notes
+
+- A peer checkout's failed Compose probe was a FAIL (exit 1, `--compose-project` exit 1 with empty stdout); it is now a WARN and the name is kept. Anything that relied on that FAIL should run env-check in the broken checkout.
+- Under `--compose-project`, peer WARN lines appear on stderr. Scripts that treat any stderr as failure should check the exit code instead.
+- When adopting `main_project` or `main_files`, set `engine = ">=0.8.0"` in `.loops/env-check.toml`, so an older engine says it is too old instead of failing on an unknown key.
+- Not in this change: a Docker shim without Compose (podman-docker, exit 125) still FAILs `e.project`; it stays on the 0.7.2 review-notes TODO.
+
 ## [loops 0.7.1] - 2026-11-04
 
 `loops env-check` 0.7.1 is a fixes-only release. Every row is escaped once, at the output edges. `c.shared` proves a worktree owns its git metadata instead of trusting `git rev-parse`. Several checks that used to pass or skip silently now fail or say why. Features the pilots asked for are listed in `TODOS.md` for 0.8.0.

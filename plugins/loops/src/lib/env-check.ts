@@ -87,11 +87,13 @@ export function envCheckMain(argv: string[], d: Deps): number {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
     // Exit 0 and the name when it is kept: a FAIL that keeps it (a run without -p is unsafe, a stack of another answer
     // runs) leaves `-p <name>` safe, so print it and warn. Exit 1 when a FAIL withholds it or it is unknown. Without
-    // Compose the name is what loops can vouch for: the shell's, else a worktree's derived one, else none.
-    const { name, results } = composeProject(ctx);
+    // Compose the name is what loops can vouch for: the shell's, else a worktree's derived one, else none. Peer WARNs
+    // follow any FAIL lines and never change the exit.
+    const { name, results, warnings } = composeProject(ctx);
     if (name) d.out(redact(name));
     const fails = results.filter((r) => r.level === "FAIL");
     for (const r of fails.map(showRow)) d.err(`env-check: ${name ? "warning: " : ""}${r.message} — fix: ${r.fix}`);
+    for (const r of warnings.map(showRow)) d.err(`env-check: warning: ${r.message} — fix: ${r.fix}`);
     if (!fails.length && !name) d.err(`env-check: ${showRow(results[0]!).message}`);
     return name ? 0 : 1;
   }

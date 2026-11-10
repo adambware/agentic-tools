@@ -103,6 +103,18 @@ function quiet(probes: string[] = []): Runner {
   };
 }
 
+/** `quiet`, recording the cwd of each fallback probe (`config --no-interpolate`); `noNormalize` false: a Compose without --no-normalize. */
+function fallbacks(raw: string[], noNormalize = true): Runner {
+  const inner = quiet();
+  return (cmd, args, opts) => {
+    if (isComposeConfigCall(cmd, args) && args.includes("--no-interpolate")) {
+      raw.push(opts?.cwd ?? "");
+      if (!noNormalize && args.includes("--no-normalize")) return { code: 1, stdout: "", stderr: "unknown flag: --no-normalize\n", timedOut: false };
+    }
+    return inner(cmd, args, opts);
+  };
+}
+
 interface Want {
   level: "PASS" | "FAIL";
   /** Fragments every one of which appears in e.project's messages (all its Results, in order, joined). */
@@ -113,6 +125,8 @@ interface Want {
   never?: string[];
   /** What `--compose-project` prints: the name it keeps (exit 0), or null when it withholds it (exit 1). */
   name: string | null;
+  /** Fragments of the peer WARNs (e.project WARN rows, also on --compose-project's stderr); none when absent. */
+  warn?: (string | RegExp)[];
 }
 type JsonResult = { level: string; id: string; message: string; fix: string | null };
 
@@ -126,7 +140,12 @@ function check(cwd: string, vars: Vars, want: Want, runner: Runner = quiet()): s
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
   const j = call(["--json"]);
-  const rs = (JSON.parse(j.out).results as JsonResult[]).filter((r) => r.id.startsWith("e.project"));
+  const all = (JSON.parse(j.out).results as JsonResult[]).filter((r) => r.id.startsWith("e.project"));
+  const rs = all.filter((r) => r.level !== "WARN");
+  const warns = all.filter((r) => r.level === "WARN");
+  const warnText = warns.map((r) => `${r.message} — fix: ${r.fix}`).join("\n");
+  expect(warns.length > 0, warnText).toBe(!!want.warn?.length);
+  for (const h of want.warn ?? []) typeof h === "string" ? expect(warnText).toContain(h) : expect(warnText).toMatch(h);
   const text = rs.map((r) => r.message).join("\n");
   const fixes = rs.map((r) => r.fix ?? "").join("\n");
   expect(rs.length, "e.project ran").toBeGreaterThan(0);
@@ -138,6 +157,8 @@ function check(cwd: string, vars: Vars, want: Want, runner: Runner = quiet()): s
   expect({ exit: p.code, name: p.out || null }, p.err).toEqual({ exit: want.name === null ? 1 : 0, name: want.name });
   // A kept name with a FAIL behind it: `-p N` is safe, a run without `-p` is not, and stderr says so.
   if (want.name !== null && want.level === "FAIL") expect(p.err).toContain("warning");
+  // A peer WARN goes to stderr after any FAIL line and never changes the exit (checked above).
+  for (const w of warns) expect(p.err).toContain(`env-check: warning: ${w.message} — fix: ${w.fix}`);
   // --compose-project asks Compose under --static and CI=true too, with the same answer.
   const ci = call(["--compose-project", "--static"], { CI: "true" });
   expect({ exit: ci.code, name: ci.out || null }, ci.err).toEqual({ exit: p.code, name: p.out || null });
@@ -491,18 +512,18 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     check(f.main, {}, { level: "PASS", has: ["app (compose)"], name: "app" }, quiet(probes));
     expect(probes.filter((c) => c.startsWith(p))).toEqual([]);
   });
-  it("row 28b (M3): the same invalid peer, run from another worktree: FAIL check 2 for the peer's runs, withheld", () => {
+  it("row 28b (M3, U1): the same invalid peer, run from another worktree: PASS, one peer WARN, the derived name kept", () => {
     const f = fixture(["compose.yml"], { "compose.yml": SVC });
     const p = f.wt(`${NEST}p1`, { "compose.yml": "services: [\n" });
     const w = f.wt(`${NEST}w1`);
-    // W's own runs answer w1, its root's directory name, so the peer's failure is the only FAIL.
+    // W's own runs answer w1, its root's directory name, so the peer's failure is the only gap.
     expect([answer(p, ["compose.yml"]), answer(w)]).toEqual([{ kind: "exit" }, { name: "w1" }]);
     check(w, {}, {
-      level: "FAIL",
-      has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/],
-      fix: [`cd ${shQuote(p)} && env ${OFF_ENV} docker compose -f compose.yml config --no-env-resolution -q`],
-      // A peer probe feeds a held name, so its failure withholds (check 2).
-      name: null,
+      level: "PASS",
+      has: [derivedPass(f.derived(w))],
+      // 0.8.0 (U1): a peer's failed probe no longer withholds; its derived name is held, the gap is a WARN.
+      warn: [new RegExp(`^peer worktree ${re(p)}: configured run: docker compose config exited \\d+, and 1 more run; this checkout keeps project ${re(f.derived(w))}`), `fix: run bin/env-check in ${p} (its e.project row names the fix there); if that worktree is abandoned, git worktree remove ${shQuote(p)}`],
+      name: f.derived(w),
     });
   });
 
@@ -564,29 +585,33 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     });
 
     for (const [what, body] of Object.entries(remote)) {
-      it(`row 32 (S1): a peer's compose file has a remote ${what}: nothing is fetched, FAIL check 2 for the peer's runs, withheld`, () => {
+      it(`row 32 (S1, U1): a peer's compose file has a remote ${what}: nothing is fetched (the fallback neither), PASS with a peer WARN, kept`, () => {
         const f = fixture(["compose.yml"], { "compose.yml": SVC });
         const w = f.wt(`${NEST}w1`);
         const p = f.wt(`${NEST}p1`, { "compose.yml": body() });
         expect(answer(p, ["compose.yml"], vars)).toEqual({ kind: "exit" });
-        check(w, vars, { level: "FAIL", has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/], fix: [`cd ${shQuote(p)} && env ${OFF_ENV} docker compose`], never: [SECRET], name: null });
+        check(w, vars, { level: "PASS", has: [derivedPass(f.derived(w))], warn: [new RegExp(`^peer worktree ${re(p)}: configured run: docker compose config exited \\d+`)], never: [SECRET], name: f.derived(w) });
         expect(srv.hits()).toBe(0);
       });
 
-      it(`row 33 (S1): the main checkout's compose file has a remote ${what}: nothing is fetched, FAIL check 2 for its runs, withheld`, () => {
+      it(`row 33 (S1, U1): the main checkout's compose file has a remote ${what}: nothing is fetched, PASS with a main-checkout WARN, kept`, () => {
         const f = fixture(["compose.yml"], { "compose.yml": body() });
         const w = f.wt(`${NEST}w1`, { "compose.yml": SVC });
-        check(w, vars, { level: "FAIL", has: [/the main checkout's configured run: docker compose config exited \d+/], never: [SECRET], name: null });
+        // The main checkout's derived name (app-node) is held for its failed runs (A1b); W's slug-hash name is not it.
+        check(w, vars, { level: "PASS", has: [derivedPass(f.derived(w))], warn: [new RegExp(`^main checkout ${re(f.main)}: configured run: docker compose config exited \\d+`)], never: [SECRET], name: f.derived(w) });
         expect(srv.hits()).toBe(0);
       });
     }
 
-    it("row 34 (S1): a peer's .env turns the remote loaders on and the shell sets COMPOSE_EXPERIMENTAL_GIT_REMOTE=1: nothing is fetched, withheld", () => {
+    it("row 34 (S1, U1): a peer's .env turns the remote loaders on and the shell sets COMPOSE_EXPERIMENTAL_GIT_REMOTE=1: nothing is fetched, even by the fallback; PASS with a peer WARN", () => {
       const f = fixture(["compose.yml"], { "compose.yml": SVC });
       const w = f.wt(`${NEST}w1`);
       const p = f.wt(`${NEST}p1`, { "compose.yml": include() });
       put(p, ".env", "COMPOSE_EXPERIMENTAL_GIT_REMOTE=1\nCOMPOSE_EXPERIMENTAL_OCI_REMOTE=1\nGIT_ALLOW_PROTOCOL=http\n");
-      check(w, { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, { level: "FAIL", has: [/worktree [^\n]*p1's configured run: docker compose config exited \d+/], never: [SECRET], name: null });
+      const raw: string[] = [];
+      check(w, { ...vars, COMPOSE_EXPERIMENTAL_GIT_REMOTE: "1" }, { level: "PASS", has: [derivedPass(f.derived(w))], warn: [new RegExp(`^peer worktree ${re(p)}: configured run: docker compose config exited \\d+`)], never: [SECRET], name: f.derived(w) }, fallbacks(raw));
+      // The fallback did run there (uninterpolated, so the URL's variable stays unexpanded) and fetched nothing either.
+      expect(raw.filter((c) => c.startsWith(p)).length).toBeGreaterThan(0);
       expect(srv.hits()).toBe(0);
     });
 
@@ -603,5 +628,151 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     // The scrubbed run answers app, neither feat nor an own name; only a worktree's runs are held to its own names (row 7b).
     expect([answer(f.main, ["compose.yml"], { COMPOSE_PROJECT_NAME: "feat" }), answer(f.main, ["compose.yml"])]).toEqual([{ name: "feat" }, { name: "app" }]);
     check(f.main, { COMPOSE_PROJECT_NAME: "feat" }, { level: "PASS", has: ["feat (COMPOSE_PROJECT_NAME"], name: "feat" });
+  });
+
+  // U1 (0.8.0): a broken peer keeps this checkout's name unless a name knowable for it collides. "Broken" below is a
+  // ${LOOPS_IMG:?} image with no value anywhere (kind interp), which the fallback reads past without interpolating.
+  const BROKEN = "services:\n  web:\n    image: ${LOOPS_IMG:?set it}\n";
+  const brokenNamed = (n: string) => `name: ${n}\n${BROKEN}`;
+  const TEMPLATED = "its name: reads a variable loops could not resolve from that worktree's .env";
+  const peerWarn = (p: string) => new RegExp(`^peer worktree ${re(p)}: configured run: docker compose config exited 1: required variable LOOPS_IMG is missing a value`);
+
+  it("row 37 (U1): a peer needs ${LOOPS_IMG:?} and has no .env: PASS here with a peer WARN; the peer's own run FAILs naming the variable, its name kept", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": BROKEN });
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "PASS", has: [derivedPass(f.derived(w))], warn: [peerWarn(p)], name: f.derived(w) });
+    check(p, {}, { level: "FAIL", has: ["this worktree's configured run: docker compose config exited 1: required variable LOOPS_IMG is missing a value"], fix: [`set LOOPS_IMG in ${p}/.env or export it`], name: f.derived(p) });
+  });
+
+  it("row 38 (U1, A1c): a broken peer's literal name: is this worktree's derived name: FAIL held by that peer (the fallback reads it), withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed(n) });
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "FAIL", has: [`this worktree would use project ${n}, which worktree ${p} uses`], warn: [peerWarn(p), "this checkout's project"], name: null });
+  });
+
+  it("row 38b (U1, A1c): a broken peer without name: whose .env COMPOSE_PROJECT_NAME is this worktree's name: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": BROKEN });
+    put(p, ".env", `COMPOSE_PROJECT_NAME=${n}\n`);
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "FAIL", has: [`this worktree would use project ${n}, which worktree ${p} uses`], warn: [peerWarn(p)], name: null });
+  });
+
+  it("row 38c (U1, A1c): the same literal name: on a Compose without --no-normalize: the fallback fails, holds nothing, PASS with the peer WARN", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed(n) });
+    const raw: string[] = [];
+    check(w, {}, { level: "PASS", has: [derivedPass(n)], warn: [peerWarn(p)], name: n }, fallbacks(raw, false));
+    expect(raw.length).toBeGreaterThan(0);
+  });
+
+  it("row 39 (U1, A1c): a broken peer's name: ${PN:-x}, the shell naming this worktree pn-x: no false FAIL (the template's normalized form is not held), the peer WARN", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${PN:-x}") });
+    // Plain --no-interpolate would report pn-x, a name nobody runs under.
+    const raw = run("docker", ["compose", "-f", "compose.yml", "config", "--no-env-resolution", "--no-interpolate", "--format", "json"], { cwd: p, env: baseEnv() });
+    expect(JSON.parse(raw.stdout).name).toBe("pn-x");
+    // The default resolves the template (x is held), so the WARN does not call it unresolved.
+    check(w, { COMPOSE_PROJECT_NAME: "pn-x" }, { level: "PASS", has: ["pn-x (COMPOSE_PROJECT_NAME)"], warn: [peerWarn(p)], never: [TEMPLATED], name: "pn-x" });
+  });
+
+  it("row 39c (U1, A1c): a broken peer's name: ${STACK}, its .env STACK=<this worktree's derived name>: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    put(p, ".env", `STACK=${n}\n`);
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "FAIL", has: [`this worktree would use project ${n}, which worktree ${p} uses`], warn: [peerWarn(p)], never: [TEMPLATED], name: null });
+  });
+
+  it("row 39d (U1, A1c): a broken peer's name: ${PN:-x} with no PN, the shell naming this worktree x: FAIL held by that peer (the default is its name), withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${PN:-x}") });
+    // Once fixed, the peer runs as x.
+    expect(answer(p, ["compose.yml"], { LOOPS_IMG: "nginx" })).toEqual({ name: "x" });
+    check(w, { COMPOSE_PROJECT_NAME: "x" }, { level: "FAIL", has: [byPeer("x", p)], warn: [peerWarn(p)], name: null });
+  });
+
+  it("row 39f (U1, A1c): a broken peer's name: ${STACK}, no STACK, its .env COMPOSE_PROJECT_NAME=stack: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    // The .env name equals the template's normalized form, so only reading the .env shows it is set.
+    put(p, ".env", "COMPOSE_PROJECT_NAME=stack\n");
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, { COMPOSE_PROJECT_NAME: "stack" }, { level: "FAIL", has: [byPeer("stack", p)], warn: [peerWarn(p)], never: [TEMPLATED], name: null });
+  });
+
+  it("row 39g (U1, A1c): a broken peer's name: ${STACK}, its .env STACK='<name>\\'s' (escaped quote): FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    put(p, ".env", "STACK='feat\\'s'\n");
+    expect(answer(p, ["compose.yml"], { LOOPS_IMG: "nginx" })).toEqual({ name: "feats" });
+    check(w, { COMPOSE_PROJECT_NAME: "feats" }, { level: "FAIL", has: [byPeer("feats", p)], warn: [peerWarn(p)], name: null });
+  });
+
+  it("row 39e (U1, A1c): a broken peer's name: ${STACK} and no .env: nothing held for it, PASS with the templated WARN", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, { COMPOSE_PROJECT_NAME: "stack" }, { level: "PASS", has: ["stack (COMPOSE_PROJECT_NAME)"], warn: [peerWarn(p), TEMPLATED], name: "stack" });
+  });
+
+  it("row 39b (U1, A1c): a broken peer's name: ${LOOPS_X} and its .env COMPOSE_PROJECT_NAME is this worktree's name: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${LOOPS_X}") });
+    put(p, ".env", `COMPOSE_PROJECT_NAME=${n}\n`);
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "FAIL", has: [`this worktree would use project ${n}, which worktree ${p} uses`], warn: [peerWarn(p)], name: null });
+  });
+
+  it("row 40 (U1, A1b): the main checkout's probe fails and this worktree's dirname name is the main checkout's: FAIL held by it, withheld", () => {
+    const f = fixture(["docker/compose.yml"], { "docker/compose.yml": BROKEN }, "dirname");
+    const w = f.wt(`${NEST}w1`, { "docker/compose.yml": SVC });
+    expect([answer(f.main, ["docker/compose.yml"]), f.derived(w)]).toEqual([{ kind: "interp" }, "docker"]);
+    // A3: both paths are named; the project directory is docker/ in every checkout, so only slug-hash helps.
+    const text = check(w, {}, { level: "FAIL", has: [byMain("docker"), `the main checkout ${f.main} and this worktree ${w} derive one name under derive = "dirname"`], fix: ['set derive = "slug-hash"', "renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)"], warn: [new RegExp(`^main checkout ${re(f.main)}: configured run: docker compose config exited 1: required variable LOOPS_IMG`)], name: null });
+    expect(text).not.toContain("git worktree move");
+  });
+
+  it("row 40b (A3): the main checkout's probe fails and a root-level worktree directory is named like it: FAIL withheld, the fix names git worktree move and slug-hash", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": BROKEN }, "dirname");
+    const w = f.wt("other/app-node", { "compose.yml": SVC });
+    expect([answer(f.main, ["compose.yml"]), f.derived(w)]).toEqual([{ kind: "interp" }, "app-node"]);
+    check(w, {}, { level: "FAIL", has: [byMain("app-node"), `the main checkout ${f.main} and this worktree ${w}`], fix: [`git worktree move ${shQuote(w)} <new-path>`, 'set derive = "slug-hash"', "without -v"], warn: [new RegExp(`^main checkout ${re(f.main)}: `)], name: null });
+  });
+
+  it("row 40c (A3): the main checkout probes fine with name: x and a worktree directory is named like it: PASS (only x is held)", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": named("x") }, "dirname");
+    const w = f.wt("other/app-node", { "compose.yml": SVC });
+    expect([answer(f.main, ["compose.yml"]), answer(w, ["compose.yml"]), f.derived(w)]).toEqual([{ name: "x" }, { name: "app-node" }, "app-node"]);
+    check(w, {}, { level: "PASS", has: ["app-node (derived: dirname)"], name: "app-node" });
+  });
+
+  it("row 41 (U1): a broken peer and a running container labeled with this worktree's name from that peer: FAIL check 5, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": BROKEN });
+    const line = JSON.stringify([`${n}-web-1`, "running", "2026-11-01 17:00:00 -0400 EDT", n, p, join(p, "compose.yml"), ""]);
+    const inner = quiet();
+    const ps: Runner = (cmd, args, opts) => (cmd === "docker" && args[0] === "ps" ? { code: 0, stdout: `${line}\n`, stderr: "", timedOut: false } : inner(cmd, args, opts));
+    check(w, {}, { level: "FAIL", has: [`project ${n} was started from project directory ${p} (worktree ${p})`], warn: [peerWarn(p)], name: null }, ps);
   });
 });

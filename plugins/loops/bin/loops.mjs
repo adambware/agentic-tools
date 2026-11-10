@@ -7364,13 +7364,13 @@ var require_dist = __commonJS({
 });
 
 // src/lib/loops-cli.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 
 // src/lib/env-check.ts
-import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync3 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join4, resolve as resolve3 } from "node:path";
+import { join as join5, resolve as resolve3 } from "node:path";
 
 // src/lib/env-config.ts
 import { isAbsolute as isAbsolute3, normalize as normalize2 } from "node:path";
@@ -8678,7 +8678,7 @@ var DEFAULTS = {
 };
 function setup(kind) {
   const [action, forTool, key] = ACTIONS[kind];
-  const named = new RegExp(`^${action}@`, "i");
+  const named2 = new RegExp(`^${action}@`, "i");
   return (text, tool, root, file, calls) => {
     if (tool !== forTool) return [];
     const lc = new import_yaml.LineCounter();
@@ -8697,7 +8697,7 @@ function setup(kind) {
     };
     const uses = (n) => {
       const v = deref(n);
-      return (0, import_yaml.isScalar)(v) && typeof v.value === "string" && named.test(v.value.trim());
+      return (0, import_yaml.isScalar)(v) && typeof v.value === "string" && named2.test(v.value.trim());
     };
     const scalar = (k, n) => {
       const v = deref(n);
@@ -8866,7 +8866,7 @@ var VERSION = "0.7.1";
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw new UsageError(`${where} must be a table`);
-  for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}"`);
+  for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}" (a key from a newer loops needs a newer engine: update agentic-tools, and set engine = ">=0.8.0" or the version that added it, so an older engine says so)`);
   return v;
 }
 function pick(t, k, where, ok, what, def) {
@@ -8881,6 +8881,8 @@ function pick(t, k, where, ok, what, def) {
 var isStr = (v) => typeof v === "string" && v !== "";
 var isBool = (v) => typeof v === "boolean";
 var isStrs = (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && x !== "");
+var isNonEmptyStrs = (v) => isStrs(v) && v.length > 0;
+var isProjectName = (v) => typeof v === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(v);
 var oneOf = (...opts) => (v) => typeof v === "string" && opts.includes(v);
 var list = (v, where) => {
   if (!Array.isArray(v)) throw new UsageError(`${where} must be an array of tables`);
@@ -8893,7 +8895,7 @@ function checkEngine(range) {
   const have = VERSION.split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     if (have[i] !== want[i]) {
-      if (have[i] < want[i]) throw new UsageError(`config needs loops ${range}, this is ${VERSION}; update agentic-tools`);
+      if (have[i] < want[i]) throw new UsageError(`config needs loops ${range}, this is ${VERSION}; update agentic-tools (stable checkout: git pull; CI: bump the action's pinned SHA)`);
       return;
     }
   }
@@ -8937,14 +8939,18 @@ function parseConfig(text, file) {
     tracked: pick(h, "tracked", "[harness]", isBool, "a boolean", false),
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn"
   };
-  const c = table2(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name"]);
+  const c = table2(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name", "main_project", "main_files"]);
   const compose = top.compose === void 0 ? null : {
     mode: pick(c, "mode", "[compose]", oneOf("none", "test"), "none|test", "none"),
     files: pick(c, "files", "[compose]", isStrs, "a list of strings", []),
     inputs: pick(c, "inputs", "[compose]", isStrs, "a list of globs", []),
     containers: pick(c, "containers", "[compose]", oneOf("fail", "warn"), "fail|warn", "fail"),
     derive: pick(c, "derive", "[compose]", oneOf("slug-hash", "dirname"), "slug-hash|dirname", "dirname"),
-    allowContainerName: pick(c, "allow_container_name", "[compose]", isStrs, "a list of strings", [])
+    allowContainerName: pick(c, "allow_container_name", "[compose]", isStrs, "a list of strings", []),
+    // The `-p` name the repo's wrappers give the main checkout (0.8.0): Compose's project-name form, as -p takes it.
+    mainProject: c.main_project === void 0 ? null : pick(c, "main_project", "[compose]", isProjectName, "a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)"),
+    // The main checkout's file set (0.8.0); null: the main checkout uses files.
+    mainFiles: c.main_files === void 0 ? null : pick(c, "main_files", "[compose]", isNonEmptyStrs, "a non-empty list of strings")
   };
   if (compose?.mode === "test" && !compose.files.length) throw new UsageError("[compose]: mode test needs files");
   const seen = /* @__PURE__ */ new Set();
@@ -8968,8 +8974,8 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
-import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join3, normalize as normalize3, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join4, normalize as normalize3, resolve as resolve2 } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -8979,6 +8985,7 @@ var TOO_OLD = /^(?:docker: )?unknown flag:? --no-env-resolution\b/m;
 var WARNING_LINES = [/^time=.* level=warning/, /^WARNING: /];
 var NO_PLUGIN = /^(?:docker: )?(?:unknown flag:? --short\b|'compose' is not a docker command|unknown command: docker compose)/m;
 var NO_FILE = "no configuration file provided: not found";
+var REQUIRED = /^(?:error while interpolating [^\n]*?: )?required variable (\w+) is missing a value/;
 function rerun(e) {
   const unset = (e.scrubbed ?? []).map((n) => `-u ${shQuote(n)}`);
   const off = Object.entries(REMOTE_OFF).map(([k, v]) => `${k}=${v}`);
@@ -8997,19 +9004,20 @@ function composeVersion(run2, cwd, env) {
   }
   return { version: r.stdout.trim() };
 }
-function composeName(o) {
+function probe(o, flags) {
   const scrubbed = o.scrub ? Object.keys(o.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort() : [];
   const kept = o.scrub ? Object.fromEntries(Object.entries(o.env).filter(([k]) => !k.startsWith("COMPOSE_"))) : o.env;
   const env = { ...kept, ...REMOTE_OFF };
   const fileArgs = (o.files ?? []).flatMap((f) => ["-f", f]);
-  const args = ["compose", ...fileArgs, "config", "--no-env-resolution", "--format", "json"];
+  const args = ["compose", ...fileArgs, "config", ...flags, "--format", "json"];
   const r = o.run("docker", args, { cwd: o.root, env, timeoutMs: COMPOSE_CONFIG_TIMEOUT_MS });
-  const fail = (kind, how) => ({
+  const fail = (kind, how, variable) => ({
     error: `docker compose config ${how}`,
     kind,
     cmd: ["docker", "compose", ...fileArgs, "config", "--no-env-resolution", "-q"].map(shQuote).join(" "),
     cwd: o.root,
-    ...scrubbed.length ? { scrubbed } : {}
+    ...scrubbed.length ? { scrubbed } : {},
+    ...variable ? { variable } : {}
   });
   if (r.timedOut) return fail("timeout", `timed out after ${seconds}`);
   if (r.notFound) return fail("gone", "could not start (its directory is gone)");
@@ -9017,17 +9025,163 @@ function composeName(o) {
   if (r.code !== 0) {
     if (TOO_OLD.test(r.stderr)) return fail("tooOld", "is too old (needs --no-env-resolution)");
     const rest = r.stderr.split("\n").filter((l) => !WARNING_LINES.some((w) => w.test(l))).join("\n").trim();
-    return rest === NO_FILE ? { noFile: true } : fail("exit", `exited ${r.code}`);
+    if (rest === NO_FILE) return { noFile: true };
+    const v = REQUIRED.exec(rest.split("\n")[0])?.[1];
+    return v ? fail("interp", `exited ${r.code}: required variable ${v} is missing a value`, v) : fail("exit", `exited ${r.code}`);
   }
-  let parsed;
   try {
-    parsed = JSON.parse(r.stdout);
+    return { model: JSON.parse(r.stdout), fail };
   } catch {
     return fail("json", "printed invalid JSON");
   }
-  const name = parsed?.name;
-  if (typeof name !== "string" || name === "") return fail("noName", "printed no project name");
+}
+var nameOf = (model) => model?.name;
+function composeName(o) {
+  const p = probe(o, ["--no-env-resolution"]);
+  if (!("model" in p)) return p;
+  const name = nameOf(p.model);
+  if (typeof name !== "string" || name === "") return p.fail("noName", "printed no project name");
   return { name };
+}
+function composeNameRaw(o) {
+  const p = probe(o, ["--no-env-resolution", "--no-interpolate", ...o.normalize ? [] : ["--no-normalize"]]);
+  if ("noFile" in p) return { error: "docker compose config found no compose file", kind: "exit", cmd: "", cwd: o.root };
+  if (!("model" in p)) return p;
+  const name = nameOf(p.model);
+  return { raw: typeof name === "string" && name !== "" ? name : null };
+}
+
+// src/lib/compose-env.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
+var NAME2 = /[A-Za-z_][A-Za-z0-9_]*/y;
+var KEY = /(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*([=:]?)[ \t]*/y;
+function resolveTemplate(t, vars) {
+  let out = "";
+  for (let i = 0; i < t.length; ) {
+    const ch = t[i];
+    if (ch !== "$") {
+      out += ch;
+      i++;
+      continue;
+    }
+    const next = t[i + 1];
+    if (next === "$") {
+      out += "$";
+      i += 2;
+      continue;
+    }
+    if (next !== "{") {
+      NAME2.lastIndex = i + 1;
+      const m2 = NAME2.exec(t);
+      if (!m2) return null;
+      const v2 = vars.get(m2[0]);
+      if (v2 === void 0 || v2 === null) return null;
+      out += v2;
+      i = NAME2.lastIndex;
+      continue;
+    }
+    NAME2.lastIndex = i + 2;
+    const m = NAME2.exec(t);
+    if (!m) return null;
+    let j = NAME2.lastIndex;
+    const op = /^(:-|-|:\?|\?|:\+|\+)?/.exec(t.slice(j))[0];
+    j += op.length;
+    let depth = 0;
+    let end = -1;
+    for (let k = j; k < t.length; k++) {
+      if (t[k] === "$" && t[k + 1] === "$") k++;
+      else if (t[k] === "$" && t[k + 1] === "{") {
+        depth++;
+        k++;
+      } else if (t[k] === "}") {
+        if (depth === 0) {
+          end = k;
+          break;
+        }
+        depth--;
+      }
+    }
+    if (end < 0 || !op && end !== j) return null;
+    const arg = t.slice(j, end);
+    const v = vars.get(m[0]);
+    if (v === null) return null;
+    const set = v !== void 0;
+    const full = set && v !== "";
+    let got;
+    if (op === ":-") got = full ? v : resolveTemplate(arg, vars);
+    else if (op === "-") got = set ? v : resolveTemplate(arg, vars);
+    else if (op === ":?") got = full ? v : null;
+    else if (op === "?") got = set ? v : null;
+    else if (op === ":+") got = full ? resolveTemplate(arg, vars) : "";
+    else if (op === "+") got = set ? resolveTemplate(arg, vars) : "";
+    else got = set ? v : null;
+    if (got === null) return null;
+    out += got;
+    i = end + 1;
+  }
+  return out;
+}
+var eol = (s, i) => {
+  const n = s.indexOf("\n", i);
+  return n < 0 ? s.length : n;
+};
+function parseDotEnv(s) {
+  const vars = /* @__PURE__ */ new Map();
+  for (let i = 0; i < s.length; ) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    if (s[i] === "#") {
+      i = eol(s, i);
+      continue;
+    }
+    KEY.lastIndex = i;
+    const m = KEY.exec(s);
+    if (!m) {
+      i = eol(s, i);
+      continue;
+    }
+    const key = m[1];
+    i = KEY.lastIndex;
+    if (!m[2]) {
+      vars.set(key, null);
+      i = eol(s, i);
+      continue;
+    }
+    const q = s[i];
+    if (q === "'" || q === '"') {
+      let k = i + 1;
+      while (k < s.length && s[k] !== q) k += s[k] === "\\" && (q === '"' || s[k + 1] === "'") ? 2 : 1;
+      if (k >= s.length) {
+        vars.set(key, null);
+        break;
+      }
+      const inner = s.slice(i + 1, k);
+      i = eol(s, k + 1);
+      if (q === "'") vars.set(key, inner.replace(/\\'/g, "'"));
+      else if (inner.includes("\\$")) vars.set(key, null);
+      else {
+        const un = inner.replace(/\\(.)/g, (_, c) => ({ n: "\n", r: "\r", t: "	" })[c] ?? c);
+        vars.set(key, un.includes("$") ? resolveTemplate(un, vars) : un);
+      }
+      continue;
+    }
+    const end = eol(s, i);
+    let v = s.slice(i, end);
+    const hash = v.search(/\s#/);
+    if (hash >= 0) v = v.slice(0, hash);
+    v = v.trim();
+    i = end;
+    vars.set(key, v.includes("$") ? resolveTemplate(v, vars) : v);
+  }
+  return vars;
+}
+function readDotEnv(pdir) {
+  try {
+    return parseDotEnv(readFileSync2(join3(pdir, ".env"), "utf8"));
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
 }
 
 // src/lib/env-checks.ts
@@ -9042,7 +9196,7 @@ var rp = (p) => {
 };
 var gitDirAt = (p) => {
   try {
-    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync2(p, "utf8")) : null;
+    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync3(p, "utf8")) : null;
     return m ? resolve2(dirname2(p), m[1].trim()) : p;
   } catch {
     return p;
@@ -9056,7 +9210,7 @@ function installFix(root, tool, want, pins) {
   const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
   const written = (file2) => {
     try {
-      return readFileSync2(join3(root, file2), "utf8").split("\n").some((l) => {
+      return readFileSync3(join4(root, file2), "utf8").split("\n").some((l) => {
         const m = /^\s*(\S+)\s+(\S+)/.exec(l);
         return !!m && names.includes(m[1]) && m[2] === want;
       });
@@ -9138,11 +9292,11 @@ function sharedCheck(c) {
     const me = rp(c.root);
     let at = null;
     try {
-      at = dirname2(resolve2(c.gitDir, readFileSync2(join3(c.gitDir, "gitdir"), "utf8").trim()));
+      at = dirname2(resolve2(c.gitDir, readFileSync3(join4(c.gitDir, "gitdir"), "utf8").trim()));
     } catch {
     }
     if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
-    if (at && rp(at) !== me && existsSync2(join3(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    if (at && rp(at) !== me && existsSync2(join4(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
     return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync2(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
   }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
@@ -9151,8 +9305,8 @@ function sharedCheck(c) {
 function autoEntrypoints(c) {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = /* @__PURE__ */ new Set();
-  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join3(c.root, t)))) {
-    for (const m of readFileSync2(join3(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
+  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join4(c.root, t)))) {
+    for (const m of readFileSync3(join4(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
   }
   return [...found].sort();
 }
@@ -9173,8 +9327,8 @@ function shimProblem(c, tool, p) {
 }
 function fallsBackTo(c, tool, p) {
   const dirs = (c.env.PATH ?? "").split(delimiter2);
-  const at = dirs.findIndex((d) => d && join3(d, tool) === p);
-  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join3(d, tool)) && !shimOf(join3(d, tool)));
+  const at = dirs.findIndex((d) => d && join4(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join4(d, tool)) && !shimOf(join4(d, tool)));
 }
 function harnessChecks(c) {
   const h = c.cfg.harness;
@@ -9204,7 +9358,7 @@ function harnessChecks(c) {
   if (h.files.length) {
     const kind = (f) => {
       try {
-        const s = statSync2(join3(c.root, f));
+        const s = statSync2(join4(c.root, f));
         return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
       } catch {
         return "missing";
@@ -9220,14 +9374,14 @@ function harnessChecks(c) {
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
   if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
-    const bad = entries.filter((e) => !isExecutable(join3(c.root, e)));
+    const bad = entries.filter((e) => !isExecutable(join4(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
   const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env, c))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ.split("\0").filter(Boolean);
-    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
+    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join4(c.root, p)) && !isExecutable(join4(c.root, p)));
     const parts2 = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
@@ -9247,7 +9401,7 @@ var isMetaKey = (k) => k === "name" || k === "version" || k.startsWith("x-");
 function readCompose(file) {
   let text;
   try {
-    text = readFileSync2(file, "utf8");
+    text = readFileSync3(file, "utf8");
   } catch {
     return "cannot be read";
   }
@@ -9274,14 +9428,17 @@ function isComposeFile(c, f) {
   const m = COMPOSE_FILE.exec(f);
   if (!m) return false;
   if (!m[3]?.startsWith("-")) return true;
-  const docs = readCompose(join3(c.root, f));
+  const docs = readCompose(join4(c.root, f));
   if (typeof docs === "string") return true;
   const keys = docs.flatMap((d) => d ? Object.keys(d) : []);
   return keys.some((k) => COMPOSE_KEYS.includes(k)) || keys.some((k) => k !== "version") && keys.every(isMetaKey);
 }
 var normProject = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
 var isProject = (s) => s !== "" && normProject(s) === s;
-var projectDir = (c, root) => dirname2(resolve2(root, c.cfg.compose.files[0]));
+var isMainRoot = (c, root) => root === c.root ? !c.isWorktree : rp(root) === rp(c.worktrees[0] ?? c.root);
+var filesFor = (c, root) => (isMainRoot(c, root) ? c.cfg.compose.mainFiles : null) ?? c.cfg.compose.files;
+var filesKey = (c, root) => isMainRoot(c, root) && c.cfg.compose.mainFiles ? "main_files" : "files";
+var projectDir = (c, root) => dirname2(resolve2(root, filesFor(c, root)[0]));
 function derive(c, root) {
   const main2 = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename3(projectDir(c, root)));
@@ -9289,12 +9446,12 @@ function derive(c, root) {
   return `${norm(basename3(main2)) || "wt"}-${norm(basename3(root)).slice(0, 24)}-${hash}`;
 }
 function runs(c, root) {
-  const { files } = c.cfg.compose;
+  const files = filesFor(c, root);
   let dir = projectDir(c, root);
   while (!existsSync2(dir) && dir !== root) dir = dirname2(dir);
   const atRoot = rp(dir) === rp(root);
   return [
-    ...files.every((f) => existsSync2(join3(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
+    ...files.every((f) => existsSync2(join4(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
     { dir, pdir: dir, label: atRoot ? "root plain run" : "project-dir plain run" },
     ...atRoot ? [] : [{ dir: root, pdir: root, label: "root plain run" }]
   ];
@@ -9337,59 +9494,143 @@ function strays(c, ps, projects) {
   }
   return [...out.values()];
 }
+var shellCompose = (c) => Object.keys(c.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort();
+function cellsOf(c, root, whose, scrubs) {
+  const set = shellCompose(c);
+  return runs(c, root).flatMap((r) => scrubs.map((scrub) => ({ ...r, whose, pre: root === c.root && scrub ? `without your shell's COMPOSE_* (${set.join(", ")}), ` : "", r: composeName({ root: r.dir, files: r.files, env: c.env, scrub, run: c.run }) })));
+}
+var NOTHING = { names: [], templated: false };
+function recoverer(c) {
+  const seen = /* @__PURE__ */ new Map();
+  let timedOut = false;
+  const once = (p) => {
+    const o = { root: p.dir, files: p.files, env: c.env, scrub: true, run: c.run };
+    const raw = composeNameRaw(o);
+    if ("error" in raw) {
+      timedOut ||= raw.kind === "timeout";
+      return NOTHING;
+    }
+    const literal = raw.raw !== null && !raw.raw.includes("$") ? normProject(raw.raw) : null;
+    const norm2 = composeNameRaw({ ...o, normalize: true });
+    if ("error" in norm2) timedOut ||= norm2.kind === "timeout";
+    const answer = "error" in norm2 ? null : norm2.raw;
+    const names = new Set(literal ? [literal] : []);
+    if (raw.raw !== null && literal === null) {
+      const dotenv = readDotEnv(p.pdir);
+      const local = resolveTemplate(raw.raw, dotenv);
+      const resolved = local === null ? "" : normProject(local);
+      if (resolved) names.add(resolved);
+      const own = dotenv.get("COMPOSE_PROJECT_NAME");
+      if (own) names.add(normProject(own));
+      const beat = !!own || answer !== null && answer !== normProject(raw.raw);
+      if (beat && answer) names.add(answer);
+      return { names: [...names], templated: !resolved && !beat };
+    } else if (answer) names.add(answer);
+    return { names: [...names], templated: false };
+  };
+  return (p) => {
+    const kind = p.r.kind;
+    if (kind !== "interp" && kind !== "exit") return NOTHING;
+    const key = `${rp(p.dir)}\0${(p.files ?? []).join("\0")}`;
+    const hit = seen.get(key);
+    if (hit) return hit;
+    const got = timedOut ? NOTHING : once(p);
+    seen.set(key, got);
+    return got;
+  };
+}
+function peers(c) {
+  const main2 = rp(c.worktrees[0] ?? c.root);
+  const recover = recoverer(c);
+  return c.worktrees.filter((w) => rp(w) !== rp(c.root)).map((w) => {
+    const isMain = rp(w) === main2;
+    const holder = isMain ? "the main checkout" : `worktree ${w}`;
+    const exists = existsSync2(w);
+    const cells = c.isWorktree && exists ? cellsOf(c, w, `${holder}'s `, [true]) : [];
+    const failed = cells.filter((p) => "error" in p.r);
+    const got = failed.map(recover);
+    const mainProject = isMain ? c.cfg.compose.mainProject : null;
+    const recovered = [...mainProject ? [mainProject] : [], ...isMain && failed.length ? [derive(c, w)] : [], ...got.flatMap((g) => g.names)];
+    return { root: w, holder, isMain, exists, files: filesFor(c, w), derived: isMain ? null : derive(c, w), cells, failed, recovered, templated: got.some((g) => g.templated) };
+  });
+}
+var named = (p) => "name" in p.r ? p.r.name : void 0;
+function heldOf(ps) {
+  const held = /* @__PURE__ */ new Map();
+  for (const p of ps) {
+    if (p.derived !== null && !held.has(p.derived)) held.set(p.derived, p.exists ? p.holder : `${p.holder} (gone, until git worktree prune)`);
+    for (const n of [...p.cells.map(named), ...p.recovered]) if (n && !held.has(n)) held.set(n, p.holder);
+  }
+  return held;
+}
+function peerWarnings(ps, name, kept) {
+  return ps.flatMap((p) => {
+    const [first, ...more] = p.failed;
+    if (!first) return [];
+    const where = p.isMain ? "checkout" : "worktree";
+    const also = more.length ? `, and ${more.length} more run${more.length > 1 ? "s" : ""}` : "";
+    const keep = kept ? `this checkout keeps project ${name} (checked against every name loops can know)` : `this checkout's project ${name} was checked against every name loops can know`;
+    const tpl = p.templated ? `; its name: reads a variable loops could not resolve from that ${where}'s .env` : "";
+    const message = `${p.isMain ? "main checkout" : "peer worktree"} ${p.root}: ${first.label}: ${first.r.error}${also}; ${keep}, but a name set only in that ${where}'s shell cannot be checked until its stack runs${tpl}`;
+    const fix = `run bin/env-check in ${p.root} (its e.project row names the fix there)${p.isMain ? "" : `; if that worktree is abandoned, git worktree remove ${shQuote(p.root)} (refuses when it has changes)`}`;
+    return [res("WARN", "e.project", message, fix)];
+  });
+}
 var UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
+var interpFix = (v, pdir) => `set ${v} in ${join4(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
 var NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 function composeProject(c) {
   const id = "e.project";
-  const { files, derive: how } = c.cfg.compose;
-  const one = (level, message, fix, name2 = null) => ({ name: name2, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [] });
-  const missing = files.filter((f) => !existsSync2(join3(c.root, f)));
-  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
-  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
+  const { derive: how, mainProject } = c.cfg.compose;
+  const files = filesFor(c, c.root);
+  const key = filesKey(c, c.root);
+  const one = (level, message, fix, name2 = null) => ({ name: name2, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [], warnings: [] });
+  const missing = files.filter((f) => !existsSync2(join4(c.root, f)));
+  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] ${key} in ${CFG}`);
+  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] ${key} in ${CFG}`);
   if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
   const envName = c.env.COMPOSE_PROJECT_NAME || void 0;
   if (envName && !isProject(envName)) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${JSON.stringify(envName)} is not a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)`, "export a COMPOSE_PROJECT_NAME of that form, or unset it");
   if (c.gitDir === null) return one("FAIL", "could not read git metadata", "rerun git rev-parse --git-dir --git-common-dir to see why");
   if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
+  if (!c.isWorktree && mainProject && envName && envName !== mainProject) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${envName} is not [compose] main_project ${mainProject}: a run here without -p would use another stack than the config names`, `unset COMPOSE_PROJECT_NAME, or set main_project = "${envName}" in ${CFG}`);
+  const mainName = c.isWorktree ? null : mainProject;
   const v = composeVersion(c.run, c.root, c.env);
-  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, void 0, envName ?? (c.isWorktree ? derive(c, c.root) : null));
+  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, void 0, envName ?? (c.isWorktree ? derive(c, c.root) : mainName));
   if ("error" in v) return one("FAIL", `compose: ${v.error}`, `rerun to see why: cd ${shQuote(c.root)} && docker compose version`);
-  const set = Object.keys(c.env).filter((k) => k.startsWith("COMPOSE_") && !isSwitch(k)).sort();
-  const probe = (root, whose, scrubs) => runs(c, root).flatMap((r) => scrubs.map((scrub) => ({ ...r, whose, pre: root === c.root && scrub ? `without your shell's COMPOSE_* (${set.join(", ")}), ` : "", r: composeName({ root: r.dir, files: r.files, env: c.env, scrub, run: c.run }) })));
   const failed = (p) => {
     const e = p.r;
-    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`);
+    const fix = e.kind === "interp" && own.includes(p) ? interpFix(e.variable, p.pdir) : e.kind === "tooOld" ? UPGRADE_FIX : e.kind === "json" || e.kind === "noName" ? NO_NAME_FIX : `rerun to see Compose's error: ${rerun(e)}`;
+    return res("FAIL", id, `${p.pre}${p.whose}${p.label}: ${e.error}`, fix);
   };
-  const named = (p) => "name" in p.r ? p.r.name : void 0;
-  const own = probe(c.root, c.isWorktree ? "this worktree's " : "this checkout's ", set.length ? [false, true] : [false]);
-  if (!envName && !c.isWorktree && "error" in own[0].r) return { name: null, results: [failed(own[0])], withheld: true, answers: [] };
-  if (!envName && !c.isWorktree && "noFile" in own[0].r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
-  const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]));
+  const own = cellsOf(c, c.root, c.isWorktree ? "this worktree's " : "this checkout's ", shellCompose(c).length ? [false, true] : [false]);
+  if (!envName && !c.isWorktree && !mainName && "error" in own[0].r) return { name: null, results: [failed(own[0])], withheld: true, answers: [], warnings: [] };
+  if (!envName && !c.isWorktree && "noFile" in own[0].r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] ${key} in ${CFG}`);
+  const name = envName ?? (c.isWorktree ? derive(c, c.root) : mainName ?? named(own[0]));
   if (!name) return one("FAIL", `no project name derives from directory ${basename3(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
-  const main2 = rp(c.worktrees[0] ?? c.root);
-  const held = /* @__PURE__ */ new Map();
-  const others = [];
-  for (const w of c.worktrees.filter((w2) => rp(w2) !== rp(c.root))) {
-    const isMain = rp(w) === main2;
-    const holder2 = isMain ? "the main checkout" : `worktree ${w}`;
-    if (!isMain && !held.has(derive(c, w))) held.set(derive(c, w), existsSync2(w) ? holder2 : `${holder2} (gone, until git worktree prune)`);
-    if (!c.isWorktree || !existsSync2(w)) continue;
-    const cells = probe(w, `${holder2}'s `, [true]);
-    others.push(...cells);
-    for (const n of cells.map(named)) if (n && !held.has(n)) held.set(n, holder2);
-  }
+  const others = peers(c);
+  const held = heldOf(others);
   const fails = [];
-  for (const p of [...own, ...others]) if ("error" in p.r) fails.push([failed(p), others.includes(p) || !c.isWorktree && !!p.files]);
+  for (const p of own) if ("error" in p.r) fails.push([failed(p), !c.isWorktree && !mainName && !!p.files]);
   const holder = held.get(name);
   const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
-  if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  const mainPath = c.worktrees[0] ?? c.root;
+  const byMain = c.isWorktree && holder === "the main checkout";
+  const viaMainProject = byMain && name === mainProject;
+  const dirnameClash = byMain && !envName && how === "dirname" && !viaMainProject && name === derive(c, mainPath);
+  const atRoot = rp(projectDir(c, c.root)) === rp(c.root);
+  const slug = `set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`;
+  const clash = `${atRoot ? `rename this worktree's directory: git worktree move ${shQuote(c.root)} <new-path>; or ` : ""}${slug}`;
+  if (holder && dirnameClash) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: the main checkout ${mainPath} and this worktree ${c.root} derive one name under derive = "dirname"`, clash), true]);
+  else if (holder && viaMainProject) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: it is [compose] main_project in ${CFG}`, `${envName ? "export another COMPOSE_PROJECT_NAME" : how === "dirname" ? clash : "export another COMPOSE_PROJECT_NAME"}, or set another main_project in ${CFG}`), true]);
+  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, byMain && !envName && how === "dirname" ? clash : rename), true]);
   const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
   for (const p of c.isWorktree ? own : []) {
     const a = named(p);
     const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename3(c.root))] : []];
     if (a === void 0 || mine.includes(a) && !held.has(a)) continue;
     const by = held.get(a);
-    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join3(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
+    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join4(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
     fails.push([res("FAIL", id, `${p.pre}${p.label} would use project ${a}, ${by ? `which ${by} uses` : `not ${name}`}`, fix), false]);
   }
   const answers = [...new Set(own.flatMap((p) => named(p) ?? []))];
@@ -9405,13 +9646,13 @@ function composeProject(c) {
   const stop = (p, d) => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute4(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
   if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
   else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]) => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
-  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
+  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : mainName ? "main_project" : "compose";
   const note = Array.isArray(ps) || ps.timedOut ? "" : `; running stacks not checked (${ps.failed})`;
-  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps };
+  if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps, warnings: peerWarnings(others, name, true) };
   const withheld = fails.some(([, w]) => w);
   const results = [...fails.filter(([, w]) => w), ...fails.filter(([, w]) => !w)].map(([r]) => r);
   results[0] = { ...results[0], message: results[0].message + note };
-  return { name: withheld ? null : name, results, withheld, answers, ps };
+  return { name: withheld ? null : name, results, withheld, answers, ps, warnings: peerWarnings(others, name, !withheld) };
 }
 function containersCheck(c, { name: project, results, ps }) {
   const cfg = c.cfg.compose;
@@ -9432,7 +9673,7 @@ function containersCheck(c, { name: project, results, ps }) {
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
   const mtimes = files.map((f) => {
     try {
-      return [f, statSync2(join3(c.root, f)).mtimeMs];
+      return [f, statSync2(join4(c.root, f)).mtimeMs];
     } catch {
       return [f, NaN];
     }
@@ -9448,7 +9689,7 @@ function containersCheck(c, { name: project, results, ps }) {
   const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
   const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? JSON.parse([...agreed][0]) : [];
   const own = split2(started);
-  const fs = own.every((f) => isAbsolute4(f) && existsSync2(f)) ? own.map(rel) : cfg.files;
+  const fs = own.every((f) => isAbsolute4(f) && existsSync2(f)) ? own.map(rel) : filesFor(c, c.root);
   const args = fs.map((f) => ` -f ${quote2(f)}`);
   if (wd && rel(wd) !== normalize3(dirname2(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
   if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote2(rel(f))}`));
@@ -9458,12 +9699,13 @@ function containersCheck(c, { name: project, results, ps }) {
 }
 function composeChecks(c, project) {
   if (!c.cfg.compose) return [];
-  const { mode, files, allowContainerName } = c.cfg.compose;
+  const { mode, allowContainerName } = c.cfg.compose;
+  const files = filesFor(c, c.root);
   if (mode === "none") {
     const tracked = c.tracked.filter((f) => isComposeFile(c, f));
     return [tracked.length ? res("FAIL", "e.none", `config says compose mode none but ${short(tracked)} is tracked`, `set [compose] mode = "test" and list the files in ${CFG}`) : res("PASS", "e.none", "no compose file tracked")];
   }
-  const read = files.filter((f) => existsSync2(join3(c.root, f))).map((f) => ({ f, docs: readCompose(join3(c.root, f)) }));
+  const read = files.filter((f) => existsSync2(join4(c.root, f))).map((f) => ({ f, docs: readCompose(join4(c.root, f)) }));
   const unread = read.filter((r) => typeof r.docs === "string").map((r) => r.f);
   const names = read.flatMap((r) => typeof r.docs === "string" ? [] : r.docs).flatMap((d) => Object.values(table3(d?.services) ?? {})).flatMap((s) => {
     const n = table3(s)?.container_name;
@@ -9472,6 +9714,7 @@ function composeChecks(c, project) {
   if (!project) throw new Error("composeChecks: compose mode test needs the resolved project");
   return [
     ...project.results,
+    ...project.warnings,
     ...c.static || project.results.some((r) => r.level === "FAIL") ? [] : containersCheck(c, project),
     unread.length ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it") : names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
   ];
@@ -9538,11 +9781,11 @@ function envCheckMain(argv, d) {
   const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
   const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
-  const cfgFile = join4(root, ".loops", "env-check.toml");
+  const cfgFile = join5(root, ".loops", "env-check.toml");
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
   let text;
   try {
-    text = readFileSync3(cfgFile, "utf8");
+    text = readFileSync4(cfgFile, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${cfgFile}: ${e.message}`);
   }
@@ -9574,10 +9817,11 @@ function envCheckMain(argv, d) {
   const ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact };
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
-    const { name, results: results2 } = composeProject(ctx);
+    const { name, results: results2, warnings } = composeProject(ctx);
     if (name) d.out(redact(name));
     const fails = results2.filter((r) => r.level === "FAIL");
     for (const r of fails.map(showRow)) d.err(`env-check: ${name ? "warning: " : ""}${r.message} \u2014 fix: ${r.fix}`);
+    for (const r of warnings.map(showRow)) d.err(`env-check: warning: ${r.message} \u2014 fix: ${r.fix}`);
     if (!fails.length && !name) d.err(`env-check: ${showRow(results2[0]).message}`);
     return name ? 0 : 1;
   }
@@ -9614,8 +9858,8 @@ function envCheckMain(argv, d) {
 }
 
 // src/lib/zone-cli.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
-import { join as join5, relative, resolve as resolve4 } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync5 } from "node:fs";
+import { join as join6, relative, resolve as resolve4 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -9806,12 +10050,12 @@ function zoneMain(argv, d) {
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
   const root = repoRoot(d.run, d.cwd, void 0) ?? d.cwd;
-  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join5(root, "risk-zones.md");
+  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join6(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
   try {
-    text = readFileSync4(filePath, "utf8");
+    text = readFileSync5(filePath, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${filePath}: ${e.message}`);
   }
@@ -9864,7 +10108,7 @@ function realDeps() {
     run,
     cwd: process.cwd(),
     env: process.env,
-    readStdin: () => readFileSync5(0, "utf8"),
+    readStdin: () => readFileSync6(0, "utf8"),
     out: (s) => process.stdout.write(`${s}
 `),
     err: (s) => process.stderr.write(`${s}

@@ -399,12 +399,13 @@ are not counted. A run with no FAIL, WARN or PASS (only SKIP and INFO rows, or n
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
 `--compose-project` (print the Compose project name for this checkout and exit 0 when `e.project` keeps it, with one
-`env-check: warning:` line on stderr per FAIL that keeps it; exit 1 with each FAIL and its fix on stderr when a FAIL
+`env-check: warning:` line on stderr per FAIL that keeps it, then one per peer WARN (a peer WARN never changes the
+exit, 0.8.0); exit 1 with each FAIL and its fix on stderr when a FAIL
 withholds it (a configured file missing, a shell `COMPOSE_PROJECT_NAME` Compose rejects, unreadable git metadata, `git worktree list` failing
 or not listing the main checkout, the name held by another checkout, a container of the name started from
-another checkout or from none, `docker compose version` failing for any reason but a missing compose plugin (timed out, killed, refused or a non-zero exit), `docker ps` timing out, a failed run of another checkout
-or of the main checkout's configured run), or when it is unknown (the main checkout with Compose unavailable and no
-shell `COMPOSE_PROJECT_NAME`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
+another checkout or from none, `docker compose version` failing for any reason but a missing compose plugin (timed out, killed, refused or a non-zero exit), `docker ps` timing out, a failed configured run in the main
+checkout when `main_project` is unset, the main checkout's shell `COMPOSE_PROJECT_NAME` differing from `main_project`), or when it is unknown (the main checkout with Compose unavailable, no
+shell `COMPOSE_PROJECT_NAME` and no `main_project`); exit 2 without compose `mode = "test"`; it always asks Compose, ignoring `--static`
 and `CI=true`). `$HOME` is shown as `~` everywhere (a quoted path under it as `~/'rest'`, so a printed command still runs; relayed output is redacted before it is cut, so a cut never shows part of home). Only a whole path is replaced, at a segment boundary on both sides: with `HOME=/Users/bob`, `/Users/bob2`, `/Users/bob.old` and `/x/Users/bob` are left as they are, punctuation alone after it (`/Users/bob.` ending a sentence, `/Users/bob...`) is not part of a name, and a PATH list's `:/Users/bob:` becomes `:~:`. A `HOME` that is not an absolute path (`HOME=build`) redacts nothing. `--json` is `{schema, engine, mode, root,
 results: [{level, id, message, fix, also, source}], summary: {fail, warn, pass, skip}, exit}`.
 Text output escapes every row (and each `--compose-project` stderr line) once: control characters, bidi controls and
@@ -468,6 +469,8 @@ inputs = ["compose.yml", "docker/**"]   # test only: b.containers, globs over tr
 containers = "fail"                     # fail (default) | warn: b.containers severity
 derive = "dirname"                      # dirname (default) | slug-hash (<main, else wt>-<worktree slug>-<hash6>)
 allow_container_name = ["app"]
+main_project = "app"                    # 0.8.0, test only: the -p name the repo's wrappers give the main checkout; held from worktrees
+main_files = ["compose.yml", "compose.dev.yml"]  # 0.8.0, test only: the main checkout's files (default: files)
 
 [[local]]                               # a repo's own checks
 id = "d.lint-lock"                      # <a-e or x>.<name>; x.none is reserved
@@ -564,7 +567,9 @@ d.tools now PASSes it by the fallback rule above. With no later copy, the shim e
 shim') and d.tools FAILs it. The macOS mise build was not probed; the shim code is shared.
 
 **Compose project (`e.project`, `mode = "test"`).** loops asks Compose, never parses for it:
-`docker compose [-f <configured files>] config --no-env-resolution --format json` reads `name`. For each checkout
+`docker compose [-f <configured files>] config --no-env-resolution --format json` reads `name`. A checkout's configured
+files are `[compose] files`, or `main_files` for the main checkout when that is set (0.8.0): its runs, its project
+directory (so its derived name), the missing-file check and the `container_name` scan all use them. For each checkout
 it asks up to three runs without `-p`: the configured `-f` run (when that checkout has every file), plain
 `docker compose` from the first configured file's directory (or its nearest existing ancestor; Compose walks up from
 there), and plain `docker compose` from the checkout root (when that is another directory); a run that finds no
@@ -574,18 +579,47 @@ Other checkouts are asked without any `COMPOSE_*`; this checkout with your shell
 any `COMPOSE_*` (even empty), again without them. Every run sets `COMPOSE_EXPERIMENTAL_GIT_REMOTE=0`,
 `COMPOSE_EXPERIMENTAL_OCI_REMOTE=0` and `GIT_ALLOW_PROTOCOL=file` over your shell and any `.env`, so a remote (git or
 OCI) `include:` or `extends.file:` is never fetched; such a file is a failed run (below). A checkout's **name** is your shell's non-empty
-`COMPOSE_PROJECT_NAME`, else a worktree's derived name, else the main checkout's configured answer. Seen from a
-worktree, the main checkout holds its answers and every other worktree holds its derived name and its answers (a
-deleted one, its derived name); seen from the main checkout, worktrees hold their derived names. e.project runs
+`COMPOSE_PROJECT_NAME`, else a worktree's derived name, else the main checkout's `main_project` (0.8.0; the `-p`
+name its wrappers pass, so Compose's own answer need not match), else the main checkout's configured answer.
+
+The **held names** a worktree's name must not equal are, seen from a worktree: every other worktree's derived name
+(a deleted one's too, until `git worktree prune`); every answer Compose gives for the main checkout and each other
+worktree; `main_project`, always; the main checkout's plain derived name when any of its runs fails; and, for a
+peer's run that fails on interpolation or exits non-zero, what a fallback read gives (below). Seen from the main
+checkout, worktrees hold their derived names.
+
+**Peer policy (0.8.0).** A failed run of another checkout (a peer worktree, or the main checkout seen from a worktree)
+is no longer a FAIL here: it is one `WARN e.project` per peer ("... and N more runs"), and this checkout keeps its
+name. The peer's own `env-check` run is where it FAILs, with the fix for that checkout. The fallback for a failed
+peer run is `docker compose [-f files] config --no-env-resolution --no-interpolate --no-normalize --format json`
+(without your shell's `COMPOSE_*`, remote loaders off, the same 10 s limit), whose name is only ever held, never used
+as this checkout's: a literal `name:` is held as Compose normalizes it; a templated `name:` (`${STACK}`, `${PN:-x}`)
+is resolved by loops from the peer project directory's `.env` alone (never your shell's environment), with Compose's
+defaults (`:-` for unset or empty, `-` for unset), and held normalized when every variable resolves; loops also runs
+once more without `--no-normalize` and holds that answer when a `.env` `COMPOSE_PROJECT_NAME` beat the template. When a
+variable stays unresolved (unset in that `.env` with no default, or a `${VAR:?}` it lacks) and no `.env` name beats
+it, nothing is held for the template and the WARN says its name reads a variable loops could not resolve; with no
+`name:` it holds that second answer (the `.env` name or the directory name). Any fallback failure, a Compose without `--no-normalize`
+included, holds nothing. Runs are deduped by directory and files, and after one fallback times out the rest skip it.
+The accepted residual case: a name set only in the peer's shell (an exported `COMPOSE_PROJECT_NAME`, or a variable a
+templated `name:` reads that its `.env` does not set, or that its shell overrides) cannot be checked until that
+peer's stack runs; then the running-stack check sees it
+through the container labels. The runbook is under "e.project peer warnings" below. e.project runs
 every check and reports every FAIL, the ones that withhold the name first, except that a missing configured file, an
 invalid shell `COMPOSE_PROJECT_NAME`, unreadable git metadata, a bad `git worktree list` and a failed `docker compose version` end evaluation
 and are reported alone:
+- in the main checkout, a shell `COMPOSE_PROJECT_NAME` other than `main_project` (a run there without `-p` would use
+  another stack than the config names; fix: unset it, or set `main_project` to the shell's value): FAIL, withheld;
 - a configured file missing here, a shell `COMPOSE_PROJECT_NAME` Compose rejects (it takes lowercase letters,
   digits, `-` and `_`, a letter or digit first; checked before asking Compose, even when Compose is unavailable), a
   failed `git rev-parse --git-dir --git-common-dir` (a worktree is then not known to be one), a
   `git worktree list` that fails or, from a worktree, does not list the main checkout first (fix: rerun
   `git worktree list --porcelain`), the name held by another checkout, or (main) equal to a worktree's derived
-  name: FAIL, and the name is withheld;
+  name: FAIL, and the name is withheld. When a worktree's `derive = "dirname"` name is the main checkout's (both
+  directories have one basename), the FAIL names both paths, and the fix is to rename the worktree's directory with
+  `git worktree move <path> <new-path>` (offered when the project directory is the worktree root) or to set
+  `derive = "slug-hash"`. slug-hash renames every worktree's project, so first stop each worktree's stack
+  (`docker compose down`, without `-v`, which would delete its volumes). The default stays `dirname`;
 - a container of the name started from another checkout's project directory or from outside every checkout
   (`working_dir` label): FAIL, withheld; a container of one of this checkout's answers: FAIL, the name is kept. The
   fix steers this checkout off that project (export another `COMPOSE_PROJECT_NAME`, or always pass `-p`) and names
@@ -601,20 +635,25 @@ exit (a daemon error, say), timing out, being killed or being refused (EACCES) i
 `config --no-env-resolution -q` (Compose's error and exit, never the resolved model with its `.env` values),
 directory and environment included, with the remote loaders off, or "upgrade Compose" when it is too old; a run that
 exits 0 with unusable JSON or no project name has no error to rerun, so its fix says to check `docker compose version`
-and upgrade Compose. loops does not copy Compose's output. Compose's own error line can still echo an interpolated value (`invalid containerPort:
-<value>`), so read the rerun's output before sharing it. That FAIL withholds the name
-when the failed run is another checkout's or the main checkout's configured run, and keeps it when it is one of this
-checkout's other runs. If `docker ps` fails, the running-stack check did not run and the Result says so; if it times
+and upgrade Compose. A run that fails on a required variable (`${VAR:?}` or `${VAR?}` unset) names that variable, and
+nothing else of Compose's stderr is relayed; in this checkout the fix is to set it in the project directory's `.env`
+or export it (copy its line from `.env.example` when one defines it; ask the repo owner for a secret you do not have). loops does not copy Compose's output. Compose's own error line can still echo an interpolated value (`invalid containerPort:
+<value>`), so read the rerun's output before sharing it. A failed run of this checkout withholds the name when it is
+the main checkout's configured run in a main-checkout run with no `main_project` (that run is where the name comes
+from), and keeps it for this checkout's other runs; another checkout's failed run is a peer WARN (above). If `docker ps` fails, the running-stack check did not run and the Result says so; if it times
 out, that is a FAIL, withheld. `--static` / `CI=true` never ask Compose; `--compose-project` always does: exit 0 and
-the name when it is kept (a warning on stderr for each FAIL that keeps it), exit 1 when it is withheld or unknown.
+the name when it is kept (a warning on stderr for each FAIL that keeps it, then each peer WARN), exit 1 when it is
+withheld or unknown; peer WARNs never change its exit.
 Verified with Compose v5.1.2, v5.5.0 and v2.38.2 (needs `config --no-env-resolution`; v2.38.2 also fails on a
 missing `env_file`; the remote-loader switches are verified locally on v5.5.0, and CI's corpus covers its runner's
-Compose). From a worktree: up to 9 + 3·peers probes of about 50 ms each, plus `docker compose version` and one
-`docker ps`.
+Compose). From a worktree: up to 9 + 3·peers probes of about 50 ms each, plus `docker compose version`, one
+`docker ps`, and up to two fallback runs per distinct failed peer run.
 
 Not covered:
-- Another checkout's exported shell `COMPOSE_PROJECT_NAME` (the main checkout's or a worktree's) is invisible to
-  loops; the running-stack check catches it only while a container of that stack exists.
+- Another checkout's exported shell `COMPOSE_PROJECT_NAME` (the main checkout's or a worktree's), or a shell variable
+  a peer's templated `name:` reads (one its `.env` does not set, or one its shell sets over the `.env` value), is
+  invisible to loops; the running-stack check catches it only while a container
+  of that stack exists. With `main_project` set, the `-p` the main checkout's wrappers pass is held.
 - Named volumes of a stack whose containers were removed are not seen by the running-stack check (the asked names
   still cover them).
 - Plain runs from other subdirectories (per-service compose files) are not asked.
@@ -624,6 +663,7 @@ Not covered:
 - A stack started with a root `.env` `COMPOSE_FILE` leaves the same labels as `-f <file>`, so the `b.containers`
   repair may miss that `.env`.
 - The running-stack check does not run when `docker ps` fails (the PASS, or the first FAIL, says so).
+- A Docker-compatible shim without Compose (podman-docker, exit 125) still FAILs instead of SKIPping.
 
 ```
                  .loops/env-check.toml ─┐
@@ -633,15 +673,36 @@ Not covered:
                                         │        │ own: shell as is (+ again without COMPOSE_*) ──► compose-config.ts ──► docker compose config
                                         │        │ from a worktree, main + peers: no COMPOSE_*     {name|noFile|error}   --no-env-resolution --format json
                                         │        │ every run: remote loaders off (git/OCI include, extends.file → failed run)
+                                        │        │ a peer's failed run (interp | exit) ──► composeNameRaw (--no-interpolate --no-normalize): held only
                                         │        │ docker ps -a --format (Compose labels) ──► running stacks of the name and the answers
                                         │        ▼
-                                        │   PASS N (COMPOSE_PROJECT_NAME | derived: slug-hash|dirname | compose)
+                                        │   PASS N (COMPOSE_PROJECT_NAME | derived: slug-hash|dirname | main_project | compose)
                                         │   | every FAIL, withholding ones first (loops' text; fix = `config -q` rerun) | SKIP unavailable
+                                        │   + one WARN per peer whose run failed (never withholds)
                                         │        │
                                         └──► b.containers (same docker ps listing; skipped on any e.project FAIL)
   --compose-project ─► composeProject ─► stdout name: exit 0 kept (+ stderr warnings), 1 withheld or unknown
   --static / CI=true ─► compose files present only  (never asks Compose or docker; --compose-project is the exception)
 ```
+
+#### e.project peer warnings
+
+A row like `WARN e.project  peer worktree <path>: <run>: <Compose error>; this checkout keeps project <name> ...`
+means another checkout's compose files did not resolve without its owner's shell, most often a fresh worktree with
+no `.env` for a `${VAR:?}` reference. This checkout keeps its name: every name loops can know for the peer is held.
+What is left unchecked is a name set only in that checkout's shell, until its stack runs.
+
+1. Run `bin/env-check` in `<path>`. Its own `e.project` FAIL names the fix there; for a required variable it is
+   "set VAR in `<path>/.env` or export it" (copy the line from `.env.example` when one defines it, or ask the repo
+   owner for a secret you do not have).
+2. If that worktree is abandoned, remove it: `git worktree remove <path>`. git refuses when it has uncommitted
+   changes or untracked files, so look at them first; a directory that is already gone stays listed until
+   `git worktree prune`.
+3. For the main checkout (`WARN e.project  main checkout <path>: ...`), run `bin/env-check` there; there is no remove
+   step. If its wrappers always pass `-p`, set `[compose] main_project` so that name is held whatever Compose says.
+
+Under `--compose-project` the same text is an `env-check: warning: <message> — fix: <fix>` line on stderr, after any
+FAIL lines; the name is still printed and the exit is unchanged.
 
 `e.container_name` WARNs on a fixed `container_name`
 unless allowlisted, reading each service's key from the parsed files (flow mappings, quoted keys and merge keys count;
