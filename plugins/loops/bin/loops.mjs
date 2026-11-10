@@ -9475,12 +9475,15 @@ function composeProject(c) {
   const holder = held.get(name);
   const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
   const mainPath = c.worktrees[0] ?? c.root;
-  const dirnameClash = c.isWorktree && !envName && how === "dirname" && holder === "the main checkout";
+  const byMain = c.isWorktree && holder === "the main checkout";
+  const viaMainProject = byMain && name === mainProject;
+  const dirnameClash = byMain && !envName && how === "dirname" && !viaMainProject && name === derive(c, mainPath);
   const atRoot = rp(projectDir(c, c.root)) === rp(c.root);
   const slug = `set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`;
   const clash = `${atRoot ? `rename this worktree's directory: git worktree move ${shQuote(c.root)} <new-path>; or ` : ""}${slug}`;
   if (holder && dirnameClash) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: the main checkout ${mainPath} and this worktree ${c.root} derive one name under derive = "dirname"`, clash), true]);
-  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  else if (holder && viaMainProject) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: it is [compose] main_project in ${CFG}`, `${envName ? "export another COMPOSE_PROJECT_NAME" : how === "dirname" ? clash : "export another COMPOSE_PROJECT_NAME"}, or set another main_project in ${CFG}`), true]);
+  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, byMain && !envName && how === "dirname" ? clash : rename), true]);
   const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
   for (const p of c.isWorktree ? own : []) {
     const a = named(p);

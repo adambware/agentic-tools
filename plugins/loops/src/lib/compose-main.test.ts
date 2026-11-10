@@ -106,7 +106,18 @@ describe("main_project (A4)", () => {
     const shell = check(feat, composeStub(answers), ["--compose-project"], { COMPOSE_PROJECT_NAME: "stack" });
     expect([shell.code, shell.out, shell.err]).toEqual([1, "", expect.stringContaining("would use project stack, which the main checkout uses")]);
     const named = check(stack, composeStub(answers));
-    expect([named.code, named.out]).toEqual([1, expect.stringContaining(`this worktree would use project stack, which the main checkout uses: the main checkout ${root} and this worktree ${stack} derive one name`)]);
+    // main's name comes from main_project, not its directory (app-node): the message names that source, not dirname.
+    expect([named.code, named.out]).toEqual([1, expect.stringContaining(`this worktree would use project stack, which the main checkout uses: it is [compose] main_project in ${CFG} — fix: rename this worktree's directory: git worktree move ${stack} <new-path>; or set derive = "slug-hash" in ${CFG}`)]);
+    expect(named.out).toContain(`, or set another main_project in ${CFG}`);
+    expect(named.out).not.toContain("derive one name");
+  });
+
+  it("a main checkout name that is not its dirname-derived one (a literal name:) gets the generic holder message", () => {
+    const { root, wts } = checkouts({ ...COMPOSE, [CFG]: head() }, ["foo"]);
+    const [foo] = wts as [string];
+    const r = check(foo, composeStub({ [root]: "foo", [foo]: "foo" }));
+    expect([r.code, r.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this worktree would use project foo, which the main checkout uses — fix: rename this worktree's directory: git worktree move ${foo} <new-path>; or set derive = "slug-hash" in ${CFG}`)]);
+    expect(r.out).not.toContain("derive one name");
   });
 
   it("is the project b.containers checks", () => {

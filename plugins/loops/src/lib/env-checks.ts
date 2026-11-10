@@ -694,12 +694,18 @@ export function composeProject(c: Ctx): ComposeProject {
   // directory name (only when the project directory is the worktree root: a subdirectory's name is the same in every
   // checkout) or slug-hash, which renames every worktree's project at once.
   const mainPath = c.worktrees[0] ?? c.root;
-  const dirnameClash = c.isWorktree && !envName && how === "dirname" && holder === "the main checkout";
+  // Only when the held name is the main checkout's own dirname-derived one; main_project, a literal name: or a .env
+  // name there is another source, and the message says so (or stays generic).
+  const byMain = c.isWorktree && holder === "the main checkout";
+  const viaMainProject = byMain && name === mainProject;
+  const dirnameClash = byMain && !envName && how === "dirname" && !viaMainProject && name === derive(c, mainPath);
   const atRoot = rp(projectDir(c, c.root)) === rp(c.root);
   const slug = `set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`;
   const clash = `${atRoot ? `rename this worktree's directory: git worktree move ${shQuote(c.root)} <new-path>; or ` : ""}${slug}`;
   if (holder && dirnameClash) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: the main checkout ${mainPath} and this worktree ${c.root} derive one name under derive = "dirname"`, clash), true]);
-  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  else if (holder && viaMainProject) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: it is [compose] main_project in ${CFG}`, `${envName ? "export another COMPOSE_PROJECT_NAME" : how === "dirname" ? clash : "export another COMPOSE_PROJECT_NAME"}, or set another main_project in ${CFG}`), true]);
+  // main's literal name: or .env name equals this worktree's dirname-derived one: the same two fixes apply here.
+  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, byMain && !envName && how === "dirname" ? clash : rename), true]);
   // Check 4: each run here without -p lands on an own name: the name, the derived one, or the root's directory name for
   // a run whose project directory is the root; each only while nobody holds it.
   const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";

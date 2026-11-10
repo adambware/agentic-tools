@@ -1427,8 +1427,9 @@ describe("compose", () => {
     commit(root);
     const wt = worktree(root, "app-prod");
     const prod = checkC(wt, { [root]: "app-prod", [wt]: "app-prod" });
-    // A3: a dirname-derived name that is the main checkout's names both paths, the move, and slug-hash's cost.
-    expect([prod.code, prod.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this worktree would use project app-prod, which the main checkout uses: the main checkout ${realpathSync(root)} and this worktree ${wt} derive one name under derive = "dirname" — fix: rename this worktree's directory: git worktree move ${wt} <new-path>; or set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`)]);
+    // The main checkout's app-prod is its literal name:, not its directory's (app-node): no "derive one name" claim, but
+    // the same fixes (the move, and slug-hash's cost) as A3.
+    expect([prod.code, prod.out]).toEqual([1, expect.stringContaining(`FAIL e.project  this worktree would use project app-prod, which the main checkout uses — fix: rename this worktree's directory: git worktree move ${wt} <new-path>; or set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`)]);
     const plain = setup(test(), { "compose.yml": "services: {}\n" });
     commit(plain);
     const d1 = worktree(plain, "dup");
