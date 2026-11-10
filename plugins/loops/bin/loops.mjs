@@ -7364,13 +7364,13 @@ var require_dist = __commonJS({
 });
 
 // src/lib/loops-cli.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 
 // src/lib/env-check.ts
-import { readFileSync as readFileSync3, existsSync as existsSync3 } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync3 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join4, resolve as resolve3 } from "node:path";
+import { join as join5, resolve as resolve3 } from "node:path";
 
 // src/lib/env-config.ts
 import { isAbsolute as isAbsolute3, normalize as normalize2 } from "node:path";
@@ -8974,8 +8974,8 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
-import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join3, normalize as normalize3, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join4, normalize as normalize3, resolve as resolve2 } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -9051,6 +9051,139 @@ function composeNameRaw(o) {
   return { raw: typeof name === "string" && name !== "" ? name : null };
 }
 
+// src/lib/compose-env.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
+var NAME2 = /[A-Za-z_][A-Za-z0-9_]*/y;
+var KEY = /(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*([=:]?)[ \t]*/y;
+function resolveTemplate(t, vars) {
+  let out = "";
+  for (let i = 0; i < t.length; ) {
+    const ch = t[i];
+    if (ch !== "$") {
+      out += ch;
+      i++;
+      continue;
+    }
+    const next = t[i + 1];
+    if (next === "$") {
+      out += "$";
+      i += 2;
+      continue;
+    }
+    if (next !== "{") {
+      NAME2.lastIndex = i + 1;
+      const m2 = NAME2.exec(t);
+      if (!m2) return null;
+      const v2 = vars.get(m2[0]);
+      if (v2 === void 0 || v2 === null) return null;
+      out += v2;
+      i = NAME2.lastIndex;
+      continue;
+    }
+    NAME2.lastIndex = i + 2;
+    const m = NAME2.exec(t);
+    if (!m) return null;
+    let j = NAME2.lastIndex;
+    const op = /^(:-|-|:\?|\?|:\+|\+)?/.exec(t.slice(j))[0];
+    j += op.length;
+    let depth = 0;
+    let end = -1;
+    for (let k = j; k < t.length; k++) {
+      if (t[k] === "$" && t[k + 1] === "$") k++;
+      else if (t[k] === "$" && t[k + 1] === "{") {
+        depth++;
+        k++;
+      } else if (t[k] === "}") {
+        if (depth === 0) {
+          end = k;
+          break;
+        }
+        depth--;
+      }
+    }
+    if (end < 0 || !op && end !== j) return null;
+    const arg = t.slice(j, end);
+    const v = vars.get(m[0]);
+    if (v === null) return null;
+    const set = v !== void 0;
+    const full = set && v !== "";
+    let got;
+    if (op === ":-") got = full ? v : resolveTemplate(arg, vars);
+    else if (op === "-") got = set ? v : resolveTemplate(arg, vars);
+    else if (op === ":?") got = full ? v : null;
+    else if (op === "?") got = set ? v : null;
+    else if (op === ":+") got = full ? resolveTemplate(arg, vars) : "";
+    else if (op === "+") got = set ? resolveTemplate(arg, vars) : "";
+    else got = set ? v : null;
+    if (got === null) return null;
+    out += got;
+    i = end + 1;
+  }
+  return out;
+}
+var eol = (s, i) => {
+  const n = s.indexOf("\n", i);
+  return n < 0 ? s.length : n;
+};
+function parseDotEnv(s) {
+  const vars = /* @__PURE__ */ new Map();
+  for (let i = 0; i < s.length; ) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    if (i >= s.length) break;
+    if (s[i] === "#") {
+      i = eol(s, i);
+      continue;
+    }
+    KEY.lastIndex = i;
+    const m = KEY.exec(s);
+    if (!m) {
+      i = eol(s, i);
+      continue;
+    }
+    const key = m[1];
+    i = KEY.lastIndex;
+    if (!m[2]) {
+      vars.set(key, null);
+      i = eol(s, i);
+      continue;
+    }
+    const q = s[i];
+    if (q === "'" || q === '"') {
+      let k = i + 1;
+      while (k < s.length && s[k] !== q) k += q === '"' && s[k] === "\\" ? 2 : 1;
+      if (k >= s.length) {
+        vars.set(key, null);
+        break;
+      }
+      const inner = s.slice(i + 1, k);
+      i = eol(s, k + 1);
+      if (q === "'") vars.set(key, inner);
+      else if (inner.includes("\\$")) vars.set(key, null);
+      else {
+        const un = inner.replace(/\\(.)/g, (_, c) => ({ n: "\n", r: "\r", t: "	" })[c] ?? c);
+        vars.set(key, un.includes("$") ? resolveTemplate(un, vars) : un);
+      }
+      continue;
+    }
+    const end = eol(s, i);
+    let v = s.slice(i, end);
+    const hash = v.search(/\s#/);
+    if (hash >= 0) v = v.slice(0, hash);
+    v = v.trim();
+    i = end;
+    vars.set(key, v.includes("$") ? resolveTemplate(v, vars) : v);
+  }
+  return vars;
+}
+function readDotEnv(pdir) {
+  try {
+    return parseDotEnv(readFileSync2(join3(pdir, ".env"), "utf8"));
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+
 // src/lib/env-checks.ts
 var res = (level, id, message, fix) => ({ level, id, message, fix, source: "builtin" });
 var CFG = ".loops/env-check.toml";
@@ -9063,7 +9196,7 @@ var rp = (p) => {
 };
 var gitDirAt = (p) => {
   try {
-    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync2(p, "utf8")) : null;
+    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync3(p, "utf8")) : null;
     return m ? resolve2(dirname2(p), m[1].trim()) : p;
   } catch {
     return p;
@@ -9077,7 +9210,7 @@ function installFix(root, tool, want, pins) {
   const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
   const written = (file2) => {
     try {
-      return readFileSync2(join3(root, file2), "utf8").split("\n").some((l) => {
+      return readFileSync3(join4(root, file2), "utf8").split("\n").some((l) => {
         const m = /^\s*(\S+)\s+(\S+)/.exec(l);
         return !!m && names.includes(m[1]) && m[2] === want;
       });
@@ -9159,11 +9292,11 @@ function sharedCheck(c) {
     const me = rp(c.root);
     let at = null;
     try {
-      at = dirname2(resolve2(c.gitDir, readFileSync2(join3(c.gitDir, "gitdir"), "utf8").trim()));
+      at = dirname2(resolve2(c.gitDir, readFileSync3(join4(c.gitDir, "gitdir"), "utf8").trim()));
     } catch {
     }
     if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
-    if (at && rp(at) !== me && existsSync2(join3(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    if (at && rp(at) !== me && existsSync2(join4(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
     return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync2(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
   }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
@@ -9172,8 +9305,8 @@ function sharedCheck(c) {
 function autoEntrypoints(c) {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = /* @__PURE__ */ new Set();
-  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join3(c.root, t)))) {
-    for (const m of readFileSync2(join3(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
+  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join4(c.root, t)))) {
+    for (const m of readFileSync3(join4(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
   }
   return [...found].sort();
 }
@@ -9194,8 +9327,8 @@ function shimProblem(c, tool, p) {
 }
 function fallsBackTo(c, tool, p) {
   const dirs = (c.env.PATH ?? "").split(delimiter2);
-  const at = dirs.findIndex((d) => d && join3(d, tool) === p);
-  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join3(d, tool)) && !shimOf(join3(d, tool)));
+  const at = dirs.findIndex((d) => d && join4(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join4(d, tool)) && !shimOf(join4(d, tool)));
 }
 function harnessChecks(c) {
   const h = c.cfg.harness;
@@ -9225,7 +9358,7 @@ function harnessChecks(c) {
   if (h.files.length) {
     const kind = (f) => {
       try {
-        const s = statSync2(join3(c.root, f));
+        const s = statSync2(join4(c.root, f));
         return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
       } catch {
         return "missing";
@@ -9241,14 +9374,14 @@ function harnessChecks(c) {
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
   if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
-    const bad = entries.filter((e) => !isExecutable(join3(c.root, e)));
+    const bad = entries.filter((e) => !isExecutable(join4(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
   const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env, c))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ.split("\0").filter(Boolean);
-    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join3(c.root, p)) && !isExecutable(join3(c.root, p)));
+    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join4(c.root, p)) && !isExecutable(join4(c.root, p)));
     const parts2 = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
@@ -9268,7 +9401,7 @@ var isMetaKey = (k) => k === "name" || k === "version" || k.startsWith("x-");
 function readCompose(file) {
   let text;
   try {
-    text = readFileSync2(file, "utf8");
+    text = readFileSync3(file, "utf8");
   } catch {
     return "cannot be read";
   }
@@ -9295,7 +9428,7 @@ function isComposeFile(c, f) {
   const m = COMPOSE_FILE.exec(f);
   if (!m) return false;
   if (!m[3]?.startsWith("-")) return true;
-  const docs = readCompose(join3(c.root, f));
+  const docs = readCompose(join4(c.root, f));
   if (typeof docs === "string") return true;
   const keys = docs.flatMap((d) => d ? Object.keys(d) : []);
   return keys.some((k) => COMPOSE_KEYS.includes(k)) || keys.some((k) => k !== "version") && keys.every(isMetaKey);
@@ -9318,7 +9451,7 @@ function runs(c, root) {
   while (!existsSync2(dir) && dir !== root) dir = dirname2(dir);
   const atRoot = rp(dir) === rp(root);
   return [
-    ...files.every((f) => existsSync2(join3(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
+    ...files.every((f) => existsSync2(join4(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
     { dir, pdir: dir, label: atRoot ? "root plain run" : "project-dir plain run" },
     ...atRoot ? [] : [{ dir: root, pdir: root, label: "root plain run" }]
   ];
@@ -9383,8 +9516,12 @@ function recoverer(c) {
     const answer = "error" in norm2 ? null : norm2.raw;
     const names = new Set(literal ? [literal] : []);
     if (raw.raw !== null && literal === null) {
-      if (answer === null || answer === normProject(raw.raw)) return { names: [], templated: true };
-      names.add(answer);
+      const local = resolveTemplate(raw.raw, readDotEnv(p.pdir));
+      const resolved = local === null ? "" : normProject(local);
+      if (resolved) names.add(resolved);
+      const beat = answer !== null && answer !== normProject(raw.raw);
+      if (beat) names.add(answer);
+      return { names: [...names], templated: !resolved && !beat };
     } else if (answer) names.add(answer);
     return { names: [...names], templated: false };
   };
@@ -9430,14 +9567,14 @@ function peerWarnings(ps, name, kept) {
     const where = p.isMain ? "checkout" : "worktree";
     const also = more.length ? `, and ${more.length} more run${more.length > 1 ? "s" : ""}` : "";
     const keep = kept ? `this checkout keeps project ${name} (checked against every name loops can know)` : `this checkout's project ${name} was checked against every name loops can know`;
-    const tpl = p.templated ? "; its name: is a template only that shell resolves" : "";
+    const tpl = p.templated ? `; its name: reads a variable loops could not resolve from that ${where}'s .env` : "";
     const message = `${p.isMain ? "main checkout" : "peer worktree"} ${p.root}: ${first.label}: ${first.r.error}${also}; ${keep}, but a name set only in that ${where}'s shell cannot be checked until its stack runs${tpl}`;
     const fix = `run bin/env-check in ${p.root} (its e.project row names the fix there)${p.isMain ? "" : `; if that worktree is abandoned, git worktree remove ${shQuote(p.root)} (refuses when it has changes)`}`;
     return [res("WARN", "e.project", message, fix)];
   });
 }
 var UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
-var interpFix = (v, pdir) => `set ${v} in ${join3(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
+var interpFix = (v, pdir) => `set ${v} in ${join4(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
 var NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 function composeProject(c) {
   const id = "e.project";
@@ -9445,7 +9582,7 @@ function composeProject(c) {
   const files = filesFor(c, c.root);
   const key = filesKey(c, c.root);
   const one = (level, message, fix, name2 = null) => ({ name: name2, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [], warnings: [] });
-  const missing = files.filter((f) => !existsSync2(join3(c.root, f)));
+  const missing = files.filter((f) => !existsSync2(join4(c.root, f)));
   if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] ${key} in ${CFG}`);
   if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] ${key} in ${CFG}`);
   if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
@@ -9490,7 +9627,7 @@ function composeProject(c) {
     const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename3(c.root))] : []];
     if (a === void 0 || mine.includes(a) && !held.has(a)) continue;
     const by = held.get(a);
-    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join3(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
+    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join4(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
     fails.push([res("FAIL", id, `${p.pre}${p.label} would use project ${a}, ${by ? `which ${by} uses` : `not ${name}`}`, fix), false]);
   }
   const answers = [...new Set(own.flatMap((p) => named(p) ?? []))];
@@ -9533,7 +9670,7 @@ function containersCheck(c, { name: project, results, ps }) {
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
   const mtimes = files.map((f) => {
     try {
-      return [f, statSync2(join3(c.root, f)).mtimeMs];
+      return [f, statSync2(join4(c.root, f)).mtimeMs];
     } catch {
       return [f, NaN];
     }
@@ -9565,7 +9702,7 @@ function composeChecks(c, project) {
     const tracked = c.tracked.filter((f) => isComposeFile(c, f));
     return [tracked.length ? res("FAIL", "e.none", `config says compose mode none but ${short(tracked)} is tracked`, `set [compose] mode = "test" and list the files in ${CFG}`) : res("PASS", "e.none", "no compose file tracked")];
   }
-  const read = files.filter((f) => existsSync2(join3(c.root, f))).map((f) => ({ f, docs: readCompose(join3(c.root, f)) }));
+  const read = files.filter((f) => existsSync2(join4(c.root, f))).map((f) => ({ f, docs: readCompose(join4(c.root, f)) }));
   const unread = read.filter((r) => typeof r.docs === "string").map((r) => r.f);
   const names = read.flatMap((r) => typeof r.docs === "string" ? [] : r.docs).flatMap((d) => Object.values(table3(d?.services) ?? {})).flatMap((s) => {
     const n = table3(s)?.container_name;
@@ -9641,11 +9778,11 @@ function envCheckMain(argv, d) {
   const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
   const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
-  const cfgFile = join4(root, ".loops", "env-check.toml");
+  const cfgFile = join5(root, ".loops", "env-check.toml");
   if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
   let text;
   try {
-    text = readFileSync3(cfgFile, "utf8");
+    text = readFileSync4(cfgFile, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${cfgFile}: ${e.message}`);
   }
@@ -9718,8 +9855,8 @@ function envCheckMain(argv, d) {
 }
 
 // src/lib/zone-cli.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
-import { join as join5, relative, resolve as resolve4 } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync5 } from "node:fs";
+import { join as join6, relative, resolve as resolve4 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -9910,12 +10047,12 @@ function zoneMain(argv, d) {
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
   const root = repoRoot(d.run, d.cwd, void 0) ?? d.cwd;
-  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join5(root, "risk-zones.md");
+  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join6(root, "risk-zones.md");
   if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
   try {
-    text = readFileSync4(filePath, "utf8");
+    text = readFileSync5(filePath, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${filePath}: ${e.message}`);
   }
@@ -9968,7 +10105,7 @@ function realDeps() {
     run,
     cwd: process.cwd(),
     env: process.env,
-    readStdin: () => readFileSync5(0, "utf8"),
+    readStdin: () => readFileSync6(0, "utf8"),
     out: (s) => process.stdout.write(`${s}
 `),
     err: (s) => process.stderr.write(`${s}

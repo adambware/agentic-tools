@@ -593,13 +593,17 @@ is no longer a FAIL here: it is one `WARN e.project` per peer ("... and N more r
 name. The peer's own `env-check` run is where it FAILs, with the fix for that checkout. The fallback for a failed
 peer run is `docker compose [-f files] config --no-env-resolution --no-interpolate --no-normalize --format json`
 (without your shell's `COMPOSE_*`, remote loaders off, the same 10 s limit), whose name is only ever held, never used
-as this checkout's: a literal `name:` is held as Compose normalizes it; with a templated `name:` (`${PN:-x}`) loops
-runs once more without `--no-normalize` and holds that answer only when a `.env` `COMPOSE_PROJECT_NAME` beat the
-template, otherwise it holds nothing for it and the WARN says the name is a template; with no `name:` it holds that
-second answer (the `.env` name or the directory name). Any fallback failure, a Compose without `--no-normalize`
+as this checkout's: a literal `name:` is held as Compose normalizes it; a templated `name:` (`${STACK}`, `${PN:-x}`)
+is resolved by loops from the peer project directory's `.env` alone (never your shell's environment), with Compose's
+defaults (`:-` for unset or empty, `-` for unset), and held normalized when every variable resolves; loops also runs
+once more without `--no-normalize` and holds that answer when a `.env` `COMPOSE_PROJECT_NAME` beat the template. When a
+variable stays unresolved (unset in that `.env` with no default, or a `${VAR:?}` it lacks) and no `.env` name beats
+it, nothing is held for the template and the WARN says its name reads a variable loops could not resolve; with no
+`name:` it holds that second answer (the `.env` name or the directory name). Any fallback failure, a Compose without `--no-normalize`
 included, holds nothing. Runs are deduped by directory and files, and after one fallback times out the rest skip it.
 The accepted residual case: a name set only in the peer's shell (an exported `COMPOSE_PROJECT_NAME`, or a variable a
-templated `name:` reads) cannot be checked until that peer's stack runs; then the running-stack check sees it
+templated `name:` reads that its `.env` does not set, or that its shell overrides) cannot be checked until that
+peer's stack runs; then the running-stack check sees it
 through the container labels. The runbook is under "e.project peer warnings" below. e.project runs
 every check and reports every FAIL, the ones that withhold the name first, except that a missing configured file, an
 invalid shell `COMPOSE_PROJECT_NAME`, unreadable git metadata, a bad `git worktree list` and a failed `docker compose version` end evaluation
@@ -647,7 +651,8 @@ Compose). From a worktree: up to 9 + 3·peers probes of about 50 ms each, plus `
 
 Not covered:
 - Another checkout's exported shell `COMPOSE_PROJECT_NAME` (the main checkout's or a worktree's), or a shell variable
-  a peer's templated `name:` reads, is invisible to loops; the running-stack check catches it only while a container
+  a peer's templated `name:` reads (one its `.env` does not set, or one its shell sets over the `.env` value), is
+  invisible to loops; the running-stack check catches it only while a container
   of that stack exists. With `main_project` set, the `-p` the main checkout's wrappers pass is held.
 - Named volumes of a stack whose containers were removed are not seen by the running-stack check (the asked names
   still cover them).

@@ -634,6 +634,7 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
   // ${LOOPS_IMG:?} image with no value anywhere (kind interp), which the fallback reads past without interpolating.
   const BROKEN = "services:\n  web:\n    image: ${LOOPS_IMG:?set it}\n";
   const brokenNamed = (n: string) => `name: ${n}\n${BROKEN}`;
+  const TEMPLATED = "its name: reads a variable loops could not resolve from that worktree's .env";
   const peerWarn = (p: string) => new RegExp(`^peer worktree ${re(p)}: configured run: docker compose config exited 1: required variable LOOPS_IMG is missing a value`);
 
   it("row 37 (U1): a peer needs ${LOOPS_IMG:?} and has no .env: PASS here with a peer WARN; the peer's own run FAILs naming the variable, its name kept", () => {
@@ -674,14 +675,42 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     expect(raw.length).toBeGreaterThan(0);
   });
 
-  it("row 39 (U1, A1c): a broken peer's name: ${PN:-x}, the shell naming this worktree pn-x: no false FAIL (the template's normalized form is not held), templated WARN", () => {
+  it("row 39 (U1, A1c): a broken peer's name: ${PN:-x}, the shell naming this worktree pn-x: no false FAIL (the template's normalized form is not held), the peer WARN", () => {
     const f = fixture(["compose.yml"], { "compose.yml": SVC });
     const w = f.wt(`${NEST}w1`);
     const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${PN:-x}") });
     // Plain --no-interpolate would report pn-x, a name nobody runs under.
     const raw = run("docker", ["compose", "-f", "compose.yml", "config", "--no-env-resolution", "--no-interpolate", "--format", "json"], { cwd: p, env: baseEnv() });
     expect(JSON.parse(raw.stdout).name).toBe("pn-x");
-    check(w, { COMPOSE_PROJECT_NAME: "pn-x" }, { level: "PASS", has: ["pn-x (COMPOSE_PROJECT_NAME)"], warn: [peerWarn(p), "its name: is a template only that shell resolves"], name: "pn-x" });
+    // The default resolves the template (x is held), so the WARN does not call it unresolved.
+    check(w, { COMPOSE_PROJECT_NAME: "pn-x" }, { level: "PASS", has: ["pn-x (COMPOSE_PROJECT_NAME)"], warn: [peerWarn(p)], never: [TEMPLATED], name: "pn-x" });
+  });
+
+  it("row 39c (U1, A1c): a broken peer's name: ${STACK}, its .env STACK=<this worktree's derived name>: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const n = f.derived(w);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    put(p, ".env", `STACK=${n}\n`);
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, {}, { level: "FAIL", has: [`this worktree would use project ${n}, which worktree ${p} uses`], warn: [peerWarn(p)], never: [TEMPLATED], name: null });
+  });
+
+  it("row 39d (U1, A1c): a broken peer's name: ${PN:-x} with no PN, the shell naming this worktree x: FAIL held by that peer (the default is its name), withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${PN:-x}") });
+    // Once fixed, the peer runs as x.
+    expect(answer(p, ["compose.yml"], { LOOPS_IMG: "nginx" })).toEqual({ name: "x" });
+    check(w, { COMPOSE_PROJECT_NAME: "x" }, { level: "FAIL", has: [byPeer("x", p)], warn: [peerWarn(p)], name: null });
+  });
+
+  it("row 39e (U1, A1c): a broken peer's name: ${STACK} and no .env: nothing held for it, PASS with the templated WARN", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, { COMPOSE_PROJECT_NAME: "stack" }, { level: "PASS", has: ["stack (COMPOSE_PROJECT_NAME)"], warn: [peerWarn(p), TEMPLATED], name: "stack" });
   });
 
   it("row 39b (U1, A1c): a broken peer's name: ${LOOPS_X} and its .env COMPOSE_PROJECT_NAME is this worktree's name: FAIL held by that peer, withheld", () => {

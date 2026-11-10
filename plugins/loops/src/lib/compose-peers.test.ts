@@ -110,12 +110,13 @@ describe("e.project peer WARNs and the fallback (stubbed Compose)", () => {
     sh(root, "worktree", "add", "-q", "-b", `p${n++}`, twin);
     put(twin, ".loops/env-check.toml", `${CONFIG}derive = "dirname"\n`);
     const calls: Raw[] = [];
-    const tpl = (x: Raw) => res(0, JSON.stringify({ name: x.normalize ? "pn-x" : "${PN:-x}" }));
+    // ${PN} with no .env: nothing resolves it locally (a ${PN:-x} would resolve to x).
+    const tpl = (x: Raw) => res(0, JSON.stringify({ name: x.normalize ? "pn" : "${PN}" }));
     const r = check(twin, runner({ [root]: INTERP, [a]: "feat-a", [realpathSync(twin)]: "app-node" }, tpl, calls));
     expect(r.code).toBe(1);
     expect(r.out).toContain("FAIL e.project  this worktree would use project app-node, which the main checkout uses");
-    expect(r.out).toContain("its name: is a template only that shell resolves");
-    expect(r.out).not.toContain("pn-x");
+    expect(r.out).toContain("its name: reads a variable loops could not resolve from that checkout's .env");
+    expect(r.out).not.toContain("project pn");
     expect(calls.length).toBeGreaterThan(0);
   });
 });

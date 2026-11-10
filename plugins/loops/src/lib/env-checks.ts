@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
+import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck } from "./env-config.js";
 import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
@@ -509,7 +510,7 @@ interface Peer {
   /** Names held besides its answers: the main checkout's `main_project` (always), its derived name when any of its
    * cells failed, and what the fallback (`recover`) read from the failed cells' files without interpolating them. */
   recovered: string[];
-  /** A failed cell's `name:` is a template the fallback cannot resolve (only that checkout's shell can). */
+  /** A failed cell's `name:` is a template reading a variable loops could not resolve from that checkout's `.env`. */
   templated: boolean;
 }
 
@@ -521,9 +522,10 @@ const NOTHING: Recovered = { names: [], templated: false };
  * The fallback for a peer's failed run (kind interp or exit only: a Compose that hangs, crashes or is too old gives no
  * second answer): `config --no-interpolate --no-normalize` reads `name:` as written. A literal one is held as Compose
  * normalizes it; then the normalizing run (still uninterpolated) adds the project directory's `.env`
- * COMPOSE_PROJECT_NAME, or with no `name:` the directory default. For a templated `name:` that run's answer is held
- * only when it is not just the template normalized (a `.env` name beat it); otherwise nothing is, and the peer is
- * marked templated. Any failure holds nothing. Runs are deduped by (cwd, files), and after one times out the rest of
+ * COMPOSE_PROJECT_NAME, or with no `name:` the directory default. A templated `name:` is resolved locally from the
+ * project directory's `.env` (Compose's defaults applied, never the process env) and held normalized; that run's
+ * answer is held too when it is not just the template normalized (a `.env` name beat it). When the template does not
+ * resolve (a variable only that checkout's shell can set), the peer is marked templated. Any failure holds nothing. Runs are deduped by (cwd, files), and after one times out the rest of
  * this e.project run skips the fallback (each could hang as long).
  */
 function recoverer(c: Ctx): (p: Cell) => Recovered {
@@ -542,8 +544,14 @@ function recoverer(c: Ctx): (p: Cell) => Recovered {
     const answer = "error" in norm ? null : norm.raw;
     const names = new Set(literal ? [literal] : []);
     if (raw.raw !== null && literal === null) {
-      if (answer === null || answer === normProject(raw.raw)) return { names: [], templated: true };
-      names.add(answer);
+      // The template resolved from the project directory's .env alone (its defaults applied), never this shell.
+      const local = resolveTemplate(raw.raw, readDotEnv(p.pdir));
+      const resolved = local === null ? "" : normProject(local);
+      if (resolved) names.add(resolved);
+      // A .env COMPOSE_PROJECT_NAME beats name:, so then the template does not decide the name.
+      const beat = answer !== null && answer !== normProject(raw.raw);
+      if (beat) names.add(answer);
+      return { names: [...names], templated: !resolved && !beat };
     } else if (answer) names.add(answer);
     return { names: [...names], templated: false };
   };
@@ -605,7 +613,7 @@ function peerWarnings(ps: Peer[], name: string, kept: boolean): Result[] {
     const where = p.isMain ? "checkout" : "worktree";
     const also = more.length ? `, and ${more.length} more run${more.length > 1 ? "s" : ""}` : "";
     const keep = kept ? `this checkout keeps project ${name} (checked against every name loops can know)` : `this checkout's project ${name} was checked against every name loops can know`;
-    const tpl = p.templated ? "; its name: is a template only that shell resolves" : "";
+    const tpl = p.templated ? `; its name: reads a variable loops could not resolve from that ${where}'s .env` : "";
     const message = `${p.isMain ? "main checkout" : "peer worktree"} ${p.root}: ${first.label}: ${(first.r as ComposeError).error}${also}; ${keep}, but a name set only in that ${where}'s shell cannot be checked until its stack runs${tpl}`;
     const fix = `run bin/env-check in ${p.root} (its e.project row names the fix there)${p.isMain ? "" : `; if that worktree is abandoned, git worktree remove ${shQuote(p.root)} (refuses when it has changes)`}`;
     return [res("WARN", "e.project", message, fix)];
