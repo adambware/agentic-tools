@@ -1,0 +1,5 @@
+# Per-run scratch. Created by `ns`, deleted on success. On failure it's kept
+# for diagnosis, but bounded: bin/clean prunes failed run dirs down to the 5
+# newest, and drops anything older than 7 days regardless of count. Never
+# commit it.
+.run/

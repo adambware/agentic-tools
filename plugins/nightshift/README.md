@@ -160,6 +160,7 @@ bin/ops-target        resolve $OPS/config.yml + one repo/lane → every path and
 bin/due               which configured repo/lane pairs warrant a run right now (`ns run --due`; A9's sentinel reuses it)
 bin/workflow-args     chunk the selected surfaces by max_concurrent_reviewers and assemble the Workflow's args
 bin/retain            copy evidence out of the run dir into $OPS/evidence/<repo>/ (content-addressed), lifecycle-prune it, time-prune $OPS/logs/
+bin/eval-planted      score a run against examples/novudesk/eval's planted vulns + clean controls (report-only, never gates)
 bin/ns                THE EASY BUTTON — POSIX shell, shellchecked in CI (see below)
 hooks/guard           PreToolUse read-only guard — blocks source + git mutation, allows .nightshift/
 ```

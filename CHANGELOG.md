@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **nightshift: non-gating planted-vuln eval (T14).** FPR only sees false positives, so a
+  reviewer change that starts *missing* real issues reads as an improvement. The new
+  `examples/novudesk/eval/` pairs a small NovuDesk target (4 planted, unambiguous
+  vulnerabilities on real registry vectors + 3 clean control surfaces, no hints in the
+  source) with an answer key kept outside the reviewed tree. `bin/eval-planted` scores a
+  finished run's logged findings: caught/total and false-positives-on-clean. Report-only:
+  it exits 0 whatever the score and nothing in CI runs a paid review. A planted vuln is
+  credited as caught only to a finding filed under its own vector; a finding on a planted
+  line under another vector no longer counts (it scores as other). `--run-id` exits 2 on records with no
+  `run_id` (run candidate files) instead of filtering them all out and reporting 0/4.
+  A finding that cites a planted file by bare or partial name (`tickets_controller.rb:7`)
+  now matches when only one keyed file has that name, instead of always missing. A
+  directory that holds several runs' `candidates.tier2.json`, or one beside logged
+  findings, exits 2 rather than counting failed runs and pre-dedupe candidates.
+
 ### Fixed
 
 - **nightshift: change detection diffs from the reviewed sha, not a date.** `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD` made any commit landing later on the same day as a review its own baseline, so its changes never reached `change_flag` until the surface went stale on age alone (up to 90 days for a low-weight vector). Registry entries now carry an engine-managed `last_reviewed_sha`, stamped by `bin/record` from `run.json.pack_sha` (left untouched when the run had no git), and `bin/select` / `bin/due` diff `<sha>..HEAD` directly. The date baseline remains only as a fallback for entries recorded before this field existed or a sha that no longer resolves (shallow clone, rewritten history). The sha comes from a registry committed in the reviewed repo, so anything that is not hex is refused both by `validate` and by the git runner itself: a value like `--output=<path>` would otherwise be parsed by `git diff` as an option.

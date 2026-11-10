@@ -1,0 +1,18 @@
+<h1>Triage review queue</h1>
+
+<table class="review-queue">
+  <thead>
+    <tr><th>Ticket</th><th>Suggested label</th><th>Why</th><th>Confidence</th><th></th></tr>
+  </thead>
+  <tbody>
+    <% @queue.items.each do |item| %>
+      <tr>
+        <td><%= link_to item.subject, ticket_path(item.ticket_id) %></td>
+        <td><%= item.suggested_label %></td>
+        <td><%= simple_format(item.rationale) %></td>
+        <td><%= number_to_percentage(item.confidence * 100, precision: 0) %></td>
+        <td><%= button_to "Accept", accept_triage_path(item.ticket_id), method: :post %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>
