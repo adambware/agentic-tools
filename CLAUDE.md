@@ -4,7 +4,7 @@ Project-level instructions for Claude Code sessions.
 
 ## Project Overview
 
-This repository is a Claude Code plugin marketplace. Each plugin lives in `plugins/<name>/` and can contain hooks, skills, agents, or MCP servers.
+This repository is a Claude Code plugin marketplace. Each plugin lives in `plugins/<name>/` and can contain hooks, skills, agents, MCP servers, or standalone CLI tools.
 
 ## Conventions
 
@@ -19,3 +19,15 @@ This repository is a Claude Code plugin marketplace. Each plugin lives in `plugi
 1. Create `plugins/<name>/` with the appropriate structure
 2. Add an entry to `.claude-plugin/marketplace.json`
 3. See the top-level README.md for the full template
+
+## Testing
+
+Run `bash tests/dev-doctor-test.sh` before shipping plugin changes.
+
+For changes under `plugins/loops`, also run
+`(cd plugins/loops && npm ci && npm run check)` (typecheck, vitest, and the
+build; commit the rebuilt `bin/` with its source).
+
+See `TESTING.md` for conventions. New plugin manifests should have JSON
+validation, shell scripts should pass `bash -n`, and behavior that affects agent
+decisions should have a regression test.

@@ -1,0 +1,16 @@
+{
+  "description": "Lean /ship overlay injector. UserPromptSubmit hook: when the prompt is an interactive `/ship` invocation it emits a hookSpecificOutput.additionalContext note pointing at the bundled overlay (playbooks/ship.md) and reviewers workflow, both resolved from ${CLAUDE_PLUGIN_ROOT}. Fail-open: on a non-match, missing CLAUDE_PLUGIN_ROOT, parse error, or any exception it emits nothing and exits 0 — it never blocks or alters a prompt. gstack's ship SKILL.md stays authoritative. Trigger is `^/ship(\\s|$)` only; the natural-language form is off unless SHIP_HOOK_NL=1.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-playbook-hook\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

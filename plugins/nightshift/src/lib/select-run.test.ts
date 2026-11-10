@@ -34,6 +34,7 @@ const VECTORS = `vectors:
     interval_days: 7
     owner: security
     last_reviewed: 2026-06-20
+    last_reviewed_sha: deadbeef
   - id: B
     title: B
     kind: vector
@@ -94,6 +95,31 @@ describe("runSelect", () => {
     expect(surfaces.find((s) => s.id === "A")!.change_flag).toBe(1);
     // change_flag=1 on a critical entry keeps it band "critical" -> same dispatch tier.
     expect(surfaces.find((s) => s.id === "A")!.dispatch).toEqual(MODEL_BY_BAND.critical);
+  });
+
+  it("passes each entry's last_reviewed_sha through to the git runner, not just the date", () => {
+    const out = join(dir, "surfaces.json");
+    const seen: Array<{ sha?: string; date?: string }> = [];
+    const git: GitRunner = {
+      changedFilesSince: (baseline) => {
+        seen.push(baseline);
+        return [];
+      },
+    };
+    runSelect({
+      vectorsPath: write("vectors.yml", VECTORS),
+      manifestPath: write("manifest.yml", MANIFEST),
+      lane: "security",
+      today: "2026-06-21",
+      repo: dir,
+      outPath: out,
+      git,
+    });
+    // A carries a recorded sha; B has never been reviewed (no sha, no date).
+    const forA = seen.find((b) => b.date === "2026-06-20");
+    expect(forA).toEqual({ sha: "deadbeef", date: "2026-06-20" });
+    const forB = seen.find((b) => b.sha === undefined && b.date === undefined);
+    expect(forB).toBeDefined();
   });
 
   it("throws when the registry file is missing", () => {

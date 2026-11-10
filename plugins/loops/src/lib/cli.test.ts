@@ -1,0 +1,409 @@
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { main, USAGE } from "./cli.js";
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "projects");
+const GSTACK_FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "gstack", "projects");
+const NOW = "2026-09-01T00:00:00.000Z";
+
+/** Never reads the real ~/.gstack: the fixtures stand in unless a test names its own dir. */
+async function run(argv: string[]) {
+  if (!argv.includes("--gstack-dir") && !argv.includes("--help")) argv = [...argv, "--gstack-dir", GSTACK_FIXTURES];
+  return runBare(argv);
+}
+
+/** Runs with argv as given: the default --gstack-dir is $HOME/.gstack/projects. */
+async function runBare(argv: string[]) {
+  let stdout = "";
+  let stderr = "";
+  // Never reads the real private config, nor calls gh: a test that wants repos names --config.
+  const code = await main(
+    argv,
+    { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+    { defaultConfig: join(tmp, "no-config.json"), gh: () => { throw new Error("gh called"); } },
+  );
+  return { code, stdout, stderr };
+}
+
+// main() reads $LOOPS_CONFIG: keep an ambient one (a developer's real config) out of every test.
+const AMBIENT_CONFIG = process.env.LOOPS_CONFIG;
+let tmp: string;
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), "loops-cli-"));
+  delete process.env.LOOPS_CONFIG;
+});
+afterEach(() => {
+  rmSync(tmp, { recursive: true, force: true });
+  if (AMBIENT_CONFIG === undefined) delete process.env.LOOPS_CONFIG;
+  else process.env.LOOPS_CONFIG = AMBIENT_CONFIG;
+});
+
+describe("loop-metrics", () => {
+  it("--dry-run prints the fixtures row and writes nothing", async () => {
+    const out = join(tmp, "metrics", "loops.jsonl");
+    const r = await run(["--projects-dir", FIXTURES, "--out", out, "--now", NOW, "--dry-run"]);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchSnapshot();
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("creates a missing out dir and appends one line per run", async () => {
+    const out = join(tmp, "metrics", "loops.jsonl");
+    for (let i = 0; i < 2; i++) {
+      const r = await run(["--projects-dir", FIXTURES, "--out", out, "--now", NOW]);
+      expect(r.code).toBe(0);
+    }
+    const lines = readFileSync(out, "utf8").trimEnd().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]!).schema).toBe(1);
+  });
+
+  it("starts a new line after a torn last row instead of gluing onto it", async () => {
+    const out = join(tmp, "loops.jsonl");
+    writeFileSync(out, '{"schema":1}\n{"partial":');
+    expect((await run(["--projects-dir", FIXTURES, "--out", out, "--now", NOW])).code).toBe(0);
+    const lines = readFileSync(out, "utf8").split("\n");
+    expect(lines).toHaveLength(4); // good row, torn row, new row, and the final newline
+    expect(lines[1]).toBe('{"partial":');
+    expect(JSON.parse(lines[2]!).window_end).toBe(NOW);
+    expect(lines[3]).toBe("");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("counts an unreadable project dir once in bad_files", async () => {
+    const proj = join(tmp, "projects", "p");
+    mkdirSync(proj, { recursive: true });
+    chmodSync(proj, 0o000);
+    try {
+      const r = await run(["--projects-dir", join(tmp, "projects"), "--now", NOW, "--dry-run"]);
+      expect(JSON.parse(r.stdout).parse.bad_files).toBe(1);
+    } finally {
+      chmodSync(proj, 0o755);
+    }
+  });
+
+  it("fails without a row when --out is unwritable", async () => {
+    const blocker = join(tmp, "a-file");
+    writeFileSync(blocker, "");
+    const r = await run(["--projects-dir", FIXTURES, "--out", join(blocker, "loops.jsonl"), "--now", NOW]);
+    expect(r.code).not.toBe(0);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/cannot append/);
+  });
+
+  it("fails without a row when --projects-dir is missing", async () => {
+    const out = join(tmp, "loops.jsonl");
+    const r = await run(["--projects-dir", join(tmp, "nope"), "--out", out, "--now", NOW]);
+    expect(r.code).not.toBe(0);
+    expect(r.stdout).toBe("");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("writes a valid zero row for an existing empty projects dir", async () => {
+    const r = await run(["--projects-dir", tmp, "--now", NOW, "--dry-run"]);
+    expect(r.code).toBe(0);
+    const row = JSON.parse(r.stdout);
+    expect(row.w30.sessions.n).toBe(0);
+    expect(row.w30.workflows.tokens_median).toBeNull();
+  });
+
+  it("rejects a bad --now and unknown flags", async () => {
+    expect((await run(["--now", "yesterday", "--dry-run"])).code).toBe(2);
+    // Date.parse would accept both: "Sep 28" as 2001, a zone-less time as local.
+    expect((await run(["--now", "Sep 28", "--dry-run"])).code).toBe(2);
+    // ...and it rolls impossible dates over (02-30 is March 2, 24:00 the next day).
+    expect((await run(["--now", "2026-02-30T10:00Z", "--dry-run"])).code).toBe(2);
+    expect((await run(["--now", "2026-09-28T24:00Z", "--dry-run"])).code).toBe(2);
+    expect((await run(["--now", "2026-09-28T09:00:00.000+02:00", "--projects-dir", tmp, "--dry-run"])).code).toBe(0);
+    expect((await run(["--now", "2026-09-28T09:00", "--dry-run"])).code).toBe(2);
+    expect((await run(["--dryrun"])).code).toBe(2);
+  });
+
+  it("rejects a value flag with no value instead of reading it as the path 'true'", async () => {
+    for (const argv of [["--out"], ["--out", "--dry-run"], ["--projects-dir"], ["--session"], ["--now"]]) {
+      const r = await run(argv);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(`error: ${argv[0]} needs a value`);
+      expect(r.stdout).toBe("");
+    }
+  });
+
+  it("--session shows the naive counts inflated over the deduped ones", async () => {
+    const r = await run(["--session", join(FIXTURES, "-home-user-proj-a", "s1.jsonl")]);
+    expect(r.code).toBe(0);
+    const report = JSON.parse(r.stdout);
+    expect(report.deduped).toEqual({ records: 6, messages: 2, compactions: 1, context_peak: 3052 });
+    expect(report.naive).toEqual({ usage_records: 6, compactions: 2 });
+    expect(report.naive.usage_records).toBeGreaterThan(report.deduped.messages);
+    expect(report.parse).toEqual({ bad_lines: 1, bad_files: 0, bad_records: 0, dup_records: 3 });
+  });
+
+  it("--help prints usage and exits 0, even beside unknown flags; a stray positional is rejected by name", async () => {
+    const help = await run(["--help", "--bogus"]);
+    expect(help).toEqual({ code: 0, stdout: USAGE, stderr: "" });
+    const stray = await run(["--dry-run", "extra", "positional"]);
+    expect(stray.code).toBe(2);
+    expect(stray.stderr).toContain("unknown argument extra positional");
+    expect(stray.stderr).toContain(USAGE);
+    expect(stray.stdout).toBe("");
+    const lead = await run(["stray", "--dry-run"]);
+    expect(lead.code).toBe(2);
+    expect(lead.stderr).toContain("unknown argument stray");
+  });
+
+  it("refuses a --projects-dir that is a file or missing, naming it on stderr", async () => {
+    const file = join(tmp, "a-file");
+    writeFileSync(file, "");
+    const asFile = await run(["--projects-dir", file, "--now", NOW, "--dry-run"]);
+    expect(asFile.code).toBe(1);
+    expect(asFile.stderr).toBe(`error: cannot read --projects-dir ${file}: not a directory\n`);
+    const missing = await run(["--projects-dir", join(tmp, "nope"), "--now", NOW, "--dry-run"]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/^error: cannot read --projects-dir .*nope: ENOENT/);
+  });
+
+  it("--session fails on a missing file, a directory, or an unreadable file; reports a null peak with no usage", async () => {
+    const missing = await run(["--session", join(tmp, "gone.jsonl")]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/cannot read --session .*gone\.jsonl: ENOENT/);
+    const asDir = await run(["--session", tmp]);
+    expect(asDir.code).toBe(1);
+    expect(asDir.stderr).toContain("not a file");
+
+    const f = join(tmp, "s.jsonl");
+    writeFileSync(f, JSON.stringify({ type: "user", uuid: "u1", timestamp: NOW }) + "\n");
+    const noUsage = await run(["--session", f]);
+    expect(noUsage.code).toBe(0);
+    expect(JSON.parse(noUsage.stdout).deduped).toEqual({ records: 1, messages: 0, compactions: 0, context_peak: null });
+
+    if (process.getuid?.() !== 0) {
+      chmodSync(f, 0o000);
+      try {
+        const locked = await run(["--session", f]);
+        expect(locked.code).toBe(1);
+        expect(locked.stderr).toBe(`error: cannot read --session ${f}\n`);
+        expect(locked.stdout).toBe("");
+      } finally {
+        chmodSync(f, 0o644);
+      }
+    }
+  });
+
+  it("reads the fixture review logs into lenses with their own parse counters", async () => {
+    const r = await run(["--projects-dir", tmp, "--now", NOW, "--dry-run"]);
+    expect(r.code).toBe(0);
+    const row = JSON.parse(r.stdout);
+    // One duplicate line, one torn line, one zone-less timestamp; the July review is past w30.
+    expect(row.parse_lenses).toEqual({ bad_lines: 1, bad_files: 0, bad_records: 1, dup_records: 1 });
+    expect(row.parse).toEqual({ bad_lines: 0, bad_files: 0, bad_records: 0, dup_records: 0 });
+    expect(row.w7.lenses).toMatchObject({ reviews: 1, with_specialists: 1, with_findings: 1 });
+    expect(row.w30.lenses).toMatchObject({ reviews: 3, with_specialists: 3, with_findings: 2 });
+    expect(row.w7.lenses.by_lens["red-team"]).toEqual({
+      dispatched: 1,
+      not_dispatched: 0,
+      reported: 2,
+      reported_critical: 1,
+      findings: 2,
+      fixed: 1,
+      auto_fixed: 0,
+      skipped: 1,
+      other_action: 0,
+      critical: 1,
+      critical_skipped: 1,
+    });
+    expect(row.w7.lenses.other).toMatchObject({ findings: 2, fixed: 1, other_action: 1, critical: 1 });
+    expect(row.w30.lenses.by_lens.testing).toMatchObject({ dispatched: 2, reported: 2, findings: 2 });
+    expect(row.w30.lenses.by_lens.performance).toMatchObject({ dispatched: 1, not_dispatched: 1, skipped: 1 });
+  });
+
+  it("gives lenses: null when the default gstack dir does not exist (gstack not installed)", async () => {
+    const prevHome = process.env.HOME;
+    process.env.HOME = tmp;
+    try {
+      const r = await runBare(["--projects-dir", tmp, "--now", NOW, "--dry-run"]);
+      expect(r.code).toBe(0);
+      const row = JSON.parse(r.stdout);
+      expect(row.w7.lenses).toBeNull();
+      expect(row.w30.lenses).toBeNull();
+      expect(row.parse_lenses).toBeNull();
+
+      mkdirSync(join(tmp, ".gstack", "projects"), { recursive: true });
+      const empty = JSON.parse((await runBare(["--projects-dir", tmp, "--now", NOW, "--dry-run"])).stdout);
+      expect(empty.w30.lenses).toEqual({
+        reviews: 0,
+        with_specialists: 0,
+        with_findings: 0,
+        by_lens: {},
+        other: { findings: 0, fixed: 0, auto_fixed: 0, skipped: 0, other_action: 0, critical: 0, critical_skipped: 0 },
+      });
+    } finally {
+      process.env.HOME = prevHome;
+    }
+  });
+
+  it("refuses a named --gstack-dir that is missing or a file, writing no row", async () => {
+    const out = join(tmp, "loops.jsonl");
+    const missing = await run(["--projects-dir", tmp, "--gstack-dir", join(tmp, "nope"), "--out", out, "--now", NOW]);
+    expect(missing.code).toBe(1);
+    expect(missing.stdout).toBe("");
+    expect(missing.stderr).toMatch(/^error: cannot read --gstack-dir .*nope: ENOENT/);
+    const file = join(tmp, "a-file");
+    writeFileSync(file, "");
+    const asFile = await run(["--projects-dir", tmp, "--gstack-dir", file, "--out", out, "--now", NOW]);
+    expect(asFile.code).toBe(1);
+    expect(asFile.stderr).toBe(`error: cannot read --gstack-dir ${file}: not a directory\n`);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("defaults --projects-dir and --out under $HOME/.claude and prints exactly the appended line", async () => {
+    const prevHome = process.env.HOME;
+    process.env.HOME = tmp;
+    try {
+      mkdirSync(join(tmp, ".claude", "projects"), { recursive: true });
+      const r = await run(["--now", NOW]);
+      expect(r.code).toBe(0);
+      const out = join(tmp, ".claude", "metrics", "loops.jsonl");
+      expect(readFileSync(out, "utf8")).toBe(r.stdout);
+      expect(JSON.parse(r.stdout).w30.sessions.n).toBe(0);
+    } finally {
+      process.env.HOME = prevHome;
+    }
+  });
+});
+
+// fetchMergedPrs resolves the slug first (`gh repo view`); the fakes below answer that with the slug.
+const withRepoView =
+  (gh: (args: string[]) => string) =>
+  (args: string[]): string =>
+    args[0] === "repo" && args[1] === "view" ? (args[2] ?? "") : gh(args);
+
+describe("loop-metrics --config", () => {
+  const PRS = JSON.stringify([{ number: 7, title: "feat: x", mergedAt: "2026-08-30T00:00:00Z", files: [{ path: "x.ts" }] }]);
+
+  async function runWith(argv: string[], gh: (args: string[]) => string) {
+    let stdout = "";
+    let stderr = "";
+    const code = await main(
+      [...argv, "--gstack-dir", GSTACK_FIXTURES],
+      { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+      { defaultConfig: join(tmp, "no-config.json"), gh: withRepoView(gh) },
+    );
+    return { code, stdout, stderr };
+  }
+
+  it("adds a repos block per window from the named config", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/app", path: "/nowhere/app" }] }));
+    const r = await runWith(["--projects-dir", FIXTURES, "--config", config, "--now", NOW, "--dry-run"], () => PRS);
+    expect(r.code).toBe(0);
+    const row = JSON.parse(r.stdout);
+    expect(row.w7.repos["o/app"]).toMatchObject({ merged_prs: 1, fix_prs: 0, sessions: 0 });
+    expect(row.repo_errors).toEqual([]);
+  });
+
+  it("records a repo whose gh call fails as null, warns, and still writes the row", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/app", path: "/a" }, { slug: "o/ok", path: "/b" }] }));
+    const r = await runWith(["--projects-dir", FIXTURES, "--config", config, "--now", NOW, "--dry-run"], (args) => {
+      if (args.includes("o/app")) throw new Error("HTTP 401\nmore");
+      return "[]";
+    });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("warning: o/app: cannot read merged PRs: HTTP 401\n");
+    const row = JSON.parse(r.stdout);
+    expect(row.w7.repos).toEqual({ "o/app": null, "o/ok": expect.objectContaining({ merged_prs: 0 }) });
+    expect(row.repo_errors).toEqual(["o/app"]);
+  });
+
+  it("records a slug gh cannot resolve as null and in repo_errors, not as quiet", async () => {
+    const config = join(tmp, "config.json");
+    writeFileSync(config, JSON.stringify({ repos: [{ slug: "o/typo", path: "/a" }] }));
+    let stdout = "";
+    let stderr = "";
+    // Like gh for an unknown slug: `repo view` fails where `pr list` would print [] with exit 0.
+    const gh = (args: string[]): string => {
+      if (args[0] === "repo") throw new Error("Could not resolve to a Repository");
+      return "[]";
+    };
+    const code = await main(
+      ["--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--config", config, "--now", NOW, "--dry-run"],
+      { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+      { defaultConfig: join(tmp, "no-config.json"), gh },
+    );
+    expect(code).toBe(0);
+    expect(stderr).toBe("warning: o/typo: cannot read merged PRs: Could not resolve to a Repository\n");
+    const row = JSON.parse(stdout);
+    expect(row.w7.repos).toEqual({ "o/typo": null });
+    expect(row.repo_errors).toEqual(["o/typo"]);
+  });
+
+  it("refuses a named config that is missing or malformed", async () => {
+    const missing = await runWith(["--projects-dir", FIXTURES, "--config", join(tmp, "nope.json"), "--dry-run"], () => "[]");
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/cannot read config/);
+    const bad = join(tmp, "bad.json");
+    writeFileSync(bad, "{");
+    expect((await runWith(["--projects-dir", FIXTURES, "--config", bad, "--dry-run"], () => "[]")).code).toBe(1);
+  });
+
+  it("a missing default config means no repos and no gh call", async () => {
+    const r = await runWith(["--projects-dir", FIXTURES, "--now", NOW, "--dry-run"], () => {
+      throw new Error("gh called");
+    });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout).w7.repos).toBeNull();
+  });
+
+  // Value: protects=config selection order (--config, $LOOPS_CONFIG, default) and that an unreadable present default is refused, not treated as absent; fails_when=env is ignored, precedence flips, or a malformed default reads as no config; why_new=only --config and a missing default are tested; seam=none
+  describe("config selection", () => {
+    const cfg = (name: string, slug: string) => {
+      const f = join(tmp, name);
+      writeFileSync(f, JSON.stringify({ repos: [{ slug, path: "/nowhere/app" }] }));
+      return f;
+    };
+    const go = async (argv: string[], defaultConfig: string) => {
+      let stdout = "";
+      let stderr = "";
+      const code = await main(
+        [...argv, "--projects-dir", FIXTURES, "--gstack-dir", GSTACK_FIXTURES, "--now", NOW, "--dry-run"],
+        { stdout: (s) => (stdout += s), stderr: (s) => (stderr += s) },
+        { defaultConfig, gh: withRepoView(() => "[]") },
+      );
+      return { code, stdout, stderr };
+    };
+
+    it("reads $LOOPS_CONFIG over the default, and --config over $LOOPS_CONFIG", async () => {
+      const def = cfg("def.json", "o/default");
+      process.env.LOOPS_CONFIG = cfg("env.json", "o/env");
+      expect(Object.keys(JSON.parse((await go([], def)).stdout).w7.repos)).toEqual(["o/env"]);
+      expect(Object.keys(JSON.parse((await go(["--config", cfg("flag.json", "o/flag")], def)).stdout).w7.repos)).toEqual(["o/flag"]);
+    });
+
+    it("refuses a missing $LOOPS_CONFIG file", async () => {
+      process.env.LOOPS_CONFIG = join(tmp, "nope.json");
+      const r = await go([], cfg("def.json", "o/default"));
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+    });
+
+    it("treats an empty $LOOPS_CONFIG as unset, so a blank plist entry falls back to the default", async () => {
+      process.env.LOOPS_CONFIG = "";
+      const r = await go([], cfg("def.json", "o/default"));
+      expect(r.code).toBe(0);
+      expect(Object.keys(JSON.parse(r.stdout).w7.repos)).toEqual(["o/default"]);
+    });
+
+    it("uses a present default, and refuses a present but malformed one", async () => {
+      delete process.env.LOOPS_CONFIG;
+      expect(Object.keys(JSON.parse((await go([], cfg("def.json", "o/default"))).stdout).w7.repos)).toEqual(["o/default"]);
+      const bad = join(tmp, "bad-default.json");
+      writeFileSync(bad, "{");
+      const r = await go([], bad);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(/cannot read config/);
+    });
+  });
+});

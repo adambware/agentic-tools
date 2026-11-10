@@ -1,0 +1,262 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { buildRow, DAY_MS, median, VERSION } from "./row.js";
+import { emptyCounters, type SessionStats } from "./session.js";
+import type { RunStats } from "./workflow.js";
+
+const NOW = Date.parse("2026-09-01T00:00:00.000Z");
+const ago = (days: number) => NOW - days * DAY_MS;
+
+function session(p: Partial<SessionStats>): SessionStats {
+  const messages = p.messages ?? [];
+  const compactions = p.compactions ?? [];
+  return {
+    file: "s.jsonl",
+    project: p.project ?? "p",
+    tokens: p.tokens ?? [],
+    recordTimes: p.recordTimes ?? [...messages.map(([t]) => t), ...compactions],
+    messages,
+    compactions,
+    naive: { usage_records: 0, compact_records: 0 },
+  };
+}
+
+function run(p: Partial<RunStats>): RunStats {
+  return {
+    project: "p",
+    startMs: ago(1),
+    durationMs: 1000,
+    status: "completed",
+    phases: 1,
+    tokens: 10,
+    agents: 0,
+    agentsErrored: 0,
+    agentsKilled: 0,
+    byModel: {},
+    ...p,
+  };
+}
+
+describe("VERSION", () => {
+  it("matches package.json, and every row carries it", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    expect(VERSION).toBe(pkg.version);
+    expect(buildRow([], [], emptyCounters(), 0).version).toBe(VERSION);
+  });
+});
+
+describe("median", () => {
+  it("is null for an empty set and averages the middle pair", () => {
+    expect(median([])).toBeNull();
+    expect(median([5])).toBe(5);
+    expect(median([3, 1, 2])).toBe(2);
+    expect(median([4, 1, 3, 2])).toBe(2.5);
+  });
+});
+
+describe("buildRow", () => {
+  it("gives zero counts and null medians for no data", () => {
+    const row = buildRow([], [], emptyCounters(), NOW);
+    expect(row.schema).toBe(1);
+    expect(row.generated_at).toBe("2026-09-01T00:00:00.000Z");
+    expect(row.window_end).toBe(row.generated_at);
+    expect(row.w7.sessions).toEqual({
+      n: 0,
+      with_usage: 0,
+      context_peak_median: null,
+      context_peak_max: null,
+      compactions_total: 0,
+      compacted: 0,
+      compacted_10plus: 0,
+    });
+    expect(row.w30.workflows).toMatchObject({
+      runs: 0,
+      phases_median: null,
+      phases_max: null,
+      tokens_sum: 0,
+      tokens_median: null,
+      duration_ms_median: null,
+      by_model: {},
+    });
+  });
+
+  it("counts a session with no usage in n but not with_usage", () => {
+    const row = buildRow([session({ recordTimes: [ago(1)] })], [], emptyCounters(), NOW);
+    expect(row.w7.sessions.n).toBe(1);
+    expect(row.w7.sessions.with_usage).toBe(0);
+    expect(row.w7.sessions.context_peak_median).toBeNull();
+  });
+
+  it("splits one session's peak and compactions between w7 and w30 by record time", () => {
+    const s = session({
+      messages: [
+        [ago(3), 1000],
+        [ago(20), 9000],
+      ],
+      compactions: [ago(3), ago(20), ago(20)],
+    });
+    const row = buildRow([s], [], emptyCounters(), NOW);
+    expect(row.w7.sessions).toMatchObject({ n: 1, context_peak_max: 1000, compactions_total: 1, compacted: 1 });
+    expect(row.w30.sessions).toMatchObject({ n: 1, context_peak_max: 9000, compactions_total: 3, compacted: 1 });
+  });
+
+  it("counts compacted_10plus at ten compactions in the window", () => {
+    const ten = Array.from({ length: 10 }, (_, i) => ago(1) + i);
+    const row = buildRow([session({ compactions: ten }), session({ compactions: ten.slice(1) })], [], emptyCounters(), NOW);
+    expect(row.w7.sessions).toMatchObject({ n: 2, compactions_total: 19, compacted: 2, compacted_10plus: 1 });
+  });
+
+  it("windows are (now - N days, now]: the start is excluded, 1 ms after is included", () => {
+    const edge = ago(7);
+    const sessions = [session({ recordTimes: [edge] }), session({ recordTimes: [edge + 1] })];
+    const runs = [run({ startMs: edge }), run({ startMs: edge + 1 }), run({ startMs: NOW + 1 })];
+    const row = buildRow(sessions, runs, emptyCounters(), NOW);
+    expect(row.w7.sessions.n).toBe(1);
+    expect(row.w7.workflows.runs).toBe(1);
+    expect(row.w30.sessions.n).toBe(2);
+    expect(row.w30.workflows.runs).toBe(2);
+  });
+
+  it("aggregates workflow runs", () => {
+    const runs = [
+      run({ phases: 2, tokens: 300, durationMs: 60_000, agents: 2, byModel: { h: { agents: 1, tokens: 100 }, s: { agents: 1, tokens: 200 } } }),
+      run({ status: "killed", phases: 1, tokens: 50, durationMs: null, agents: 3, agentsKilled: 1, agentsErrored: 1, byModel: { s: { agents: 3, tokens: 50 } } }),
+      run({ status: "failed", phases: 5, tokens: 0, durationMs: 10 }),
+    ];
+    const row = buildRow([], runs, emptyCounters(), NOW);
+    expect(row.w7.workflows).toEqual({
+      runs: 3,
+      completed: 1,
+      killed: 1,
+      failed: 1,
+      other: 0,
+      phases_median: 2,
+      phases_max: 5,
+      tokens_sum: 350,
+      tokens_median: 50,
+      duration_ms_median: 30_005,
+      agents: 5,
+      agents_errored: 1,
+      agents_killed: 1,
+      by_model: { h: { agents: 1, tokens: 100 }, s: { agents: 4, tokens: 250 } },
+    });
+  });
+
+  it("counts a running or renamed status as other, so runs = completed + killed + failed + other", () => {
+    const runs = [run({}), run({ status: "running" }), run({ status: "cancelled" }), run({ status: "unknown" })];
+    const w = buildRow([], runs, emptyCounters(), NOW).w7.workflows;
+    expect([w.runs, w.completed, w.killed, w.failed, w.other]).toEqual([4, 1, 0, 0, 3]);
+  });
+
+  it("merges a model named __proto__ as a plain key, not the prototype", () => {
+    const byModel = Object.fromEntries([["__proto__", { agents: 1, tokens: 2 }]]);
+    const w = buildRow([], [run({ byModel }), run({ byModel })], emptyCounters(), NOW).w7.workflows;
+    expect(Object.entries(w.by_model)).toEqual([["__proto__", { agents: 2, tokens: 4 }]]);
+    expect(({} as Record<string, unknown>).agents).toBeUndefined();
+  });
+
+  it("sorts by_model keys regardless of the order runs report them", () => {
+    const runs = [run({ byModel: { zeta: { agents: 1, tokens: 1 }, alpha: { agents: 1, tokens: 2 } } }), run({ byModel: { mid: { agents: 1, tokens: 3 } } })];
+    const row = buildRow([], runs, emptyCounters(), NOW);
+    expect(Object.keys(row.w7.workflows.by_model)).toEqual(["alpha", "mid", "zeta"]);
+  });
+
+  it("excludes session records after now and counts usage only from in-window messages", () => {
+    const future = session({ recordTimes: [NOW + 1], messages: [[NOW + 1, 50]], compactions: [NOW + 1] });
+    const oldUsage = session({ recordTimes: [ago(1), ago(40)], messages: [[ago(40), 700]] });
+    const row = buildRow([future, oldUsage], [], emptyCounters(), NOW);
+    expect(row.w30.sessions).toMatchObject({ n: 1, with_usage: 0, context_peak_max: null, compactions_total: 0 });
+  });
+
+  it("copies parse counters instead of aliasing them", () => {
+    const parse = emptyCounters();
+    const row = buildRow([], [], parse, NOW);
+    parse.bad_lines = 9;
+    expect(row.parse.bad_lines).toBe(0);
+  });
+});
+
+describe("buildRow repos", () => {
+  const REPO = "/r/app";
+  const MINE = "-r-app";
+  const pr = (number: number, title: string, daysAgo: number, files: string[]) => ({ number, title, mergedAt: ago(daysAgo), files });
+
+  it("is null without a config, and empty-but-present with an empty one", () => {
+    expect(buildRow([], [], emptyCounters(), NOW).w7.repos).toBeNull();
+    expect(buildRow([], [], emptyCounters(), NOW).repo_errors).toBeNull();
+    const r = buildRow([], [], emptyCounters(), NOW, null, []);
+    expect(r.w7.repos).toEqual({});
+    expect(r.repo_errors).toEqual([]);
+  });
+
+  it("windows PRs, escapes, sessions and tokens per repo", () => {
+    const prs = [
+      pr(1, "feat: a", 20, ["a.ts"]),
+      pr(2, "fix: a", 18, ["a.ts"]), // escapes #1, observed (merged > 14 days ago)
+      pr(3, "feat: b", 3, ["b.ts"]),
+      pr(4, "fix: b", 1, ["b.ts"]), // escapes #3, not yet observed
+    ];
+    const sessions = [
+      session({ project: MINE, recordTimes: [ago(2)], tokens: [[ago(2), 100]] }),
+      session({ project: `${MINE}--claude-worktrees-x`, recordTimes: [ago(10)], tokens: [[ago(10), 50]] }),
+      session({ project: "-r-app-two", recordTimes: [ago(2)], tokens: [[ago(2), 999]] }),
+    ];
+    const runs = [run({ project: MINE, startMs: ago(2), tokens: 1000 }), run({ project: "-other", startMs: ago(2), tokens: 5 })];
+    const row = buildRow(sessions, runs, emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, prs }]);
+    expect(row.w7.repos!["o/app"]).toEqual({
+      merged_prs: 2,
+      fix_prs: 1,
+      escaped: 1,
+      observed_14d: 0,
+      escaped_observed: 0,
+      sessions: 1,
+      session_tokens: 100,
+      workflow_runs: 1,
+      workflow_tokens: 1000,
+      tokens_per_merged_pr: 550,
+      sessions_per_merged_pr: 0.5,
+    });
+    expect(row.w30.repos!["o/app"]).toMatchObject({
+      merged_prs: 4,
+      fix_prs: 2,
+      escaped: 2,
+      observed_14d: 2,
+      escaped_observed: 1,
+      sessions: 2,
+      session_tokens: 150,
+      tokens_per_merged_pr: 288,
+      sessions_per_merged_pr: 0.5,
+    });
+  });
+
+  it("gives null ratios when no local session or run exists: the cost is unknown, not zero", () => {
+    const row = buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/web", path: "/w", prs: [pr(1, "feat: a", 1, ["a.ts"])] }]);
+    expect(row.w7.repos!["o/web"]).toMatchObject({ merged_prs: 1, sessions: 0, tokens_per_merged_pr: null, sessions_per_merged_pr: null });
+  });
+
+  it("gives null ratios at zero merged PRs, and a failed repo is null and named", () => {
+    const row = buildRow([], [], emptyCounters(), NOW, null, [
+      { slug: "o/quiet", path: "/q", prs: [] },
+      { slug: "o/broken", path: "/b", prs: null },
+    ]);
+    expect(row.w7.repos!["o/quiet"]).toMatchObject({ merged_prs: 0, tokens_per_merged_pr: null, sessions_per_merged_pr: null });
+    expect(row.w7.repos!["o/broken"]).toBeNull();
+    expect(row.repo_errors).toEqual(["o/broken"]);
+  });
+
+  // Value: protects=observed_14d counts a PR only once its 14 days are complete, and a repo's escape_ignore reaches the escape check; fails_when=the <= boundary flips or escape_ignore is not passed to escaped(); why_new=the windows test has no PR at exactly 14 days and no ignore list; seam=none
+  it("observes a PR at exactly 14 days, and applies the repo's escape_ignore", () => {
+    const prs = [pr(1, "feat: a", 14, ["gen/out.js"]), pr(2, "fix: a", 13, ["gen/out.js"]), pr(3, "feat: b", 13.9, ["b.ts"])];
+    const at = (ignore: string[]) =>
+      buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, escape_ignore: ignore, prs }]).w30.repos!["o/app"]!;
+    expect(at([])).toMatchObject({ merged_prs: 3, observed_14d: 1, escaped: 1, escaped_observed: 1 });
+    expect(at(["gen/"])).toMatchObject({ observed_14d: 1, escaped: 0, escaped_observed: 0 });
+  });
+
+  // Value: protects=a rerun with an earlier --now judges escapes only by PRs merged by then; fails_when=PRs fetched after now still blame or shield; why_new=no test feeds PRs merged after now; seam=none
+  it("ignores PRs merged after now, as a rerun with an earlier --now fetches them too", () => {
+    const prs = [pr(1, "feat: a", 3, ["a.ts"]), pr(2, "fix: a", -1, ["a.ts"])];
+    const r = buildRow([], [], emptyCounters(), NOW, null, [{ slug: "o/app", path: REPO, prs }]).w7.repos!["o/app"]!;
+    expect(r).toMatchObject({ merged_prs: 1, fix_prs: 0, escaped: 0 });
+  });
+});
