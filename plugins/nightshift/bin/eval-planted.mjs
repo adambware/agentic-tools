@@ -7390,7 +7390,7 @@ function requireArg(args, key) {
 
 // src/lib/planted-eval.ts
 import { existsSync as existsSync2, readdirSync, readFileSync as readFileSync2, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 // src/lib/io.ts
 import {
@@ -7481,8 +7481,10 @@ function parseLocations(location) {
   }
   return out;
 }
-function sameFile(cited, keyed) {
-  return cited === keyed || cited.endsWith(`/${keyed}`);
+function sameFile(cited, keyed, keyFiles) {
+  if (cited === keyed || cited.endsWith(`/${keyed}`)) return true;
+  if (!keyed.endsWith(`/${cited}`)) return false;
+  return keyFiles.filter((k) => k === cited || k.endsWith(`/${cited}`)).length === 1;
 }
 function toFinding(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
@@ -7504,6 +7506,15 @@ var PRE_FINAL_ARTIFACTS = /* @__PURE__ */ new Set([
   "tier2.pending.json",
   "tier2.survivors.json"
 ]);
+function refuseMixedWalk(root, files) {
+  const runs = files.filter((f) => basename(f) === "candidates.tier2.json");
+  const logged = files.filter((f) => f.endsWith(".jsonl"));
+  const hint = "point --findings at <pack>/metrics/findings (with --run-id for one run) or at one run dir";
+  if (runs.length > 1)
+    throw new Error(`${root} holds ${runs.length} runs' candidates.tier2.json; ${hint}`);
+  if (runs.length === 1 && logged.length > 0)
+    throw new Error(`${root} mixes logged findings (.jsonl) with a run's candidates.tier2.json; ${hint}`);
+}
 function listFiles(path) {
   if (!statSync(path).isDirectory()) return [path];
   const out = [];
@@ -7518,8 +7529,10 @@ function listFiles(path) {
 }
 function collectFindings(path) {
   if (!existsSync2(path)) throw new Error(`findings path not found: ${path}`);
+  const files = listFiles(path);
+  if (statSync(path).isDirectory()) refuseMixedWalk(path, files);
   const out = [];
-  for (const file of listFiles(path)) {
+  for (const file of files) {
     const text = readFileSync2(file, "utf8");
     const values = [];
     if (file.endsWith(".jsonl")) {
@@ -7556,10 +7569,10 @@ function dedupeFindings(findings) {
   }
   return [...seen.values()];
 }
-function catches(f, p, slack) {
+function catches(f, p, slack, keyFiles) {
   for (const cited of parseLocations(f.location)) {
     for (const loc of p.locations) {
-      if (!sameFile(cited.file, loc.file)) continue;
+      if (!sameFile(cited.file, loc.file, keyFiles)) continue;
       if (f.surface !== p.vector) continue;
       if (cited.line === void 0) return true;
       const citedEnd = cited.lineEnd ?? cited.line;
@@ -7568,9 +7581,9 @@ function catches(f, p, slack) {
   }
   return false;
 }
-function onClean(f, c) {
+function onClean(f, c, keyFiles) {
   if (f.surface === c.vector) return true;
-  return parseLocations(f.location).some((l) => c.files.some((file) => sameFile(l.file, file)));
+  return parseLocations(f.location).some((l) => c.files.some((file) => sameFile(l.file, file, keyFiles)));
 }
 function scorePlanted(key, findings, opts = {}) {
   const slack = opts.slack ?? DEFAULT_LINE_SLACK;
@@ -7584,16 +7597,19 @@ function scorePlanted(key, findings, opts = {}) {
   const scoped = dedupeFindings(
     opts.runId === void 0 ? findings : findings.filter((f) => f.run_id === opts.runId)
   );
+  const keyFiles = [
+    .../* @__PURE__ */ new Set([...key.planted.flatMap((p) => p.locations.map((l) => l.file)), ...key.clean.flatMap((c) => c.files)])
+  ];
   const caughtIds = /* @__PURE__ */ new Set();
   const cleanCounts = new Map(key.clean.map((c) => [c.vector, 0]));
   let other = 0;
   for (const f of scoped) {
-    const hits = key.planted.filter((p) => catches(f, p, slack));
+    const hits = key.planted.filter((p) => catches(f, p, slack, keyFiles));
     if (hits.length > 0) {
       for (const p of hits) caughtIds.add(p.id);
       continue;
     }
-    const control = key.clean.find((c) => onClean(f, c));
+    const control = key.clean.find((c) => onClean(f, c, keyFiles));
     if (control) {
       cleanCounts.set(control.vector, cleanCounts.get(control.vector) + 1);
       continue;

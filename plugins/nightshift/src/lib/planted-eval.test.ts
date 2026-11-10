@@ -248,6 +248,32 @@ describe("scorePlanted against the shipped key", () => {
     expect(scorePlanted(key, asScored([finding("ASVS-INPV-04", "app/controllers/concerns/verify_webhook_signature.rb")])).caught).toBe(0);
   });
 
+  it("a bare or partial filename names the keyed file when only one keyed file fits", () => {
+    expect(scorePlanted(key, asScored([finding("ND-SEC-05", "tickets_controller.rb:7")])).caught).toBe(1);
+    expect(scorePlanted(key, asScored([finding("ND-SEC-05", "controllers/tickets_controller.rb:7")])).caught).toBe(1);
+    expect(scorePlanted(key, asScored([finding("ND-SEC-05", "/home/ci/novudesk/app/controllers/tickets_controller.rb:7")])).caught).toBe(1);
+    // A bare name still has to sit on the planted lines, and a mis-spelled suffix is not a match.
+    expect(scorePlanted(key, asScored([finding("ND-SEC-05", "tickets_controller.rb:24")])).caught).toBe(0);
+    expect(scorePlanted(key, asScored([finding("ND-SEC-05", "s_controller.rb:7")])).caught).toBe(0);
+    // A bare name of a clean file counts as a false positive on that control.
+    expect(scorePlanted(key, asScored([finding("ASVS-INPV-04", "command_signer.rb:22")])).false_positives_on_clean).toBe(1);
+  });
+
+  it("a bare filename that fits two keyed files names neither", () => {
+    const k: AnswerKey = {
+      key_format: 1,
+      target: "t",
+      planted: [
+        { id: "P1", vector: "V1", class: "c", summary: "s", locations: [{ file: "app/a/show.rb", lines: [2, 3] }] },
+      ],
+      clean: [{ vector: "V2", files: ["app/b/show.rb"] }],
+    } as AnswerKey;
+    const r = scorePlanted(k, asScored([finding("V1", "show.rb:2")]));
+    expect(r.caught).toBe(0);
+    expect(r.false_positives_on_clean).toBe(0);
+    expect(scorePlanted(k, asScored([finding("V1", "a/show.rb:2")])).caught).toBe(1);
+  });
+
   it("the right vector with no usable location is not a catch", () => {
     const r = scorePlanted(key, asScored([finding("ND-SEC-03", "SSRF in the monitor fetcher")]));
     expect(r.caught).toBe(0);
@@ -308,21 +334,37 @@ describe("scorePlanted against the shipped key", () => {
 });
 
 describe("collectFindings / runPlantedEval", () => {
-  it("reads a findings dir recursively, mixing jsonl + json and skipping non-finding JSON", () => {
+  it("reads a findings dir recursively, skipping non-finding JSON and non-JSON files", () => {
     const findingsDir = join(dir, "metrics", "findings");
-    mkdirSync(join(dir, "run"), { recursive: true });
     mkdirSync(findingsDir, { recursive: true });
     writeFileSync(
       join(findingsDir, "2026-09.jsonl"),
       `${JSON.stringify(finding("ND-SEC-05", "app/controllers/tickets_controller.rb:7"))}\n\n`,
     );
-    writeFileSync(join(dir, "run", "reviewed.json"), JSON.stringify(["ND-SEC-05"]));
-    writeFileSync(join(dir, "run", "surfaces.json"), JSON.stringify([{ id: "ND-SEC-05", band: "critical" }]));
-    writeFileSync(join(dir, "run", "candidates.tier2.json"), JSON.stringify([finding("ASVS-INPV-04", "app/queries/ticket_search_query.rb:14")]));
+    writeFileSync(join(findingsDir, "2026-10.jsonl"), `${JSON.stringify(finding("ASVS-INPV-04", "app/queries/ticket_search_query.rb:14"))}\n`);
+    writeFileSync(join(dir, "metrics", "summary.json"), JSON.stringify({ total: 2 }));
     writeFileSync(join(dir, "notes.txt"), "not json");
     const r = runPlantedEval({ keyPath: KEY_PATH, findingsPath: dir });
     expect(r.caught).toBe(2);
     expect(r.findings_scanned).toBe(2);
+  });
+
+  it("refuses a walk that mixes logged findings with a run's candidates, or spans several runs", () => {
+    const pack = join(dir, ".nightshift");
+    mkdirSync(join(pack, "metrics", "findings"), { recursive: true });
+    for (const id of ["r1", "r2"]) mkdirSync(join(pack, ".run", id), { recursive: true });
+    const idor = finding("ND-SEC-05", "app/controllers/tickets_controller.rb:7");
+    writeFileSync(join(pack, "metrics", "findings", "2026-09.jsonl"), `${JSON.stringify({ ...idor, run_id: "r1" })}\n`);
+    writeFileSync(join(pack, ".run", "r1", "candidates.tier2.json"), JSON.stringify([idor]));
+    // r2 failed before record: its survivors were never logged.
+    writeFileSync(join(pack, ".run", "r2", "candidates.tier2.json"), JSON.stringify([finding("ND-SEC-03", "app/services/webhooks/url_fetcher.rb:12")]));
+    expect(() => collectFindings(pack)).toThrow(/2 runs' candidates\.tier2\.json/);
+    expect(() => collectFindings(join(pack, ".run"))).toThrow(/2 runs'/);
+    rmSync(join(pack, ".run", "r2"), { recursive: true });
+    expect(() => collectFindings(pack)).toThrow(/mixes logged findings/);
+    // Each source on its own is fine.
+    expect(runPlantedEval({ keyPath: KEY_PATH, findingsPath: join(pack, "metrics", "findings"), runId: "r1" }).caught).toBe(1);
+    expect(runPlantedEval({ keyPath: KEY_PATH, findingsPath: join(pack, ".run", "r1") }).caught).toBe(1);
   });
 
   it("a run dir scores only what survived both refuter tiers, never pre-refutation candidates", () => {

@@ -7,7 +7,7 @@
 // clean). It is REPORT-ONLY: nothing here gates CI or a run, and bin/eval-planted
 // exits 0 whatever the score.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { readYaml } from "./io.js";
 
 export interface PlantedLocation {
@@ -168,8 +168,16 @@ export function parseLocations(location: string | undefined): ParsedLocation[] {
   return out;
 }
 
-function sameFile(cited: string, keyed: string): boolean {
-  return cited === keyed || cited.endsWith(`/${keyed}`);
+/**
+ * A citation names a keyed file when either path is a `/`-aligned suffix of the
+ * other: reviewers write `app/x.rb`, `./app/x.rb`, `/abs/repo/app/x.rb` or just
+ * `x.rb`. A short citation that fits more than one keyed file (two `show.rb`s)
+ * names neither, rather than crediting whichever comes first.
+ */
+function sameFile(cited: string, keyed: string, keyFiles: readonly string[]): boolean {
+  if (cited === keyed || cited.endsWith(`/${keyed}`)) return true;
+  if (!keyed.endsWith(`/${cited}`)) return false;
+  return keyFiles.filter((k) => k === cited || k.endsWith(`/${cited}`)).length === 1;
 }
 
 function toFinding(raw: unknown): ScoredFinding | undefined {
@@ -202,6 +210,23 @@ const PRE_FINAL_ARTIFACTS = new Set([
   "tier2.survivors.json",
 ]);
 
+/**
+ * A directory walk scores exactly one source: the logged findings
+ * (metrics/findings/*.jsonl, which carry run_id, so --run-id can pick a run) or
+ * ONE run dir's final candidates.tier2.json. Walking a whole pack would add every
+ * run's candidates on top of the logged findings, including runs that failed
+ * before recording and candidates dedupe later suppressed, so it is refused.
+ */
+function refuseMixedWalk(root: string, files: string[]): void {
+  const runs = files.filter((f) => basename(f) === "candidates.tier2.json");
+  const logged = files.filter((f) => f.endsWith(".jsonl"));
+  const hint = "point --findings at <pack>/metrics/findings (with --run-id for one run) or at one run dir";
+  if (runs.length > 1)
+    throw new Error(`${root} holds ${runs.length} runs' candidates.tier2.json; ${hint}`);
+  if (runs.length === 1 && logged.length > 0)
+    throw new Error(`${root} mixes logged findings (.jsonl) with a run's candidates.tier2.json; ${hint}`);
+}
+
 function listFiles(path: string): string[] {
   if (!statSync(path).isDirectory()) return [path];
   const out: string[] = [];
@@ -224,8 +249,10 @@ function listFiles(path: string): string[] {
  */
 export function collectFindings(path: string): ScoredFinding[] {
   if (!existsSync(path)) throw new Error(`findings path not found: ${path}`);
+  const files = listFiles(path);
+  if (statSync(path).isDirectory()) refuseMixedWalk(path, files);
   const out: ScoredFinding[] = [];
-  for (const file of listFiles(path)) {
+  for (const file of files) {
     const text = readFileSync(file, "utf8");
     const values: unknown[] = [];
     if (file.endsWith(".jsonl")) {
@@ -264,10 +291,10 @@ function dedupeFindings(findings: ScoredFinding[]): ScoredFinding[] {
   return [...seen.values()];
 }
 
-function catches(f: ScoredFinding, p: PlantedEntry, slack: number): boolean {
+function catches(f: ScoredFinding, p: PlantedEntry, slack: number, keyFiles: readonly string[]): boolean {
   for (const cited of parseLocations(f.location)) {
     for (const loc of p.locations) {
-      if (!sameFile(cited.file, loc.file)) continue;
+      if (!sameFile(cited.file, loc.file, keyFiles)) continue;
       // A catch needs the planted vector either way: the planted vulns sit close together
       // in the same files, so a location match alone credits the wrong finding.
       if (f.surface !== p.vector) continue;
@@ -279,9 +306,9 @@ function catches(f: ScoredFinding, p: PlantedEntry, slack: number): boolean {
   return false;
 }
 
-function onClean(f: ScoredFinding, c: CleanControl): boolean {
+function onClean(f: ScoredFinding, c: CleanControl, keyFiles: readonly string[]): boolean {
   if (f.surface === c.vector) return true;
-  return parseLocations(f.location).some((l) => c.files.some((file) => sameFile(l.file, file)));
+  return parseLocations(f.location).some((l) => c.files.some((file) => sameFile(l.file, file, keyFiles)));
 }
 
 export interface ScoreOpts {
@@ -310,17 +337,20 @@ export function scorePlanted(
     opts.runId === undefined ? findings : findings.filter((f) => f.run_id === opts.runId),
   );
 
+  const keyFiles = [
+    ...new Set([...key.planted.flatMap((p) => p.locations.map((l) => l.file)), ...key.clean.flatMap((c) => c.files)]),
+  ];
   const caughtIds = new Set<string>();
   const cleanCounts = new Map<string, number>(key.clean.map((c) => [c.vector, 0]));
   let other = 0;
 
   for (const f of scoped) {
-    const hits = key.planted.filter((p) => catches(f, p, slack));
+    const hits = key.planted.filter((p) => catches(f, p, slack, keyFiles));
     if (hits.length > 0) {
       for (const p of hits) caughtIds.add(p.id);
       continue;
     }
-    const control = key.clean.find((c) => onClean(f, c));
+    const control = key.clean.find((c) => onClean(f, c, keyFiles));
     if (control) {
       cleanCounts.set(control.vector, cleanCounts.get(control.vector)! + 1);
       continue;

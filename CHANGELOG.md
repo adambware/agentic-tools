@@ -17,6 +17,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   credited as caught only to a finding filed under its own vector; a finding on a planted
   line under another vector no longer counts (it scores as other). `--run-id` exits 2 on records with no
   `run_id` (run candidate files) instead of filtering them all out and reporting 0/4.
+  A finding that cites a planted file by bare or partial name (`tickets_controller.rb:7`)
+  now matches when only one keyed file has that name, instead of always missing. A
+  directory that holds several runs' `candidates.tier2.json`, or one beside logged
+  findings, exits 2 rather than counting failed runs and pre-dedupe candidates.
 
 ### Fixed
 

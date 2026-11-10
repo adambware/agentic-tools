@@ -48,10 +48,13 @@ node plugins/nightshift/bin/eval-planted.mjs \
   --findings ~/scratch/novudesk-eval/.nightshift/metrics/findings
 ```
 
-`--findings` also takes a run's final `candidates.tier2.json` or a whole directory
+`--findings` also takes a run's final `candidates.tier2.json` or a directory
 (recursive; non-finding JSON and the pre-refutation `candidates.proposed.json`,
 `candidates.json`, `tier2.pending.json` and `tier2.survivors.json` are skipped, so a
-vuln the refuter killed never counts as caught). `--run-id <id>` scores one run from logged findings (run candidate files carry no `run_id`, so it
+vuln the refuter killed never counts as caught). A directory must hold one source:
+the logged findings, or one run dir. A walk that finds several runs'
+`candidates.tier2.json`, or one next to logged `.jsonl` findings, exits 2: it would
+count runs that failed before recording, and candidates dedupe later suppressed. `--run-id <id>` scores one run from logged findings (run candidate files carry no `run_id`, so it
 exits 2 on them rather than scoring 0), `--json` emits the report
 as JSON, and `--slack <n>` (default 3) widens each planted line range.
 
@@ -59,7 +62,8 @@ as JSON, and `--slack <n>` (default 3) widens each planted line range.
 
 - **Caught** — a logged finding filed under the planted vector whose `location` cites a
   planted file with a line inside the planted range (± slack), or cites the file with no
-  line. A finding under a different vector never catches, even on a planted line (the
+  line. The file may be cited by full, absolute or partial path, or by bare name
+  (`tickets_controller.rb:7`) as long as only one keyed file has that name. A finding under a different vector never catches, even on a planted line (the
   planted vulns sit close together); it scores as other. Score what was *logged*: a vuln the refuter killed is a miss to the operator.
 - **False positive on clean** — any finding filed under a clean vector, or citing a clean file.
 - **Other** — everything else (findings on the planted surfaces' other lines, on
