@@ -19,10 +19,12 @@ function main(): void {
       slack = Number(args.slack);
       if (!Number.isInteger(slack) || slack < 0) throw new Error("--slack must be a non-negative integer");
     }
+    const runId = args["run-id"];
+    if (runId === "true" || runId === "") throw new Error("--run-id needs a value");
     const report = runPlantedEval({
       keyPath: requireArg(args, "key"),
       findingsPath: requireArg(args, "findings"),
-      runId: args["run-id"],
+      runId,
       slack,
     });
     process.stdout.write(args.json === "true" ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));

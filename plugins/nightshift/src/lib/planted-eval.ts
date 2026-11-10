@@ -296,6 +296,16 @@ export function scorePlanted(
   opts: ScoreOpts = {},
 ): PlantedEvalReport {
   const slack = opts.slack ?? DEFAULT_LINE_SLACK;
+  if (opts.runId !== undefined) {
+    // Run candidates (candidates*.json) carry no run_id; only logged findings do.
+    // Filtering them would drop every record and report a misleading 0/N.
+    const unscoped = findings.filter((f) => typeof f.run_id !== "string").length;
+    if (unscoped > 0)
+      throw new Error(
+        `--run-id needs logged findings that carry run_id; ${unscoped} of ${findings.length} record(s) have none ` +
+          "(run candidate files never do). Drop --run-id, or point --findings at metrics/findings",
+      );
+  }
   const scoped = dedupeFindings(
     opts.runId === undefined ? findings : findings.filter((f) => f.run_id === opts.runId),
   );

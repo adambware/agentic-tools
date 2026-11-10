@@ -51,7 +51,8 @@ node plugins/nightshift/bin/eval-planted.mjs \
 `--findings` also takes a run's final `candidates.tier2.json` or a whole directory
 (recursive; non-finding JSON and the pre-refutation `candidates.proposed.json`,
 `candidates.json`, `tier2.pending.json` and `tier2.survivors.json` are skipped, so a
-vuln the refuter killed never counts as caught). `--run-id <id>` scores one run, `--json` emits the report
+vuln the refuter killed never counts as caught). `--run-id <id>` scores one run from logged findings (run candidate files carry no `run_id`, so it
+exits 2 on them rather than scoring 0), `--json` emits the report
 as JSON, and `--slack <n>` (default 3) widens each planted line range.
 
 ## Scoring

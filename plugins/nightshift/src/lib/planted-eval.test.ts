@@ -286,6 +286,17 @@ describe("scorePlanted against the shipped key", () => {
     expect(r2).toMatchObject({ caught: 0, false_positives_on_clean: 1, findings_scanned: 1 });
   });
 
+  it("--run-id on records with no run_id (run candidates) errors instead of scoring a silent 0", () => {
+    const cands = asScored([finding("ND-SEC-05", "app/controllers/tickets_controller.rb:7")]);
+    expect(scorePlanted(key, cands).caught).toBe(1);
+    expect(() => scorePlanted(key, cands, { runId: "r1" })).toThrow(/--run-id needs logged findings/);
+    const mixed = asScored([
+      finding("ND-SEC-05", "app/controllers/tickets_controller.rb:7", { run_id: "r1" }),
+      finding("ND-SEC-01", "app/models/integration_token.rb:4"),
+    ]);
+    expect(() => scorePlanted(key, mixed, { runId: "r1" })).toThrow(/1 of 2 record/);
+  });
+
   it("formatReport names the misses and states it never gates", () => {
     const text = formatReport(scorePlanted(key, asScored([finding("ND-SEC-05", "app/controllers/tickets_controller.rb:7")])));
     expect(text).toContain("never gates");

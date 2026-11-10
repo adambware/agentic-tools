@@ -7574,6 +7574,13 @@ function onClean(f, c) {
 }
 function scorePlanted(key, findings, opts = {}) {
   const slack = opts.slack ?? DEFAULT_LINE_SLACK;
+  if (opts.runId !== void 0) {
+    const unscoped = findings.filter((f) => typeof f.run_id !== "string").length;
+    if (unscoped > 0)
+      throw new Error(
+        `--run-id needs logged findings that carry run_id; ${unscoped} of ${findings.length} record(s) have none (run candidate files never do). Drop --run-id, or point --findings at metrics/findings`
+      );
+  }
   const scoped = dedupeFindings(
     opts.runId === void 0 ? findings : findings.filter((f) => f.run_id === opts.runId)
   );
@@ -7639,10 +7646,12 @@ function main() {
       slack = Number(args.slack);
       if (!Number.isInteger(slack) || slack < 0) throw new Error("--slack must be a non-negative integer");
     }
+    const runId = args["run-id"];
+    if (runId === "true" || runId === "") throw new Error("--run-id needs a value");
     const report = runPlantedEval({
       keyPath: requireArg(args, "key"),
       findingsPath: requireArg(args, "findings"),
-      runId: args["run-id"],
+      runId,
       slack
     });
     process.stdout.write(args.json === "true" ? `${JSON.stringify(report, null, 2)}

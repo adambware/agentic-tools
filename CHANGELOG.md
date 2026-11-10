@@ -15,7 +15,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   finished run's logged findings: caught/total and false-positives-on-clean. Report-only:
   it exits 0 whatever the score and nothing in CI runs a paid review. A planted vuln is
   credited as caught only to a finding filed under its own vector; a finding on a planted
-  line under another vector no longer counts (it scores as other).
+  line under another vector no longer counts (it scores as other). `--run-id` exits 2 on records with no
+  `run_id` (run candidate files) instead of filtering them all out and reporting 0/4.
 
 ### Fixed
 
