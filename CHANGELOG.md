@@ -9,6 +9,290 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **nightshift: change detection diffs from the reviewed sha, not a date.** `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD` made any commit landing later on the same day as a review its own baseline, so its changes never reached `change_flag` until the surface went stale on age alone (up to 90 days for a low-weight vector). Registry entries now carry an engine-managed `last_reviewed_sha`, stamped by `bin/record` from `run.json.pack_sha` (left untouched when the run had no git), and `bin/select` / `bin/due` diff `<sha>..HEAD` directly. The date baseline remains only as a fallback for entries recorded before this field existed or a sha that no longer resolves (shallow clone, rewritten history). The sha comes from a registry committed in the reviewed repo, so anything that is not hex is refused both by `validate` and by the git runner itself: a value like `--output=<path>` would otherwise be parsed by `git diff` as an option.
 
+## [loops 0.7.1] - 2026-11-04
+
+`loops env-check` 0.7.1 is a fixes-only release. Every row is escaped once, at the output edges. `c.shared` proves a worktree owns its git metadata instead of trusting `git rev-parse`. Several checks that used to pass or skip silently now fail or say why. Features the pilots asked for are listed in `TODOS.md` for 0.8.0.
+
+### Changed
+
+- Behavior change (exit code): `c.shared` PASSes a linked worktree only when it is registered in `git worktree list` and `<git-dir>/gitdir` names this folder. A `cp -R` copy (also one over another registered worktree) FAILs "copied?" with a recreate fix, and a moved worktree FAILs "moved" with `git worktree repair`. An inherited `GIT_DIR` or `GIT_WORK_TREE` naming another checkout FAILs; a `GIT_DIR` that names a `.git` gitfile is followed as git does, and the one git sets inside a hook is silent. A failed `rev-parse` or `worktree list` FAILs "could not read git metadata" in every mode instead of guessing. These come before `ENV_CHECK_ALLOW_MAIN`.
+- Behavior change (exit code): `e.project` withholds the Compose project name (FAIL "could not read git metadata") when `git rev-parse` fails, instead of giving a linked worktree the main checkout's name.
+- Behavior change (exit code): a `setup-go` or `setup-node` step with neither its version input nor its `-file` input is a FAIL "<action> step without a version in <file>:<line>", also beside a pinned sibling, where it used to be skipped. `setup-python` reads `.python-version` as its implicit file, `golangci-lint-action` reads the golangci-lint module version from `go.mod` (from v6.5.0, in `install-mode: binary` only, and only a `go.mod` inside the checkout), and `goreleaser-action` records its default `~> v2` as a range.
+- Behavior change (exit code): Dockerfile pins fail closed. An `ARG` line is split into words as Docker splits it, so an escaped quote no longer hides the next pair; an unterminated quote on a line naming `<TOOL>_VERSION` is unsupported; a `FROM` tag whose `$` may continue a prerelease (`node:20-dev-${N}`) or names any variable other than `<TOOL>_VERSION` is unsupported instead of read or skipped.
+- Behavior change (level): `x.none` fires when every counted row is SKIP, not only when no row is counted. The exit code stays 0, and the wording follows `--static`.
+- Behavior change (exit code): `d.tools` PASSes a mise shim whose tool is installed but active in no config when an executable copy that is not a shim follows it on PATH, because mise's shim runs that copy (verified against mise 2026.11.0 on linux/aarch64). Without such a copy, for any other mise error (an untrusted or broken config), and for asdf, it still FAILs.
+- `--static` now probes the worktree, so a static `[[local]]` gets the `ENV_CHECK_WORKTREE` that full mode exports instead of 0 inside a worktree. It is the empty string when git metadata is unreadable. `c.shared` still SKIPs under `--static` unless that read failed.
+- env-check's git commands run on a clean git environment (the `git rev-parse --local-env-vars` set is dropped), so an inherited `GIT_DIR` cannot point env-check at another checkout. As git's own `prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` and its `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, such as `safe.directory` in CI) is kept and `GIT_CONFIG` is dropped. `GIT_INDEX_FILE` is kept when it names a file directly in this checkout's own git-dir (the `index.lock` git hands a `git commit -a` pre-commit hook), so `d.tracked` no longer FAILs a deletion being committed; one naming another checkout's index or any other path is dropped. `loops zone` keeps its inherited git environment as before.
+- The `a.local` probe and every `[[local]]` check run with `MISE_AUTO_INSTALL=0`, so a mise shim never installs a missing version while it is checked.
+- A `[[local]]` check runs in its own process group, and its timeout kills the whole group with SIGKILL, so a child such as `go` under a shell no longer outlives it. Interrupting env-check (Ctrl-C, SIGINT, SIGTERM or SIGHUP) or killing it while a local check runs kills that group too, through a small supervisor process.
+- An executable file that cannot start because its `#!` interpreter is missing is reported as that in `a.local`, `d.tools` and `[[local]]` checks ("could not start (missing interpreter in its #! line?)"), instead of "not found" or "printed no results".
+- `templates/env-check` fails loudly: an explicit `LOOPS_BIN` that is not a regular file exits 2, a dangling candidate symlink exits 2, and a chosen engine that cannot run because `node` does not start writes a `d.tools` FAIL row to stderr and exits 1. Exit 3 stays for "no candidate". Consumers get these only when they re-copy the wrapper.
+- `--compose-project`'s stderr warning (a FAIL that keeps the name) separates its fix with ` — fix: `, like every other row; it was `; fix: `. A script that matched `; fix:` on that line must match ` — fix: `.
+
+### Fixed
+
+- Every row is escaped once, at the edges: text rows and the `--compose-project` stderr lines go through one renderer that redacts and then escapes, and `--json` carries values raw (so an unparseable `[[local]]` line and quoted Compose fix arguments are no longer double-escaped), writing DEL, C1, U+2028/9, bidi and zero-width characters as `\uXXXX` so `JSON.parse` round-trips them.
+- The CLI's exit-2 error line is redacted and escaped whole, command prefix included, so a hostile argument or git stderr cannot reach the terminal raw.
+- U+061C ARABIC LETTER MARK is escaped like the other bidi controls in text and `--json` output, and a `[[local]]` line containing it is a protocol FAIL.
+- `redactHome` replaces `$HOME` only where it is a whole path (`/Users/bob2`, `/Users/bob.old` and `/x/Users/bob/y` stay), redacts `$HOME` followed only by punctuation (a sentence's period, `...`) again, builds no pattern from `$HOME`, and redacts nothing when `$HOME` is not absolute.
+- A `[[local]]` check that writes more than 64 KB to stderr no longer loses its result lines (a false "printed no results").
+
+## [loops 0.7.0] - 2026-11-02
+
+`loops env-check` reports more of what it cannot verify and fails closed in four places that used to pass. A run that checks nothing now says so, local-check output is sanitized, and probe failures say why.
+
+### Changed
+
+- Behavior change (exit code): `d.tools` FAILs a tool on PATH that is an asdf shim (a `# asdf-plugin:` header) or a mise shim (a symlink to the mise binary) when its manager resolves no version for this checkout. It runs `asdf which <tool>` or `mise which <tool>` from the repo root with a 10s limit and never runs the listed tool. An older asdf shim's `exec <absolute path> exec` is asked only when that path names `asdf`; otherwise asdf is looked up on PATH. A missing manager, one that cannot run, a timeout, a non-zero exit (first output line shown, escaped) or empty output each give their own FAIL row after any "missing on PATH" row. `--static` and `CI=true` still run no `d.tools` probe.
+- Behavior change (exit code): `d.files` FAILs a directory, or any other non-regular entry (a symlink to a directory too), as "not a regular file". Every directory used to PASS whatever it held. Untracked files still pass: `d.files` checks the working tree, and tracking is `d.tracked`'s job.
+- Behavior change (level): a run with no counted row (no FAIL, WARN, PASS or SKIP) adds a counted WARN `x.none` with a fix, worded for `--static` when that is why. The exit code stays 0. `x.none` is reserved: a `[[local]]` using it is a config error (exit 2).
+- Behavior change (exit code): a local-check line containing a control character other than tab, a Unicode line separator, a bidi control or a zero-width space (CRLF line ends still pass) is FAIL `<id>.protocol`, including a line that ends in or is only such a character. A rejected line is echoed as a quoted, escaped string cut to 80 code points, and the stderr excerpt is escaped too, so relayed text cannot move the cursor or read as a second fix. A bare trailing `— fix:` is an empty fix, and the README documents the split at the first separator.
+- Behavior change (level): `d.sparse` reads `core.sparseCheckout` as a git boolean (`yes`, `on`, `1` now WARN), PASSes when it is off, and WARNs `could not read core.sparseCheckout` on a failed or odd read instead of passing.
+- `entrypoints = "auto"` with no `./` command in tracked workflows adds an uncounted INFO `d.entrypoints` row instead of nothing.
+- `a.local` tells apart a tool not on PATH, a probe that could not run, a non-zero exit and an exit with no version, with the tool's first output line escaped and cut to 120 characters. When a `.tool-versions` line pins the version as written, the fix names `asdf install` / `mise install` (a bare `asdf install` in that file's directory for go and node).
+- Workflow pin sources note a job-level reusable-workflow call (`jobs.<id>.uses`). Under a glob, a workflow that only makes such a call adds an uncounted INFO row when another file gives the value; otherwise the FAIL names the files (up to 5) and the calls, with a fix saying reusable inputs are not read. `with:` inputs of a reusable call are never read.
+
+### Fixed
+
+- `redactHome` ignores a trailing slash on `$HOME`, which left a bare home path unredacted.
+- Pin rows escape tracked file names and config text, and the `.tool-versions` install fix shell-quotes the directory it names.
+- Cutting relayed text to length reads no further than the cut, so one huge output line no longer costs memory in proportion to its length.
+
+## [loops 0.6.0] - 2026-11-02
+
+`loops env-check` `a.pins` compares exact pins only. Ranges are reported, not compared, and a value loops cannot read as a pin or a range is a FAIL that names its file and line. The README's pin source matrix is the only list of supported forms, and a test checks it against the code. Two fail-open paths from 0.5.0 now fail closed.
+
+### Changed
+
+- `a.pins.<tool>` compares only exact pins (one version or one series, such as `20.11.1`, `1.26`, `1.26.x`, `~1.26`, `^1`), pairwise at the `compare` depth. Range sources never enter the comparison: `engines.<tool>`, `requires-python`, Poetry's `python`, a range in a Pipfile, and a range in a `setup-*`, `golangci-lint-action` or `goreleaser-action` input. Each distinct range adds one INFO row, `<source>: "<value>" is a range, not compared`, after the verdict.
+- Behavior change: with no exact pin among a tool's sources (for example `engines` only, or `pyproject.toml` only), `a.pins.<tool>` FAILs `no exact pin among sources (…); pin an exact version in a supported source`, and no `a.local.<tool>` row is reported. 0.5.0 passed on the floor.
+- Behavior change: the `a.pins.<tool>` PASS row names only the pin sources it compared; each range source gets its own INFO row (`<src>: "<value>" is a range, not compared`) instead of being listed in the PASS row.
+- Behavior change: a pin below an `engines` range is no longer a FAIL (`.nvmrc` 18.2.0 with `engines.node` >=20.0.0 now PASSes, with an INFO row), and `a.local` no longer checks the local toolchain against an `engines` floor. A planned `a.range` check will cover a pin inside a range.
+- Behavior change: an unsupported form is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact version`. This covers aliases (`lts/*`, `latest`, `node`, `stable`, `system`), `ref:` and `path:`, words such as `pypy3.9`, a version followed by other text, and a Dockerfile `FROM` of the tool image with no tag, a digest only or a non-version tag. A `latest` input used to be skipped, and a tagless `FROM` used to be ignored. A `FROM` tag built from a build arg (`node:${NODE_VERSION}`) is still skipped, and its `ARG` is read instead. Dockerfile `FROM` and `ARG` lines may now be indented or continued with a backslash, and every `NAME=value` on an `ARG` line is read.
+- Behavior change: a `setup-*` direct input that is a range (`>=20`, `~=3.12`) is an INFO row. It was a FAIL `is a range`. Plain version files (`.nvmrc`, `.node-version`, `.python-version`, `.go-version`) still FAIL on a range.
+- Behavior change: a `<tool>-version-file` is read only when its file name is supported: `go.mod`, `go.work`, `.tool-versions`, `package.json`, `pyproject.toml`, `Pipfile`, `.nvmrc`, `.node-version`, `.python-version` or `.go-version`. Any other name is an unsupported FAIL. 0.5.0 read it as a plain version file. A `volta.<tool>` value that is not a string is a FAIL, and the reader no longer falls back to `engines`.
+- `compare = "floor"` is removed and is now a config error (exit 2). Use `exact`, `minor` or `major`.
+- Behavior change: a non-zero exit from `docker compose version` is a SKIP (`compose unavailable`) only when stderr shows the compose plugin is missing (`unknown flag: --short`, `'compose' is not a docker command`, `unknown command: docker compose`). Any other non-zero exit is an `e.project` FAIL that withholds the name. 0.5.0 read every non-zero exit as a SKIP.
+- Behavior change: `b.containers` counts a running container whose `CreatedAt` loops cannot read as stale, and says so. It used to count it as fresh. A failed or garbled `git log` over tracked `[compose] inputs` is now reported at the `containers` level, where it used to be a SKIP `no commit touches the [compose] inputs`. Empty `git log` output is still a SKIP, and the `git log` call passes `--no-show-signature` so a `log.showSignature` setting cannot hide the commit time. A tracked input whose modification time loops cannot read (deleted from the working tree, or unreadable) is reported at the `containers` level, `loops cannot read the modification time of <file>`; 0.5.0 counted it as time 0. The `containers = "warn"` hint for an unreadable `CreatedAt` is added to the fix only at the FAIL level.
+- Behavior change: a Dockerfile `ARG <TOOL>_VERSION=` value is its whole shell word and must be a pin as written, by the same rule as every other pin; quotes may wrap the whole value only. `"20 || 22"`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, an empty value, `latest` and a variant such as `20-alpine` are unsupported FAILs; 0.5.0 read a version off the front of the value. A bare `-dev` in an `ARG` value is now a prerelease (`20-dev`); in a `FROM` tag it is still the Chainguard dev variant.
+- Behavior change: a Dockerfile `FROM` tag that starts with `$` is still skipped. A tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version, and any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `python:3.13rc${BUILD}`) is an unsupported FAIL; 0.5.0 skipped both.
+- Behavior change: Dockerfile instructions are read as Docker reads them. A full-line comment is dropped and never continued, so `# note \` no longer swallows the next instruction; a comment or empty line inside a continued instruction is dropped without ending it; a `RUN`, `COPY` or `ADD` heredoc body is skipped (a `<<` inside quotes is not a heredoc; its name has its quotes removed as the shell does, so `<<E"OF"` ends at `EOF`; an unterminated one is a FAIL, also on an instruction still open at end of file). An `# escape=` parser directive that sets an escape other than `\` is an unsupported FAIL, since only the default escape is read. An error names the physical line of the offending image or value, also when an `AS` clause is on a continuation line.
+- Behavior change: the pin-only readers (`.tool-versions`, `go.mod`, `volta.<tool>`) accept every pin form (`=20.11.1` for node, `~20.11`, `^20`, `1.26.x`), and a range there is an unsupported FAIL with file and line. A `go.mod` `go` or `toolchain` directive is classified whole, up to a `//` comment, so `go 1.26 latest` is unsupported and `go ~> v1` is a pin.
+- Behavior change: an empty or comment-only plain version file (`.nvmrc`, `.node-version`, `.python-version`, `.go-version`) is a FAIL `no version in <file>`, also when it is one of several glob matches beside a file that holds a version.
+
+### Removed
+
+- The hand-written range math in `pins.ts` (engines, PEP 440 and Poetry lower bounds, exclusive and prerelease bounds) and the floor compare mode.
+
+## [loops 0.5.0] - 2026-11-01
+
+`loops env-check` `e.project` asks Compose for every project name instead of re-implementing Compose's rules, and checks the configured run and the plain runs from the first file's directory and the checkout root. The outcome changes against 0.4.1 are listed under Changed; the README's Compose project contract is the whole rule.
+
+### Changed
+
+- `e.project` asks Compose: each run is `docker compose [-f <configured files>] config --no-env-resolution --format json` (10 s timeout, verified against Docker Compose v5.1.2, v5.5.0 and v2.38.2). loops no longer parses compose files, `.env`, `COMPOSE_FILE` or overrides for the name, so Compose's own precedence decides. `docker compose version` runs once first: Docker missing or a non-zero exit is a SKIP `compose unavailable` (0.4.1 read the name from the files without Docker; an invalid shell `COMPOSE_PROJECT_NAME` or a bad `git worktree list` is still a FAIL that withholds the name, below), after which the name is the shell's `COMPOSE_PROJECT_NAME`, else a worktree's derived name, else unknown in the main checkout (`--compose-project` exits 1, `b.containers` SKIP `project unknown`, `ENV_CHECK_PROJECT` empty).
+- Behavior change: a worktree `.env` whose `COMPOSE_PROJECT_NAME` is none of the worktree's own names (the shell's `COMPOSE_PROJECT_NAME`, its derived name, or, for the checkout-root `.env`, its directory name) now FAILs (0.4.1 used that name and passed). The worktree keeps its derived name for `-p`; the fix is to add `COMPOSE_PROJECT_NAME=<derived>` to the `.env` the FAIL names, or to export the name you want in the shell, or to always pass `-p`.
+- A worktree's configured `-f` run and its plain run from the checkout root are checked like the plain run from the first file's directory (0.4.1 checked only that one, through its own parse): any of them that would use a project another checkout holds, or a name other than the worktree's name, derived name or (from its root) directory name, FAILs and keeps the name.
+- This checkout is asked again without the shell's `COMPOSE_*` when the shell sets any (even empty), since another terminal would not carry them; those FAILs say "without your shell's COMPOSE_* (…)". Other checkouts are always asked without `COMPOSE_*`.
+- Held names, from a worktree: the main checkout's answers, plus every other worktree's derived name and answers (a deleted worktree, its derived name until `git worktree prune`). 0.4.1 counted a peer under its `.env` name instead of its derived name, so a worktree using a peer's derived name now FAILs. From the main checkout only the worktrees' derived names count: a worktree whose `.env` names the main checkout's project is reported by that worktree's `e.project`, not the main checkout's, and the main checkout never asks Compose about a worktree's files, so a worktree's broken compose file or `.env` does not FAIL it.
+- `e.project` runs every check and reports every FAIL, the ones that withhold the name first (0.4.1 stopped at the first FAIL), except that a missing configured file, an invalid shell `COMPOSE_PROJECT_NAME`, a bad `git worktree list` and a failed `docker compose version` end evaluation and are reported alone.
+- No Compose text: a failed Compose run is a FAIL that says whose run failed and how (`exited 1`, `timed out after 10s`, `is too old`); it no longer quotes Compose's error or loops' own reading of the file (0.4.1's YAML, interpolation and `COMPOSE_PROJECT_NAME` diagnoses all read this way now), so a secret interpolated into Compose's error cannot reach the report. The fix is the command to rerun as `config --no-env-resolution -q`, with its directory, any `env -u` and the remote-loader switches, which prints Compose's error but never the interpolated model (Compose's error line itself can still echo an interpolated value), or "upgrade Docker Compose" when it is too old; a run that exits 0 with invalid JSON or no project name has nothing to rerun, so its fix says to check `docker compose version` and upgrade Docker Compose.
+- An invalid shell `COMPOSE_PROJECT_NAME` (one Compose rejects, e.g. `Bad Name`: it takes lowercase letters, digits, `-` and `_`, a letter or digit first) is an `e.project` FAIL that withholds the name, checked before any Compose probe and also when Compose is unavailable.
+- `e.project` withholds the name when `git worktree list` fails or, from a worktree, does not list the main checkout first, instead of taking the worktree for the main checkout; the fix is `git worktree list --porcelain` to see why.
+- PASS wording: `N (COMPOSE_PROJECT_NAME)` now means the shell's only; a worktree reads `derived: slug-hash|dirname`, even when its `.env` names its derived name; the main checkout reads `compose` instead of `name: in compose file` or `derived: dirname`. The `--static` PASS no longer shows `, name: X`.
+- `--compose-project` exits 0 and prints the name when `e.project` keeps it, with one stderr warning per FAIL that keeps it (a run without `-p` is unsafe, one of this checkout's other runs fails, or a stack of another of its answers was started elsewhere); exit 1 when a FAIL withholds the name (a configured file missing, an invalid shell `COMPOSE_PROJECT_NAME`, `git worktree list` failing or lacking the main checkout, the name held, a container of the name started elsewhere, `docker compose version` failing to run (timed out, killed or refused), a `docker ps` timeout, a failed run of another checkout or of the main checkout's configured run) or the name is unknown; exit 2 without compose `mode = "test"`. It still asks Compose under `--static` and `CI=true`. 0.4.1 exited 1 on a failure of this worktree's own files; that now keeps the name. `[[local]]` checks get the kept name in `ENV_CHECK_PROJECT` (0.4.1: empty on any FAIL); `b.containers` still skips on any `e.project` FAIL.
+- The `b.containers` repair command recreates the stack the way it was started, from the stale containers' Compose labels when they agree: `docker compose -p <project> -f <file>... [--project-directory <dir>] [--env-file <file>]... up -d --build --force-recreate`, with the `-f` files taken from `config_files` (the override Compose loaded included) when every entry still exists, else the configured `[compose] files`. 0.4.1 named the configured files plus the `compose.override.*` beside a lone default-named file; with no usable labels the fix now names the configured files only. Label paths keep Compose's spelling: a path under the checkout root prints relative to it, a symlinked directory keeps its name (Compose resolves `../` against it as spelled), any other spelling prints absolute, and `--project-directory` is added when the spellings differ.
+- `b.containers` reads e.project's `docker ps -a` listing; the `docker inspect` pass and its SKIP `docker inspect failed` are gone (SKIP `docker is not available (…)` when `docker ps` fails). Container times are whole seconds, so a container created just after a change within the same second can read as stale.
+
+### Added
+
+- Running stacks (`e.project`): one `docker ps -a` reads the Compose labels, and a container of this checkout's name or of one of its answers whose `working_dir` belongs to another checkout or to none is a FAIL "project p was started from project directory <dir>", withholding the name for a stack of the name and keeping it for another answer. A `docker ps` timeout is a FAIL; a failing `docker ps` leaves the check not run and the Result says so (the PASS, or the first FAIL). When the stack's project directory still exists (another checkout, a live worktree, a clone), the fix only steers this checkout off it (export another `COMPOSE_PROJECT_NAME`, or always pass `-p <name>`) and names that directory; it adds `docker compose -p <p> down` only when the `working_dir` label is missing or its directory is gone.
+- Remote loaders off: every `docker compose config` probe sets `COMPOSE_EXPERIMENTAL_GIT_REMOTE=0`, `COMPOSE_EXPERIMENTAL_OCI_REMOTE=0` and `GIT_ALLOW_PROTOCOL=file` (after the `COMPOSE_*` scrub, over the shell and the checkout's `.env`), so a branch's git or OCI `include:` or `extends.file:` cannot make `env-check` fetch a URL carrying an interpolated secret; such a run is a failed run (FAIL), which withholds the name when it is another checkout's or the main checkout's configured run.
+- `compose-config.test.ts` runs the Compose wrapper against the real `docker compose config`, and `compose-policy.test.ts` runs `e.project` end to end over real checkouts (a temp git repo with worktrees per row, `--json` and `--compose-project`, one row against a real Docker daemon). Both are skipped when Compose is absent; CI's `compose-differential` job runs them on `ubuntu-latest` with the runner's Compose plugin and `LOOPS_REQUIRE_COMPOSE=1`, so a missing plugin fails the job.
+- The README lists what `e.project` does not cover.
+
+## [loops 0.4.1] - 2026-11-01
+
+### Fixed
+
+- `loops env-check` pins: in exact, minor and major modes a range floor no longer counts as a pin, so `.nvmrc` 22.1.0 next to `engines.node` >=20.11.0 passes; an exact pin below the highest floor FAILs as `<src>=<v> below the floor <fl>`.
+- `loops env-check` resolves the Compose project once per run instead of twice; the output is unchanged.
+
+## [loops 0.4.0] - 2026-10-31
+
+The `loops` CLI: `loops zone` and `loops env-check`, in a new bundle `bin/loops.mjs`.
+
+### Added
+
+- `loops zone` classifies a change's paths against a repo's `risk-zones.md`: a strict parser
+  (exit 2 with `file:line` for a bad row, glob or schema version), bash-style brace globs, zone =
+  highest matching row with an unmatched path rounding up to yellow, and the file's own
+  `## Ship prefix` bullet copied verbatim. The diff is the merge base against `origin/HEAD`,
+  `origin/main` or `main` (renames count both sides); uncommitted and untracked files are included
+  unless `--committed`; staged paths count even when the working copy matches `HEAD`. `--paths`,
+  `--stdin [-z]`, `--file`, `--json` and `--explain` are supported; a missing ship bullet is exit 2
+  in `--json` mode too.
+- `loops env-check` runs `.loops/env-check.toml`: version pins that must agree across
+  `.tool-versions`, `.nvmrc`, `go.mod`, `package.json` engines, `setup-*` workflow steps, Dockerfile
+  tags, golangci-lint and goreleaser actions and `.python-version` (exact, minor, major or floor), local toolchains checked offline,
+  shared-checkout, harness (tools, files, entrypoints, tracked files, sparse checkout) and Compose
+  (`none` or `test`) checks, including `b.containers` (running containers older than the newest
+  commit to the Compose `inputs`; docker absent or the stack down is a SKIP), and repo-owned `[[local]]` checks over a one-line-per-result protocol that
+  fails closed. Exit 0 ok, 1 FAIL, 2 usage or config error; `--static`, `--json`, `--quiet`,
+  `--compose-project`; `$HOME` is redacted to `~`.
+- Every pair of pin sources must agree on the parts both state, the
+  pin is the most specific pinned version, and an `engines` floor still binds the local toolchain.
+  `engines` ranges are read for their lower bound (`>=`, `^`, `~`, `X.x`, `||`), so `<20` is an
+  error rather than a floor of 20. `setup-*` and action sources read `.yml` and `.yaml` workflows,
+  and `node-version-file: package.json` reads `volta` or `engines`, not the app's own version.
+- A `[[local]]` check's `run` must be a repo-relative path. Its result ids are the configured id or
+  `<id>.<name>`, and a check that prints a FAIL and then times out keeps the FAIL.
+- In a worktree, `e.project` takes the reserved project name from the main checkout's compose file,
+  so a worktree cannot claim the main stack's project by editing its own `name:`.
+  `ENV_CHECK_ALLOW_MAIN` only allows the shared checkout when it is `1`.
+- Results with the same level and message fold into one line that names the other ids, so one root
+  cause is one FAIL.
+- `templates/env-check`: a 15-line POSIX wrapper that runs `$LOOPS_BIN`, `~/bin/loops` or `loops`
+  on PATH, and exits 3 with `env-check: not run` when the engine or `node` is missing.
+- `smol-toml` is a dev dependency, bundled into `bin/loops.mjs` (still zero runtime install).
+
+### Changed
+
+- The `loop-metrics` row `version` is now `0.4.0` (it follows the plugin version).
+
+### Not in this release
+
+- Shim-aware `a.shadow.*` duplicate-binary checks, Compose `dev` mode, a
+  `loops zone --lint`, and cross-result dedup keys.
+
+## [loops 0.3.0] - 2026-10-13
+
+Per-repo metrics, the second half of Wave 0 slice 2.
+
+### Added
+
+- A private config (`--config`, `$LOOPS_CONFIG`, or `~/.config/agentic-loops/config.json`)
+  names the repos to measure. An empty `$LOOPS_CONFIG` counts as unset. Without a config,
+  `repos` and `repo_errors` are `null` and the row is otherwise unchanged.
+- Each window gains `repos`: per repo, merged PRs, fix/revert PRs, a defect-escape proxy, local
+  sessions and their tokens, Workflow runs and their tokens, and tokens and sessions per merged
+  PR. The row gains `repo_errors`, the repos whose PRs `gh` could not read or resolve.
+- A slug `gh` cannot resolve (a typo, a rename, no access) is recorded as `null` and named in
+  `repo_errors`, rather than read as a repo with no merged PRs: `gh pr list` answers `[]` with exit
+  0 for it, so each repo now makes a `gh repo view` check before the PR list. `gh` calls time out
+  after 5 minutes, so a stalled call no longer waits forever; a `gh` that ignores `SIGTERM` is
+  not covered yet.
+- `session_tokens` counts main-thread transcripts only. Agent-tool subagent transcripts are not
+  read yet, so `tokens_per_merged_pr` understates subagent-heavy work.
+- The escape proxy blames like `git blame`: a fix within 14 days counts only against the last
+  PR to touch a shared file, and docs, `VERSION`, manifests, lockfiles, snapshots and test files
+  never count. Without these rules the first real run blamed 49 of 83 PRs in one repo, nearly
+  all through the release files every PR bumps.
+- PRs merged after `--now` are ignored, so a rerun with an earlier `--now` matches what that
+  week's run would have seen.
+- Session records now keep their project dir and per-message token totals (context plus output).
+  An invalid `output_tokens` counts in `bad_records`.
+- `version` is `0.3.0`.
+
+## [loops 0.2.1] - 2026-10-03
+
+Parser hardening from the loops 0.1.0 ship's final adversarial round. None of these cases occurs
+in current data; each was a way malformed input could get past the drift counters.
+
+### Changed
+
+- An empty `uuid` or `message.id` is treated as absent instead of as a dedupe key every such
+  record shares. A `message.id` that is empty or a non-null non-string falls back to `requestId`
+  and counts in `bad_records`, once per record that carries it.
+- Token counts and Workflow `durationMs` must be non-negative safe integers (session context
+  fields, Workflow token counts and durations), so a sum or median can no longer overflow to
+  `Infinity`, which JSON writes as `null`.
+- A Workflow `workflowProgress` entry whose type is not `workflow_phase` or `workflow_agent`, or
+  that is not an object, counts in `bad_records`.
+- A transcript whose mtime is more than a minute in the future is not treated as live, so its
+  torn last line counts.
+- Appending a row also syncs the history file's directory, every run (an earlier run may have
+  created the file and died before syncing it), and any directories created for it. A failed sync
+  (or a failed close after it) now reports `row written but may not be on disk` rather than
+  `cannot append`, and still prints the row. A filesystem that cannot sync directories at all
+  skips the directory sync instead of failing every run.
+- `version` is `0.2.1`.
+
+## [loops 0.2.0] - 2026-10-03
+
+Wave 0, slice 2 (lens noise, first pass): the weekly row now records how often each gstack review
+lens is dispatched and what happens to its findings, with no change to gstack.
+
+### Added
+
+- **`lenses`** in each window, read from `~/.gstack/projects/<repo>/*-reviews.jsonl`
+  (`skill: "review"` records only): review counts, and per lens the specialists block's
+  dispatched / not-dispatched / reported counts plus the `findings[]` outcome counts (fixed,
+  auto-fixed, skipped, other, critical, critical skipped). Findings whose category is not a lens
+  go to `other`. Lens names are normalized (`red_team` -> `red-team`).
+- **`parse_lenses`**: the review-log parser's own drift counters, separate from `parse`.
+- **`--gstack-dir DIR`** (default `~/.gstack/projects`). Without gstack installed, `lenses` is
+  `null` rather than zeros; a named directory that cannot be read refuses to write a row.
+
+### Changed
+
+- `version` is `0.2.0`. `schema` stays `1`: the new fields are additive.
+
+## [dev-doctor 1.0.0] - 2026-10-01
+
+### Added
+
+- **`dev-doctor` 1.0.0** — an installable Claude Code plugin for read-only local environment preflights before agents run local development commands. Emits Markdown and JSON reports covering git/worktree state, runtime pins, Docker/Compose status, env-file gaps, collision risks, setup hints, and recommended next commands. Non-mutating by design: no installs, migrations, service starts/stops, tests, formatters, or secret-value printing.
+- Root README discovery for `dev-doctor`.
+- Reports default to `<git-dir>/dev-doctor/` so the preflight never adds untracked files to the checkout or flips its own `dirty` flag; `compose config` error excerpts have env-file values redacted.
+
+### For Contributors
+
+- Shell tests (`tests/dev-doctor-test.sh`, needs `bash`, `git`, `jq`) and a GitHub Actions `Test` workflow covering plugin manifests, report generation, env blockers, Compose parsing, env-key drift (including `export` prefixes), secret-value redaction, default report placement, worktree detection, and the exit-code contract.
+- `TESTING.md` with conventions for marketplace plugin changes.
+
+## [loops 0.1.0] - 2026-09-28
+
+New plugin: **loops**. Wave 0, slice 1 measures how your engineering loops actually run, so
+later loop rules can be kept or dropped against recorded history instead of impressions.
+
+### Added
+
+- **`loop-metrics`**, a zero-install Node 18+ CLI (committed bundle). Each run reads Claude Code's
+  local session transcripts and Workflow run records and appends **one baseline row** to
+  `~/.claude/metrics/loops.jsonl`, covering 7-day and 30-day windows:
+  - Workflow runs: status mix, phases, tokens, duration, agents, per-model split.
+  - Sessions: context peaks, compactions, sessions with 10+ compactions.
+  - Parse counters.
+
+  It reads only numeric fields and ids; message text is never read.
+- **Counts that survive how transcripts repeat themselves.**
+  - Records are deduped by `uuid` across the whole run. Resumes replay records within a file,
+    and forks copy them across files; the original owns the shared records.
+  - API usage is deduped by `message.id`, because one message is written once per content
+    block.
+  - Synthetic API-error records are not counted as calls.
+  - Workflow runs are deduped by `runId`, and the finished copy is the one kept.
+  - `--session FILE` prints one transcript's deduped counts next to its naive ones for manual
+    validation.
+- **A drift tripwire.** A renamed or missing field reads as zero but is still counted in
+  `bad_records`, so a format change shows up in `parse` rather than as a quiet week. The same
+  applies to:
+  - an impossible or zone-less timestamp
+  - a negative count
+  - an unknown status or agent state
+  - an unreadable directory, which counts in `bad_files` instead
+- **Safe appends to the only history.**
+  - A torn last row is fenced off with a newline, so the new row never glues onto it.
+  - A failed write is truncated back.
+  - The row is synced to disk before the tool exits 0.
+  - A wrong `--projects-dir` or an unwritable `--out` exits non-zero with no row.
+  - Every row carries a parser `version`.
+- **A weekly launchd schedule** (README), with a `launchctl kickstart` proof run, plus a
+  manual validation recipe against `jq`.
+- **CI** (`loops-ci`): typecheck, 71 vitest tests, build, and a check that the committed
+  bundle matches the source.
+
 ## [3.0.0] - 2026-08-23
 
 Nightshift v3. The loop now runs **local-first behind one easy button** — `ns run <repo>

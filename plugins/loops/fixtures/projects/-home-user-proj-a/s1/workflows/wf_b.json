@@ -1,0 +1,6 @@
+{"runId":"wf_b","startTime":1787184000000,"durationMs":1000,"status":"killed","totalTokens":50,
+ "phases":[{"title":"Scan"}],
+ "workflowProgress":[
+  {"type":"workflow_agent","index":1,"model":"claude-sonnet-5","state":"done","tokens":50},
+  {"type":"workflow_agent","index":2,"model":"claude-sonnet-5","state":"progress"},
+  {"type":"workflow_agent","index":3,"model":"claude-haiku-4-5-20251001","state":"error"}]}

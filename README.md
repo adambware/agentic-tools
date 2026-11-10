@@ -26,11 +26,14 @@ More orchestration patterns and plugin types to come!
 | [nightshift](plugins/nightshift/) | Skills + Agents | Budget-aware, two-lane assurance loop — `/nightshift:security` (security + mandatory refuter) and `/nightshift:design` (UX) — keeping security surfaces and user flows fresh and refuted; onboard any repo as a `.nightshift/` pack |
 | [pr-test-reviewer](plugins/pr-test-reviewer/) | Skill | Test-focused PR review — grades tests present, flags testability changes, suggests highest-value missing tests |
 | [test-plan-explorer](plugins/test-plan-explorer/) | Skill | Risk-prioritized test plan for under-tested code — decides what is worth testing and why before tests are written |
+| [loops](plugins/loops/) | CLI | `loops zone` (risk-zone triage of a change against a repo's `risk-zones.md`), `loops env-check` (a repo's `.loops/env-check.toml` environment checks, with a POSIX wrapper template) and `loop-metrics` — appends one deduped baseline row of Workflow, session and gstack review-lens metrics (plus, with a private repo config, per-repo merged PRs, escape proxy and tokens per PR via `gh`) to `~/.claude/metrics/loops.jsonl`, so loop rules are kept or dropped against measured history |
+| [dev-doctor](plugins/dev-doctor/) | Skill | Read-only local environment preflight — runtimes, Docker/Compose, env files, ports, volumes, and worktrees, reported before any local command runs |
 
 ## Changelog & Roadmap
 
 - [CHANGELOG.md](CHANGELOG.md) — version history and release notes
 - [TODOS.md](TODOS.md) — open work items and deferred decisions
+- [TESTING.md](TESTING.md) — how to run the shell test suite and the loops TypeScript suite, and what new plugins must cover
 
 ## Creating a New Plugin
 
@@ -65,5 +68,6 @@ agentic-tools/
 │       ├── .mcp.json           # MCP servers (if any)
 │       └── README.md
 ├── CLAUDE.md
+├── TESTING.md
 └── README.md
 ```
