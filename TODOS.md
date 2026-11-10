@@ -237,13 +237,6 @@
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
-- [ ] **loops 0.7.1: re-copy `templates/env-check` into the pilot repos** [P1 follow-up]
-  - **What:** After 0.7.1 merges, copy `plugins/loops/templates/env-check` over each of the four pilot repos' `bin/env-check`, then check that the wrapper exits 1 with no `node`, 2 for a bad `LOOPS_BIN`, and 2 for a dangling link.
-  - **Why:** 0.7.1 changed the wrapper's exit contract; the pilots keep running their 0.7.0 copy until it is re-copied.
-  - **Context:** Deferred from plan: loops-0.7.1-plan.md (T16, post-merge by design). Needs the merged bundle, so it cannot ship in the 0.7.1 PR.
-  - **Effort:** S
-  - **Depends on / blocked by:** loops 0.7.1 merged.
-
 - [ ] **loops 0.8.0 backlog: features the 0.7.1 pilots asked for** [P2 features]
   - **What:** Eight items cut from 0.7.1 as features: opt-in `a.range` (compare ranges, not only exact pins); optional pin sources (`.nvmrc` and `.tool-versions`, "if present"); a built-in npm `node_modules`-vs-lockfile check; detect a workflow that runs Go with no `setup-go`; a "skip when absent" level for local checks; a compose test mode with `${VAR:?}` interpolation; split the pin check's local severity by major versus minor/patch; run `[[local]]` checks in parallel.
   - **Why:** Each was asked for by one of the four pilot repos during the 0.7.1 review and cut as a feature, not a fix. Without this entry the list lives only in a session note.
@@ -285,6 +278,10 @@
   - **Depends on / blocked by:** None.
 
 ## Completed
+
+- [x] **loops 0.7.1: re-copy `templates/env-check` into the pilot repos** [P1 follow-up]
+  - Done: the wrapper went to five repos, not the four named (job-hunter was added). Each got the template byte-for-byte (`git hash-object` a88ab6e4), and each wrapper exited 2 for `LOOPS_BIN=/nonexistent`, 2 for a dangling `LOOPS_BIN` symlink, and 1 with no `node` on PATH. rolodex PR #43 (e5adddb0; also bumped Go to 1.26.10 past a stale golangci-lint v2.1.6), descry PR #48 (5dc6cfa4), bear-euchre PR #39 (v3.0.11, 959b9a84), bearhost PR #610 (v0.11.45.76, da08ec4b; also aligned checkrunner Go pins on 1.27.3 and added a CI pin guard), job-hunter pushed straight to `adam/main` (1785af7). The same pass applied each repo's risk-zones re-zone from research commit 12f0f7f.
+  - **Completed:** 2026-11-09
 
 - [x] **loops env-check: `d.tracked` FAILs a deletion being committed in a `git commit -a` pre-commit hook** [P2 correctness]
   - Done: owner decision D-IDX (contract-4). `gitEnv` keeps `GIT_INDEX_FILE` when it names a file directly in this checkout's own git-dir; git-dir discovery runs without it. A real-hook test runs `commit -a` with a deletion in the main checkout and a linked worktree.
