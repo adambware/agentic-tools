@@ -121,7 +121,7 @@ export function pinChecks(c: Ctx): Result[] {
       .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`))
       .concat([...new Set(notes)].map((n) => res("INFO", id, n)));
     if (!pins.length) {
-      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || pin.sources.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
       continue;
     }
     const bad = disagreement(vals, pin.compare);

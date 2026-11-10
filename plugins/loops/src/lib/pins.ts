@@ -24,8 +24,8 @@ export interface PinValue {
 }
 type Found = { v: string; range?: boolean }[];
 /** `file` is the repo-relative file `text` came from, for messages. A workflow parser adds each job-level reusable-workflow
- * call it skipped to `calls`. */
-type Parser = (text: string, tool: string, root: string, file: string, calls?: string[]) => Found;
+ * call it skipped to `calls`; a parser adds each value it cannot know (reported as INFO, never compared) to `notes`. */
+type Parser = (text: string, tool: string, root: string, file: string, calls?: string[], notes?: string[]) => Found;
 
 /** The first version in `s`, keeping a prerelease suffix (`22.0.0-rc.1`, `-beta-30`, `3.13.0rc1`, `1.26rc1`, `3.14.0.dev0`).
  * Only known prerelease shapes count, so an image variant (`-alpine`, `-slim-bookworm`), a patchlevel (`3.1.4p223`), a
@@ -232,21 +232,76 @@ const logicalLines = (text: string, file: string): Logical[] => {
   if (cur) close(cur, end);
   return out;
 };
+/** `w` as Docker's shell lexer expands a word in the global ARG scope: quotes removed, `\` escaping the next character,
+ * `$A`, `${A}`, `${A:-w}`, `${A-w}`, `${A:+w}` and `${A+w}` read from `env`. Null when a variable it needs is unset (only the
+ * build can set it) or a `${...}` uses another modifier. */
+const expand = (w: string, env: Map<string, string>): string | null => {
+  let out = "";
+  let q = ""; // the open quote
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i]!;
+    if (q !== "'" && c === "\\") out += w[++i] ?? "";
+    else if ((c === '"' || c === "'") && (!q || q === c)) q = q ? "" : c;
+    else if (c !== "$" || q === "'") out += c;
+    else if (w[i + 1] === "{") {
+      let j = i + 2;
+      for (let depth = 1; j < w.length && (depth += w[j] === "{" ? 1 : w[j] === "}" ? -1 : 0); j++);
+      const m = /^([A-Za-z_]\w*)(?:(:?[-+])(.*))?$/s.exec(w.slice(i + 2, j));
+      if (!m || j >= w.length) return null;
+      const v = env.get(m[1]!);
+      const set = m[2]?.startsWith(":") ? !!v : v !== undefined;
+      const r = !m[2] ? (v ?? null) : m[2].endsWith("-") ? (set ? v! : expand(m[3]!, env)) : set ? expand(m[3]!, env) : "";
+      if (r === null) return null;
+      out += r;
+      i = j;
+    } else {
+      const name = /^[A-Za-z_]\w*/.exec(w.slice(i + 1))?.[0];
+      if (!name) out += c;
+      else if (!env.has(name)) return null;
+      else (out += env.get(name)!), (i += name.length);
+    }
+  }
+  return out;
+};
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
  * with `$<TOOL>_VERSION` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its
  * `$` (`18-${DISTRO}`) is that version; no tag, a digest only, another variable or any other tag is unsupported. An ARG
  * value is its whole shell word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not
- * `"20"${SUFFIX}`). */
-const dockerfile: Parser = (text, tool, _root, file) => {
+ * `"20"${SUFFIX}`). An image whose name is a variable (`${BASE}`, `$IMG:20`, `${BASE:-node:20}`) is expanded through the
+ * ARGs declared before the first FROM (the only ones FROM sees; the last definition wins) and then read as that literal
+ * image; one only the build can name (an ARG with no value, or declared only inside a stage) is a note, never a FAIL. */
+const dockerfile: Parser = (text, tool, _root, file, _calls, notes) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
+  const words = (s: string) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
+  const global = new Map<string, string>(); // the global ARG scope; an ARG with no value (or an unknowable one) is unset
+  for (const l of logical) {
+    if (/^\s*FROM\s/i.test(l.text)) break;
+    const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
+    for (const p of m ? words(m[1]!) : []) {
+      const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
+      const v = name && eq ? expand(val!, global) : null;
+      if (name && v !== null) global.set(name, v);
+      else if (name) global.delete(name);
+    }
+  }
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
     if (!m) continue;
-    const image = m[2]!;
+    let image = m[2]!;
+    // The name, with each `${...}` as one unit: `${BASE:-docker.io/node:20}` is a variable name, `${REG}/node:20` is not.
+    if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0]!.split("/").pop()!.split(":")[0]!.includes("$")) {
+      const r = expand(image, global);
+      if (!r) {
+        notes?.push(`FROM ${image} (line ${at(l, m[1]!.length)}): image set at build time, not compared`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
+      image = r;
+    }
     const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
@@ -263,7 +318,7 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     if (!m) continue;
     // Shell words, as Docker splits them: a backslash escapes the next character, also inside double quotes. A word whose
     // quote never closes leaves the line unreadable, a FAIL when it names the tool's variable.
-    for (const p of m[2]!.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+    for (const p of words(m[2]!)) {
       if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]!))
         throw unsupported(m[2]!.trim(), file, at(l, m[1]!.length));
       const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
@@ -308,7 +363,7 @@ const refVer = (uses: string): [number, number] | null => {
 };
 /** What each action installs for a step that sets neither its version input nor its `-file`, as of the upstream release cited:
  * the value it reads, or null when it installs no pinned version (the step is then a FAIL). `wd` is the step's
- * `working-directory` input and `mode` its `install-mode` (`binary` when unset); each is null when it is not a literal. */
+ * `working-directory` input and `mode` its `install-mode` (`binary` when unset or empty); each is null when it is not a literal. */
 const DEFAULTS: Record<
   keyof typeof ACTIONS,
   (root: string, tool: string, ref: [number, number] | null, wd: string | null, mode: string | null) => Found | null
@@ -391,7 +446,8 @@ function setup(kind: keyof typeof ACTIONS): Parser {
           }
           if (k === "install-mode") {
             const v = deref(p.value);
-            mode = isScalar(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null; // an expression is no `binary`
+            // An empty value is unset (`binary`); an expression is no `binary`.
+            mode = isScalar(v) && (v.value === null || typeof v.value === "string") ? (v.value ?? "").trim().toLowerCase() || "binary" : null;
           }
         }
       }
@@ -488,7 +544,8 @@ export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, spli
 
 /** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. A matched workflow that yields no
  * value but calls a reusable workflow adds a note to `notes` (when the source still yields a value), or is named in the
- * error (when it does not). */
+ * error (when it does not). A value a parser cannot know (a Dockerfile image set at build time) is always a note: a source
+ * that yields only such notes is no error. */
 export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
   const [kind, path] = splitSource(spec);
   const k = KINDS[kind]!;
@@ -498,19 +555,22 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out: PinValue[] = [];
   const skipped: [string, string][] = []; // [file, its reusable calls]
+  const unknown: string[] = [];
   for (const f of files) {
     if (!existsSync(join(root, f))) throw new PinError(`${spec}: ${f} not found`);
     const calls: string[] = [];
+    const said: string[] = [];
     let found: Found;
     try {
-      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls);
+      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls, said);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
     for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
     if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length) {
+  if (!out.length && !unknown.length) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
     if (!skipped.length) throw new PinError(msg);
     throw new PinError(
@@ -518,7 +578,7 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
       `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`,
     );
   }
-  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`));
+  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
   return out;
 }
 
