@@ -364,8 +364,17 @@ function isComposeFile(c: Ctx, f: string): boolean {
 const normProject = (s: string): string => s.toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
 /** A name Compose takes for -p or COMPOSE_PROJECT_NAME: one normalizing leaves as is (lowercase letters, digits, `-`, `_`; a letter or digit first). */
 const isProject = (s: string): boolean => s !== "" && normProject(s) === s;
-/** Compose's project directory for checkout `root` under the configured files: the first configured file's. */
-const projectDir = (c: Ctx, root: string): string => dirname(resolve(root, c.cfg.compose!.files[0]!));
+/** Whether checkout `root` is the main checkout (this checkout by its own git metadata; another by git's list order). */
+const isMainRoot = (c: Ctx, root: string): boolean => (root === c.root ? !c.isWorktree : rp(root) === rp(c.worktrees[0] ?? c.root));
+/**
+ * The compose files of checkout `root`: `[compose] main_files` for the main checkout when set, else `files`. Every
+ * consumer reads them here: runs, projectDir (so derive), check 0, the container_name scan, the b.containers fix.
+ */
+const filesFor = (c: Ctx, root: string): string[] => (isMainRoot(c, root) ? c.cfg.compose!.mainFiles : null) ?? c.cfg.compose!.files;
+/** The key that lists checkout `root`'s files, as a fix names it. */
+const filesKey = (c: Ctx, root: string): string => (isMainRoot(c, root) && c.cfg.compose!.mainFiles ? "main_files" : "files");
+/** Compose's project directory for checkout `root` under its files: the first one's. */
+const projectDir = (c: Ctx, root: string): string => dirname(resolve(root, filesFor(c, root)[0]!));
 
 /**
  * The `-p` name loops gives checkout `root`: this is loops' own policy, not Compose's. The main checkout (and any
@@ -391,7 +400,7 @@ interface Run {
  * `docker compose` from X's root, when that is another directory.
  */
 function runs(c: Ctx, root: string): Run[] {
-  const { files } = c.cfg.compose!;
+  const files = filesFor(c, root);
   let dir = projectDir(c, root);
   while (!existsSync(dir) && dir !== root) dir = dirname(dir);
   const atRoot = rp(dir) === rp(root);
@@ -488,7 +497,7 @@ interface Peer {
   isMain: boolean;
   /** False for a worktree git still lists whose directory is gone (until git worktree prune). */
   exists: boolean;
-  /** The configured files its configured run passes as -f. */
+  /** The files its configured run passes as -f (`main_files` for the main checkout when set). */
   files: string[];
   /** The `-p` name loops gives a linked worktree; null for the main checkout, whose name is Compose's answer. */
   derived: string | null;
@@ -497,8 +506,8 @@ interface Peer {
   cells: Cell[];
   /** Its cells whose probe failed, in order: each is a gap in what this checkout can check against (the peer WARN). */
   failed: Cell[];
-  /** Names held for those gaps: the main checkout's derived name when any of its cells failed, and what the fallback
-   * (`recover`) read from the failed cells' files without interpolating them. */
+  /** Names held besides its answers: the main checkout's `main_project` (always), its derived name when any of its
+   * cells failed, and what the fallback (`recover`) read from the failed cells' files without interpolating them. */
   recovered: string[];
   /** A failed cell's `name:` is a template the fallback cannot resolve (only that checkout's shell can). */
   templated: boolean;
@@ -562,8 +571,10 @@ function peers(c: Ctx): Peer[] {
     const got = failed.map(recover);
     // From a worktree the main checkout is a peer too: when its name is unknown, the name plain Compose derives for it
     // is held, so a worktree named like the main checkout never shares (and `down -v`s) its volumes.
-    const recovered = [...(isMain && failed.length ? [derive(c, w)] : []), ...got.flatMap((g) => g.names)];
-    return { root: w, holder, isMain, exists, files: c.cfg.compose!.files, derived: isMain ? null : derive(c, w), cells, failed, recovered, templated: got.some((g) => g.templated) };
+    // Its main_project is the -p name its wrappers use, so it is held whatever Compose answers there.
+    const mainProject = isMain ? c.cfg.compose!.mainProject : null;
+    const recovered = [...(mainProject ? [mainProject] : []), ...(isMain && failed.length ? [derive(c, w)] : []), ...got.flatMap((g) => g.names)];
+    return { root: w, holder, isMain, exists, files: filesFor(c, w), derived: isMain ? null : derive(c, w), cells, failed, recovered, templated: got.some((g) => g.templated) };
   });
 }
 
@@ -624,12 +635,14 @@ const NO_NAME_FIX = "Compose exited 0 without a usable project name; check `dock
  */
 export function composeProject(c: Ctx): ComposeProject {
   const id = "e.project";
-  const { files, derive: how } = c.cfg.compose!;
+  const { derive: how, mainProject } = c.cfg.compose!;
+  const files = filesFor(c, c.root);
+  const key = filesKey(c, c.root);
   const one = (level: Level, message: string, fix?: string, name: string | null = null): ComposeProject => ({ name, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [], warnings: [] });
   // Check 0: this checkout lacks a configured file.
   const missing = files.filter((f) => !existsSync(join(c.root, f)));
-  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] files in ${CFG}`);
-  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] files in ${CFG}`);
+  if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] ${key} in ${CFG}`);
+  if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] ${key} in ${CFG}`);
   if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
   const envName = c.env.COMPOSE_PROJECT_NAME || undefined;
   // Check 0b: Compose rejects the shell's name outright, so every run here fails and no name holds.
@@ -639,9 +652,14 @@ export function composeProject(c: Ctx): ComposeProject {
   // Check 0c: git lists the main checkout first and every linked worktree after it (a successful list has at least one
   // entry). Without that, derive and the held names would take this worktree for the main checkout.
   if (c.isWorktree ? c.worktrees.length < 2 || rp(c.worktrees[0]!) === rp(c.root) : !c.worktrees.length) return one("FAIL", "git worktree list did not list the main checkout; the names other checkouts hold are unknown", `rerun to see why: cd ${shQuote(c.root)} && git worktree list --porcelain`);
+  // Check 0d: in the main checkout, a shell COMPOSE_PROJECT_NAME other than main_project runs another stack than the
+  // one the config (and its wrappers' -p) names, so neither name is safe to hand out.
+  if (!c.isWorktree && mainProject && envName && envName !== mainProject) return one("FAIL", `your shell's COMPOSE_PROJECT_NAME ${envName} is not [compose] main_project ${mainProject}: a run here without -p would use another stack than the config names`, `unset COMPOSE_PROJECT_NAME, or set main_project = "${envName}" in ${CFG}`);
+  // The main checkout's name when main_project sets it: the wrappers pass it as -p, so Compose's answer need not match.
+  const mainName = c.isWorktree ? null : mainProject;
   // Check 1: without Compose nothing here starts a stack; the name is then only what loops vouches for on its own.
   const v = composeVersion(c.run, c.root, c.env);
-  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, undefined, envName ?? (c.isWorktree ? derive(c, c.root) : null));
+  if ("unavailable" in v) return one("SKIP", `compose unavailable (${v.unavailable}); nothing to collide with`, undefined, envName ?? (c.isWorktree ? derive(c, c.root) : mainName));
   if ("error" in v) return one("FAIL", `compose: ${v.error}`, `rerun to see why: cd ${shQuote(c.root)} && docker compose version`);
   // envs(X): this checkout under the shell as is, and again without COMPOSE_* when the shell sets any (even empty);
   // every other checkout runs from its own shell, so without this one's COMPOSE_*.
@@ -654,9 +672,9 @@ export function composeProject(c: Ctx): ComposeProject {
   const own = cellsOf(c, c.root, c.isWorktree ? "this worktree's " : "this checkout's ", shellCompose(c).length ? [false, true] : [false]);
   // name(X): the shell's, else a worktree's derived one, else the main checkout's configured run as is (own[0], as
   // check 0 found every file). That probe failing leaves nothing to check.
-  if (!envName && !c.isWorktree && "error" in own[0]!.r) return { name: null, results: [failed(own[0]!)], withheld: true, answers: [], warnings: [] };
-  if (!envName && !c.isWorktree && "noFile" in own[0]!.r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] files in ${CFG}`);
-  const name = envName ?? (c.isWorktree ? derive(c, c.root) : named(own[0]!));
+  if (!envName && !c.isWorktree && !mainName && "error" in own[0]!.r) return { name: null, results: [failed(own[0]!)], withheld: true, answers: [], warnings: [] };
+  if (!envName && !c.isWorktree && "noFile" in own[0]!.r) return one("FAIL", "this checkout's configured run: docker compose config found no compose file", `fix [compose] ${key} in ${CFG}`);
+  const name = envName ?? (c.isWorktree ? derive(c, c.root) : (mainName ?? named(own[0]!)));
   if (!name) return one("FAIL", `no project name derives from directory ${basename(projectDir(c, c.root))}`, "set COMPOSE_PROJECT_NAME, or declare name: in the compose file");
   // Held names, from a worktree: the main checkout's answers, every other worktree's derived name and answers (a gone
   // one only its derived name). From the main checkout: only the worktrees' derived names (each reports the rest).
@@ -665,14 +683,23 @@ export function composeProject(c: Ctx): ComposeProject {
   // Every check runs; each FAIL says whether it withholds the name (true) or keeps it.
   const fails: [Result, boolean][] = [];
   // Check 2: this checkout's own probe that failed. The main checkout's configured run, in a main-checkout run,
-  // withholds (it is where the name came from); this checkout's other runs keep the name: only that run without -p is
+  // withholds (it is where the name came from), unless main_project names it; this checkout's other runs keep the name: only that run without -p is
   // unknown. A peer's failed run is no FAIL here: every name loops can know for it is held (its derived name, the
   // main checkout's derived name, the fallback's), the rest is its own run's FAIL, and here it is a peer WARN.
-  for (const p of own) if ("error" in p.r) fails.push([failed(p), !c.isWorktree && !!p.files]);
+  for (const p of own) if ("error" in p.r) fails.push([failed(p), !c.isWorktree && !mainName && !!p.files]);
   // Checks 3 and 6: the name itself is another checkout's.
   const holder = held.get(name);
   const rename = `export another COMPOSE_PROJECT_NAME${how === "dirname" ? `, set derive = "slug-hash" in ${CFG}` : ""}, or rename ${holder}`;
-  if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
+  // A3: a worktree's dirname-derived name that is the main checkout's. Both paths are named; the fixes are a new
+  // directory name (only when the project directory is the worktree root: a subdirectory's name is the same in every
+  // checkout) or slug-hash, which renames every worktree's project at once.
+  const mainPath = c.worktrees[0] ?? c.root;
+  const dirnameClash = c.isWorktree && !envName && how === "dirname" && holder === "the main checkout";
+  const atRoot = rp(projectDir(c, c.root)) === rp(c.root);
+  const slug = `set derive = "slug-hash" in ${CFG}, which renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)`;
+  const clash = `${atRoot ? `rename this worktree's directory: git worktree move ${shQuote(c.root)} <new-path>; or ` : ""}${slug}`;
+  if (holder && dirnameClash) fails.push([res("FAIL", id, `this worktree would use project ${name}, which the main checkout uses: the main checkout ${mainPath} and this worktree ${c.root} derive one name under derive = "dirname"`, clash), true]);
+  else if (holder) fails.push([res("FAIL", id, `${c.isWorktree ? "this worktree" : "this checkout"} would use project ${name}, which ${holder} uses`, rename), true]);
   // Check 4: each run here without -p lands on an own name: the name, the derived one, or the root's directory name for
   // a run whose project directory is the root; each only while nobody holds it.
   const unset = c.env.COMPOSE_PROJECT_NAME === "" ? "unset the empty COMPOSE_PROJECT_NAME, then " : "";
@@ -702,7 +729,7 @@ export function composeProject(c: Ctx): ComposeProject {
   const stop = (p: string, d: string): string => `${p === name ? "export another COMPOSE_PROJECT_NAME" : `always pass -p ${name}`}${isAbsolute(d) && !gone(d) ? `; leave that stack to whoever runs it from ${shQuote(d)}` : `, or stop that stack: docker compose -p ${p} down`}`;
   if (!Array.isArray(ps) && ps.timedOut) fails.unshift([res("FAIL", id, `running stacks not checked (${ps.failed})`, "rerun to see why: docker ps -a"), true]);
   else if (Array.isArray(ps)) fails.unshift(...strays(c, ps, [name, ...answers]).map(([p, d, by]): [Result, boolean] => [res("FAIL", id, `project ${p} was started from project directory ${d || "(no working_dir label)"} (${by})`, stop(p, d)), p === name]));
-  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : "compose";
+  const source = envName ? "COMPOSE_PROJECT_NAME" : c.isWorktree ? `derived: ${how}` : mainName ? "main_project" : "compose";
   const note = Array.isArray(ps) || ps.timedOut ? "" : `; running stacks not checked (${ps.failed})`;
   if (!fails.length) return { name, results: [res("PASS", id, `${name} (${source})${note}`)], withheld: false, answers, ps, warnings: peerWarnings(others, name, true) };
   const withheld = fails.some(([, w]) => w);
@@ -766,7 +793,7 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
   const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? (JSON.parse([...agreed][0]!) as string[]) : [];
   // The files the stack was started with (its override included) when every one is still there, else the configured list.
   const own = split(started);
-  const fs = own.every((f) => isAbsolute(f) && existsSync(f)) ? own.map(rel) : cfg.files;
+  const fs = own.every((f) => isAbsolute(f) && existsSync(f)) ? own.map(rel) : filesFor(c, c.root);
   const args = fs.map((f) => ` -f ${quote(f)}`);
   // Compose's default project directory is the first file's directory as spelled, so compare spellings.
   if (wd && rel(wd) !== normalize(dirname(fs[0]!))) args.push(` --project-directory ${quote(rel(wd))}`);
@@ -781,7 +808,8 @@ export function containersCheck(c: Ctx, { name: project, results, ps }: ComposeP
 /** The compose checks. `project` is the one composeProject result for this run (null only when compose is not in test mode). */
 export function composeChecks(c: Ctx, project: ComposeProject | null): Result[] {
   if (!c.cfg.compose) return [];
-  const { mode, files, allowContainerName } = c.cfg.compose;
+  const { mode, allowContainerName } = c.cfg.compose;
+  const files = filesFor(c, c.root);
   if (mode === "none") {
     const tracked = c.tracked.filter((f) => isComposeFile(c, f));
     return [tracked.length ? res("FAIL", "e.none", `config says compose mode none but ${short(tracked)} is tracked`, `set [compose] mode = "test" and list the files in ${CFG}`) : res("PASS", "e.none", "no compose file tracked")];

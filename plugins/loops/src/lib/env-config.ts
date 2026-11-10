@@ -25,14 +25,14 @@ export interface Config {
   pins: Pin[];
   harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean };
   /** null when the config has no [compose] table: no e.* checks run. */
-  compose: { mode: "none" | "test"; files: string[]; inputs: string[]; containers: "fail" | "warn"; derive: "slug-hash" | "dirname"; allowContainerName: string[] } | null;
+  compose: { mode: "none" | "test"; files: string[]; inputs: string[]; containers: "fail" | "warn"; derive: "slug-hash" | "dirname"; allowContainerName: string[]; mainProject: string | null; mainFiles: string[] | null } | null;
   locals: LocalCheck[];
 }
 
 type T = Record<string, unknown>;
 function table(v: unknown, where: string, allowed: string[]): T {
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw new UsageError(`${where} must be a table`);
-  for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}"`);
+  for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}" (a key from a newer loops needs a newer engine: update agentic-tools, and set engine = ">=0.8.0" or the version that added it, so an older engine says so)`);
   return v as T;
 }
 function pick<V>(t: T, k: string, where: string, ok: (v: unknown) => v is V, what: string, def?: V): V {
@@ -47,6 +47,9 @@ function pick<V>(t: T, k: string, where: string, ok: (v: unknown) => v is V, wha
 const isStr = (v: unknown): v is string => typeof v === "string" && v !== "";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && x !== "");
+const isNonEmptyStrs = (v: unknown): v is string[] => isStrs(v) && v.length > 0;
+/** What Compose takes for -p: lowercase letters, digits, `-` and `_`, a letter or digit first. */
+const isProjectName = (v: unknown): v is string => typeof v === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(v);
 const oneOf =
   <S extends string>(...opts: S[]) =>
   (v: unknown): v is S =>
@@ -64,7 +67,7 @@ function checkEngine(range: string): void {
   const have = VERSION.split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     if (have[i] !== want[i]) {
-      if (have[i]! < want[i]!) throw new UsageError(`config needs loops ${range}, this is ${VERSION}; update agentic-tools`);
+      if (have[i]! < want[i]!) throw new UsageError(`config needs loops ${range}, this is ${VERSION}; update agentic-tools (stable checkout: git pull; CI: bump the action's pinned SHA)`);
       return;
     }
   }
@@ -113,7 +116,7 @@ export function parseConfig(text: string, file: string): Config {
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn",
   };
 
-  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name"]);
+  const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name", "main_project", "main_files"]);
   const compose = top.compose === undefined ? null : {
     mode: pick(c, "mode", "[compose]", oneOf<"none" | "test">("none", "test"), "none|test", "none"),
     files: pick(c, "files", "[compose]", isStrs, "a list of strings", []),
@@ -121,6 +124,10 @@ export function parseConfig(text: string, file: string): Config {
     containers: pick(c, "containers", "[compose]", oneOf<"fail" | "warn">("fail", "warn"), "fail|warn", "fail"),
     derive: pick(c, "derive", "[compose]", oneOf<"slug-hash" | "dirname">("slug-hash", "dirname"), "slug-hash|dirname", "dirname"),
     allowContainerName: pick(c, "allow_container_name", "[compose]", isStrs, "a list of strings", []),
+    // The `-p` name the repo's wrappers give the main checkout (0.8.0): Compose's project-name form, as -p takes it.
+    mainProject: c.main_project === undefined ? null : pick(c, "main_project", "[compose]", isProjectName, "a Compose project name (lowercase letters, digits, - and _, starting with a letter or digit)"),
+    // The main checkout's file set (0.8.0); null: the main checkout uses files.
+    mainFiles: c.main_files === undefined ? null : pick(c, "main_files", "[compose]", isNonEmptyStrs, "a non-empty list of strings"),
   };
   if (compose?.mode === "test" && !compose.files.length) throw new UsageError("[compose]: mode test needs files");
 

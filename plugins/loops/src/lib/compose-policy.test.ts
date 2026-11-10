@@ -698,7 +698,23 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     const f = fixture(["docker/compose.yml"], { "docker/compose.yml": BROKEN }, "dirname");
     const w = f.wt(`${NEST}w1`, { "docker/compose.yml": SVC });
     expect([answer(f.main, ["docker/compose.yml"]), f.derived(w)]).toEqual([{ kind: "interp" }, "docker"]);
-    check(w, {}, { level: "FAIL", has: [byMain("docker")], warn: [new RegExp(`^main checkout ${re(f.main)}: configured run: docker compose config exited 1: required variable LOOPS_IMG`)], name: null });
+    // A3: both paths are named; the project directory is docker/ in every checkout, so only slug-hash helps.
+    const text = check(w, {}, { level: "FAIL", has: [byMain("docker"), `the main checkout ${f.main} and this worktree ${w} derive one name under derive = "dirname"`], fix: ['set derive = "slug-hash"', "renames every worktree's project, so first stop each worktree's stack (docker compose down, without -v)"], warn: [new RegExp(`^main checkout ${re(f.main)}: configured run: docker compose config exited 1: required variable LOOPS_IMG`)], name: null });
+    expect(text).not.toContain("git worktree move");
+  });
+
+  it("row 40b (A3): the main checkout's probe fails and a root-level worktree directory is named like it: FAIL withheld, the fix names git worktree move and slug-hash", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": BROKEN }, "dirname");
+    const w = f.wt("other/app-node", { "compose.yml": SVC });
+    expect([answer(f.main, ["compose.yml"]), f.derived(w)]).toEqual([{ kind: "interp" }, "app-node"]);
+    check(w, {}, { level: "FAIL", has: [byMain("app-node"), `the main checkout ${f.main} and this worktree ${w}`], fix: [`git worktree move ${shQuote(w)} <new-path>`, 'set derive = "slug-hash"', "without -v"], warn: [new RegExp(`^main checkout ${re(f.main)}: `)], name: null });
+  });
+
+  it("row 40c (A3): the main checkout probes fine with name: x and a worktree directory is named like it: PASS (only x is held)", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": named("x") }, "dirname");
+    const w = f.wt("other/app-node", { "compose.yml": SVC });
+    expect([answer(f.main, ["compose.yml"]), answer(w, ["compose.yml"]), f.derived(w)]).toEqual([{ name: "x" }, { name: "app-node" }, "app-node"]);
+    check(w, {}, { level: "PASS", has: ["app-node (derived: dirname)"], name: "app-node" });
   });
 
   it("row 41 (U1): a broken peer and a running container labeled with this worktree's name from that peer: FAIL check 5, withheld", () => {
