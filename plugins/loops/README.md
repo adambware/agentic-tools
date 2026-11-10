@@ -565,6 +565,15 @@ line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf i
 `mise install <tool>@<version>`; for `go` and `node`, whose line may say `golang` or `nodejs`, it names a bare
 `asdf install` (or `mise install`) in that file's directory. Any other pin source, and a prerelease written as is
 (`golangci-lint 2.0.0-rc.1`), keeps the generic install fix.
+When the probed command resolves on PATH to an asdf shim, `a.local` also reads the shim's `# asdf-plugin: <plugin>
+<version>` header lines (0.8.0) and keeps those whose version is active here: `ASDF_<PLUGIN>_VERSION` (upper-cased,
+dashes as underscores), else the nearest `.tool-versions` that lists the plugin walking up from the checkout, else
+`$HOME/.tool-versions`; every version on a line counts. When more than one plugin provides the command (a tool
+`go install`ed inside an asdf Go next to the tool's own plugin), the shim may run either copy, so a WARN row follows
+the version row: `WARN a.local.<tool>  ambiguous shim: provided by <plugin> <v> and <plugin> <v> (shim <path>)`, fix
+`find the stray copy (asdf which <tool>, then the bin dir of each listed provider; a Go-installed tool is in that Go
+install's bin dir), remove it, then run asdf reshim; ask the machine owner if unsure`. Nothing runs for this (no
+`asdf current`, no `installs/` scan), and mise shims are not checked.
 `d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
 line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that

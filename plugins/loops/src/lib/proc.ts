@@ -259,6 +259,8 @@ export function which(name: string, pathVar: string | undefined): string | null 
 export interface Shim {
   manager: "asdf" | "mise";
   cmd: string | null;
+  /** The plugin versions an asdf shim's `# asdf-plugin: <plugin> <version>` header lines name, in order; none for mise. */
+  providers: { plugin: string; version: string }[];
 }
 
 /**
@@ -274,7 +276,7 @@ export function shimOf(file: string): Shim | null {
   } catch {
     return null;
   }
-  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real };
+  if (/^mise(\.exe)?$/.test(basename(real)) && !/^mise(\.exe)?$/.test(basename(file))) return { manager: "mise", cmd: real, providers: [] };
   const buf = Buffer.alloc(4096);
   let head: string;
   let fd: number | undefined;
@@ -289,7 +291,8 @@ export function shimOf(file: string): Shim | null {
   if (!/^# asdf-plugin:/m.test(head)) return null;
   const m = /^\s*exec\s+(?:"([^"]+)"|(\S+))\s+exec\s/m.exec(head);
   const cmd = m?.[1] ?? m?.[2];
-  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null };
+  const providers = [...head.matchAll(/^# asdf-plugin:[ \t]+(\S+)[ \t]+(\S+)/gm)].map((p) => ({ plugin: p[1]!, version: p[2]! }));
+  return { manager: "asdf", cmd: cmd && isAbsolute(cmd) && basename(cmd) === "asdf" ? cmd : null, providers };
 }
 
 type Flags = Record<string, boolean | string | string[]>;

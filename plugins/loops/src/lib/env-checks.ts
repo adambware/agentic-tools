@@ -152,17 +152,64 @@ export function pinChecks(c: Ctx): Result[] {
       : r.code === null ? `${cmd} could not run (${r.abend ?? "killed"})`
       : r.code !== 0 ? `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`
       : null;
-    if (failed !== null || have === null) {
-      row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
-      continue;
+    if (failed !== null || have === null) row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
+    else {
+      // compare decides; only a rejected version picks a level, by the first component that differs.
+      for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
+        if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
+        else row(sev[cmp(have, w, 1) ? "major" : cmp(have, w, 2) ? "minor" : "patch"], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
+      }
     }
-    // compare decides; only a rejected version picks a level, by the first component that differs.
-    for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
-      if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
-      else row(sev[cmp(have, w, 1) ? "major" : cmp(have, w, 2) ? "minor" : "patch"], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
-    }
+    const amb = ambiguousShim(c, bin);
+    if (amb) out.push(res("WARN", lid, amb, `find the stray copy (asdf which ${bin}, then the bin dir of each listed provider; a Go-installed tool is in that Go install's bin dir), remove it, then run asdf reshim; ask the machine owner if unsure`));
   }
   return out;
+}
+
+/**
+ * Why the asdf shim `bin` resolves to on PATH is ambiguous, or null: more than one plugin among its `# asdf-plugin:`
+ * header lines has a version active here, so more than one copy can answer to the name (B6). Each plugin is named by
+ * the first of its active versions the shim lists. Read from asdf's own files, never by running asdf or the tool.
+ */
+function ambiguousShim(c: Ctx, bin: string): string | null {
+  const p = which(bin, c.env.PATH);
+  const s = p ? shimOf(p) : null;
+  if (!s || s.manager !== "asdf") return null;
+  const found = [...new Set(s.providers.map((x) => x.plugin))].flatMap((plugin) => {
+    const v = asdfActive(c, plugin).find((a) => s.providers.some((x) => x.plugin === plugin && x.version === a));
+    return v ? [`${plugin} ${v}`] : [];
+  });
+  if (found.length < 2) return null;
+  return `ambiguous shim: provided by ${found.slice(0, -1).join(", ")} and ${found.at(-1)} (shim ${p})`;
+}
+
+/**
+ * The versions asdf takes as active for `plugin` in this checkout: `ASDF_<PLUGIN>_VERSION` (upper-cased, dashes as
+ * underscores, as asdf names it), else the nearest `.tool-versions` that lists the plugin, walking up from the checkout,
+ * else `$HOME/.tool-versions`. A line may list several versions; all are active. No `asdf current`: nothing runs.
+ */
+function asdfActive(c: Ctx, plugin: string): string[] {
+  const env = c.env[`ASDF_${plugin.toUpperCase().replace(/-/g, "_")}_VERSION`]?.trim();
+  if (env) return env.split(/\s+/);
+  const listed = (dir: string): string[] | null => {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, ".tool-versions"), "utf8");
+    } catch {
+      return null;
+    }
+    for (const l of text.split("\n")) {
+      const [name, ...vs] = l.replace(/#.*/, "").trim().split(/\s+/);
+      if (name === plugin && vs.length) return vs;
+    }
+    return null;
+  };
+  for (let d = c.root; ; d = dirname(d)) {
+    const v = listed(d);
+    if (v) return v;
+    if (dirname(d) === d) break;
+  }
+  return (c.env.HOME && listed(c.env.HOME)) || [];
 }
 
 export function sharedCheck(c: Ctx): Result[] {
