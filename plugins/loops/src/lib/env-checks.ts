@@ -545,12 +545,16 @@ function recoverer(c: Ctx): (p: Cell) => Recovered {
     const names = new Set(literal ? [literal] : []);
     if (raw.raw !== null && literal === null) {
       // The template resolved from the project directory's .env alone (its defaults applied), never this shell.
-      const local = resolveTemplate(raw.raw, readDotEnv(p.pdir));
+      const dotenv = readDotEnv(p.pdir);
+      const local = resolveTemplate(raw.raw, dotenv);
       const resolved = local === null ? "" : normProject(local);
       if (resolved) names.add(resolved);
-      // A .env COMPOSE_PROJECT_NAME beats name:, so then the template does not decide the name.
-      const beat = answer !== null && answer !== normProject(raw.raw);
-      if (beat) names.add(answer);
+      // A .env COMPOSE_PROJECT_NAME beats name:, so then the template does not decide the name. Read it from the
+      // .env itself: an answer equal to normProject(raw) (COMPOSE_PROJECT_NAME=stack over name: ${STACK}) is still it.
+      const own = dotenv.get("COMPOSE_PROJECT_NAME");
+      if (own) names.add(normProject(own));
+      const beat = !!own || (answer !== null && answer !== normProject(raw.raw));
+      if (beat && answer) names.add(answer);
       return { names: [...names], templated: !resolved && !beat };
     } else if (answer) names.add(answer);
     return { names: [...names], templated: false };

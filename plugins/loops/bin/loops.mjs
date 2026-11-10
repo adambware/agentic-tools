@@ -9151,14 +9151,14 @@ function parseDotEnv(s) {
     const q = s[i];
     if (q === "'" || q === '"') {
       let k = i + 1;
-      while (k < s.length && s[k] !== q) k += q === '"' && s[k] === "\\" ? 2 : 1;
+      while (k < s.length && s[k] !== q) k += s[k] === "\\" && (q === '"' || s[k + 1] === "'") ? 2 : 1;
       if (k >= s.length) {
         vars.set(key, null);
         break;
       }
       const inner = s.slice(i + 1, k);
       i = eol(s, k + 1);
-      if (q === "'") vars.set(key, inner);
+      if (q === "'") vars.set(key, inner.replace(/\\'/g, "'"));
       else if (inner.includes("\\$")) vars.set(key, null);
       else {
         const un = inner.replace(/\\(.)/g, (_, c) => ({ n: "\n", r: "\r", t: "	" })[c] ?? c);
@@ -9516,11 +9516,14 @@ function recoverer(c) {
     const answer = "error" in norm2 ? null : norm2.raw;
     const names = new Set(literal ? [literal] : []);
     if (raw.raw !== null && literal === null) {
-      const local = resolveTemplate(raw.raw, readDotEnv(p.pdir));
+      const dotenv = readDotEnv(p.pdir);
+      const local = resolveTemplate(raw.raw, dotenv);
       const resolved = local === null ? "" : normProject(local);
       if (resolved) names.add(resolved);
-      const beat = answer !== null && answer !== normProject(raw.raw);
-      if (beat) names.add(answer);
+      const own = dotenv.get("COMPOSE_PROJECT_NAME");
+      if (own) names.add(normProject(own));
+      const beat = !!own || answer !== null && answer !== normProject(raw.raw);
+      if (beat && answer) names.add(answer);
       return { names: [...names], templated: !resolved && !beat };
     } else if (answer) names.add(answer);
     return { names: [...names], templated: false };

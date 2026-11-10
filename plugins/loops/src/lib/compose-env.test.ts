@@ -83,6 +83,11 @@ describe("parseDotEnv", () => {
     });
   });
 
+  it("honors an escaped quote inside single quotes", () => {
+    expect(parseDotEnv("STACK='feat\\'s'\nN=1\n").get("STACK")).toBe("feat's");
+    expect(parseDotEnv("STACK='feat\\'s'\nN=1\n").get("N")).toBe("1");
+  });
+
   it("expands only variables defined above", () => {
     expect(parseDotEnv("A=${B:-zz}x\nB=1\n").get("A")).toBe("zzx");
   });

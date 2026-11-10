@@ -705,6 +705,25 @@ describe.skipIf(!composeAvailable)("e.project policy against real docker compose
     check(w, { COMPOSE_PROJECT_NAME: "x" }, { level: "FAIL", has: [byPeer("x", p)], warn: [peerWarn(p)], name: null });
   });
 
+  it("row 39f (U1, A1c): a broken peer's name: ${STACK}, no STACK, its .env COMPOSE_PROJECT_NAME=stack: FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    // The .env name equals the template's normalized form, so only reading the .env shows it is set.
+    put(p, ".env", "COMPOSE_PROJECT_NAME=stack\n");
+    expect(answer(p, ["compose.yml"])).toEqual({ kind: "interp" });
+    check(w, { COMPOSE_PROJECT_NAME: "stack" }, { level: "FAIL", has: [byPeer("stack", p)], warn: [peerWarn(p)], never: [TEMPLATED], name: null });
+  });
+
+  it("row 39g (U1, A1c): a broken peer's name: ${STACK}, its .env STACK='<name>\\'s' (escaped quote): FAIL held by that peer, withheld", () => {
+    const f = fixture(["compose.yml"], { "compose.yml": SVC });
+    const w = f.wt(`${NEST}w1`);
+    const p = f.wt(`${NEST}p1`, { "compose.yml": brokenNamed("${STACK}") });
+    put(p, ".env", "STACK='feat\\'s'\n");
+    expect(answer(p, ["compose.yml"], { LOOPS_IMG: "nginx" })).toEqual({ name: "feats" });
+    check(w, { COMPOSE_PROJECT_NAME: "feats" }, { level: "FAIL", has: [byPeer("feats", p)], warn: [peerWarn(p)], name: null });
+  });
+
   it("row 39e (U1, A1c): a broken peer's name: ${STACK} and no .env: nothing held for it, PASS with the templated WARN", () => {
     const f = fixture(["compose.yml"], { "compose.yml": SVC });
     const w = f.wt(`${NEST}w1`);

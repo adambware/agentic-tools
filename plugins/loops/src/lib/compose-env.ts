@@ -120,14 +120,15 @@ export function parseDotEnv(s: string): DotEnv {
     const q = s[i];
     if (q === "'" || q === '"') {
       let k = i + 1;
-      while (k < s.length && s[k] !== q) k += q === '"' && s[k] === "\\" ? 2 : 1;
+      // Either quote can be escaped inside itself (Compose's dotenv: STACK='feat\'s' is feat's).
+      while (k < s.length && s[k] !== q) k += s[k] === "\\" && (q === '"' || s[k + 1] === "'") ? 2 : 1;
       if (k >= s.length) {
         vars.set(key, null);
         break;
       }
       const inner = s.slice(i + 1, k);
       i = eol(s, k + 1);
-      if (q === "'") vars.set(key, inner);
+      if (q === "'") vars.set(key, inner.replace(/\\'/g, "'"));
       else if (inner.includes("\\$")) vars.set(key, null);
       else {
         const un = inner.replace(/\\(.)/g, (_, c: string) => ({ n: "\n", r: "\r", t: "\t" })[c] ?? c);
