@@ -63,6 +63,8 @@ natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
 
 `loops env-check` 0.8.0, PR A: Compose project policy v2. One worktree's broken Compose file no longer withholds the project name in every other checkout, and two `[compose]` keys cover a main checkout that runs other files or a wrapper-supplied `-p`.
 
+PR B: pins. A pin can be checked against each range its sources declare, a source can be optional, `local` can pick a level per version component, a Dockerfile `FROM ${ARG}` is read, and `a.local` keeps reporting when the pins disagree and warns about an ambiguous asdf shim.
+
 ### Changed
 
 - Behavior change (exit code): a failed `docker compose config` probe of another checkout (a peer worktree, or the main checkout seen from a worktree) is no longer a FAIL that withholds `e.project`. It is one `WARN e.project` per peer ("... and N more runs"), the name is kept, and the fix says to run `bin/env-check` in that checkout or `git worktree remove` it when abandoned. The peer's own run still FAILs. `ComposeProject` gains `warnings`, shown after `results`, so `results[0]` keeps its meaning.
@@ -75,6 +77,15 @@ natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
 - New `[compose] main_files = [...]`: the main checkout's file set (default `files`), used by its runs, project directory, derived name, the missing-file check, the `container_name` scan and the `b.containers` fix, also when a worktree probes the main checkout.
 - The unknown-key config error says a newer key needs a newer engine and an `engine = ">=0.8.0"` floor; the engine-floor error adds "stable checkout: git pull; CI: bump the action's pinned SHA".
 - CI's compose-differential preflight fails unless `docker compose config --help` lists `--no-env-resolution`, `--no-interpolate` and `--no-normalize`.
+- New `[[pins]] range = "check"` (default `"info"` keeps the INFO row): each distinct range a source yields (`engines`, `requires-python`, Poetry's `python`, a Pipfile range, setup-* range inputs, goreleaser-action's default `~> v2`) is checked against the pin, a series pin standing for every version it names. `PASS` inside, `WARN` only partly inside (pin `20` against `>=20.11`), `FAIL` outside; rows keep the id `a.pins.<tool>`. npm and Actions ranges are read as semver; Python packaging ranges as PEP 440 (`>3.11` is `>3.11.0`, `<=3.11` is `<=3.11.0`, `==3.12` is `3.12.0`, `~=3.11` is `>=3.11.0 <4.0.0`, `,` is and). `!=`, `===`, a prerelease, an exact-looking value and any form semver rejects stay INFO `(not a form range = "check" reads)`; while the pins disagree each range stays INFO `(the pins disagree)`. The `compare = "floor"` removal error now points to `range = "check"`.
+- New `[[pins]] optional = [...]`: sources, exactly as written in `sources`, that are read when present and skipped when absent (a missing file, or a glob that matches no tracked file). An entry not in `sources` is exit 2 naming it. A present optional source that is invalid still FAILs, and so does a missing source that is not optional. When every source is optional and none is present, the row is `SKIP a.pins.<tool> no source present (all optional: ...)` and no `a.local` row runs.
+- `[[pins]] local` also takes a table, `{ major = "fail", minor = "warn", patch = "info" }` (each `fail|warn|info|off`; a missing component is `warn`). `compare` decides first, so a difference it accepts stays PASS; a rejected local version is reported at the level of its first differing component, and a probe that gives no version (tool missing, unrunnable, timed out, no version printed) at `major`. The string forms keep their meaning.
+- Behavior change (rows): when the pins disagree (`a.pins.<tool>` FAILs), `a.local.<tool>` still probes the tool and reports it against each distinct pin, one row per pin at its own level naming that pin's sources (`PASS` for the pin it matches), with the fix `align the pins first (a.pins.<tool>); env-check then names the version to install`. The row used to vanish.
+- Behavior change (level): when the probed command is an asdf shim whose `# asdf-plugin:` header lines name more than one plugin with a version active here (`ASDF_<PLUGIN>_VERSION`, else the nearest `.tool-versions` walking up from the checkout, else `$HOME/.tool-versions`), `WARN a.local.<tool>  ambiguous shim: provided by <plugin> <v> and <plugin> <v> (shim <path>)` follows the version row, with a fix to find and remove the stray copy and run `asdf reshim`. Nothing extra runs (no `asdf current`, no `installs/` scan); mise shims are not checked.
+- Behavior change (exit code): a Dockerfile `FROM ${BASE}` (also `FROM $IMG:20` and `FROM ${BASE:-node:20}`) is resolved through the `ARG`s declared before the first `FROM`, as Docker does: the last definition in that scope wins, and a value may use earlier global `ARG`s. The result is read as that literal image, so a non-tool image is skipped, a tool image is a pin, and a tool image with an unsupported tag FAILs. Such a `FROM` used to be skipped silently.
+- A `FROM` image whose variable has no value in the global `ARG` scope (no default, an `ARG` declared only inside a stage, an empty value, or another `${...}` modifier) is `INFO a.pins.<tool>  FROM <image> (line N): image set at build time, not compared`, never a FAIL. A Compose `build.args` or `--build-arg` override of the default is not read.
+- Fixed: golangci-lint-action `install-mode: ""` is read as unset (`binary`), so `go.mod` is read as the action reads it, instead of a false FAIL "step without a version".
+- Build: `semver` 7.7.3 is bundled into `bin/` (a new exact dev dependency, with `@types/semver` 7.7.1); still nothing to install at runtime.
 
 ### Upgrade notes
 
@@ -82,6 +93,12 @@ natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
 - Under `--compose-project`, peer WARN lines appear on stderr. Scripts that treat any stderr as failure should check the exit code instead.
 - When adopting `main_project` or `main_files`, set `engine = ">=0.8.0"` in `.loops/env-check.toml`, so an older engine says it is too old instead of failing on an unknown key.
 - Not in this change: a Docker shim without Compose (podman-docker, exit 125) still FAILs `e.project`; it stays on the 0.7.2 review-notes TODO.
+- A pin disagreement now also prints `a.local.<tool>` rows, one per distinct pin; a mismatching one is a WARN, or a FAIL (exit 1, as the disagreement already is) under `local = "fail"`.
+- A Dockerfile whose `FROM ${VAR}` resolves to the tool's image now adds that pin, which can surface a disagreement (or an unsupported-tag FAIL) that 0.7.x never saw.
+- `install-mode: ""` now reads as unset: a versionless golangci-lint-action step with it reads `go.mod`, so its pin now joins the comparison.
+- A machine with a stray copy of a tool behind an asdf shim (a `go install`ed binary next to the tool's own plugin) now gets a WARN; the exit code is unchanged.
+- When adopting `range`, `optional` or a `local` table, set `engine = ">=0.8.0"`, as for the `[compose]` keys.
+- Not in this change: B7 (a workflow that runs Go with no `setup-go`) was cut to a TODO.
 
 ## [loops 0.7.1] - 2026-11-04
 
