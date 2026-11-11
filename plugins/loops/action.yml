@@ -1,0 +1,26 @@
+# The loops env-check composite action. Pin it by a 40-hex commit SHA:
+#   uses: adambware/agentic-tools/plugins/loops@<sha>
+# It needs node 18 or newer (actions/setup-node) and a checkout of the repo to check. See the loops README,
+# "Run the static checks in CI". The logic is scripts/action-env-check.sh; inputs reach it only as env vars.
+name: loops env-check
+description: Run loops env-check --static --require-checks on a checkout, with its rows in the step summary.
+inputs:
+  working-directory:
+    description: The checkout to check, relative to $GITHUB_WORKSPACE (an absolute path stays absolute).
+    required: false
+    default: "."
+  require-checks:
+    description: >-
+      Comma-separated check ids or globs (a.pins.go, a.pins.*) that must each produce a PASS, WARN or FAIL row.
+      Empty runs bare --require-checks, which only turns "no check ran" (x.none) into a FAIL.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: loops env-check
+      shell: bash
+      env:
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_REQUIRE_CHECKS: ${{ inputs.require-checks }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/action-env-check.sh"

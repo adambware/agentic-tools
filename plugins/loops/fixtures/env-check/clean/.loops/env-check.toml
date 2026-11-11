@@ -1,0 +1,6 @@
+# A minimal env-check config for loops-ci's action-fixtures job: one go pin read from three sources.
+schema_version = 1
+
+[[pins]]
+tool = "go"
+sources = ["go-mod:go.mod", "dockerfile:Dockerfile", "setup-go:.github/workflows/*.yml"]
