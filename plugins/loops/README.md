@@ -447,7 +447,8 @@ argument:
   `(also: ...)` counts.
 - Exit 2: the space form (`--require-checks a.pins.go`: "write --require-checks=a.pins.go"), an empty value
   (`--require-checks=`), an empty item (`a.pins.go,,b.x`), an id that does not look like `<a-e or x>.<name>`
-  (`pins.go`, `*.go`, `a.`), a reserved id (`x.none`, `x.required`), and `--require-checks` with `--compose-project`.
+  (`pins.go`, `*.go`, `a.`), a reserved id (`x.none`, `x.required`), the flag given twice (one comma list holds every
+  id), and `--require-checks` with `--compose-project`.
 - `--quiet` still prints the `x.required` rows; `--json` carries them in `results` and counts them in `summary.fail`
   and `exit` (schema unchanged).
 

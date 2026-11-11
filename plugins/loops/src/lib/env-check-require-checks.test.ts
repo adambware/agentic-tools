@@ -45,6 +45,11 @@ describe("parseFlags optional-value flags (C2)", () => {
     expect(() => parseFlags(["--require-checks", "a.pins.go"], spec)).toThrow(UsageError);
     expect(() => parseFlags(["--require-checks", "a.pins.go"], spec)).toThrow(/unexpected argument a\.pins\.go.*--require-checks=a\.pins\.go/);
   });
+  it("rejects a repeated flag instead of letting the last one drop an earlier list", () => {
+    for (const argv of [["--require-checks=a.pins.go", "--require-checks=b.x"], ["--require-checks=a.pins.go", "--require-checks"], ["--require-checks", "--require-checks=a.pins.go"]]) {
+      expect(() => parseFlags(argv, spec)).toThrow(/--require-checks given twice/);
+    }
+  });
 });
 
 // Value: protects=the reserved x.* ids (a [[local]] named x.required could fake or hide the engine's own row);

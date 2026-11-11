@@ -313,7 +313,7 @@ type Flags = Record<string, boolean | string | string[]>;
 /**
  * Tiny flag parser. `--x` and `-z` set bool flags; `--x v` / `--x=v` set value flags; an opt flag
  * is true bare and the string after `=` with one (`--x=` alone is an error, and `--x v` never takes
- * v: that is an unexpected argument naming the `--x=v` form); list flags take every following arg
+ * v: that is an unexpected argument naming the `--x=v` form; a repeated opt flag is an error); list flags take every following arg
  * up to the next flag (or everything after `--`). Anything else is a UsageError.
  */
 export function parseFlags(argv: string[], spec: { bool?: string[]; value?: string[]; opt?: string[]; list?: string[] }): Flags {
@@ -330,6 +330,8 @@ export function parseFlags(argv: string[], spec: { bool?: string[]; value?: stri
       if (inline === undefined && next !== undefined && !next.startsWith("-")) {
         throw new UsageError(`unexpected argument ${next}: --${name} takes its value after "=" (write --${name}=${next})`);
       }
+      // A second occurrence would silently replace the first list (a required id dropped), so it is an error.
+      if (name in out) throw new UsageError(`--${name} given twice (write it once, with every id in one comma list)`);
       out[name] = inline ?? true;
     }
     else if (spec.value?.includes(name)) {
