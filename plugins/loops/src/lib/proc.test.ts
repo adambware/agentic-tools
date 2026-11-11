@@ -20,6 +20,16 @@ describe("shimOf", () => {
     expect(shimOf(join(d, "varpath"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "x", version: "1" }] }); // not a plain absolute path: PATH lookup
   });
 
+  // Value: protects=a shim over 1 MiB keeps only its 4 KiB head (providers and cmd from the head), never a full read;
+  // fails_when=the size cap is dropped or inverted; why_new=only a 4 KiB to 1 MiB shim was tested; seam=none;
+  // no_claim=memory use
+  it("keeps only the head of an asdf shim larger than 1 MiB", () => {
+    const d = tmp();
+    const pad = `# ${"x".repeat(1022)}\n`.repeat(1100);
+    put(d, "huge", `#!/usr/bin/env bash\n# asdf-plugin: golang 1.26.1\n${pad}# asdf-plugin: late 9\nexec /home/u/.asdf/bin/asdf exec "huge" "$@"\n`, true);
+    expect(shimOf(join(d, "huge"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "golang", version: "1.26.1" }] });
+  });
+
   it("reads every header line and the exec line of an asdf shim longer than 4 KiB", () => {
     const d = tmp();
     const lines = Array.from({ length: 200 }, (_, i) => `# asdf-plugin: lint 1.${i}.0`).join("\n");

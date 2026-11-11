@@ -104,6 +104,15 @@ describe("inRange: a pin against a range", () => {
     // semver's ANY comparator and throws Invalid Version; why_new=no row reached the `*` comparator; seam=none; no_claim=row text
     ["20", ">=0", false, "inside"],
     ["3.12", ">=0.0.0", true, "inside"],
+    // Value: protects=a range whose overlap with the series holds no release is outside (FAIL), and a comparator outside
+    // the series never crashes; fails_when=semver's continuous intersects() decides overlap again, or covers() increments a
+    // patch at Number.MAX_SAFE_INTEGER; why_new=no row had an empty interval or a boundary past the series; seam=none;
+    // no_claim=row text
+    ["20", ">20.0.0 <20.0.1", false, "outside"],
+    ["20", "<20.0.0 || >20.0.0 <20.0.1", false, "outside"],
+    ["20.1", ">20.1.5 <20.1.6", false, "outside"],
+    ["20", ">=20.3.0 <20.3.1", false, "partly"],
+    ["20", ">=20 <21.0.9007199254740991", false, "inside"],
   ])("pin %s vs %s (PEP 440: %s) is %s", (pin, range, pep, want) => {
     expect(inRange(pin, range, pep)).toBe(want);
   });

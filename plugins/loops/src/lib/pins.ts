@@ -5,7 +5,7 @@
 // form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, sep } from "node:path";
-import { inc, intersects, lt, Range, satisfies, SemVer, validRange } from "semver";
+import { inc, lt, Range, satisfies, SemVer, valid, validRange } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -92,10 +92,14 @@ export function semverRange(range: string, pep440: boolean): string | null {
   const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
   return alts.some((a) => a.includes(null)) ? null : validRange(alts.map((a) => a.join(" ")).join(" || "));
 }
-/** Whether every release in the series `pin` names (`20` is [20.0.0, 21.0.0)) satisfies `r`, also when only the union of
- * its `||` alternatives covers it (semver's `subset` wants one alternative to). Which releases satisfy `r` changes only
- * at its comparators' versions, so the series' first release and the first release at and after each of them decide. */
-const covers = (pin: string, r: string): boolean => {
+/** The release after `v`: the next patch, else (a patch at Number.MAX_SAFE_INTEGER) the next minor, then major. */
+const after = (v: string): string | null =>
+  (["patch", "minor", "major"] as const).map((p) => inc(v, p)).find((x) => x !== null && valid(x) !== null) ?? null;
+/** Whether each release in the series `pin` names (`20` is [20.0.0, 21.0.0)) that decides `r` satisfies it, also when only
+ * the union of its `||` alternatives covers the series (semver's `subset` wants one alternative to). Which releases satisfy
+ * `r` changes only at its comparators' versions, so the series' first release and, inside the series, each comparator's
+ * version and the release after it decide: every one satisfies `r` (inside), some do (partly), or none does (outside). */
+const deciding = (pin: string, r: string): boolean[] => {
   const n = pin.split(".").map(Number);
   const lo = [...n, 0, 0].slice(0, 3).join(".");
   const up = [...n];
@@ -106,9 +110,9 @@ const covers = (pin: string, r: string): boolean => {
     for (const c of alt) {
       if (!(c.semver instanceof SemVer)) continue; // `*`
       const core = `${c.semver.major}.${c.semver.minor}.${c.semver.patch}`;
-      at.add(core).add(inc(core, "patch")!);
+      for (const v of [core, after(core)]) if (v !== null && !lt(v, lo) && lt(v, hi)) at.add(v);
     }
-  return [...at].every((v) => lt(v, lo) || !lt(v, hi) || satisfies(v, r));
+  return [...at].map((v) => satisfies(v, r));
 };
 /** Where the set of versions `pin` names (a series `20` is `20.x`) sits against `range`; null when either cannot be
  * checked (`semverRange`, a prerelease pin, or one semver cannot read, such as a leading zero). */
@@ -117,7 +121,8 @@ export function inRange(pin: string, range: string, pep440 = false): "inside" | 
   if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
   const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
   if (validRange(set) === null) return null;
-  return !intersects(set, r) ? "outside" : covers(pin, r) ? "inside" : "partly";
+  const ok = deciding(pin, r);
+  return ok.every(Boolean) ? "inside" : ok.some(Boolean) ? "partly" : "outside";
 }
 /** A version spec as a pin, the series it installs (`1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`, node's `=20.11.1`);
  * as a range when it is wider than its stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`), kept as written;
@@ -295,11 +300,14 @@ const logicalLines = (text: string, file: string): Logical[] => {
 };
 /** `w` as Docker's shell lexer expands a word in the global ARG scope: quotes removed, `\` escaping the next character,
  * `$A`, `${A}`, `${A:-w}`, `${A-w}`, `${A:+w}` and `${A+w}` read from `env`. Null when a variable it needs is unset (only the
- * build can set it) or a `${...}` uses another modifier. */
+ * build can set it), a `${...}` uses another modifier, or the result passes EXPAND_MAX (ARGs that double an earlier one
+ * would otherwise grow without bound). */
+const EXPAND_MAX = 4096;
 const expand = (w: string, env: Map<string, string>): string | null => {
   let out = "";
   let q = ""; // the open quote
   for (let i = 0; i < w.length; i++) {
+    if (out.length > EXPAND_MAX) return null;
     const c = w[i]!;
     if (q !== "'" && c === "\\") out += w[++i] ?? "";
     else if ((c === '"' || c === "'") && (!q || q === c)) q = q ? "" : c;
@@ -322,7 +330,7 @@ const expand = (w: string, env: Map<string, string>): string | null => {
       else (out += env.get(name)!), (i += name.length);
     }
   }
-  return out;
+  return out.length > EXPAND_MAX ? null : out;
 };
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
  * with `$<TOOL>_VERSION` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its
@@ -337,17 +345,26 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
   const out: Found = [];
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const words = (s: string) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
-  const global = new Map<string, string>(); // the global ARG scope; an ARG with no value (or an unknowable one) is unset
-  for (const l of logical) {
-    if (/^\s*FROM\s/i.test(l.text)) break;
-    const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
-    for (const p of m ? words(m[1]!) : []) {
-      const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
-      const v = name && eq ? expand(val!, global) : null;
-      if (name && v !== null) global.set(name, v);
-      else if (name) global.delete(name);
+  // The global ARG scope; an ARG with no value (or an unknowable one) is unset. `held` is the same scope with the tool's
+  // version ARG, when it has no value there, held as HELD: an image that expands only through it is the tool's image
+  // tagged with that ARG when it reads so, a stage that names its version only at build time, as `FROM node:${KEY}` does.
+  const HELD = "\0";
+  const scope = (seed: [string, string][]) => {
+    const env = new Map(seed);
+    for (const l of logical) {
+      if (/^\s*FROM\s/i.test(l.text)) break;
+      const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
+      for (const p of m ? words(m[1]!) : []) {
+        const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
+        const v = name && eq ? expand(val!, env) : null;
+        if (name && v !== null) env.set(name, v);
+        else if (name && !(seed.length && name === key && !eq)) env.delete(name);
+      }
     }
-  }
+    return env;
+  };
+  const global = scope([]);
+  const held = global.has(key) ? global : scope([[key, HELD]]);
   const skipped: string[] = []; // tool-image FROM lines whose tag is the version ARG
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
@@ -357,6 +374,13 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
     // The name, with each `${...}` as one unit: `${BASE:-docker.io/node:20}` is a variable name, `${REG}/node:20` is not.
     if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0]!.split("/").pop()!.split(":")[0]!.includes("$")) {
       const r = expand(image, global);
+      const h = r ? null : expand(image, held);
+      const [hn = "", ht = ""] = h?.split("@")[0]!.split("/").pop()!.split(":") ?? [];
+      if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
+        skipped.push(`FROM ${image} (line ${at(l, m[1]!.length)})`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
       if (!r) {
         notes?.push(`FROM ${image} (line ${at(l, m[1]!.length)}): image set at build time, not compared`);
         if (m[3]) stages.add(m[3].toLowerCase());

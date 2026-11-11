@@ -82,6 +82,24 @@ describe("Dockerfile FROM ${ARG} through the global ARG scope", () => {
     for (const [f, c] of Object.entries(files)) put(root, f, c);
     expect(() => readSource(root, Object.keys(files), "node", "dockerfile:**/Dockerfile")).toThrow(/no node version found in 2 files/);
   });
+  // Value: protects=a tool-image FROM reached through another variable, tagged with the unset version ARG, FAILs as the
+  // direct `FROM node:${NODE_VERSION}` does; fails_when=the indirect form becomes a build-time note again and the Dockerfile
+  // silently yields no pin (a false PASS beside .nvmrc); why_new=every FAIL row used a direct tool FROM; seam=none;
+  // no_claim=none beyond protects
+  it.each([
+    ["an image ARG holding the version ARG", "ARG NODE_VERSION\nARG BASE=node:${NODE_VERSION}-alpine\nFROM ${BASE}\n"],
+    ["an image-name ARG with the version ARG as tag", "ARG IMG=node\nARG NODE_VERSION\nFROM ${IMG}:${NODE_VERSION}\n"],
+  ])("a tool stage set up through %s with no value still FAILs", (_n, text) => fails("node", D(text), /no node version found in Dockerfile/));
+  it("an indirect tool stage reads the version ARG a stage gives it, as the direct form does", () => {
+    expect(read("dockerfile", "node", D("ARG IMG=node\nARG NODE_VERSION\nFROM ${IMG}:${NODE_VERSION}\nARG NODE_VERSION=20.11.1\n"))).toEqual([["20.11.1"], []]);
+  });
+  // Value: protects=ARG expansion is bounded, so a small Dockerfile cannot blow up memory: past the bound the image is a
+  // build-time note; fails_when=the size check is dropped and doubling ARGs expand without limit; why_new=no test chained
+  // ARGs; seam=none; no_claim=the exact bound
+  it("an expansion past the size bound is a build-time note, never a huge image", () => {
+    const args = Array.from({ length: 22 }, (_, i) => `ARG A${i + 1}=\${A${i}}\${A${i}}`).join("\n");
+    expect(read("dockerfile", "node", D(`ARG A0=x\n${args}\nFROM \${A22}\nFROM node:20\n`))).toEqual([["20"], [BUILD_TIME("${A22}", 24)]]);
+  });
   it("a Dockerfile whose only tool FROM is set at build time yields no pin and no FAIL of its own", () => {
     expect(read("dockerfile", "node", D("ARG BASE\nFROM ${BASE}\n"))).toEqual([[], [BUILD_TIME("${BASE}", 2)]]);
   });
