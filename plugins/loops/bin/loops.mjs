@@ -10259,7 +10259,15 @@ function parseFlags(argv, spec) {
     if (!m) throw new UsageError(`unexpected argument ${arg}`);
     const [, name = "", inline] = m;
     if (spec.bool?.includes(name) && inline === void 0) out[name] = true;
-    else if (spec.value?.includes(name)) {
+    else if (spec.opt?.includes(name)) {
+      if (inline === "") throw new UsageError(`--${name}= needs a value (write --${name} bare, or --${name}=<value>)`);
+      const next = argv[i + 1];
+      if (inline === void 0 && next !== void 0 && !next.startsWith("-")) {
+        throw new UsageError(`unexpected argument ${next}: --${name} takes its value after "=" (write --${name}=${next})`);
+      }
+      if (name in out) throw new UsageError(`--${name} given twice (write it once, with every id in one comma list)`);
+      out[name] = inline ?? true;
+    } else if (spec.value?.includes(name)) {
       const v = inline ?? argv[++i];
       if (v === void 0) throw new UsageError(`--${name} needs a value`);
       out[name] = v;
@@ -10640,7 +10648,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   };
   const global = scope([]);
   const held = scope(global.has(key) ? [] : [[key, HELD]], UNSET);
-  const skipped = [];
+  const skipped2 = [];
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -10651,7 +10659,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
       const h = r ? null : expand(image, held, UNSET);
       const [hn = "", ht = ""] = h?.split("@")[0].split("/").pop().split(":") ?? [];
       if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
-        skipped.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+        skipped2.push(`FROM ${image} (line ${at(l, m[1].length)})`);
         if (m[3]) stages.add(m[3].toLowerCase());
         continue;
       }
@@ -10667,7 +10675,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
     if (/^\$\{?(\w+)/.exec(tag)?.[1].toUpperCase() === key) {
-      skipped.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+      skipped2.push(`FROM ${image} (line ${at(l, m[1].length)})`);
       continue;
     }
     const v = tag ? tagVer(tag) : null;
@@ -10686,7 +10694,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
       out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + pair[1].length + 1)));
     }
   }
-  if (!out.length) bare?.push(...skipped);
+  if (!out.length) bare?.push(...skipped2);
   return out;
 };
 var BY_NAME = {
@@ -10886,7 +10894,7 @@ function readSource(root, tracked, tool, spec, notes) {
   const { target, files } = sourceFiles(tracked, spec);
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out = [];
-  const skipped = [];
+  const skipped2 = [];
   const unknown = [];
   const bare = [];
   for (const f of files) {
@@ -10901,17 +10909,17 @@ function readSource(root, tracked, tool, spec, notes) {
     }
     for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false, ...x.pep440 && { pep440: true } });
     unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
-    if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
+    if (!found.length && calls.length) skipped2.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
   if (!out.length && (!unknown.length || bare.length)) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
-    if (!skipped.length) throw new PinError(msg);
+    if (!skipped2.length) throw new PinError(msg);
     throw new PinError(
-      `${msg}; ${skipped.map(([f, s]) => files.length === 1 ? s : `${f}: ${s}`).join("; ")}`,
+      `${msg}; ${skipped2.map(([f, s]) => files.length === 1 ? s : `${f}: ${s}`).join("; ")}`,
       `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`
     );
   }
-  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
+  notes?.push(...skipped2.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
   return out;
 }
 var DEPTH = { exact: 3, minor: 2, major: 1 };
@@ -10955,6 +10963,9 @@ function pick(t, k, where, ok, what, def) {
   if (!ok(v)) throw new UsageError(`${where}: ${k} must be ${what}`);
   return v;
 }
+var RESERVED_IDS = ["x.none", "x.required"];
+var RESERVED_ROWS = { "x.none": '"no check ran"', "x.required": '"required check missing"' };
+var isReserved = (id) => RESERVED_IDS.includes(id);
 var isStr = (v) => typeof v === "string" && v !== "";
 var isBool = (v) => typeof v === "boolean";
 var isStrs = (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && x !== "");
@@ -11053,7 +11064,7 @@ function parseConfig(text, file) {
     const t = table2(l, where, ["id", "run", "static", "timeout_s"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
-    if (id === "x.none") throw new UsageError(`${where}: id x.none is reserved for env-check's own "no check ran" row`);
+    if (isReserved(id)) throw new UsageError(`${where}: id ${id} is reserved for env-check's own ${RESERVED_ROWS[id]} row`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v) => typeof v === "number" && v >= 1e-3 && Number.isSafeInteger(Math.round(v * 1e3)), "a positive number of seconds (at least 0.001)", 15);
@@ -11916,6 +11927,49 @@ function collapse(rs) {
   }
   return out;
 }
+function requiredIds(v) {
+  const out = [];
+  for (const id of v.split(",").map((x) => x.trim())) {
+    if (!id) throw new UsageError(`--require-checks: empty id in "${v}"`);
+    if (!/^[a-ex]\.[\w.*-]+$/.test(id)) throw new UsageError(`--require-checks: id "${id}" must look like <a-e or x>.<name> ("*" in the name matches any run of characters)`);
+    if (isReserved(id)) throw new UsageError(`--require-checks: ${id} is reserved for env-check's own row and cannot be required`);
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+function idMatcher(id) {
+  if (!id.includes("*")) return (s) => s === id;
+  const re = new RegExp(`^${id.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
+  return (s) => re.test(s);
+}
+var skipped = (id) => ({ level: "SKIP", id, message: "not run in --static mode", source: "builtin" });
+function staticSkips(cfg) {
+  return [
+    ...cfg.pins.filter((p) => Object.values(p.local).some((s) => s !== "off")).map((p) => skipped(`a.local.${p.tool}`)),
+    ...cfg.compose?.mode === "test" && cfg.compose.inputs.length ? [skipped("b.containers")] : [],
+    ...cfg.harness.tools.length ? [skipped("d.tools")] : [],
+    ...cfg.harness.sparse ? [skipped("d.sparse")] : []
+  ];
+}
+function requiredRows(required, rows, isStatic) {
+  const counted = (r) => r.level === "PASS" || r.level === "WARN" || r.level === "FAIL";
+  return required.flatMap((id) => {
+    const m = idMatcher(id);
+    const source = id.startsWith("x.") ? "local" : "builtin";
+    const hits = rows.filter((r) => r.source === source && m(r.id));
+    if (hits.some(counted)) return [];
+    const drop = `drop ${id} from --require-checks`;
+    if (hits.length) {
+      const shown = hits.slice(0, 3).map((r) => `${r.level} ${r.id}: ${r.message}`).join("; ") + (hits.length > 3 ? `; and ${hits.length - 3} more` : "");
+      const fix2 = !isStatic ? `fix what keeps the check from running, or ${drop}` : source === "builtin" ? `${id} is a built-in check that --static does not run (run env-check without --static, outside CI, to see it), or ${drop}` : `make the check run under --static (a [[local]] needs static = true; CI=true implies --static), or ${drop}`;
+      return [{ level: "FAIL", id: "x.required", message: `${id} produced only SKIP/INFO rows (${shown})`, fix: fix2, source: "builtin" }];
+    }
+    const lookalike = source === "builtin" && rows.some((r) => r.source === "local" && m(r.id));
+    const what = id.includes("*") ? "an id matching it" : "this id";
+    const fix = source === "builtin" ? `configure the built-in check that produces ${id} in .loops/env-check.toml, or ${drop}` : `add a [[local]] check that prints ${id} to .loops/env-check.toml, or ${drop}`;
+    return [{ level: "FAIL", id: "x.required", message: `${id} not configured: no check produced ${what}${lookalike ? " (a [[local]] row with it does not count: a-e ids are satisfied only by built-in checks)" : ""}`, fix, source: "builtin" }];
+  });
+}
 var mapText = (r, f) => ({
   ...r,
   id: f(r.id),
@@ -11924,7 +11978,10 @@ var mapText = (r, f) => ({
   ...r.also ? { also: r.also.map(f) } : {}
 });
 function envCheckMain(argv, d) {
-  const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"] });
+  const f = parseFlags(argv, { bool: ["static", "json", "quiet", "compose-project"], opt: ["require-checks"] });
+  const req = f["require-checks"];
+  if (req !== void 0 && f["compose-project"]) throw new UsageError("--require-checks does not combine with --compose-project");
+  const required = typeof req === "string" ? requiredIds(req) : [];
   const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
   const cfgFile = join5(root, ".loops", "env-check.toml");
@@ -11980,11 +12037,14 @@ function envCheckMain(argv, d) {
     ...composeChecks(ctx, compose),
     ...cfg.locals.flatMap((l) => runLocal(ctx, l, project))
   ].map((r, i) => ({ r, i })).sort((a, b) => group(a.r) - group(b.r) || a.i - b.i).map(({ r }) => r);
+  const missing = requiredRows(required, isStatic ? [...results, ...staticSkips(cfg)] : results, isStatic);
   if (!results.some((r) => r.level !== "INFO" && r.level !== "SKIP")) {
+    const level = req === void 0 ? "WARN" : "FAIL";
     results.push(
-      isStatic ? { level: "WARN", id: "x.none", message: "no check ran under --static (CI=true implies it)", fix: "add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)", source: "builtin" } : { level: "WARN", id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", source: "builtin" }
+      isStatic ? { level, id: "x.none", message: "no check ran under --static (CI=true implies it)", fix: "add checks that run under --static to .loops/env-check.toml ([[pins]], [harness] files, entrypoints or tracked, or a [[local]] with static = true)", source: "builtin" } : { level, id: "x.none", message: "no check ran", fix: "add checks to .loops/env-check.toml (see the loops README)", source: "builtin" }
     );
   }
+  results.push(...missing);
   const shown = collapse(results).map((r) => {
     const x = mapText({ ...r, fix: r.fix ?? (r.level === "WARN" || r.level === "FAIL" ? "address the message above and re-run" : "") }, redact);
     return { ...x, fix: x.fix || void 0 };
@@ -12247,7 +12307,7 @@ function zoneMain(argv, d) {
 var USAGE = `loops ${VERSION}
 usage: loops <command> [options]
   zone       [--base REF] [--committed] [--paths P... | --stdin [-z]] [--file F] [--json] [--explain]
-  env-check  [--static] [--json] [--quiet] [--compose-project]
+  env-check  [--static] [--json] [--quiet] [--require-checks[=IDS]] [--compose-project]
   --version`;
 function realDeps() {
   return {
