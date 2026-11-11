@@ -300,3 +300,17 @@ describe("--require-checks glob with many SKIP/INFO hits (Step 7)", () => {
     expect(r.required[0]).toMatch(/\(SKIP x\.n1: [^;]+; SKIP x\.n2: [^;]+; SKIP x\.n3: [^;]+; and 2 more\)/);
   });
 });
+
+// Value: protects=the fix text for a required id whose only rows are SKIP/INFO in a full run (no --static);
+// fails_when=the !isStatic branch is swapped with a static one, so a full run blames --static for a check that ran and
+// skipped itself; why_new=every --require-checks case ran --static; seam=none; no_claim=which built-in checks a full
+// run adds (env-check.test.ts)
+describe("--require-checks in a full run (no --static)", () => {
+  it("a SKIP-only required id is told to fix what keeps the check from running", () => {
+    const t = deps(setup(LOCAL("x.slow", "c.sh"), script("c.sh", "SKIP x.slow tool missing")));
+    const code = main(["env-check", "--require-checks=x.slow"], t.d);
+    const required = t.out.join("\n").split("\n").filter((l) => l.startsWith("FAIL x.required"));
+    expect(code).toBe(1);
+    expect(required).toEqual([expect.stringMatching(/x\.slow produced only SKIP\/INFO rows \(SKIP x\.slow: tool missing\) — fix: fix what keeps the check from running, or drop x\.slow from --require-checks$/)]);
+  });
+});
