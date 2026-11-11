@@ -10,7 +10,7 @@ import { zoneMain } from "./zone-cli.js";
 const USAGE = `loops ${VERSION}
 usage: loops <command> [options]
   zone       [--base REF] [--committed] [--paths P... | --stdin [-z]] [--file F] [--json] [--explain]
-  env-check  [--static] [--json] [--quiet] [--compose-project]
+  env-check  [--static] [--json] [--quiet] [--require-checks[=IDS]] [--compose-project]
   --version`;
 
 export function realDeps(): Deps {

@@ -51,6 +51,10 @@ function pick<V>(t: T, k: string, where: string, ok: (v: unknown) => v is V, wha
   if (!ok(v)) throw new UsageError(`${where}: ${k} must be ${what}`);
   return v;
 }
+/** Ids only env-check itself emits: never a [[local]] id, never a --require-checks id. */
+export const RESERVED_IDS = ["x.none", "x.required"] as const;
+const RESERVED_ROWS: Record<(typeof RESERVED_IDS)[number], string> = { "x.none": '"no check ran"', "x.required": '"required check missing"' };
+export const isReserved = (id: string): id is (typeof RESERVED_IDS)[number] => (RESERVED_IDS as readonly string[]).includes(id);
 const isStr = (v: unknown): v is string => typeof v === "string" && v !== "";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isStrs = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && x !== "");
@@ -163,7 +167,7 @@ export function parseConfig(text: string, file: string): Config {
     const t = table(l, where, ["id", "run", "static", "timeout_s"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
-    if (id === "x.none") throw new UsageError(`${where}: id x.none is reserved for env-check's own "no check ran" row`);
+    if (isReserved(id)) throw new UsageError(`${where}: id ${id} is reserved for env-check's own ${RESERVED_ROWS[id]} row`);
     if (seen.has(id)) throw new UsageError(`${where}: duplicate id ${id}`);
     seen.add(id);
     const timeoutS = pick(t, "timeout_s", where, (v): v is number => typeof v === "number" && v >= 0.001 && Number.isSafeInteger(Math.round(v * 1000)), "a positive number of seconds (at least 0.001)", 15);
