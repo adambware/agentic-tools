@@ -89,6 +89,11 @@ describe("Dockerfile FROM ${ARG} through the global ARG scope", () => {
   it.each([
     ["an image ARG holding the version ARG", "ARG NODE_VERSION\nARG BASE=node:${NODE_VERSION}-alpine\nFROM ${BASE}\n"],
     ["an image-name ARG with the version ARG as tag", "ARG IMG=node\nARG NODE_VERSION\nFROM ${IMG}:${NODE_VERSION}\n"],
+    // Value: protects=another unset variable after the version ARG does not hide the tool image; fails_when=`-${DISTRO}`
+    // makes the stage a build-time note again (a false PASS beside .nvmrc); why_new=PR #31 review; seam=none; no_claim=none
+    ["an unset variant suffix after the version ARG", "ARG IMG=node\nARG NODE_VERSION\nARG DISTRO\nFROM ${IMG}:${NODE_VERSION}-${DISTRO}\n"],
+    ["an image ARG with an unset variant suffix", "ARG NODE_VERSION\nARG BASE=node:${NODE_VERSION}-${DISTRO}\nFROM ${BASE}\n"],
+    ["an unset registry before the tool image", "ARG NODE_VERSION\nFROM ${REG}/node:${NODE_VERSION}\n"],
   ])("a tool stage set up through %s with no value still FAILs", (_n, text) => fails("node", D(text), /no node version found in Dockerfile/));
   it("an indirect tool stage reads the version ARG a stage gives it, as the direct form does", () => {
     expect(read("dockerfile", "node", D("ARG IMG=node\nARG NODE_VERSION\nFROM ${IMG}:${NODE_VERSION}\nARG NODE_VERSION=20.11.1\n"))).toEqual([["20.11.1"], []]);

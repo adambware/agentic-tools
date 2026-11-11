@@ -10587,7 +10587,7 @@ var logicalLines = (text, file) => {
   return out;
 };
 var EXPAND_MAX = 4096;
-var expand = (w, env) => {
+var expand = (w, env, unset) => {
   let out = "";
   let q = "";
   for (let i = 0; i < w.length; i++) {
@@ -10603,15 +10603,15 @@ var expand = (w, env) => {
       if (!m || j >= w.length) return null;
       const v = env.get(m[1]);
       const set = m[2]?.startsWith(":") ? !!v : v !== void 0;
-      const r = !m[2] ? v ?? null : m[2].endsWith("-") ? set ? v : expand(m[3], env) : set ? expand(m[3], env) : "";
+      const r = !m[2] ? v ?? unset ?? null : m[2].endsWith("-") ? set ? v : expand(m[3], env, unset) : set ? expand(m[3], env, unset) : "";
       if (r === null) return null;
       out += r;
       i = j;
     } else {
       const name = /^[A-Za-z_]\w*/.exec(w.slice(i + 1))?.[0];
       if (!name) out += c;
-      else if (!env.has(name)) return null;
-      else out += env.get(name), i += name.length;
+      else if (!env.has(name) && unset === void 0) return null;
+      else out += env.get(name) ?? unset, i += name.length;
     }
   }
   return out.length > EXPAND_MAX ? null : out;
@@ -10623,14 +10623,15 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const words = (s) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
   const HELD = "\0";
-  const scope = (seed) => {
+  const UNSET = "";
+  const scope = (seed, unset) => {
     const env = new Map(seed);
     for (const l of logical) {
       if (/^\s*FROM\s/i.test(l.text)) break;
       const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
       for (const p of m ? words(m[1]) : []) {
         const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
-        const v = name && eq ? expand(val, env) : null;
+        const v = name && eq ? expand(val, env, unset) : null;
         if (name && v !== null) env.set(name, v);
         else if (name && !(seed.length && name === key && !eq)) env.delete(name);
       }
@@ -10638,7 +10639,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
     return env;
   };
   const global = scope([]);
-  const held = global.has(key) ? global : scope([[key, HELD]]);
+  const held = scope(global.has(key) ? [] : [[key, HELD]], UNSET);
   const skipped = [];
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
@@ -10647,7 +10648,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
     let image = m[2];
     if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0].split("/").pop().split(":")[0].includes("$")) {
       const r = expand(image, global);
-      const h = r ? null : expand(image, held);
+      const h = r ? null : expand(image, held, UNSET);
       const [hn = "", ht = ""] = h?.split("@")[0].split("/").pop().split(":") ?? [];
       if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
         skipped.push(`FROM ${image} (line ${at(l, m[1].length)})`);

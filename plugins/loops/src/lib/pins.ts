@@ -300,10 +300,10 @@ const logicalLines = (text: string, file: string): Logical[] => {
 };
 /** `w` as Docker's shell lexer expands a word in the global ARG scope: quotes removed, `\` escaping the next character,
  * `$A`, `${A}`, `${A:-w}`, `${A-w}`, `${A:+w}` and `${A+w}` read from `env`. Null when a variable it needs is unset (only the
- * build can set it), a `${...}` uses another modifier, or the result passes EXPAND_MAX (ARGs that double an earlier one
- * would otherwise grow without bound). */
+ * build can set it) and no `unset` stand-in is given, a `${...}` uses another modifier, or the result passes EXPAND_MAX
+ * (ARGs that double an earlier one would otherwise grow without bound). */
 const EXPAND_MAX = 4096;
-const expand = (w: string, env: Map<string, string>): string | null => {
+const expand = (w: string, env: Map<string, string>, unset?: string): string | null => {
   let out = "";
   let q = ""; // the open quote
   for (let i = 0; i < w.length; i++) {
@@ -319,15 +319,15 @@ const expand = (w: string, env: Map<string, string>): string | null => {
       if (!m || j >= w.length) return null;
       const v = env.get(m[1]!);
       const set = m[2]?.startsWith(":") ? !!v : v !== undefined;
-      const r = !m[2] ? (v ?? null) : m[2].endsWith("-") ? (set ? v! : expand(m[3]!, env)) : set ? expand(m[3]!, env) : "";
+      const r = !m[2] ? (v ?? unset ?? null) : m[2].endsWith("-") ? (set ? v! : expand(m[3]!, env, unset)) : set ? expand(m[3]!, env, unset) : "";
       if (r === null) return null;
       out += r;
       i = j;
     } else {
       const name = /^[A-Za-z_]\w*/.exec(w.slice(i + 1))?.[0];
       if (!name) out += c;
-      else if (!env.has(name)) return null;
-      else (out += env.get(name)!), (i += name.length);
+      else if (!env.has(name) && unset === undefined) return null;
+      else (out += env.get(name) ?? unset!), (i += name.length);
     }
   }
   return out.length > EXPAND_MAX ? null : out;
@@ -346,17 +346,19 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const words = (s: string) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
   // The global ARG scope; an ARG with no value (or an unknowable one) is unset. `held` is the same scope with the tool's
-  // version ARG, when it has no value there, held as HELD: an image that expands only through it is the tool's image
-  // tagged with that ARG when it reads so, a stage that names its version only at build time, as `FROM node:${KEY}` does.
+  // version ARG, when it has no value there, held as HELD, and every other unset variable read as UNSET: an image that
+  // expands through it is the tool's image tagged with that ARG when it reads so, a stage that names its version only at
+  // build time, as `FROM node:${KEY}` does, whatever unset suffix or registry follows or precedes it (`-${DISTRO}`).
   const HELD = "\0";
-  const scope = (seed: [string, string][]) => {
+  const UNSET = "\x01";
+  const scope = (seed: [string, string][], unset?: string) => {
     const env = new Map(seed);
     for (const l of logical) {
       if (/^\s*FROM\s/i.test(l.text)) break;
       const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
       for (const p of m ? words(m[1]!) : []) {
         const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
-        const v = name && eq ? expand(val!, env) : null;
+        const v = name && eq ? expand(val!, env, unset) : null;
         if (name && v !== null) env.set(name, v);
         else if (name && !(seed.length && name === key && !eq)) env.delete(name);
       }
@@ -364,7 +366,7 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
     return env;
   };
   const global = scope([]);
-  const held = global.has(key) ? global : scope([[key, HELD]]);
+  const held = scope(global.has(key) ? [] : [[key, HELD]], UNSET);
   const skipped: string[] = []; // tool-image FROM lines whose tag is the version ARG
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
@@ -374,7 +376,7 @@ const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
     // The name, with each `${...}` as one unit: `${BASE:-docker.io/node:20}` is a variable name, `${REG}/node:20` is not.
     if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0]!.split("/").pop()!.split(":")[0]!.includes("$")) {
       const r = expand(image, global);
-      const h = r ? null : expand(image, held);
+      const h = r ? null : expand(image, held, UNSET);
       const [hn = "", ht = ""] = h?.split("@")[0]!.split("/").pop()!.split(":") ?? [];
       if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
         skipped.push(`FROM ${image} (line ${at(l, m[1]!.length)})`);
