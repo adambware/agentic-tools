@@ -394,10 +394,13 @@ env-check: 1 FAIL, 1 WARN, 6 PASS, 0 SKIP
 
 Order is groups `a` (pins), `b` (containers), `c` (checkout), `d` (harness), `e` (compose), then `x`. `INFO` lines
 are not counted. A run with no FAIL, WARN or PASS (only SKIP and INFO rows, or none: a SKIP is not a check) adds
-`WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)` last (under `--static`:
-`no check ran under --static (CI=true implies it)`, naming the checks that do run there); exit stays 0. Results with the same level and message fold into one line that ends
+`WARN x.none  no check ran — fix: add checks to .loops/env-check.toml (see the loops README)` after the other rows
+(only `x.required` rows follow it; under `--static`:
+`no check ran under --static (CI=true implies it)`, naming the checks that do run there); exit stays 0, except under
+`--require-checks` (either form), where the same row is `FAIL x.none` and the exit is 1. Results with the same level and message fold into one line that ends
 `(also: <ids>)`, so one root cause is one FAIL. Every WARN or FAIL carries a fix. Flags:
 `--static` (also implied by `CI=true`), `--json`, `--quiet` (WARN and FAIL plus the summary),
+`--require-checks[=<ids>]` (0.8.0, for CI: see **Required checks** below),
 `--compose-project` (print the Compose project name for this checkout and exit 0 when `e.project` keeps it, with one
 `env-check: warning:` line on stderr per FAIL that keeps it, then one per peer WARN (a peer WARN never changes the
 exit, 0.8.0); exit 1 with each FAIL and its fix on stderr when a FAIL
@@ -424,9 +427,33 @@ an absent one included (git would read it as an empty index), is dropped.
 rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
 `ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
 
+**Required checks (0.8.0).** `--require-checks` makes a CI run fail when a check it relies on stops running (a
+deleted `[[pins]]` entry, a `[[local]]` that lost `static = true`). The value goes after `=`, never as the next
+argument:
+
+- `--require-checks` (bare): `x.none` (no check ran) is a FAIL, exit 1.
+- `--require-checks=<ids>`: also bare, plus each id must produce at least one PASS, WARN or FAIL row. `<ids>` is a
+  comma-separated list (spaces around commas are trimmed, duplicates dropped) of exact ids (`a.pins.go`) or globs
+  (`a.pins.*`; `*` is the only metacharacter and matches any run of characters, dots included). An exact id is
+  string equality: `a.pins.go.setup` never satisfies `a.pins.go`. Each unsatisfied id adds one row, in the order
+  written, after `x.none` (last):
+  `FAIL x.required  <id> not configured: no check produced this id` (for a glob, `an id matching it`), or
+  `FAIL x.required  <id> produced only SKIP/INFO rows (<LEVEL> <row id>: <message>; ...)`, which quotes up to three of
+  them (for example `a.local.go` under `--static`: `SKIP a.local.go: not run in --static mode`).
+- An id in a built-in group (`a.` to `e.`) is satisfied only by env-check's own rows, never by a `[[local]]` row with
+  a lookalike id or output (the not-configured row then says so); an `x.` id only by a `[[local]]` row. To require a
+  repo check, give its `[[local]]` an `x.` id.
+- Ids are matched before rows with the same level and message are folded, so an id listed in another row's
+  `(also: ...)` counts.
+- Exit 2: the space form (`--require-checks a.pins.go`: "write --require-checks=a.pins.go"), an empty value
+  (`--require-checks=`), an empty item (`a.pins.go,,b.x`), an id that does not look like `<a-e or x>.<name>`
+  (`pins.go`, `*.go`, `a.`), a reserved id (`x.none`, `x.required`), and `--require-checks` with `--compose-project`.
+- `--quiet` still prints the `x.required` rows; `--json` carries them in `results` and counts them in `summary.fail`
+  and `exit` (schema unchanged).
+
 Unknown keys, wrong types, an unsupported `schema_version`, an `engine` range newer than this
 CLI, a missing or non-executable local check, a local check `run` that is absolute or leaves the
-repo, a `[[local]]` id `x.none` (reserved), `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
+repo, a `[[local]]` id `x.none` or `x.required` (reserved), `compare = "floor"` (removed in 0.6.0), and bad TOML are all exit 2.
 The exit-2 error line of every `loops` command is redacted and escaped like a text row, the command name included.
 
 ```toml
@@ -479,7 +506,7 @@ main_project = "app"                    # 0.8.0, test only: the -p name the repo
 main_files = ["compose.yml", "compose.dev.yml"]  # 0.8.0, test only: the main checkout's files (default: files)
 
 [[local]]                               # a repo's own checks
-id = "d.lint-lock"                      # <a-e or x>.<name>; x.none is reserved
+id = "d.lint-lock"                      # <a-e or x>.<name>; x.none and x.required are reserved
 run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
 timeout_s = 15
@@ -861,6 +888,70 @@ Any other exit code comes from the engine.
 **Re-copy the wrapper after upgrading loops.** A repo keeps running the copy it took, so a release that changes
 `templates/env-check` (0.7.1 added exits 1 and 2) reaches a consumer only when it copies the template over its
 `bin/env-check` again (`chmod +x`). The CHANGELOG says when a release changes the template.
+
+#### Run the static checks in CI
+
+The composite action at `plugins/loops` runs `node bin/loops.mjs env-check --static --require-checks[=<ids>]` once,
+with your checkout as its working directory, writes the rows to the job's step summary in a `text` fence, and
+exits with the engine's code (0 clean, 1 a FAIL row, 2 a usage or config error). It needs node 18 or newer: with
+node missing or older it exits 2 with `add actions/setup-node`. Inputs:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `working-directory` | `.` | the checkout to check, relative to `$GITHUB_WORKSPACE` (an absolute path stays absolute) |
+| `require-checks` | empty | the ids for `--require-checks=<ids>`; empty runs bare `--require-checks` |
+
+It has no outputs. Pin it, and every other action, by a 40-hex commit SHA:
+
+```yaml
+name: env-check
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  env-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - uses: adambware/agentic-tools/plugins/loops@<40-hex-sha> # main as of <date>
+        with:
+          require-checks: a.pins.go
+```
+
+Replace `<40-hex-sha>` with a commit of this repo that has the action (0.8.0 or later), and `<date>` with the day
+you took it, so a reader knows how old the pin is. To find the current one:
+
+```sh
+git ls-remote https://github.com/adambware/agentic-tools refs/heads/main
+```
+
+A shallow checkout (`actions/checkout`'s default `fetch-depth: 1`) is fine: `--static` reads the working tree and
+one `git rev-parse`, never history. The rows appear in the step's log and on the run's summary page.
+Windows runners are not supported (the action exits 2 there); use `ubuntu-latest` or `macos-latest`. Moving the pin
+to a newer SHA is how CI gets a newer engine; a repo whose `.loops/env-check.toml` sets `engine = ">=0.8.0"` fails
+with "update agentic-tools" on an older pin.
+
+Without the action (or to run other flags), check out agentic-tools at a SHA into a side path and run its bundle,
+directly or through your repo's wrapper copy, which runs `$LOOPS_BIN` when it is set:
+
+```yaml
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: adambware/agentic-tools
+          ref: <40-hex-sha>
+          path: .agentic-tools
+      - run: node .agentic-tools/plugins/loops/bin/loops.mjs env-check --static --require-checks=a.pins.go
+      # or, with templates/env-check copied to bin/env-check:
+      # - run: bin/env-check --static --require-checks=a.pins.go
+      #   env:
+      #     LOOPS_BIN: .agentic-tools/plugins/loops/bin/loops.mjs
+```
+
+Keep the side path out of what your checks read: `.agentic-tools` is untracked in your repo, so tracked-file globs
+and `d.tracked` never see it. Add `.agentic-tools/` to `.gitignore` if a check of yours walks the working tree.
 
 ## Roadmap
 
