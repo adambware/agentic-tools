@@ -88,3 +88,64 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: differential and policy corpora
         run: npx vitest run src/lib/compose-config.test.ts src/lib/compose-policy.test.ts
+
+  # The composite action (plugins/loops/action.yml) end to end, as a consumer runs it: the action's code is this
+  # checkout, the repo it checks is a fixture copied into $RUNNER_TEMP and committed there (a separate directory).
+  # mismatch must fail on its go pin, clean must pass. The step's own summary is a per-step file, so the FAIL row is
+  # asserted from a second run of the action's script with GITHUB_STEP_SUMMARY pointed at a file this job reads.
+  action-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: copy the fixtures into RUNNER_TEMP as git repos
+        run: |
+          set -euo pipefail
+          for name in clean mismatch; do
+            dest="$RUNNER_TEMP/$name"
+            cp -R "plugins/loops/fixtures/env-check/$name" "$dest"
+            git -C "$dest" init -q -b main
+            git -C "$dest" add -A
+            git -C "$dest" -c user.name=loops-ci -c user.email=loops-ci@example.com -c commit.gpgsign=false commit -q -m fixture
+          done
+      - name: action on the mismatch fixture
+        id: mismatch
+        continue-on-error: true
+        uses: ./plugins/loops
+        with:
+          working-directory: ${{ runner.temp }}/mismatch
+          require-checks: a.pins.go
+      - name: the mismatch step failed
+        env:
+          OUTCOME: ${{ steps.mismatch.outcome }}
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::the action passed on the mismatch fixture (outcome $OUTCOME)"
+            exit 1
+          fi
+      - name: the mismatch run prints FAIL a.pins.go
+        run: |
+          set -uo pipefail
+          summary="$RUNNER_TEMP/mismatch-summary.md"
+          : > "$summary"
+          # The default shell is bash -e: keep the script's exit 1 from ending the step.
+          code=0
+          GITHUB_ACTION_PATH="$GITHUB_WORKSPACE/plugins/loops" GITHUB_STEP_SUMMARY="$summary" \
+            INPUT_WORKING_DIRECTORY="$RUNNER_TEMP/mismatch" INPUT_REQUIRE_CHECKS=a.pins.go \
+            bash plugins/loops/scripts/action-env-check.sh || code=$?
+          cat "$summary"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::expected exit 1 on the mismatch fixture, got $code"
+            exit 1
+          fi
+          if ! grep -q '^FAIL a\.pins\.go ' "$summary"; then
+            echo "::error::the mismatch summary has no FAIL a.pins.go row"
+            exit 1
+          fi
+      - name: action on the clean fixture
+        uses: ./plugins/loops
+        with:
+          working-directory: ${{ runner.temp }}/clean
+          require-checks: a.pins.go
