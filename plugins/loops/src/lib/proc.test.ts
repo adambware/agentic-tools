@@ -14,18 +14,38 @@ describe("shimOf", () => {
     put(d, "bypath", '#!/usr/bin/env bash\n# asdf-plugin: nodejs 20.0.0\n# asdf-plugin: nodejs 22.1.0\nexec /home/u/.asdf/bin/asdf exec "bypath" "$@"\n', true);
     put(d, "quoted", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec "/opt/asdf dir/bin/asdf" exec "quoted" "$@"\n', true);
     put(d, "varpath", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec $ASDF_DIR/bin/asdf exec "varpath" "$@"\n', true);
-    expect(shimOf(join(d, "byname"))).toEqual({ manager: "asdf", cmd: null });
-    expect(shimOf(join(d, "bypath"))).toEqual({ manager: "asdf", cmd: "/home/u/.asdf/bin/asdf" });
-    expect(shimOf(join(d, "quoted"))).toEqual({ manager: "asdf", cmd: "/opt/asdf dir/bin/asdf" });
-    expect(shimOf(join(d, "varpath"))).toEqual({ manager: "asdf", cmd: null }); // not a plain absolute path: PATH lookup
+    expect(shimOf(join(d, "byname"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "golang", version: "1.26.6" }] });
+    expect(shimOf(join(d, "bypath"))).toEqual({ manager: "asdf", cmd: "/home/u/.asdf/bin/asdf", providers: [{ plugin: "nodejs", version: "20.0.0" }, { plugin: "nodejs", version: "22.1.0" }] });
+    expect(shimOf(join(d, "quoted"))).toEqual({ manager: "asdf", cmd: "/opt/asdf dir/bin/asdf", providers: [{ plugin: "x", version: "1" }] });
+    expect(shimOf(join(d, "varpath"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "x", version: "1" }] }); // not a plain absolute path: PATH lookup
+  });
+
+  // Value: protects=a shim over 1 MiB keeps only its 4 KiB head (providers and cmd from the head), never a full read;
+  // fails_when=the size cap is dropped or inverted; why_new=only a 4 KiB to 1 MiB shim was tested; seam=none;
+  // no_claim=memory use
+  it("keeps only the head of an asdf shim larger than 1 MiB", () => {
+    const d = tmp();
+    const pad = `# ${"x".repeat(1022)}\n`.repeat(1100);
+    put(d, "huge", `#!/usr/bin/env bash\n# asdf-plugin: golang 1.26.1\n${pad}# asdf-plugin: late 9\nexec /home/u/.asdf/bin/asdf exec "huge" "$@"\n`, true);
+    expect(shimOf(join(d, "huge"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "golang", version: "1.26.1" }] });
+  });
+
+  it("reads every header line and the exec line of an asdf shim longer than 4 KiB", () => {
+    const d = tmp();
+    const lines = Array.from({ length: 200 }, (_, i) => `# asdf-plugin: lint 1.${i}.0`).join("\n");
+    put(d, "long", `#!/usr/bin/env bash\n${lines}\n# asdf-plugin: golang 1.26.1\nexec /home/u/.asdf/bin/asdf exec "long" "$@"\n`, true);
+    const s = shimOf(join(d, "long"));
+    expect(s?.providers.length).toBe(201);
+    expect(s?.providers.at(-1)).toEqual({ plugin: "golang", version: "1.26.1" });
+    expect(s?.cmd).toBe("/home/u/.asdf/bin/asdf");
   });
 
   it("never takes an exec'd program not named asdf as the asdf to ask, so a planted shim cannot pick what runs", () => {
     const d = tmp();
     put(d, "evil", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec /tmp/payload exec "evil" "$@"\n', true);
     put(d, "lookalike", '#!/usr/bin/env bash\n# asdf-plugin: x 1\nexec "/opt/asdf/bin/asdf-wrapper" exec "lookalike" "$@"\n', true);
-    expect(shimOf(join(d, "evil"))).toEqual({ manager: "asdf", cmd: null });
-    expect(shimOf(join(d, "lookalike"))).toEqual({ manager: "asdf", cmd: null });
+    expect(shimOf(join(d, "evil"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "x", version: "1" }] });
+    expect(shimOf(join(d, "lookalike"))).toEqual({ manager: "asdf", cmd: null, providers: [{ plugin: "x", version: "1" }] });
   });
 
   it("takes a symlink to the mise binary as a mise shim, but not mise itself", () => {
@@ -33,8 +53,8 @@ describe("shimOf", () => {
     put(d, "mise", "#!/bin/sh\n", true);
     symlinkSync(join(d, "mise"), join(d, "tool"));
     symlinkSync(join(d, "mise"), join(d, "mise-link"));
-    expect(shimOf(join(d, "tool"))).toEqual({ manager: "mise", cmd: join(d, "mise") });
-    expect(shimOf(join(d, "mise-link"))).toEqual({ manager: "mise", cmd: join(d, "mise") });
+    expect(shimOf(join(d, "tool"))).toEqual({ manager: "mise", cmd: join(d, "mise"), providers: [] });
+    expect(shimOf(join(d, "mise-link"))).toEqual({ manager: "mise", cmd: join(d, "mise"), providers: [] });
     expect(shimOf(join(d, "mise"))).toBeNull();
   });
 

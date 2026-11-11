@@ -9,9 +9,16 @@ import { VERSION } from "./version.js";
 export interface Pin {
   tool: string;
   sources: string[];
+  /** Sources (as written in sources) read when present and skipped when absent (0.8.0); a subset of sources. */
+  optional: string[];
   compare: Compare;
-  local: "fail" | "warn" | "off";
+  /** The a.local level for a version that differs first in each component (0.8.0); a probe failure uses major. */
+  local: Record<Part, Severity>;
+  /** "check" compares the pin against each range a source yields (0.8.0); "info" reports the range only. */
+  range: "check" | "info";
 }
+export type Severity = "fail" | "warn" | "info" | "off";
+export type Part = "major" | "minor" | "patch";
 export interface LocalCheck {
   id: string;
   run: string;
@@ -31,7 +38,7 @@ export interface Config {
 
 type T = Record<string, unknown>;
 function table(v: unknown, where: string, allowed: string[]): T {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) throw new UsageError(`${where} must be a table`);
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where} must be a table`);
   for (const k of Object.keys(v)) if (!allowed.includes(k)) throw new UsageError(`${where}: unknown key "${k}" (a key from a newer loops needs a newer engine: update agentic-tools, and set engine = ">=0.8.0" or the version that added it, so an older engine says so)`);
   return v as T;
 }
@@ -58,6 +65,21 @@ const list = (v: unknown, where: string): unknown[] => {
   if (!Array.isArray(v)) throw new UsageError(`${where} must be an array of tables`);
   return v;
 };
+
+/** `local`: "fail" | "warn" | "off" sets every component; a { major, minor, patch } table sets each (missing: warn). */
+function localOf(v: unknown, where: string): Pin["local"] {
+  const all = (s: Severity) => ({ major: s, minor: s, patch: s });
+  const what = "fail|warn|off or a { major, minor, patch } table";
+  if (v === undefined || typeof v === "string") return all(pick({ local: v }, "local", where, oneOf<Severity>("fail", "warn", "off"), what, "warn"));
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Date) throw new UsageError(`${where}: local must be ${what}`);
+  const t = table(v, `${where}: local`, ["major", "minor", "patch"]);
+  const part = (k: Part): Severity => {
+    const s = t[k] ?? "warn";
+    if (!oneOf<Severity>("fail", "warn", "info", "off")(s)) throw new UsageError(`${where}: local.${k} must be fail|warn|info|off`);
+    return s;
+  };
+  return { major: part("major"), minor: part("minor"), patch: part("patch") };
+}
 
 /** `>=X.Y.Z` is the only range form; anything else is a config error. */
 function checkEngine(range: string): void {
@@ -92,17 +114,21 @@ export function parseConfig(text: string, file: string): Config {
 
   const pins = list(top.pins ?? [], "[[pins]]").map((p, i): Pin => {
     const where = `[[pins]] #${i + 1}`;
-    const t = table(p, where, ["tool", "sources", "compare", "local"]);
+    const t = table(p, where, ["tool", "sources", "optional", "compare", "local", "range"]);
     const sources = pick(t, "sources", where, isStrs, "a list of strings");
     for (const s of sources) if (!isSourceKind(s)) throw new UsageError(`${where}: unknown source kind in "${s}"`);
     if (!sources.length) throw new UsageError(`${where}: sources is empty`);
+    const optional = pick(t, "optional", where, isStrs, "a list of strings", []);
+    for (const s of optional) if (!sources.includes(s)) throw new UsageError(`${where}: optional "${s}" is not in sources (list a source exactly as written there)`);
     if (t.compare === "floor")
-      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: ranges are no longer compared (a later a.range check will cover a pin inside a range); use exact, minor or major`);
+      throw new UsageError(`${where}: compare = floor was removed in loops 0.6.0: compare no longer reads ranges; use exact, minor or major, and set range = "check" (0.8.0) to check the pin against each range`);
     return {
       tool: pick(t, "tool", where, isStr, "a string"),
       sources,
+      optional,
       compare: pick(t, "compare", where, oneOf<Compare>("exact", "minor", "major"), "exact|minor|major", "exact"),
-      local: pick(t, "local", where, oneOf<Pin["local"]>("fail", "warn", "off"), "fail|warn|off", "warn"),
+      local: localOf(t.local, where),
+      range: pick(t, "range", where, oneOf<"check" | "info">("check", "info"), "check|info", "info"),
     };
   });
 

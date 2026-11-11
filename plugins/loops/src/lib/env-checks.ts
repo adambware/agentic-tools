@@ -7,8 +7,8 @@ import { isMap, parseAllDocuments } from "yaml";
 import { composeName, composeNameRaw, composeVersion, isSwitch, rerun, type ComposeError, type ComposeName } from "./compose-config.js";
 import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
-import type { Config, LocalCheck } from "./env-config.js";
-import { ALIAS, disagreement, localOk, pinOf, PinError, readSource, ver, type PinValue } from "./pins.js";
+import type { Config, LocalCheck, Severity } from "./env-config.js";
+import { ALIAS, diffPart, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -104,40 +104,62 @@ export function pinChecks(c: Ctx): Result[] {
     const id = `a.pins.${pin.tool}`;
     let vals: PinValue[];
     const notes: string[] = [];
+    // B2: an absent optional source is skipped; when every source is optional and none is present, there is no pin.
+    const present = pin.sources.filter((s) => !pin.optional.includes(s) || !sourceAbsent(c.root, c.tracked, s));
+    if (!present.length) {
+      out.push(res("SKIP", id, `no source present (all optional: ${pin.sources.join(", ")})`));
+      continue;
+    }
     try {
-      vals = pin.sources.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
+      vals = present.flatMap((s) => readSource(c.root, c.tracked, pin.tool, s, notes));
     } catch (e) {
       if (!(e instanceof PinError)) throw e;
       out.push(res("FAIL", id, e.message, e.fix ?? `fix the source file or the sources in ${CFG}`));
       continue;
     }
-    // Only exact pins are compared; each distinct (source, value) range is one INFO row after the verdict, then one per
-    // distinct workflow skipped for its reusable-workflow calls.
+    // Only exact pins are compared with each other; each distinct (source, value) range is one row after the verdict
+    // (INFO, or under range = "check" the pin against that range), then one INFO per distinct workflow skipped for its
+    // reusable-workflow calls.
     const pins = vals.filter((v) => !v.range);
     const srcs = (xs: PinValue[]) => [...new Set(xs.map((v) => v.src))].join(", ");
     const seen = new Set<string>();
-    const info = vals
-      .filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`))
-      .map((v) => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared`))
-      .concat([...new Set(notes)].map((n) => res("INFO", id, n)));
+    const ranges = vals.filter((v) => v.range && !seen.has(`${v.src}\0${v.v}`) && seen.add(`${v.src}\0${v.v}`));
+    const info = (v: PinValue, why = "") => res("INFO", id, `${v.src}: "${v.v}" is a range, not compared${why}`);
+    const noted = [...new Set(notes)].map((n) => res("INFO", id, n));
     if (!pins.length) {
-      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals)}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...info);
+      out.push(res("FAIL", id, `no exact pin among sources (${srcs(vals) || present.join(", ")}); pin an exact version in a supported source`, `add a source that pins an exact version to ${CFG}`), ...ranges.map((v) => info(v)), ...noted);
       continue;
     }
     const bad = disagreement(vals, pin.compare);
-    if (bad) {
-      out.push(res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`), ...info);
-      continue;
-    }
     const want = pinOf(vals);
-    out.push(res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...info);
-    if (c.static || pin.local === "off") continue;
+    // B1: under range = "check", each distinct pin against each range (a series as the set of versions it names), so the
+    // verdict never depends on which pin is the most specific: the row is the worst, FAIL outside, WARN partly inside,
+    // INFO when a pin cannot be checked, else PASS. With more than one distinct pin, the row names the pin's sources.
+    const distinct = [...new Set(pins.map((v) => v.v))];
+    const named = (w: string) => (distinct.length > 1 ? `${w} (${srcs(pins.filter((v) => v.v === w))})` : w);
+    const ranged = (v: PinValue): Result => {
+      if (pin.range === "info") return info(v);
+      if (bad) return info(v, " (the pins disagree)");
+      const at = distinct.map((w) => [w, inRange(w, v.v, v.pep440)] as const);
+      const first = (k: string | null) => at.find(([, a]) => a === k)?.[0];
+      const outside = first("outside");
+      const partly = first("partly");
+      return outside !== undefined ? res("FAIL", id, `${v.src}: pin ${named(outside)} is outside "${v.v}"`, `pin a version inside the range, or change the range`)
+        : partly !== undefined ? res("WARN", id, `${v.src}: pin ${named(partly)} is only partly inside "${v.v}"`, `pin a version the range wholly allows (a series pin names every version in it), or widen the range`)
+        : first(null) !== undefined ? info(v, ' (not a form range = "check" reads)')
+        : res("PASS", id, `${v.src}: ${distinct.length > 1 ? `pins ${distinct.map(named).join(", ")} are` : `pin ${want} is`} inside "${v.v}"`);
+    };
+    out.push(bad ? res("FAIL", id, bad, `align the pinned versions, or loosen compare in ${CFG}`) : res("PASS", id, `${pin.tool} ${want} (${srcs(pins)})`), ...ranges.map(ranged), ...noted);
+    const sev = pin.local;
+    if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
     const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
-    const level = pin.local === "fail" ? "FAIL" : "WARN";
-    const fix = installFix(c.root, pin.tool, want, pins);
+    const row = (s: Severity, message: string, fix: string) => void (s !== "off" && out.push(res(s.toUpperCase() as Level, lid, message, fix)));
+    // When the pins disagree (B5), each distinct pin gets its own row, named by its sources, and the fix is to align them.
+    const fixFor = (w: string) => (bad ? `align the pins first (${id}); env-check then names the version to install` : installFix(c.root, pin.tool, w, pins));
+    const of = (w: string) => (bad ? ` (${srcs(pins.filter((v) => v.v === w))})` : "");
     const cmd = [bin, ...args].join(" ");
     // The tool's first output line, redacted then cut; the renderer escapes it, so it stays on this row and cannot read as
     // a second fix.
@@ -145,19 +167,73 @@ export function pinChecks(c: Ctx): Result[] {
       const l = texts.flatMap((t) => t.split("\n")).map((x) => x.trim()).find(Boolean);
       return l ? `: ${cut(c.redact(l), 120)}` : "";
     };
-    if (r.timedOut) out.push(res(level, lid, `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`, fix));
-    else if (r.notFound) {
-      // ENOENT for a file that is on PATH is its #! interpreter, which spawn reports as it does a missing file.
-      const at = which(bin, c.env.PATH);
-      out.push(res(level, lid, at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`, fix));
+    // A probe that gives no version is reported at the major level. ENOENT for a file that is on PATH is its #!
+    // interpreter, which spawn reports as it does a missing file.
+    const at = r.notFound ? which(bin, c.env.PATH) : null;
+    const failed = r.timedOut ? `${cmd} timed out after ${PROBE_TIMEOUT_MS / 1000}s`
+      : r.notFound ? (at ? `${at} ${NO_INTERP}` : `${bin} not found on PATH`)
+      : r.code === null ? `${cmd} could not run (${r.abend ?? "killed"})`
+      : r.code !== 0 ? `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`
+      : null;
+    if (failed !== null || have === null) row(sev.major, failed ?? `${cmd} printed no version${said(r.stdout, r.stderr)}`, fixFor(want));
+    else {
+      // compare decides; only a rejected version picks a level, by the first numeric component that differs (patch for a
+      // prerelease-only difference).
+      for (const w of bad ? [...new Set(pins.map((v) => v.v))] : [want]) {
+        if (localOk(have, w, pin.compare)) out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${w}${of(w)}`));
+        else row(sev[diffPart(have, w)], `local ${pin.tool} ${have} does not match pin ${w}${of(w)}`, fixFor(w));
+      }
     }
-    else if (r.code === null) out.push(res(level, lid, `${cmd} could not run (${r.abend ?? "killed"})`, fix));
-    else if (r.code !== 0) out.push(res(level, lid, `${cmd} exited ${r.code}${said(r.stderr, r.stdout)}`, fix));
-    else if (have === null) out.push(res(level, lid, `${cmd} printed no version${said(r.stdout, r.stderr)}`, fix));
-    else if (!localOk(have, want, pin.compare)) out.push(res(level, lid, `local ${pin.tool} ${have} does not match pin ${want}`, fix));
-    else out.push(res("PASS", lid, `local ${pin.tool} ${have} matches pin ${want}`));
+    const amb = ambiguousShim(c, bin);
+    if (amb) out.push(res("WARN", lid, amb, `find the stray copy (asdf which ${bin}, then the bin dir of each listed provider; a Go-installed tool is in that Go install's bin dir), remove it, then run asdf reshim; ask the machine owner if unsure`));
   }
   return out;
+}
+
+/**
+ * Why the asdf shim `bin` resolves to on PATH is ambiguous, or null: more than one plugin among its `# asdf-plugin:`
+ * header lines has a version active here, so more than one copy can answer to the name (B6). Each plugin is named by
+ * the first of its active versions the shim lists. Read from asdf's own files, never by running asdf or the tool.
+ */
+function ambiguousShim(c: Ctx, bin: string): string | null {
+  const p = which(bin, c.env.PATH);
+  const s = p ? shimOf(p) : null;
+  if (!s || s.manager !== "asdf") return null;
+  const found = [...new Set(s.providers.map((x) => x.plugin))].flatMap((plugin) => {
+    const v = asdfActive(c, plugin).find((a) => s.providers.some((x) => x.plugin === plugin && x.version === a));
+    return v ? [`${plugin} ${v}`] : [];
+  });
+  if (found.length < 2) return null;
+  return `ambiguous shim: provided by ${found.slice(0, -1).join(", ")} and ${found.at(-1)} (shim ${p})`;
+}
+
+/**
+ * The versions asdf takes as active for `plugin` in this checkout: `ASDF_<PLUGIN>_VERSION` (upper-cased, dashes as
+ * underscores, as asdf names it), else the nearest `.tool-versions` that lists the plugin, walking up from the checkout,
+ * else `$HOME/.tool-versions`. A line may list several versions; all are active. No `asdf current`: nothing runs.
+ */
+function asdfActive(c: Ctx, plugin: string): string[] {
+  const env = c.env[`ASDF_${plugin.toUpperCase().replace(/-/g, "_")}_VERSION`]?.trim();
+  if (env) return env.split(/\s+/);
+  const listed = (dir: string): string[] | null => {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, ".tool-versions"), "utf8");
+    } catch {
+      return null;
+    }
+    for (const l of text.split("\n")) {
+      const [name, ...vs] = l.replace(/#.*/, "").trim().split(/\s+/);
+      if (name === plugin && vs.length) return vs;
+    }
+    return null;
+  };
+  for (let d = c.root; ; d = dirname(d)) {
+    const v = listed(d);
+    if (v) return v;
+    if (dirname(d) === d) break;
+  }
+  return (c.env.HOME && listed(c.env.HOME)) || [];
 }
 
 export function sharedCheck(c: Ctx): Result[] {

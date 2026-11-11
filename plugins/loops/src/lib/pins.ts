@@ -1,9 +1,11 @@
 // Version pins for `loops env-check`: read one tool's version out of the files that pin it, then
-// compare them. Every value a source yields is a pin (compared), a range (reported, never compared)
+// compare them. Every value a source yields is a pin (compared), a range (reported; checked against the pin only under
+// `range = "check"`, never compared with the pins)
 // or an unsupported form. A configured source that cannot be read or parsed, or holds an unsupported
 // form, throws PinError (reported as a FAIL by the caller), never a pass.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, sep } from "node:path";
+import { inc, lt, Range, satisfies, SemVer, valid, validRange } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, visit, type Node, type YAMLMap } from "yaml";
 import { compileGlob, isGlob } from "./glob.js";
@@ -19,13 +21,17 @@ export interface PinValue {
   src: string;
   /** The pinned version, or a range's value as written. */
   v: string;
-  /** A range (engines, requires-python, a range input): reported, never compared. */
+  /** A range (engines, requires-python, a range input): reported, and compared only under `range = "check"`. */
   range: boolean;
+  /** A range from Python packaging metadata (requires-python, Poetry, Pipfile), read as PEP 440; else semver. */
+  pep440?: boolean;
 }
-type Found = { v: string; range?: boolean }[];
+type Found = { v: string; range?: boolean; pep440?: boolean }[];
 /** `file` is the repo-relative file `text` came from, for messages. A workflow parser adds each job-level reusable-workflow
- * call it skipped to `calls`. */
-type Parser = (text: string, tool: string, root: string, file: string, calls?: string[]) => Found;
+ * call it skipped to `calls`; a parser adds each value it cannot know (reported as INFO, never compared) to `notes`, and
+ * each place the tool is set up with no version it can read (a Dockerfile stage of the tool's image whose version ARG has
+ * no value) to `bare`, so a note elsewhere never stands in for that missing pin. */
+type Parser = (text: string, tool: string, root: string, file: string, calls?: string[], notes?: string[], bare?: string[]) => Found;
 
 /** The first version in `s`, keeping a prerelease suffix (`22.0.0-rc.1`, `-beta-30`, `3.13.0rc1`, `1.26rc1`, `3.14.0.dev0`).
  * Only known prerelease shapes count, so an image variant (`-alpine`, `-slim-bookworm`), a patchlevel (`3.1.4p223`), a
@@ -58,6 +64,66 @@ const isRange = (s: string): boolean => {
   const toks = s.replace(/(~>|===?|!=|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1").split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/);
   return (toks.length > 1 || OP.test(s)) && toks.every((t) => exact(t.replace(OP, "")) !== null);
 };
+/** `range` (one `isRange` accepts) in semver's grammar, or null when it cannot be checked exactly: `!=`, `===`, a
+ * prerelease, or anything semver rejects. npm and Actions ranges go to semver as written, but never with a PEP 440
+ * operator or `,`. PEP 440 (`pep440`) zero-pads a partial version (`>3.11` is `>3.11.0`, `<=3.11` `<=3.11.0`, `==3.11`
+ * `3.11.0`), reads `==3.11.*` as `3.11.x`, `~=3.11` as `>=3.11.0 <4.0.0` and `~=3.11.2` as `>=3.11.2 <3.12.0`, and `,` as
+ * and; Poetry's `^` and `~` mean what semver's do. */
+export function semverRange(range: string, pep440: boolean): string | null {
+  if (!isRange(range) || /!=|===/.test(range)) return null;
+  const toks = range.replace(/(~>|==|<=|>=|~=|[<>=~^])\s+(?=v?\d)/gi, "$1");
+  if (toks.split(/\s*(?:\|\||,)\s*|\s+-\s+|\s+/).some((t) => /[a-z]/i.test(exact(t.replace(OP, "")) ?? ""))) return null;
+  if (!pep440) return /~=|==|,/.test(toks) ? null : validRange(toks);
+  if (/\s-\s|~>/.test(toks)) return null;
+  const one = (c: string): string | null => {
+    const [, op = "==", v] = /^(~=|==|<=|>=|[<>=^~])?(.*)$/.exec(c)!;
+    const wild = /\.[xX*]$/.test(v!);
+    const n = exact(v!)!.split(".").map(Number);
+    const pad = [...n, 0, 0].slice(0, 3).join(".");
+    if (op === "^" || op === "~") return c;
+    if (op === "==") return wild ? `${n.join(".")}.x` : pad;
+    if (op === "=" || wild) return null;
+    if (op !== "~=") return `${op}${pad}`;
+    if (n.length < 2) return null;
+    const up = n.slice(0, -1);
+    up[up.length - 1]! += 1;
+    return `>=${pad} <${[...up, 0, 0].slice(0, 3).join(".")}`;
+  };
+  const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
+  return alts.some((a) => a.includes(null)) ? null : validRange(alts.map((a) => a.join(" ")).join(" || "));
+}
+/** The release after `v`: the next patch, else (a patch at Number.MAX_SAFE_INTEGER) the next minor, then major. */
+const after = (v: string): string | null =>
+  (["patch", "minor", "major"] as const).map((p) => inc(v, p)).find((x) => x !== null && valid(x) !== null) ?? null;
+/** Whether each release in the series `pin` names (`20` is [20.0.0, 21.0.0)) that decides `r` satisfies it, also when only
+ * the union of its `||` alternatives covers the series (semver's `subset` wants one alternative to). Which releases satisfy
+ * `r` changes only at its comparators' versions, so the series' first release and, inside the series, each comparator's
+ * version and the release after it decide: every one satisfies `r` (inside), some do (partly), or none does (outside). */
+const deciding = (pin: string, r: string): boolean[] => {
+  const n = pin.split(".").map(Number);
+  const lo = [...n, 0, 0].slice(0, 3).join(".");
+  const up = [...n];
+  up[up.length - 1]! += 1;
+  const hi = [...up, 0, 0].slice(0, 3).join(".");
+  const at = new Set([lo]);
+  for (const alt of new Range(r).set)
+    for (const c of alt) {
+      if (!(c.semver instanceof SemVer)) continue; // `*`
+      const core = `${c.semver.major}.${c.semver.minor}.${c.semver.patch}`;
+      for (const v of [core, after(core)]) if (v !== null && !lt(v, lo) && lt(v, hi)) at.add(v);
+    }
+  return [...at].map((v) => satisfies(v, r));
+};
+/** Where the set of versions `pin` names (a series `20` is `20.x`) sits against `range`; null when either cannot be
+ * checked (`semverRange`, a prerelease pin, or one semver cannot read, such as a leading zero). */
+export function inRange(pin: string, range: string, pep440 = false): "inside" | "partly" | "outside" | null {
+  const r = semverRange(range, pep440);
+  if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
+  const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
+  if (validRange(set) === null) return null;
+  const ok = deciding(pin, r);
+  return ok.every(Boolean) ? "inside" : ok.some(Boolean) ? "partly" : "outside";
+}
 /** A version spec as a pin, the series it installs (`1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `~> v2`, `^1`, node's `=20.11.1`);
  * as a range when it is wider than its stated components (`>=1.20`, `^1.20`, `~1.20.3`, `20 || 22`), kept as written;
  * null for anything else. */
@@ -150,12 +216,12 @@ const pyproject: Parser = (text) => {
     const rp = table(doc.project)?.["requires-python"];
     if (rp === undefined) throw new PinError("no project.requires-python");
     if (typeof rp !== "string") throw new PinError("requires-python is not a string");
-    return [{ v: rp.trim(), range: true }];
+    return [{ v: rp.trim(), range: true, pep440: true }];
   }
   const py = table(table(table(doc.tool)?.poetry)?.dependencies)?.python;
   if (py === undefined) throw new PinError("no project.requires-python or tool.poetry.dependencies.python");
   if (typeof py !== "string") throw new PinError("tool.poetry.dependencies.python is not a string");
-  return [{ v: py.trim(), range: true }];
+  return [{ v: py.trim(), range: true, pep440: true }];
 };
 /** `python-version-file: Pipfile` reads `[requires] python_full_version`, else `python_version`, as setup-python does. */
 const pipfile: Parser = (text, tool, _root, file) => {
@@ -166,7 +232,7 @@ const pipfile: Parser = (text, tool, _root, file) => {
   if (typeof v !== "string") throw new PinError(`requires.${key} is not a string`);
   const f = classify(v.trim(), tool);
   if (!f) throw unsupported(v.trim(), file, lineAt(text, text.search(new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m"))));
-  return [f];
+  return [f.range ? { ...f, pep440: true } : f];
 };
 /** In an image tag a bare `-dev` right after the version is the Chainguard/Wolfi dev variant (`20-dev`, `3.12-dev-slim`),
  * not a prerelease; `-dev.1` still is one. */
@@ -232,27 +298,107 @@ const logicalLines = (text: string, file: string): Logical[] => {
   if (cur) close(cur, end);
   return out;
 };
+/** `w` as Docker's shell lexer expands a word in the global ARG scope: quotes removed, `\` escaping the next character,
+ * `$A`, `${A}`, `${A:-w}`, `${A-w}`, `${A:+w}` and `${A+w}` read from `env`. Null when a variable it needs is unset (only the
+ * build can set it) and no `unset` stand-in is given, a `${...}` uses another modifier, or the result passes EXPAND_MAX
+ * (ARGs that double an earlier one would otherwise grow without bound). */
+const EXPAND_MAX = 4096;
+const expand = (w: string, env: Map<string, string>, unset?: string): string | null => {
+  let out = "";
+  let q = ""; // the open quote
+  for (let i = 0; i < w.length; i++) {
+    if (out.length > EXPAND_MAX) return null;
+    const c = w[i]!;
+    if (q !== "'" && c === "\\") out += w[++i] ?? "";
+    else if ((c === '"' || c === "'") && (!q || q === c)) q = q ? "" : c;
+    else if (c !== "$" || q === "'") out += c;
+    else if (w[i + 1] === "{") {
+      let j = i + 2;
+      for (let depth = 1; j < w.length && (depth += w[j] === "{" ? 1 : w[j] === "}" ? -1 : 0); j++);
+      const m = /^([A-Za-z_]\w*)(?:(:?[-+])(.*))?$/s.exec(w.slice(i + 2, j));
+      if (!m || j >= w.length) return null;
+      const v = env.get(m[1]!);
+      const set = m[2]?.startsWith(":") ? !!v : v !== undefined;
+      const r = !m[2] ? (v ?? unset ?? null) : m[2].endsWith("-") ? (set ? v! : expand(m[3]!, env, unset)) : set ? expand(m[3]!, env, unset) : "";
+      if (r === null) return null;
+      out += r;
+      i = j;
+    } else {
+      const name = /^[A-Za-z_]\w*/.exec(w.slice(i + 1))?.[0];
+      if (!name) out += c;
+      else if (!env.has(name) && unset === undefined) return null;
+      else (out += env.get(name) ?? unset!), (i += name.length);
+    }
+  }
+  return out.length > EXPAND_MAX ? null : out;
+};
 /** `FROM [--flag] <image>[:tag][@digest]` of the tool image and `ARG <TOOL>_VERSION=<v>`, each a pin. A tag that starts
  * with `$<TOOL>_VERSION` is skipped (its ARG is the pin); a tag with a literal version a variant separator ends before its
  * `$` (`18-${DISTRO}`) is that version; no tag, a digest only, another variable or any other tag is unsupported. An ARG
  * value is its whole shell word and must be a pin as written: quotes may wrap the whole value only (`"20.11.0"`, not
- * `"20"${SUFFIX}`). */
-const dockerfile: Parser = (text, tool, _root, file) => {
+ * `"20"${SUFFIX}`). An image whose name is a variable (`${BASE}`, `$IMG:20`, `${BASE:-node:20}`) is expanded through the
+ * ARGs declared before the first FROM (the only ones FROM sees; the last definition wins) and then read as that literal
+ * image; one only the build can name (an ARG with no value, or declared only inside a stage) is a note, never a FAIL. */
+const dockerfile: Parser = (text, tool, _root, file, _calls, notes, bare) => {
   const logical = logicalLines(text, file);
   const at = (l: Logical, index: number): number => l.lines[Math.min(index, l.lines.length - 1)] ?? 1;
   const out: Found = [];
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
+  const words = (s: string) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
+  // The global ARG scope; an ARG with no value (or an unknowable one) is unset. `held` is the same scope with the tool's
+  // version ARG, when it has no value there, held as HELD, and every other unset variable read as UNSET: an image that
+  // expands through it is the tool's image tagged with that ARG when it reads so, a stage that names its version only at
+  // build time, as `FROM node:${KEY}` does, whatever unset suffix or registry follows or precedes it (`-${DISTRO}`).
+  const HELD = "\0";
+  const UNSET = "\x01";
+  const scope = (seed: [string, string][], unset?: string) => {
+    const env = new Map(seed);
+    for (const l of logical) {
+      if (/^\s*FROM\s/i.test(l.text)) break;
+      const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
+      for (const p of m ? words(m[1]!) : []) {
+        const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
+        const v = name && eq ? expand(val!, env, unset) : null;
+        if (name && v !== null) env.set(name, v);
+        else if (name && !(seed.length && name === key && !eq)) env.delete(name);
+      }
+    }
+    return env;
+  };
+  const global = scope([]);
+  const held = scope(global.has(key) ? [] : [[key, HELD]], UNSET);
+  const skipped: string[] = []; // tool-image FROM lines whose tag is the version ARG
   const stages = new Set<string>(); // aliases declared by earlier `FROM … AS <alias>` lines (Docker matches them case-insensitively)
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
     if (!m) continue;
-    const image = m[2]!;
+    let image = m[2]!;
+    // The name, with each `${...}` as one unit: `${BASE:-docker.io/node:20}` is a variable name, `${REG}/node:20` is not.
+    if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0]!.split("/").pop()!.split(":")[0]!.includes("$")) {
+      const r = expand(image, global);
+      const h = r ? null : expand(image, held, UNSET);
+      const [hn = "", ht = ""] = h?.split("@")[0]!.split("/").pop()!.split(":") ?? [];
+      if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
+        skipped.push(`FROM ${image} (line ${at(l, m[1]!.length)})`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
+      if (!r) {
+        notes?.push(`FROM ${image} (line ${at(l, m[1]!.length)}): image set at build time, not compared`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
+      image = r;
+    }
     const [name = "", tag = ""] = image.split("@")[0]!.split("/").pop()!.split(":"); // after the last "/": a registry port is not a tag
     const stageRef = image === name && stages.has(name.toLowerCase()); // a tagless name that is an earlier alias is a stage, not the image
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
     // A tag of <TOOL>_VERSION is skipped: its ARG is the pin. Any other variable there is unsupported.
-    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) continue;
+    if (/^\$\{?(\w+)/.exec(tag)?.[1]!.toUpperCase() === key) {
+      skipped.push(`FROM ${image} (line ${at(l, m[1]!.length)})`);
+      continue;
+    }
     const v = tag ? tagVer(tag) : null;
     if (v === null) throw unsupported(image, file, at(l, m[1]!.length));
     out.push({ v });
@@ -263,7 +409,7 @@ const dockerfile: Parser = (text, tool, _root, file) => {
     if (!m) continue;
     // Shell words, as Docker splits them: a backslash escapes the next character, also inside double quotes. A word whose
     // quote never closes leaves the line unreadable, a FAIL when it names the tool's variable.
-    for (const p of m[2]!.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs)) {
+    for (const p of words(m[2]!)) {
       if (!/^(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*$/s.test(p[0]) && new RegExp(`\\b${key}\\b`, "i").test(m[2]!))
         throw unsupported(m[2]!.trim(), file, at(l, m[1]!.length));
       const pair = /^([A-Za-z_]\w*)=(.*)$/s.exec(p[0]);
@@ -272,6 +418,8 @@ const dockerfile: Parser = (text, tool, _root, file) => {
       out.push(...pinAt(v, tool, file, at(l, m[1]!.length + p.index + pair[1]!.length + 1)));
     }
   }
+  // A stage skipped for its version ARG with no ARG value anywhere in the file installs a version only the build names.
+  if (!out.length) bare?.push(...skipped);
   return out;
 };
 
@@ -308,7 +456,7 @@ const refVer = (uses: string): [number, number] | null => {
 };
 /** What each action installs for a step that sets neither its version input nor its `-file`, as of the upstream release cited:
  * the value it reads, or null when it installs no pinned version (the step is then a FAIL). `wd` is the step's
- * `working-directory` input and `mode` its `install-mode` (`binary` when unset); each is null when it is not a literal. */
+ * `working-directory` input and `mode` its `install-mode` (`binary` when unset or empty); each is null when it is not a literal. */
 const DEFAULTS: Record<
   keyof typeof ACTIONS,
   (root: string, tool: string, ref: [number, number] | null, wd: string | null, mode: string | null) => Found | null
@@ -391,7 +539,8 @@ function setup(kind: keyof typeof ACTIONS): Parser {
           }
           if (k === "install-mode") {
             const v = deref(p.value);
-            mode = isScalar(v) && typeof v.value === "string" ? v.value.trim().toLowerCase() : null; // an expression is no `binary`
+            // An empty value is unset (`binary`); an expression is no `binary`.
+            mode = isScalar(v) && (v.value === null || typeof v.value === "string") ? (v.value ?? "").trim().toLowerCase() || "binary" : null;
           }
         }
       }
@@ -488,29 +637,48 @@ export const isSourceKind = (spec: string): boolean => Object.hasOwn(KINDS, spli
 
 /** Read `spec` (`kind` or `kind:path-or-glob`) for `tool`; `tracked` is `git ls-files`. A matched workflow that yields no
  * value but calls a reusable workflow adds a note to `notes` (when the source still yields a value), or is named in the
- * error (when it does not). */
-export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
+ * error (when it does not). A value a parser cannot know (a Dockerfile image set at build time) is always a note: a source
+ * that yields only such notes is no error, unless one of its files also sets the tool up with no version (`bare`). */
+/** The file `spec` names (its path, else its kind's default file), and the files it reads: a glob's tracked matches. */
+function sourceFiles(tracked: string[], spec: string): { target: string; files: string[] } {
   const [kind, path] = splitSource(spec);
-  const k = KINDS[kind]!;
-  const target = path ?? k.file;
+  const target = path ?? KINDS[kind]!.file;
   const res = isGlob(target) ? compileGlob(target) : null;
-  const files = res ? tracked.filter((f) => res.some((re) => re.test(f))) : [target];
+  return { target, files: res ? tracked.filter((f) => res.some((re) => re.test(f))) : [target] };
+}
+
+/** Whether `spec` is absent (B2: an optional source is then skipped): its file is missing, or its glob matches no tracked
+ * file. Only absence: a present file that holds no pin, or a glob match missing on disk, is read and FAILs as usual. */
+export function sourceAbsent(root: string, tracked: string[], spec: string): boolean {
+  const { target, files } = sourceFiles(tracked, spec);
+  return !files.length || (!isGlob(target) && !existsSync(join(root, target)));
+}
+
+export function readSource(root: string, tracked: string[], tool: string, spec: string, notes?: string[]): PinValue[] {
+  const [kind] = splitSource(spec);
+  const k = KINDS[kind]!;
+  const { target, files } = sourceFiles(tracked, spec);
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out: PinValue[] = [];
   const skipped: [string, string][] = []; // [file, its reusable calls]
+  const unknown: string[] = [];
+  const bare: string[] = [];
   for (const f of files) {
     if (!existsSync(join(root, f))) throw new PinError(`${spec}: ${f} not found`);
     const calls: string[] = [];
+    const said: string[] = [];
     let found: Found;
     try {
-      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls);
+      found = k.parse(readFileSync(join(root, f), "utf8"), tool, root, f, calls, said, bare);
     } catch (e) {
       throw new PinError(`${spec}: ${f}: ${(e as Error).message}`);
     }
-    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false });
+    for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false, ...(x.pep440 && { pep440: true }) });
+    unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
     if (!found.length && calls.length) skipped.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
-  if (!out.length) {
+  // A note stands in for a value only when nothing set the tool up without one.
+  if (!out.length && (!unknown.length || bare.length)) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
     if (!skipped.length) throw new PinError(msg);
     throw new PinError(
@@ -518,7 +686,7 @@ export function readSource(root: string, tracked: string[], tool: string, spec: 
       `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`,
     );
   }
-  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`));
+  notes?.push(...skipped.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
   return out;
 }
 
@@ -545,6 +713,15 @@ export function disagreement(vals: PinValue[], mode: Compare): string | null {
   const pins = pinsOf(vals);
   const bad = pins.some((x, i) => pins.slice(i + 1).some((y) => cmp(x.v, y.v, DEPTH[mode]) !== 0));
   return bad ? pins.map((x) => `${x.src}=${x.v}`).join(", ") + ` disagree (${mode})` : null;
+}
+
+/** The component a rejected local version is reported at: the first numeric core component that differs (a component
+ * only one of them states never differs), else `patch`, which also covers a prerelease-only difference. */
+export function diffPart(a: string, b: string): "major" | "minor" | "patch" {
+  const [x] = split(a);
+  const [y] = split(b);
+  if (x[0] !== y[0]) return "major";
+  return x.length > 1 && y.length > 1 && x[1] !== y[1] ? "minor" : "patch";
 }
 
 /** Does a local toolchain version match the pin at the compare depth? */

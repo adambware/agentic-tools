@@ -448,12 +448,18 @@ hint = "git worktree add .claude/worktrees/<name> -b <branch> origin/main"
 tool = "go"
 sources = ["go-mod:go.mod", "tool-versions", "setup-go:.github/workflows/*.yml"]
 compare = "minor"                       # exact (default) | minor | major
-local = "warn"                          # warn (default) | fail | off
+local = "warn"                          # warn (default) | fail | off: one level for any difference
+# local = { major = "fail", minor = "warn", patch = "info" }  # 0.8.0: a level per first differing component
+                                        # (each fail | warn | info | off; a missing one is warn)
 
 [[pins]]
 tool = "node"
 sources = ["nvmrc", "engines", "dockerfile:build/Dockerfile"]
-compare = "exact"                       # engines is a range: one INFO row, never compared
+compare = "exact"                       # engines is a range: never compared with the pins
+range = "check"                         # 0.8.0: info (default): one INFO row per range | check: the pin against
+                                        # each range (PASS inside, WARN partly inside, FAIL outside)
+optional = ["dockerfile:build/Dockerfile"]  # 0.8.0: sources (exactly as written in sources) read if present,
+                                        # skipped if absent (a subset of sources, else exit 2); all absent = SKIP
 
 [harness]                               # d.*
 tools = ["git", "go", "make"]           # d.tools: on PATH; an asdf or mise shim must also resolve a version here
@@ -480,14 +486,52 @@ timeout_s = 15
 ```
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
-depth, and the pin is the most specific one. A range is never compared: after the verdict, each distinct
+depth, and the pin is the most specific one. A range is never compared with the pins: after the verdict, each distinct
 (source, value) range adds one INFO row `<source>: "<value>" is a range, not compared`. When every source yields only ranges,
 `a.pins.<tool>` is a FAIL (`no exact pin among sources (...); pin an exact version in a supported source`) and no
 `a.local.<tool>` row runs. A value in the "anything else" column is a FAIL `unsupported form "<value>" in <file>:<line>; pin an exact
 version`; a `<tool>-version-file` name missing from the second table is a FAIL `unsupported form: <tool>-version-file
 <name> in <workflow>:<line> is not a supported version file (...); pin an exact version`. `compare =
-"floor"` was removed in 0.6.0 (exit 2); checking that a pin falls inside a range is a later `a.range` check.
+"floor"` was removed in 0.6.0 (exit 2); use `range = "check"` instead.
 These two tables are the only list of supported forms.
+
+**Range check (0.8.0).** `range = "check"` in a `[[pins]]` entry (default `"info"`, today's INFO row) turns each range
+row into the pin checked against that range, still with the id `a.pins.<tool>`, evaluated with semver (bundled). A
+series pin is the set of versions it names (`20` is `20.x`, `1.26` is `1.26.x`): `PASS <source>: pin <pin> is inside
+"<range>"` when the whole set is inside; `WARN ... is only partly inside` when part of it is (pin `20` against
+`>=20.11`; fix: pin a version the range wholly allows, or widen the range); `FAIL ... is outside` when none of it is
+(fix: pin a version inside the range, or change the range). The set is its releases, so a range whose overlap with the
+series holds no release (`>20.0.0 <20.0.1` for pin `20`) is outside, a FAIL. The set is covered when the union of a range's `||`
+alternatives covers it (`20` is inside `>=20.0.0 <20.5.0 || >=20.5.0 <21`). Every distinct pin is checked, not only the
+most specific one, and the row reports the worst result (FAIL if any pin is outside, else WARN if any is only partly
+inside, else INFO when a pin cannot be checked, else PASS), so it never depends on source order. With more than one
+distinct pin, the row names the pin and its sources: `pin 20.1.0 (dockerfile:Dockerfile) is outside ">=20.11"`, `pins
+20.12.0 (nvmrc:.nvmrc), 20 (dockerfile:Dockerfile) are inside ">=20"`. The range forms are exactly the "range" column below.
+`engines` and workflow range inputs are read as npm semver (`<=20` is every 20.x, `~> v2` is `~2`); `requires-python`,
+Poetry's `python` and a Pipfile range are read as PEP 440:
+
+| PEP 440 | read as |
+|---|---|
+| `>=3.10`, `<3.13` | `>=3.10.0`, `<3.13.0` |
+| `>3.11`, `<=3.11` | `>3.11.0`, `<=3.11.0` (a partial version is zero-padded, so pin `3.11` is only partly inside `<=3.11`) |
+| `==3.12`, `==3.12.*` | `3.12.0`, `3.12.x` |
+| `~=3.11`, `~=3.11.2` | `>=3.11.0 <4.0.0`, `>=3.11.2 <3.12.0` |
+| `>=3.10, <3.13` | both (`,` is and) |
+| `^3.11`, `~3.11` (Poetry) | as semver |
+
+A range with `!=` or `===`, a prerelease (`>=3.13.0rc1`, `>=22.0.0-rc.1`), a PEP 440 operator (`~=`, `==`) or `,`
+outside Python packaging metadata, an exact-looking value (`engines.node = "20"`, which is no range form), or any form semver rejects
+stays INFO `... is a range, not compared (not a form range = "check" reads)`; so does a prerelease pin, or one semver
+cannot read (a leading zero, `20.01.0`). While the pins disagree, each range stays INFO
+`(the pins disagree)`; with no exact pin, each range stays INFO.
+
+**Optional sources (0.8.0).** `optional = [...]` in a `[[pins]]` entry lists sources that are read when present and
+skipped when absent. Each entry is a source specification exactly as written in `sources` (`"nvmrc"`,
+`"tool-versions:.tool-versions"`), not a filename; one that is not in `sources` is a config error (exit 2) naming it.
+Only absence is skipped: a missing file, or a glob that matches no tracked file. A present optional source that holds no
+valid pin still FAILs, and a missing source not listed in `optional` still FAILs `<source>: <file> not found`. When
+every source is optional and none is present, the row is `SKIP a.pins.<tool> no source present (all optional: ...)` and
+no `a.local.<tool>` row runs. (Not a trailing `?` on the source: `?` is a glob character.)
 
 Pin source kinds are `kind` or `kind:path-or-glob` (a glob matches tracked files). A pin is one version or one
 series: `1.26`, `v1.26.1`, `1.26.x`, `~1.26`, `^1`, `~> v2` (and node's `=20.11.1`). Every reader that takes a pin
@@ -502,11 +546,11 @@ exactly these forms; where the matrix lists no range, a range is a FAIL.
 | `python-version` | `.python-version` | as `nvmrc`, without node's `=` (`=3.12.1` is a range) | none (FAIL, as `nvmrc`) | FAIL unsupported: `system`, `pypy3.9-7.3.11` |
 | `go-mod` | `go.mod` | `toolchain goX`, else `go X`, in any pin form; the whole value up to a `//` comment is classified | none | FAIL unsupported: a range (`go >=1.20`), `go stable`, a version followed by other text (`go 1.26 latest`) |
 | `engines` | `package.json` | none | `engines.<tool>`, always, even an exact-looking `20.11.0` | missing or not a string: FAIL |
-| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; an `ARG` line is split into shell words as Docker splits them, so an escaped quote (`ARG A=x\" NODE_VERSION=20`) does not hide the next pair; a tag that starts with `$<TOOL>_VERSION` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped | none | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`), a `$` tag of another variable (`node:${OTHER}`), a prerelease the `$` may continue (`node:20-dev-${N}`, `node:22-rc-${N}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `ARG` line naming `<TOOL>_VERSION` with an unterminated quote; an `escape` parser directive other than `\` |
+| `dockerfile` | `Dockerfile` | `FROM [--flag] <image>:<version tag>` (image `golang` for go, else the tool name; variants such as `-alpine` dropped) and `ARG <TOOL>_VERSION=<v>` whose value (its whole shell word; quotes may wrap the whole value only) is a pin as written; an `ARG` line is split into shell words as Docker splits them, so an escaped quote (`ARG A=x\" NODE_VERSION=20`) does not hide the next pair; a tag that starts with `$<TOOL>_VERSION` (`node:${NODE_VERSION}-alpine`) is skipped, its `ARG` is the pin; a tag whose literal version a variant separator ends before its `$` (`node:18-${DISTRO}`, `node:20-alpine${X}`) reads that version; a tagless `FROM` naming an earlier `AS` stage alias is a stage reference and is skipped; an image whose name is a variable (`FROM ${BASE}`, `FROM $IMG:20`, `FROM ${BASE:-node:20}`) is expanded through the `ARG`s before the first `FROM` and then read as that literal image (0.8.0) | none; INFO `FROM <image> (line <n>): image set at build time, not compared` when that variable has no value there (no default, or an `ARG` declared only inside a stage); that INFO never stands in for a pin, so a stage of the tool image tagged `$<TOOL>_VERSION` whose `ARG` has no value still leaves the source with no version (FAIL `no <tool> version found`), also across a glob's files, and also when the image reaches that tag through another `ARG` (`ARG BASE=node:${NODE_VERSION}` then `FROM ${BASE}`, or `FROM ${IMG}:${NODE_VERSION}`, also with another unset variable after the tag such as `-${DISTRO}`), which adds no INFO row | FAIL unsupported: the tool image with no tag, a digest only, a non-version tag (`latest`, `lts-alpine3.20`), any other `$` tag (`node:lts-${X}`, `node:20.${MINOR}.0`, `node:20${SUFFIX}`, `python:3.13rc${BUILD}`), a `$` tag of another variable (`node:${OTHER}`), a prerelease the `$` may continue (`node:20-dev-${N}`, `node:22-rc-${N}`); an `ARG` value that is not a pin (`20 \|\| 22`, `20${SUFFIX}`, `"20"${SUFFIX}`, `${NODE_MAJOR}`, empty, `latest`, `20-alpine`); an `ARG` line naming `<TOOL>_VERSION` with an unterminated quote; an `escape` parser directive other than `\` |
 | `setup-go` | `.github/workflows/*.{yml,yaml}` | each line of `go-version`, or `go-version-file` (second table) | each line of `go-version` that is a range (`>=1.20`, `^1.20`, `~1.20.3`) | FAIL unsupported: `latest`, `stable`, `oldstable`; FAIL `setup-go step without a version in <file>:<line>` for a step with neither `go-version` nor `go-version-file` (no `with:`, an empty `with:`, or only `cache:`/`check-latest:`) |
 | `setup-node` | `.github/workflows/*.{yml,yaml}` | each line of `node-version`, or `node-version-file` (second table) | each line of `node-version` that is a range (`>=20`, `20 \|\| 22`, `18 - 20`) | FAIL unsupported: `latest`, `lts/*`, `node`, `current`; FAIL `setup-node step without a version in <file>:<line>` for a step with neither `node-version` nor `node-version-file` (the action has no default file) |
 | `setup-python` | `.github/workflows/*.{yml,yaml}` | each line of `python-version`, or `python-version-file` (second table); a step with neither input reads `.python-version` at the repo root, as the action does from v4.7.0 | each line of `python-version` that is a range (`>=3.10`, `~=3.12`) | FAIL unsupported: `latest`, `pypy3.9`, `graalpy-24.0`; FAIL `setup-python step without a version in <file>:<line>` when that file is absent or the action ref is older than v4.7.0 |
-| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`); a step with no `version`/`version-file` reads `github.com/golangci/golangci-lint/v2 vX` from `<working-directory>/go.mod`, as the action does (`golangci-lint vX` for v6.5 and later v6 refs); refs before v6.5.0, any `install-mode` other than `binary`, and a `working-directory` that is an expression, absolute or outside the checkout never read go.mod | a range `version:` | FAIL unsupported: `latest`; FAIL `golangci-lint-action step without a version in <file>:<line>` when go.mod is not read or has no such line (the action installs latest) |
+| `golangci-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `golangci/golangci-lint-action` (tool `golangci-lint`); a step with no `version`/`version-file` reads `github.com/golangci/golangci-lint/v2 vX` from `<working-directory>/go.mod`, as the action does (`golangci-lint vX` for v6.5 and later v6 refs); refs before v6.5.0, any `install-mode` other than `binary` (an empty `install-mode` is unset, so `binary`; 0.8.0), and a `working-directory` that is an expression, absolute or outside the checkout never read go.mod | a range `version:` | FAIL unsupported: `latest`; FAIL `golangci-lint-action step without a version in <file>:<line>` when go.mod is not read or has no such line (the action installs latest) |
 | `goreleaser-action` | `.github/workflows/*.{yml,yaml}` | `with: version:` of `goreleaser/goreleaser-action` (tool `goreleaser`), e.g. `~> v2` | a range `version:` (`^2.5`); a step with no `version` is the action's default `~> v2` (v6 and later), an INFO range | FAIL unsupported: `latest`; FAIL `goreleaser-action step without a version in <file>:<line>` for refs v5 and older (default latest) |
 
 `<tool>-version-file` names are matched on the file's basename; any other name is a FAIL `unsupported form:
@@ -536,10 +580,32 @@ an empty line inside a continuation; the body of a `RUN`, `COPY` or `ADD` heredo
 to its delimiter line, and an unterminated heredoc is a FAIL, also on an instruction still open at end of file. Only the
 default `\` escape is read: an `# escape=` parser directive that sets another escape character is an unsupported FAIL. An error names the physical line of the offending image
 or value.
+A `FROM` image whose name is a variable is resolved as Docker resolves it (0.8.0): only the `ARG`s declared before the
+first `FROM` (the global scope, the only one `FROM` sees) count, a later definition there replaces an earlier one, a
+value may use earlier global `ARG`s, and `${A:-default}`, `${A-default}`, `${A:+word}` and `${A+word}` are honored. The
+result is read as if written literally: a non-tool image is skipped, a tool image with an unsupported tag FAILs at the
+`FROM` line. When the variable has no value there (an `ARG` with no default, also one that redeclares an earlier
+`ARG`, one declared only inside a stage, an empty value, another `${...}` modifier, or an expansion longer than 4096
+characters, which an `ARG` that doubles an earlier one reaches quickly) the image is set at build time: an INFO row, never a FAIL, and the source yields no
+pin from that `FROM`. The one exception is the tool image tagged with the tool's own `<TOOL>_VERSION` `ARG` while that
+`ARG` has no value there (`ARG NODE_VERSION` with `ARG BASE=node:${NODE_VERSION}` and `FROM ${BASE}`, or `ARG IMG=node`
+with `FROM ${IMG}:${NODE_VERSION}`): it is read as `FROM node:${NODE_VERSION}` is, with no INFO row, so unless the
+source gives a pin elsewhere (an `ARG <TOOL>_VERSION=<v>` in the file, a stage with a literal tool-image tag, or another
+file a glob matches), it FAILs `no <tool> version found`. The resolved image is the Dockerfile's default only: a Compose `build.args` entry (or
+`docker build --build-arg`) can override it, and that override is not read.
 `a.local.*` runs the tool with `GOTOOLCHAIN=local GOPROXY=off MISE_AUTO_INSTALL=0` (`go version`, `node --version`,
 `python3 --version`, otherwise `<tool> --version`), so Go downloads no toolchain and a mise shim installs no missing version; a probe that does
-not answer in 10s is killed and reported as timed out at the pin's `local` level. The local version must
-match the pin at the `compare` depth; ranges do not bind it. A probe that gives no version says why: `<tool> not found on
+not answer in 10s is killed and reported as timed out at the pin's `local` level (`major` for a table). The local version must
+match the pin at the `compare` depth; ranges do not bind it. `local` is one level for every difference (`"warn"`,
+`"fail"`, `"off"`), or a table that picks one per component (0.8.0): `compare` decides first, so a patch difference
+`compare = "minor"` accepts stays PASS; a rejected version is reported at the level of the first component that
+differs, by the numeric components alone (`major`, `minor`, then `patch`, which also covers a prerelease of the same
+release, so `1.26rc1` against `1.26` is `patch`); `info` makes it an INFO
+row and `off` drops the row. A probe that gives no version (below) is reported at the `major` level; with every
+component `off` the tool is not run. When the pins disagree (`a.pins.<tool>` FAILs), the tool is still probed (0.8.0)
+and reported against each distinct pin, one row each at its own level, naming the pin's sources: `local <tool> <v>
+does not match pin <pin> (<sources>)`, fix `align the pins first (a.pins.<tool>); env-check then names the version
+to install`. A probe that gives no version says why: `<tool> not found on
 PATH`, `<path> could not start (missing interpreter in its #! line?)` (a file on PATH whose `#!` interpreter is not
 there, which the OS reports as it does a missing file), `<cmd> could not run (<error>)`, `<cmd> exited <code>: <first output line>`, or `<cmd> printed no version:
 <first output line>`; the output line is cut to 120 characters with control characters escaped. When a `.tool-versions`
@@ -547,10 +613,20 @@ line pins the version as written (`golangci-lint 1.62.2`), the fix names `asdf i
 `mise install <tool>@<version>`; for `go` and `node`, whose line may say `golang` or `nodejs`, it names a bare
 `asdf install` (or `mise install`) in that file's directory. Any other pin source, and a prerelease written as is
 (`golangci-lint 2.0.0-rc.1`), keeps the generic install fix.
+When the probed command resolves on PATH to an asdf shim, `a.local` also reads the shim's `# asdf-plugin: <plugin>
+<version>` header lines (0.8.0; the whole shim, up to 1 MiB) and keeps those whose version is active here: `ASDF_<PLUGIN>_VERSION` (upper-cased,
+dashes as underscores), else the nearest `.tool-versions` that lists the plugin walking up from the checkout, else
+`$HOME/.tool-versions`; every version on a line counts. When more than one plugin provides the command (a tool
+`go install`ed inside an asdf Go next to the tool's own plugin), the shim may run either copy, so a WARN row follows
+the version row: `WARN a.local.<tool>  ambiguous shim: provided by <plugin> <v> and <plugin> <v> (shim <path>)`, fix
+`find the stray copy (asdf which <tool>, then the bin dir of each listed provider; a Go-installed tool is in that Go
+install's bin dir), remove it, then run asdf reshim; ask the machine owner if unsure`. Nothing runs for this (no
+`asdf current`, no `installs/` scan), and mise shims are not checked.
 `d.tools` never runs a listed tool. A tool found on PATH that is an asdf shim (a script with a `# asdf-plugin:` header
 line) or a mise shim (a symlink to the mise binary) is checked by asking its manager: `asdf which <tool>` or
 `mise which <tool>`, from the repo root with a 10s limit. An asdf shim that execs asdf by an absolute path asks that
-asdf; otherwise asdf is looked up on PATH. A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
+asdf; otherwise asdf is looked up on PATH. The `# asdf-plugin:` header must start within the shim's first 4 KiB; the
+exec line is then read from the whole shim, up to 1 MiB (0.8.0; a bigger shim is read from its first 4 KiB only). A shim whose manager is not there, cannot run (`<manager> at <path> could not start (missing interpreter in its #! line?)`
 for a manager whose `#!` interpreter is missing), times out, exits non-zero (its first output
 line is shown, escaped) or prints no path is a FAIL row of its own, after any `missing on PATH` row. The one
 exception follows mise's own fallback: a mise shim whose `mise which` exits 1 with '... is a mise bin however it is
