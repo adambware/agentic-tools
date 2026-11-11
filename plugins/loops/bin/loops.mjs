@@ -513,11 +513,11 @@ var require_valid = __commonJS({
   "node_modules/semver/functions/valid.js"(exports, module) {
     "use strict";
     var parse2 = require_parse();
-    var valid = (version, options) => {
+    var valid2 = (version, options) => {
       const v = parse2(version, options);
       return v ? v.version : null;
     };
-    module.exports = valid;
+    module.exports = valid2;
   }
 });
 
@@ -1647,12 +1647,12 @@ var require_intersects = __commonJS({
   "node_modules/semver/ranges/intersects.js"(exports, module) {
     "use strict";
     var Range2 = require_range();
-    var intersects2 = (r1, r2, options) => {
+    var intersects = (r1, r2, options) => {
       r1 = new Range2(r1, options);
       r2 = new Range2(r2, options);
       return r1.intersects(r2, options);
     };
-    module.exports = intersects2;
+    module.exports = intersects;
   }
 });
 
@@ -1877,7 +1877,7 @@ var require_semver2 = __commonJS({
     var SemVer2 = require_semver();
     var identifiers = require_identifiers();
     var parse2 = require_parse();
-    var valid = require_valid();
+    var valid2 = require_valid();
     var clean = require_clean();
     var inc2 = require_inc();
     var diff = require_diff();
@@ -1910,12 +1910,12 @@ var require_semver2 = __commonJS({
     var outside = require_outside();
     var gtr = require_gtr();
     var ltr = require_ltr();
-    var intersects2 = require_intersects();
+    var intersects = require_intersects();
     var simplifyRange = require_simplify();
     var subset = require_subset();
     module.exports = {
       parse: parse2,
-      valid,
+      valid: valid2,
       clean,
       inc: inc2,
       diff,
@@ -1948,7 +1948,7 @@ var require_semver2 = __commonJS({
       outside,
       gtr,
       ltr,
-      intersects: intersects2,
+      intersects,
       simplifyRange,
       subset,
       SemVer: SemVer2,
@@ -10169,10 +10169,10 @@ function redactHome(s, home) {
   let from = 0;
   for (let i = s.indexOf(home); i !== -1; i = s.indexOf(home, Math.max(from, i + 1))) {
     const before = s[i - 1] ?? "";
-    const after = s[i + home.length] ?? "";
+    const after2 = s[i + home.length] ?? "";
     if (before && SEGMENT.test(before) || joined(s, i + home.length)) continue;
-    const quoted = i > from && before === "'" && (after === "/" || after === "'");
-    out += `${s.slice(from, quoted ? i - 1 : i)}${quoted ? after === "/" ? "~/'" : "~" : "~"}`;
+    const quoted = i > from && before === "'" && (after2 === "/" || after2 === "'");
+    out += `${s.slice(from, quoted ? i - 1 : i)}${quoted ? after2 === "/" ? "~/'" : "~" : "~"}`;
     from = i + home.length + (quoted ? 1 : 0);
   }
   return out + s.slice(from);
@@ -10425,7 +10425,8 @@ function semverRange(range, pep440) {
   const alts = toks.split(/\s*\|\|\s*/).map((a) => a.split(/\s*,\s*|\s+/).map(one));
   return alts.some((a) => a.includes(null)) ? null : (0, import_semver.validRange)(alts.map((a) => a.join(" ")).join(" || "));
 }
-var covers = (pin, r) => {
+var after = (v) => ["patch", "minor", "major"].map((p) => (0, import_semver.inc)(v, p)).find((x) => x !== null && (0, import_semver.valid)(x) !== null) ?? null;
+var deciding = (pin, r) => {
   const n = pin.split(".").map(Number);
   const lo = [...n, 0, 0].slice(0, 3).join(".");
   const up = [...n];
@@ -10436,16 +10437,17 @@ var covers = (pin, r) => {
     for (const c of alt) {
       if (!(c.semver instanceof import_semver.SemVer)) continue;
       const core = `${c.semver.major}.${c.semver.minor}.${c.semver.patch}`;
-      at.add(core).add((0, import_semver.inc)(core, "patch"));
+      for (const v of [core, after(core)]) if (v !== null && !(0, import_semver.lt)(v, lo) && (0, import_semver.lt)(v, hi)) at.add(v);
     }
-  return [...at].every((v) => (0, import_semver.lt)(v, lo) || !(0, import_semver.lt)(v, hi) || (0, import_semver.satisfies)(v, r));
+  return [...at].map((v) => (0, import_semver.satisfies)(v, r));
 };
 function inRange(pin, range, pep440 = false) {
   const r = semverRange(range, pep440);
   if (r === null || !/^\d+(?:\.\d+){0,2}$/.test(pin)) return null;
   const set = pin.split(".").length < 3 ? `${pin}.x` : pin;
   if ((0, import_semver.validRange)(set) === null) return null;
-  return !(0, import_semver.intersects)(set, r) ? "outside" : covers(pin, r) ? "inside" : "partly";
+  const ok = deciding(pin, r);
+  return ok.every(Boolean) ? "inside" : ok.some(Boolean) ? "partly" : "outside";
 }
 var classify = (raw, tool) => {
   const s = tool === "node" ? raw.replace(/^=\s*(?=v?\d)/, "") : raw;
@@ -10584,10 +10586,12 @@ var logicalLines = (text, file) => {
   if (cur) close(cur, end);
   return out;
 };
+var EXPAND_MAX = 4096;
 var expand = (w, env) => {
   let out = "";
   let q = "";
   for (let i = 0; i < w.length; i++) {
+    if (out.length > EXPAND_MAX) return null;
     const c = w[i];
     if (q !== "'" && c === "\\") out += w[++i] ?? "";
     else if ((c === '"' || c === "'") && (!q || q === c)) q = q ? "" : c;
@@ -10610,7 +10614,7 @@ var expand = (w, env) => {
       else out += env.get(name), i += name.length;
     }
   }
-  return out;
+  return out.length > EXPAND_MAX ? null : out;
 };
 var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   const logical = logicalLines(text, file);
@@ -10618,17 +10622,23 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   const out = [];
   const key = `${tool.toUpperCase().replace(/\W/g, "_")}_VERSION`;
   const words = (s) => s.matchAll(/(?:[^\s"'\\]|\\.?|"(?:[^"\\]|\\.)*"?|'[^']*'?)+/gs);
-  const global = /* @__PURE__ */ new Map();
-  for (const l of logical) {
-    if (/^\s*FROM\s/i.test(l.text)) break;
-    const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
-    for (const p of m ? words(m[1]) : []) {
-      const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
-      const v = name && eq ? expand(val, global) : null;
-      if (name && v !== null) global.set(name, v);
-      else if (name) global.delete(name);
+  const HELD = "\0";
+  const scope = (seed) => {
+    const env = new Map(seed);
+    for (const l of logical) {
+      if (/^\s*FROM\s/i.test(l.text)) break;
+      const m = /^\s*ARG\s+(.*)$/is.exec(l.text);
+      for (const p of m ? words(m[1]) : []) {
+        const [, name, eq, val] = /^([A-Za-z_]\w*)(=?)(.*)$/s.exec(p[0]) ?? [];
+        const v = name && eq ? expand(val, env) : null;
+        if (name && v !== null) env.set(name, v);
+        else if (name && !(seed.length && name === key && !eq)) env.delete(name);
+      }
     }
-  }
+    return env;
+  };
+  const global = scope([]);
+  const held = global.has(key) ? global : scope([[key, HELD]]);
   const skipped = [];
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
@@ -10637,6 +10647,13 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
     let image = m[2];
     if (image.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}/g, "$V").split("@")[0].split("/").pop().split(":")[0].includes("$")) {
       const r = expand(image, global);
+      const h = r ? null : expand(image, held);
+      const [hn = "", ht = ""] = h?.split("@")[0].split("/").pop().split(":") ?? [];
+      if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
+        skipped.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+        if (m[3]) stages.add(m[3].toLowerCase());
+        continue;
+      }
       if (!r) {
         notes?.push(`FROM ${image} (line ${at(l, m[1].length)}): image set at build time, not compared`);
         if (m[3]) stages.add(m[3].toLowerCase());
