@@ -250,11 +250,12 @@
   - **Effort:** M
   - **Depends on / blocked by:** None. Scope 0.8.0 alongside the backlog entry above.
 
-- [ ] **loops env-check: WARN a workflow job that runs Go with no `setup-go` (0.8.0 item B7, cut)** [P3 features]
+- [ ] **loops env-check: WARN a workflow job that runs Go with no `setup-go` (0.8.0 item B7, cut)** [P1 features]
   - **What:** A job whose `run:` lines invoke `go`, `golangci-lint` or `goreleaser` at command position (start of a line or after `&&`, `;`, `|`), with no `actions/setup-go` step, is `WARN a.pins.go.setup job <name> uses the runner's Go`, fix: add an `actions/setup-go` step reading the pinned version. Runs only when a go `[[pins]]` entry exists; its own id keeps it from satisfying `--require-checks=a.pins.go`. Skips `container:` jobs and jobs using a local `./` composite action.
   - **Build specifics (normative, from the 0.8.0 Eng phase):** parse workflows with `yaml`. `actions/setup-go`, `jdx/mise-action` and `asdf-vm/actions` steps count as setup; job-level `uses:` (reusable workflow) jobs are skipped. Tests: `cargo build` does not match; a `container:` job is skipped.
   - **Why:** A job that runs the runner's preinstalled Go ignores every pin, so `a.pins.go` can PASS while CI builds with another version. It was a pilot ask in the 0.7.1 review.
   - **Context:** Cut from 0.8.0 PR B by the owner decision of 2026-11-10: may-slip items are cut to TODOs unless trivial, and after 0.8.0 the engine is in maintenance mode, so this lands only when a pilot hits it. Spec from the 0.8.0 plan's PR B list. In the 0.8.0 plan, PR C's required-id matching never lets `a.pins.go.setup` satisfy `a.pins.go`, so the id is reserved for this check.
+  - **Deferred from plan:** the loops 0.8.0 release plan (`releases/0.8.0-plan.md` in the loops plan home), PR B item B7; deferred as P1 by the owner at PR B's /ship on 2026-11-10.
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
