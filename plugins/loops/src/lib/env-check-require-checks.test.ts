@@ -204,10 +204,12 @@ describe("--require-checks=<ids> (C2)", () => {
     const r = check(setup(LOCAL("x.slow", "c.sh", true), script("c.sh", "PASS x.slow ok")), "--require-checks=x.slow");
     expect(r.code).toBe(1);
     expect(r.required).toEqual([expect.stringMatching(/^FAIL x\.required {2}x\.slow produced only SKIP\/INFO rows \(SKIP x\.slow: not run in --static mode\) — fix: /)]);
+    expect(r.required[0]).toMatch(/fix: make the check run under --static \(a \[\[local\]\] needs static = true; CI=true implies --static\), or drop x\.slow from --require-checks$/);
     const info = check(setup(LOCAL("x.note", "c.sh"), script("c.sh", "INFO x.note fyi")), "--require-checks=x.note");
     expect(info.required).toEqual([expect.stringMatching(/x\.note produced only SKIP\/INFO rows \(INFO x\.note: fyi\)/)]);
     const shared = check(setup(`${GO_PIN}[shared_checkout]\nhint = "use a worktree"\n`), "--require-checks=c.shared");
     expect(shared.required).toEqual([expect.stringMatching(/c\.shared produced only SKIP\/INFO rows \(SKIP c\.shared: not checked in --static mode\)/)]);
+    expect(shared.required[0]).toMatch(/fix: c\.shared is a built-in check that --static does not run .*, or drop c\.shared from --require-checks$/);
   });
 
   it("a.local.go under --static is skipped there, not unconfigured", () => {
@@ -215,6 +217,9 @@ describe("--require-checks=<ids> (C2)", () => {
     expect(r.code).toBe(1);
     expect(r.out).not.toMatch(/^SKIP a\.local\.go/m);
     expect(r.required).toEqual([expect.stringMatching(/a\.local\.go produced only SKIP\/INFO rows \(SKIP a\.local\.go: not run in --static mode\)/)]);
+    // A built-in check --static leaves out cannot be made to run there: the fix says so, with no [[local]] advice.
+    expect(r.required[0]).toMatch(/fix: a\.local\.go is a built-in check that --static does not run \(run env-check without --static, outside CI, to see it\), or drop a\.local\.go from --require-checks$/);
+    expect(r.required[0]).not.toMatch(/static = true|\[\[local\]\]/);
     const off = check(setup(`${GO_PIN}local = "off"\n`), "--require-checks=a.local.go");
     expect(off.required).toEqual([expect.stringMatching(/a\.local\.go not configured/)]);
   });

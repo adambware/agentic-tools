@@ -77,9 +77,12 @@ function requiredRows(required: string[], rows: Result[], isStatic: boolean): Re
     const drop = `drop ${id} from --require-checks`;
     if (hits.length) {
       const shown = hits.slice(0, 3).map((r) => `${r.level} ${r.id}: ${r.message}`).join("; ") + (hits.length > 3 ? `; and ${hits.length - 3} more` : "");
-      const fix = isStatic
-        ? `make the check run under --static (a [[local]] needs static = true; CI=true implies --static), or ${drop}`
-        : `fix what keeps the check from running, or ${drop}`;
+      // Under --static a built-in SKIP is one --static always leaves out; only a [[local]] can opt in with static = true.
+      const fix = !isStatic
+        ? `fix what keeps the check from running, or ${drop}`
+        : source === "builtin"
+          ? `${id} is a built-in check that --static does not run (run env-check without --static, outside CI, to see it), or ${drop}`
+          : `make the check run under --static (a [[local]] needs static = true; CI=true implies --static), or ${drop}`;
       return [{ level: "FAIL", id: "x.required", message: `${id} produced only SKIP/INFO rows (${shown})`, fix, source: "builtin" }];
     }
     const lookalike = source === "builtin" && rows.some((r) => r.source === "local" && m(r.id));
