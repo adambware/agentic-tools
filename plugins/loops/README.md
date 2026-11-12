@@ -415,7 +415,7 @@ Text output escapes every row (and each `--compose-project` stderr line) once: c
 the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
 `\u002d- fix:`, so a row has one fix. `--json` values are the raw text (redacted, not escaped), with DEL, C1, U+2028/2029,
 bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, so `JSON.parse` returns them exactly.
-env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
+env-check's git commands, and (0.8.0) its `[[local]]` checks and `a.local` version probes, run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_CONFIG`…), so they read the checkout env-check runs in; `loops zone` keeps them. As git's
 `prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, e.g. `safe.directory`)
 stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in this checkout's own git-dir (the
@@ -454,6 +454,8 @@ installed package the lockfile does not list. A missing dev package says it may 
 - No `node_modules/.package-lock.json` (npm 6, yarn or pnpm installs) is a WARN "cannot verify".
 - `lockfileVersion` 2 and 3 are read; any other is INFO "unsupported lockfile".
 - Every tracked lockfile counts, also a test fixture's, which has no `node_modules`.
+- Only npm's record is read, not each package's directory: a package deleted by hand from `node_modules` while
+  `node_modules/.package-lock.json` still lists it is not caught.
 
 **Required checks (0.8.0).** `--require-checks` makes a CI run fail when a check it relies on stops running (a
 deleted `[[pins]]` entry, a `[[local]]` that lost `static = true`). The value goes after `=`, never as the next
@@ -919,7 +921,7 @@ exit without a FAIL line adds one (with the first stderr line, cut to 120 charac
 a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).
 
-**Wrapper.** `templates/env-check` is a 27-line POSIX `sh` wrapper to copy into a repo as
+**Wrapper.** `templates/env-check` is a 29-line POSIX `sh` wrapper to copy into a repo as
 `bin/env-check` (`chmod +x`). It runs the first regular file among `$LOOPS_BIN`, `$HOME/bin/loops` and
 `loops` on PATH as `loops env-check "$@"` (through `node` when the file is not executable). Exit codes of its own:
 

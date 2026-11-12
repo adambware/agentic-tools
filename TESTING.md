@@ -28,6 +28,8 @@ committed `bin/*.mjs` bundle is stale, so commit the rebuilt `bin/` with its
 source. The `action-fixtures` CI job also runs the composite action (`plugins/loops/action.yml`)
 on the `fixtures/env-check/clean` and `mismatch` fixtures. The Compose tests skip when Docker Compose is absent; set
 `LOOPS_REQUIRE_COMPOSE=1` to make a missing Compose fail instead, as CI does.
+The `proc-macos` CI job also runs `src/lib/proc.test.ts` on `macos-latest`, since the
+`[[local]]` supervisor's `ps` parsing and kill sequence differ there (BSD `ps`, launchd as init).
 
 When adding a plugin:
 
