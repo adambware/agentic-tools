@@ -891,8 +891,8 @@ The kill sequence (0.8.0) is the same for every way a check is cut short:
 
 If the supervisor itself dies (SIGKILLed, out of memory), env-check kills the check's group, but only after `ps` shows
 the group's processes all started during this run, so a reused process id is never killed. The row is then
-`WARN <id>  supervisor lost; check group killed`, or `... could not be verified, nothing killed` when env-check cannot
-tell; a FAIL the check printed first still stands. Rerun once, and report it if it repeats. One gap remains: a
+`WARN <id>  supervisor lost; check group killed`, `... belongs to another process, nothing killed` when the group is
+live but not this run's, or `... could not be verified, nothing killed` when env-check cannot tell; a FAIL the check printed first still stands. Rerun once, and report it if it repeats. One gap remains: a
 double-forked daemon that its parent left before the timeout is reparented to init, so no `ps` walk finds it. A child
 the check leaves running when it exits on its own is not killed either, and it can hold the run open, so `exec` long
 commands.

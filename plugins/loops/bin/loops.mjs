@@ -10080,7 +10080,8 @@ function backstopMs(timeoutMs) {
 }
 function findPs(pathVar = process.env.PATH, system = ["/bin/ps", "/usr/bin/ps"]) {
   for (const f of system) if (isExecutable(f)) return f;
-  return which("ps", pathVar);
+  const p = which("ps", pathVar);
+  return p && isAbsolute(p) ? p : null;
 }
 var SUPERVISOR = `
 const { spawn, spawnSync } = require("node:child_process");
@@ -12273,7 +12274,7 @@ function runLocal(c, l, project) {
     return !p ? [n] : why2 ? [`${n} (${why2})`] : [];
   });
   if (lacking.length) {
-    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${l.needs.length > 1 ? "them" : "it"} and put ${l.needs.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
+    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${lacking.length > 1 ? "them" : "it"} and put ${lacking.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
   }
   const env = {
     // gitEnv: a foreign GIT_DIR is dropped, a hook's own index and GIT_CONFIG_PARAMETERS/COUNT stay.
@@ -12300,7 +12301,7 @@ function runLocal(c, l, project) {
   }
   if (r.lost) {
     if (out.some((x) => x.level === "FAIL")) return out;
-    const what = r.cleaned === "yes" ? "check group killed" : "check group could not be verified, nothing killed";
+    const what = r.cleaned === "yes" ? "check group killed" : r.cleaned === "no" ? "check group belongs to another process, nothing killed" : "check group could not be verified, nothing killed";
     return [...out, mk("WARN", l.id, `supervisor lost; ${what}`, "rerun once; report it if it repeats")];
   }
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];

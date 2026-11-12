@@ -2663,6 +2663,7 @@ describe("local checks", () => {
     // A shell loop, not `exec sleep`: some sh builds reset an ignored TERM across exec.
     const t = run('trap "" TERM\nend=$(($(date +%s) + 8))\nwhile [ "$(date +%s)" -lt "$end" ]; do :; done', "timeout_s = 0.2\n");
     // SIGTERM at 0.2 s, SIGKILL GRACE_MS (2 s) later, well before the loop's own end.
+    // gstack-timing-ok: grace-period behavior (D3 GRACE_MS)
     expect(Date.now() - t0).toBeLessThan(5000);
     expect(t.out).toContain("WARN d.x  timed out after 0.2s (not a pass)");
   });

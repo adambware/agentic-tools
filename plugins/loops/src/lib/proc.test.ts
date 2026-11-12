@@ -218,6 +218,7 @@ describe("run with group", () => {
       const t0 = Date.now();
       const r = run("/bin/sh", ["-c", `sh -c 'trap "" TERM; sleep 30; : ${mark}' & wait`], { group: true, timeoutMs: 1000 });
       expect({ timedOut: r.timedOut, lost: r.lost, cleaned: r.cleaned }).toEqual({ timedOut: true, lost: false, cleaned: "yes" });
+      // gstack-timing-ok: grace-period behavior (D3 GRACE_MS)
       expect(Date.now() - t0).toBeGreaterThanOrEqual(1000 + GRACE_MS - 100);
       expect(running(mark)).toBe(false);
     } finally {
@@ -229,6 +230,7 @@ describe("run with group", () => {
     const t0 = Date.now();
     const r = run("/bin/sh", ["-c", "sleep 30"], { group: true, timeoutMs: 300 });
     expect(r.timedOut).toBe(true);
+    // gstack-timing-ok: grace-period behavior (D3 GRACE_MS)
     expect(Date.now() - t0).toBeLessThan(300 + GRACE_MS - 500);
   });
 
@@ -267,6 +269,7 @@ describe("run with group", () => {
       sleepMs(Math.max(0, t0 + 1_000 - Date.now()));
       expect(running(mark)).toBe(true);
       expect(until(() => running(mark) === false, GRACE_MS + 3_000)).toBe(true);
+      // gstack-timing-ok: grace-period behavior (D3 GRACE_MS)
       expect(Date.now() - t0).toBeGreaterThanOrEqual(GRACE_MS - 200);
       expect(read(log)).not.toContain("TERM");
       expect(await exited).toBe("SIGINT");

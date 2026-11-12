@@ -1,7 +1,7 @@
 // 0.8.0 PR D review fixes for the grouped-run supervisor and the lost-supervisor reaper (D3).
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
@@ -62,6 +62,18 @@ describe("backstop and ps lookup (review fixes)", () => {
     put(sys, "ps", "#!/bin/sh\n", true);
     expect(findPs(other, [join(sys, "ps")])).toBe(join(sys, "ps"));
     expect(findPs()).not.toBeNull();
+  });
+
+  // Value: protects=the supervisor running a ps it cannot find (it runs with cwd = repo root, not the engine's cwd);
+  // fails_when=a relative PATH entry's ps is returned; why_new=the row above only uses absolute dirs; seam=injected
+  // system candidates and PATH; no_claim=which() itself
+  it("does not take a ps from a relative PATH entry", () => {
+    const sys = tmp();
+    const other = tmp();
+    put(other, "ps", "#!/bin/sh\n", true);
+    const rel = relative(process.cwd(), other);
+    expect(isAbsolute(rel)).toBe(false);
+    expect(findPs(rel, [join(sys, "ps")])).toBeNull();
   });
 });
 

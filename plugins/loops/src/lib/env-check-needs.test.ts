@@ -75,6 +75,14 @@ describe("[[local]] needs (D1)", () => {
     expect(r.ran).toBe(false);
   });
 
+  // Value: protects=a hint that matches the lacking count; fails_when=the pronoun follows every needed command, not the
+  // lacking ones; why_new=the row above lacks every command it needs; seam=none; no_claim=shim reasons
+  it("with several needs and one lacking, says it", () => {
+    const r = check(toml('needs = ["no-such-tool-zz", "sh"]'));
+    expect(r.out).toContain("SKIP x.rel  no-such-tool-zz not installed — fix: install it and put it on PATH");
+    expect(r.ran).toBe(false);
+  });
+
   it("a needs-SKIP does not satisfy --require-checks=<id>", () => {
     const r = check(toml('needs = ["no-such-tool-zz"]'), { args: ["--require-checks=x.rel"] });
     expect(r.code).toBe(1);

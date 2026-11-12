@@ -957,7 +957,7 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     return !p ? [n] : why ? [`${n} (${why})`] : [];
   });
   if (lacking.length) {
-    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${l.needs.length > 1 ? "them" : "it"} and put ${l.needs.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
+    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${lacking.length > 1 ? "them" : "it"} and put ${lacking.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
   }
   const env: NodeJS.ProcessEnv = {
     // gitEnv: a foreign GIT_DIR is dropped, a hook's own index and GIT_CONFIG_PARAMETERS/COUNT stay.
@@ -986,7 +986,8 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
   // A lost supervisor (it died, or overran the backstop) never downgrades a FAIL the check printed before it.
   if (r.lost) {
     if (out.some((x) => x.level === "FAIL")) return out;
-    const what = r.cleaned === "yes" ? "check group killed" : "check group could not be verified, nothing killed";
+    const what =
+      r.cleaned === "yes" ? "check group killed" : r.cleaned === "no" ? "check group belongs to another process, nothing killed" : "check group could not be verified, nothing killed";
     return [...out, mk("WARN", l.id, `supervisor lost; ${what}`, "rerun once; report it if it repeats")];
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).

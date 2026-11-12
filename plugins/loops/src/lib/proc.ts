@@ -63,11 +63,14 @@ export function backstopMs(timeoutMs: number): number {
 
 /**
  * The ps to list processes with: /bin/ps, else /usr/bin/ps, else the first ps on `pathVar` (NixOS keeps it elsewhere).
- * The system dirs come first, so a repo's PATH cannot put a fake ps ahead of the real one. Null when there is none.
+ * The system dirs come first, so a repo's PATH cannot put a fake ps ahead of the real one. Null when there is none, or
+ * when the PATH one is relative.
  */
 export function findPs(pathVar: string | undefined = process.env.PATH, system: string[] = ["/bin/ps", "/usr/bin/ps"]): string | null {
   for (const f of system) if (isExecutable(f)) return f;
-  return which("ps", pathVar);
+  // A relative entry resolves against this cwd, but the supervisor runs in the repo root: count it as no ps.
+  const p = which("ps", pathVar);
+  return p && isAbsolute(p) ? p : null;
 }
 
 /**

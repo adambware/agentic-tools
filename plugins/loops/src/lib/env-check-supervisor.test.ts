@@ -51,9 +51,9 @@ describe("a [[local]] check whose supervisor is lost (D3)", () => {
   });
 
   it("says nothing was killed when the group could not be verified (no pidfile) or was not this run's", () => {
-    for (const cleaned of ["unverified", "no"] as const) {
+    for (const [cleaned, what] of [["unverified", "could not be verified"], ["no", "belongs to another process"]] as const) {
       const r = check("true", lostWith({ cleaned }));
-      expect([r.code, r.err, r.rows]).toEqual([0, "", ["WARN x.sup  supervisor lost; check group could not be verified, nothing killed — fix: rerun once; report it if it repeats"]]);
+      expect([r.code, r.err, r.rows]).toEqual([0, "", [`WARN x.sup  supervisor lost; check group ${what}, nothing killed — fix: rerun once; report it if it repeats`]]);
     }
   });
 });
