@@ -34,6 +34,8 @@ PR B: pins. A pin can be checked against each range its sources declare, a sourc
 
 PR C: CI. A composite action runs `env-check --static` in a consumer's workflow, and `--require-checks` turns a check that stopped running (a deleted pin, a `[[local]]` that lost `static = true`) into a red build instead of a quiet pass.
 
+PR D: local checks. A `[[local]]` can name the commands it `needs` and is skipped, not failed, where one is missing; an opt-in `d.node_modules` check catches an install that no longer matches `package-lock.json`; a check cut short gets SIGTERM and 2 s to clean up before SIGKILL, and its leftover processes are killed even if the supervisor dies; the wrapper's "engine not installed" hint now shows the install command.
+
 ### Added
 
 - Composite action `plugins/loops/action.yml`, pinned by commit SHA (`uses: adambware/agentic-tools/plugins/loops@<sha>`). It runs `node bin/loops.mjs env-check --static --require-checks[=<ids>]` once from the consumer's checkout, prints the rows to the log with workflow commands paused, writes them to the step summary in a `text` fence longer than any backtick run in the output (also on exit 1), and exits with the engine's code. Inputs `working-directory` (default `.`, relative to `$GITHUB_WORKSPACE`) and `require-checks` (empty = bare `--require-checks`); no outputs. Node missing or older than 18 is exit 2 with `add actions/setup-node`; a Windows runner is exit 2. The logic is `scripts/action-env-check.sh`, which takes the inputs only as environment variables. The README's "Run the static checks in CI" has a complete workflow and a no-action fallback.
@@ -71,7 +73,7 @@ PR C: CI. A composite action runs `env-check --static` in a consumer's workflow,
 
 ### Upgrade notes
 
-- Peer FAIL becomes WARN: a peer checkout's failed Compose probe was a FAIL (exit 1, `--compose-project` exit 1 with empty stdout); it is now a WARN and the name is kept. Anything that relied on that FAIL should run env-check in the broken checkout.
+- Peer FAIL becomes WARN. A peer checkout's failed Compose probe was a FAIL (exit 1, `--compose-project` exit 1 with empty stdout); it is now a WARN and the name is kept. Anything that relied on that FAIL should run env-check in the broken checkout.
 - WARN lines on stderr under `--compose-project`: peer WARN lines appear on stderr. Scripts that treat any stderr as failure should check the exit code instead.
 - Set the engine floor, `engine = ">=0.8.0"` in `.loops/env-check.toml`, when adopting any 0.8.0 key (`main_project`, `main_files`, `range`, `optional`, a `local` table, `needs`, `node_modules`). An older engine then says it is too old instead of failing on an unknown key.
 - Not in this change: a Docker shim without Compose (podman-docker, exit 125) still FAILs `e.project`; it stays on the 0.7.2 review-notes TODO.
@@ -85,7 +87,7 @@ PR C: CI. A composite action runs `env-check --static` in a consumer's workflow,
 - Not in this change: D5 (`d.entrypoints` auto plus an extra list, and pre-commit `language: script` hooks) was cut to a TODO.
 - `d.node_modules` is opt-in. Every tracked `package-lock.json` counts, a test fixture's too.
 - SIGTERM + 2 s grace before SIGKILL: a `[[local]]` check cut short now gets SIGTERM + 2 s grace before SIGKILL (SIGINT for a Ctrl-C), so a timed-out run can take up to 2 s longer. A check that cleans up on SIGTERM now gets the chance; one that ignores it is still killed.
-- Lost supervisor is a WARN: a `[[local]]` whose supervisor is lost (killed, out of memory) without timing out and without printing a FAIL used to be FAIL `could not run`. It is now WARN `supervisor lost`, after the engine kills the check's group.
+- A lost supervisor is a WARN. When a `[[local]]` check's supervisor dies (killed, out of memory) before the check times out or prints a FAIL, the row is now WARN `supervisor lost`, after the engine kills the check's group. In 0.7 a check killed that way read FAIL `could not run`.
 - Re-copy the wrapper: copy `plugins/loops/templates/env-check` over your `bin/env-check` (`chmod +x`). Its exit 3 hint now carries the `mkdir -p ~/bin && ln -sf` install line and the full README install URL instead of `see CONTRIBUTING.md`. The engine is unchanged by this, but a repo keeps the old hint until it copies.
 - `x.none` FAIL under `--require-checks`: in either form, a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
 - `--require-checks` is a flag, not a config key, so `engine = ">=0.8.0"` in `.loops/env-check.toml` cannot make an older engine accept it: an engine before 0.8.0 exits 2 `unknown flag --require-checks...`. (flags are read before the config, so the floor is never reached). Pin the action, or the fallback's checkout, at an agentic-tools SHA that has the flag, and add the flag and move the pin in the same change.
