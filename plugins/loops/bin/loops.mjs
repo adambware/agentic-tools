@@ -11939,10 +11939,25 @@ function requiredIds(v) {
 }
 function idMatcher(id) {
   if (!id.includes("*")) return (s) => s === id;
-  const re = new RegExp(`^${id.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
-  return (s) => re.test(s);
+  const parts2 = id.split("*");
+  const first = parts2[0];
+  const last = parts2[parts2.length - 1];
+  const middle = parts2.slice(1, -1).filter((p) => p !== "");
+  return (s) => {
+    if (s.length < first.length + last.length || !s.startsWith(first) || !s.endsWith(last)) return false;
+    let at = first.length;
+    const end = s.length - last.length;
+    for (const p of middle) {
+      const i = s.indexOf(p, at);
+      if (i < 0 || i + p.length > end) return false;
+      at = i + p.length;
+    }
+    return true;
+  };
 }
-var skipped = (id) => ({ level: "SKIP", id, message: "not run in --static mode", source: "builtin" });
+var STATIC_SKIP = "not run in --static mode";
+var skipped = (id) => ({ level: "SKIP", id, message: STATIC_SKIP, source: "builtin" });
+var staticOmission = (r) => r.level === "SKIP" && (r.message === STATIC_SKIP || r.message === "not checked in --static mode");
 function staticSkips(cfg) {
   return [
     ...cfg.pins.filter((p) => Object.values(p.local).some((s) => s !== "off")).map((p) => skipped(`a.local.${p.tool}`)),
@@ -11961,7 +11976,7 @@ function requiredRows(required, rows, isStatic) {
     const drop = `drop ${id} from --require-checks`;
     if (hits.length) {
       const shown = hits.slice(0, 3).map((r) => `${r.level} ${r.id}: ${r.message}`).join("; ") + (hits.length > 3 ? `; and ${hits.length - 3} more` : "");
-      const fix2 = !isStatic ? `fix what keeps the check from running, or ${drop}` : source === "builtin" ? `${id} is a built-in check that --static does not run (run env-check without --static, outside CI, to see it), or ${drop}` : `make the check run under --static (a [[local]] needs static = true; CI=true implies --static), or ${drop}`;
+      const fix2 = !isStatic || !hits.every(staticOmission) ? `fix what keeps the check from running, or ${drop}` : source === "builtin" ? `${id} is a built-in check that --static does not run (run env-check without --static, outside CI, to see it), or ${drop}` : `make the check run under --static (a [[local]] needs static = true; CI=true implies --static), or ${drop}`;
       return [{ level: "FAIL", id: "x.required", message: `${id} produced only SKIP/INFO rows (${shown})`, fix: fix2, source: "builtin" }];
     }
     const lookalike = source === "builtin" && rows.some((r) => r.source === "local" && m(r.id));

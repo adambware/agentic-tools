@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig, RESERVED_IDS } from "./env-config.js";
 import { main } from "./loops-cli.js";
 import { parseFlags, UsageError } from "./proc.js";
+import { idMatcher } from "./env-check.js";
 import { deps, put, repo } from "./testkit.js";
 
 const HEAD = "schema_version = 1\n";
@@ -312,5 +313,69 @@ describe("--require-checks in a full run (no --static)", () => {
     const required = t.out.join("\n").split("\n").filter((l) => l.startsWith("FAIL x.required"));
     expect(code).toBe(1);
     expect(required).toEqual([expect.stringMatching(/x\.slow produced only SKIP\/INFO rows \(SKIP x\.slow: tool missing\) — fix: fix what keeps the check from running, or drop x\.slow from --require-checks$/)]);
+  });
+});
+
+// Value: protects=a --require-checks glob is matched in time linear in the row id, with the same meaning as before;
+// fails_when=the glob goes back to a backtracking regex (a.<100 stars>z against a.pins.go stalled for seconds per row,
+// outside every check timeout), or the linear walk changes which ids a glob matches; why_new=review (outside voice,
+// adversarial) reproduced the stall; seam=none; no_claim=wall-clock limits on CI runners (the bounds are generous)
+describe("--require-checks glob matching is linear (review fix)", () => {
+  it.each([
+    ["a.pins.go", "a.pins.go", true],
+    ["a.pins.go", "a.pins.gox", false],
+    ["a.pins.*", "a.pins.go", true],
+    ["a.pins.*", "a.pins.", true],
+    ["a.pins.*", "a.pin", false],
+    ["x.go*", "x.go.setup", true],
+    ["*.lint", "x.a.lint", true],
+    ["*.lint", "x.a.lint.y", false],
+    ["x.*.lint", "x.lint", false],
+    ["x.*.lint", "x..lint", true],
+    ["x.*.*.lint", "x.a.b.lint", true],
+    ["x.*.*.lint", "x.a.lint", false],
+    ["x.a*a", "x.a", false],
+    ["x.a*a", "x.aa", true],
+    ["x.*b*b", "x.b", false],
+    ["x.*b*b", "x.bb", true],
+    ["x.**y", "x.y", true],
+    ["a.*z", "a.pins.go", false],
+  ])("%s against %s is %s", (glob, id, want) => {
+    expect(idMatcher(glob)(id)).toBe(want);
+  });
+  it("many stars, and dotted stars against a long id, match fast", () => {
+    const many = idMatcher(`a.${"*".repeat(100)}z`);
+    const dotted = idMatcher("x.*.*.*.lint");
+    const long = `x.${"a.".repeat(5000)}b`;
+    const t0 = performance.now();
+    for (let i = 0; i < 1000; i++) expect(many("a.pins.go")).toBe(false);
+    expect(dotted(long)).toBe(false);
+    expect(dotted(`${long}.lint`)).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
+  it("a many-star required id runs the engine to a prompt not-configured row", () => {
+    const t0 = performance.now();
+    const r = check(setup(GO_PIN), `--require-checks=a.${"*".repeat(100)}z`);
+    expect(performance.now() - t0).toBeLessThan(5000);
+    expect(r.code).toBe(1);
+    expect(r.required).toEqual([expect.stringMatching(/not configured: no check produced an id matching it/)]);
+  });
+});
+
+// Value: protects=under --static, the --static fix text goes only to rows --static left out; fails_when=a built-in
+// that skipped for its own reason (an all-optional pin with no source present) is told to run outside CI or drop the
+// requirement, neither of which restores the source; why_new=review (3 sources) found the wrong remedy; seam=none;
+// no_claim=every built-in SKIP message (the list of --static omissions is the two messages env-check writes)
+describe("--require-checks --static fix text names only --static omissions (review fix)", () => {
+  it("an all-optional pin with no source present is told to fix what keeps the check from running", () => {
+    const pin = `[[pins]]\ntool = "node"\nsources = ["tool-versions:.tool-versions"]\noptional = ["tool-versions:.tool-versions"]\nlocal = "off"\n`;
+    const r = check(setup(GO_PIN + pin), "--require-checks=a.pins.node");
+    expect(r.code).toBe(1);
+    expect(r.required).toEqual([expect.stringMatching(/a\.pins\.node produced only SKIP\/INFO rows \(SKIP a\.pins\.node: no source present \(all optional: tool-versions:\.tool-versions\)\) — fix: fix what keeps the check from running, or drop a\.pins\.node from --require-checks$/)]);
+    expect(r.required[0]).not.toMatch(/--static does not run|static = true/);
+  });
+  it("a static [[local]] that prints INFO under --static is not told to set static = true", () => {
+    const r = check(setup(LOCAL("x.note", "c.sh"), script("c.sh", "INFO x.note fyi")), "--require-checks=x.note");
+    expect(r.required).toEqual([expect.stringMatching(/fix: fix what keeps the check from running, or drop x\.note from --require-checks$/)]);
   });
 });

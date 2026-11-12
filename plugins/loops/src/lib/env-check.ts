@@ -44,14 +44,34 @@ function requiredIds(v: string): string[] {
   return out;
 }
 
-/** An exact id matches only itself; a `*` in it matches any run of characters. */
-function idMatcher(id: string): (s: string) => boolean {
+/**
+ * An exact id matches only itself; a `*` in it matches any run of characters. The glob is matched without a regex: a
+ * `.*` per star backtracks exponentially on many stars (`a.***…z` against `a.pins.go` took seconds per row), so this
+ * walks the literal parts left to right and takes each one's first fit, which is linear in the row id per part.
+ */
+export function idMatcher(id: string): (s: string) => boolean {
   if (!id.includes("*")) return (s) => s === id;
-  const re = new RegExp(`^${id.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "s");
-  return (s) => re.test(s);
+  const parts = id.split("*");
+  const first = parts[0]!;
+  const last = parts[parts.length - 1]!;
+  const middle = parts.slice(1, -1).filter((p) => p !== "");
+  return (s) => {
+    if (s.length < first.length + last.length || !s.startsWith(first) || !s.endsWith(last)) return false;
+    let at = first.length;
+    const end = s.length - last.length;
+    for (const p of middle) {
+      const i = s.indexOf(p, at);
+      if (i < 0 || i + p.length > end) return false;
+      at = i + p.length;
+    }
+    return true;
+  };
 }
 
-const skipped = (id: string): Result => ({ level: "SKIP", id, message: "not run in --static mode", source: "builtin" });
+const STATIC_SKIP = "not run in --static mode";
+const skipped = (id: string): Result => ({ level: "SKIP", id, message: STATIC_SKIP, source: "builtin" });
+/** A SKIP that says --static left the check out (staticSkips, a [[local]] without static = true, c.shared). */
+const staticOmission = (r: Result): boolean => r.level === "SKIP" && (r.message === STATIC_SKIP || r.message === "not checked in --static mode");
 /** The built-in rows --static leaves out rather than SKIPs, as the SKIPs a required id can name. */
 function staticSkips(cfg: Config): Result[] {
   return [
@@ -77,8 +97,9 @@ function requiredRows(required: string[], rows: Result[], isStatic: boolean): Re
     const drop = `drop ${id} from --require-checks`;
     if (hits.length) {
       const shown = hits.slice(0, 3).map((r) => `${r.level} ${r.id}: ${r.message}`).join("; ") + (hits.length > 3 ? `; and ${hits.length - 3} more` : "");
-      // Under --static a built-in SKIP is one --static always leaves out; only a [[local]] can opt in with static = true.
-      const fix = !isStatic
+      // The --static advice fits only rows --static left out: a built-in one --static never runs, a [[local]] that can
+      // opt in with static = true. Any other SKIP/INFO (an all-optional pin with no source, say) skipped for its own reason.
+      const fix = !isStatic || !hits.every(staticOmission)
         ? `fix what keeps the check from running, or ${drop}`
         : source === "builtin"
           ? `${id} is a built-in check that --static does not run (run env-check without --static, outside CI, to see it), or ${drop}`
