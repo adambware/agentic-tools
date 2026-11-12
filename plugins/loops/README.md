@@ -110,7 +110,7 @@ mkdir -p ~/bin && ln -sf "/path/to/agentic-tools/plugins/loops/bin/loop-metrics.
 The `loops` CLI is a second bundle, `bin/loops.mjs` (executable, zero runtime dependencies):
 
 ```bash
-ln -sf "/path/to/agentic-tools/plugins/loops/bin/loops.mjs" ~/bin/loops
+mkdir -p ~/bin && ln -sf "/path/to/agentic-tools/plugins/loops/bin/loops.mjs" ~/bin/loops
 ```
 
 ## Run

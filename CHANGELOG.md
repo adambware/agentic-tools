@@ -82,9 +82,10 @@ PR C: CI. A composite action runs `env-check --static` in a consumer's workflow,
 - A machine with a stray copy of a tool behind an asdf shim (a `go install`ed binary next to the tool's own plugin) now gets a WARN; the exit code is unchanged.
 - `d.tools` reads an asdf shim's exec line from the whole shim, up to 1 MiB, not only its first 4 KiB: a long shim (one header line per installed version) that execs asdf by an absolute path now asks that asdf instead of the one on PATH.
 - Not in this change: B7 (a workflow that runs Go with no `setup-go`) was cut to a TODO.
+- Not in this change: D5 (`d.entrypoints` auto plus an extra list, and pre-commit `language: script` hooks) was cut to a TODO.
 - `d.node_modules` is opt-in. Every tracked `package-lock.json` counts, a test fixture's too.
 - SIGTERM + 2 s grace before SIGKILL: a `[[local]]` check cut short now gets SIGTERM + 2 s grace before SIGKILL (SIGINT for a Ctrl-C), so a timed-out run can take up to 2 s longer. A check that cleans up on SIGTERM now gets the chance; one that ignores it is still killed.
-- Re-copy the wrapper: copy `plugins/loops/templates/env-check` over your `bin/env-check` (`chmod +x`). Its exit 3 hint now carries the `ln -sf` install line and the full README install URL instead of `see CONTRIBUTING.md`. The engine is unchanged by this, but a repo keeps the old hint until it copies.
+- Re-copy the wrapper: copy `plugins/loops/templates/env-check` over your `bin/env-check` (`chmod +x`). Its exit 3 hint now carries the `mkdir -p ~/bin && ln -sf` install line and the full README install URL instead of `see CONTRIBUTING.md`. The engine is unchanged by this, but a repo keeps the old hint until it copies.
 - `x.none` FAIL under `--require-checks`: in either form, a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
 - `--require-checks` is a flag, not a config key, so `engine = ">=0.8.0"` in `.loops/env-check.toml` cannot make an older engine accept it: an engine before 0.8.0 exits 2 `unknown flag --require-checks...`. (flags are read before the config, so the floor is never reached). Pin the action, or the fallback's checkout, at an agentic-tools SHA that has the flag, and add the flag and move the pin in the same change.
 

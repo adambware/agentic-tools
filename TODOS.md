@@ -254,7 +254,7 @@
   - **Effort:** M
   - **Depends on / blocked by:** None.
 
-- [ ] **loops env-check: per-directory `a.local` probes and GOTOOLCHAIN "will download" (B2, B6)** [P3 features]
+- [ ] **loops env-check: per-directory `a.local` probes and GOTOOLCHAIN "will download" (B6)** [P3 features]
   - **What:** Give `a.local.<tool>` a per-pin directory, and stop forcing `GOTOOLCHAIN=local`, so a Go module in a subdirectory reports what `go` there would select and the "will download" case is seen.
   - **Why:** The probe runs at the repo root and reports the installed go, not the toolchain the module would pick.
   - **Context:** B6 from the Compose + Go pilot list; the probe sets `GOTOOLCHAIN=local` on purpose so it never downloads.
@@ -310,6 +310,13 @@
   - **Effort:** M
   - **Depends on / blocked by:** The 0.8.0 composite action.
 
+- [ ] **loops env-check: `d.entrypoints` auto plus an extra list, and pre-commit `language: script` hooks (D5, pilot list B7)** [P3 features]
+  - **What:** Accept `entrypoints = ["auto", "./extra"]`. Have auto also read `.pre-commit-config.yaml` hooks with `language: script`, only under `repo: local`, so a remote hook repo's script path is ignored.
+  - **Why:** A pilot could not keep auto detection and add one entrypoint it misses, and its pre-commit script hooks are not checked.
+  - **Context:** Cut from loops 0.8.0 PR D (may-slip items became TODOs). Tests to add: auto plus a list, a local script hook is read, a remote repo's script hook is ignored. Land it when a pilot hits it.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
 - [ ] **loops: engines node >=18 and a Node 18/24 CI matrix (D6)** [P3 packaging]
   - **What:** Add `engines: node >=18` to `package.json` and run `loops-ci` on Node 18 and 24.
   - **Why:** CI runs Node 20 only, with no `engines` field, while the action accepts Node 18.
@@ -319,7 +326,7 @@
 
 - [ ] **loops 0.7.2 review-notes backlog: fix the ones a pilot hits** [P3 correctness]
   - **What:** INFORMATIONAL notes below the blocking floor in the 0.7.1 (PR #27) and 0.6.0 (PR #25) reviews, not fixed in either PR. Fix one when a pilot hits it; leave the rest. Line numbers are as reviewed.
-    - From PR #27: `pins.ts:328` the go.mod guard is lexical, so a committed symlink (folder or go.mod) still reads outside the checkout, as does every pin source; `pins.ts:305` a SHA or branch ref reads as the current release for every DEFAULTS rule (asserted on purpose in `pins.test.ts`); `proc.ts:166` `redactHome` no longer redacts a home glued to a flag or token (`-I/Users/x/inc`, `pkg@/Users/x`), which 0.7.0 did; `env-check.ts:136` a tab in a `[[local]]` message or fix now prints as a literal `\t`, undocumented; the CHANGELOG's 0.7.1 entry is labeled fixes-only but adds implicit pin sources, the mise fallback and the process-group supervisor; `env-checks.ts:230` the mise fallback ignores PATH order (mise shims, then an unresolved asdf shim, then a system copy PASSes, though mise's fallback reaches the failing asdf shim); `env-checks.ts:223` the inactive-state regex matches anywhere in stderr, so a config path containing that phrase enables the fallback; `pins.ts:394` `install-mode: ""` is read as non-binary, a false FAIL (closed by 0.8.0 PR B, item B8); `env-check.ts:75` a worktree path containing a newline reads as moved, a false FAIL; `pins.ts:330` a versionless golangci-lint-action step with `install-mode: none` FAILs with no hint about install-mode; `pins.test.ts:855` a "Value" header sits above the wrong test.
+    - From PR #27: `pins.ts:328` the go.mod guard is lexical, so a committed symlink (folder or go.mod) still reads outside the checkout, as does every pin source; `pins.ts:305` a SHA or branch ref reads as the current release for every DEFAULTS rule (asserted on purpose in `pins.test.ts`); `proc.ts:166` `redactHome` no longer redacts a home glued to a flag or token (`-I$HOME/inc`, `pkg@$HOME`), which 0.7.0 did; `env-check.ts:136` a tab in a `[[local]]` message or fix now prints as a literal `\t`, undocumented; the CHANGELOG's 0.7.1 entry is labeled fixes-only but adds implicit pin sources, the mise fallback and the process-group supervisor; `env-checks.ts:230` the mise fallback ignores PATH order (mise shims, then an unresolved asdf shim, then a system copy PASSes, though mise's fallback reaches the failing asdf shim); `env-checks.ts:223` the inactive-state regex matches anywhere in stderr, so a config path containing that phrase enables the fallback; `pins.ts:394` `install-mode: ""` is read as non-binary, a false FAIL (closed by 0.8.0 PR B, item B8); `env-check.ts:75` a worktree path containing a newline reads as moved, a false FAIL; `pins.ts:330` a versionless golangci-lint-action step with `install-mode: none` FAILs with no hint about install-mode; `pins.test.ts:855` a "Value" header sits above the wrong test.
     - From PR #25, still open after 0.7.1 (which fixed its later notes 1, 2, 4 and 8; line numbers here are not given, since `pins.ts` has moved since): in `compose-config.ts` a Docker-compatible shim without Compose (podman-docker, exit 125) FAILs `e.project` instead of SKIP, with fix text that cannot clear it (deferred from 0.8.0 PR A, item A6: the plan builds the SKIP matcher only from captured podman-docker stderr, and none was captured, so the wording is not guessed; a bare exit 125 must still FAIL); in `pins.ts`, for a workflow block-scalar input the unsupported-form line is the scalar's start line; the README's `b.containers` wording merges failed and non-numeric `git log` output, which the code distinguishes; the `readSource` prefix repeats the file the message already names; the Dockerfile directive scan continues past unknown `# name=value` lines and treats an empty `# escape=` as a change (a false FAIL; a non-default escape is already rejected); setup-python's free-threaded `3.13t` is an unsupported FAIL; the `b.containers` FAIL for a failed or garbled `git log` has no fix text; a setup-* range input is an INFO row until `a.range` lands (by design; 0.8.0 PR B checks it under the opt-in `range = "check"`); `pins-matrix.test.ts` checks kind names and files, not the pin, range and "anything else" columns the docs imply; a tracked `[compose]` input missing on disk (sparse checkout) is a FAIL that cannot be cleared from inside that state.
   - **Why:** None blocks a release, and most are narrow or a false FAIL. They live only in two PR bodies, so 0.8.0 scoping would not see them.
   - **Context:** Recorded in the "Review notes" sections of PR #27 and PR #25. Check that a note still reproduces before fixing it.
@@ -340,7 +347,7 @@
   - **Completed:** 2026-11-12 (loops 0.8.0)
 
 - [x] **loops 0.8.0: gaps a later pilot found migrating a Compose + Go repo to env-check (B1-B10)** [P2 features]
-  - Done: B1-B3 (PR A), B4, B5 and B10's pin-disagreement probe (PR B), and B8's exit 3 hint (PR D: it carries the install line and the README URL). The still-open pieces each have their own entry: B2 and B6 as per-directory probes, B8b, B9, and the `redactHome` cosmetic note under B10 (B10b). This list's B7 (`d.entrypoints` auto plus a list) did not ship and is not filed.
+  - Done: B1-B3 (PR A), B4, B5 and B10's pin-disagreement probe (PR B), and B8's exit 3 hint (PR D: it carries the install line and the README URL). The still-open pieces each have their own entry: B6 as per-directory probes, B8b, B9, and the `redactHome` cosmetic note under B10 (B10b). This list's B7 (`d.entrypoints` auto plus a list) did not ship; it has its own entry (0.8.0 item D5).
   - **Completed:** 2026-11-12 (loops 0.8.0)
 
 - [x] **Change detection uses a date, not the reviewed SHA** [P1 correctness]

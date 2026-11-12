@@ -88,7 +88,7 @@ describe("wrapper templates/env-check exit contract", () => {
   it("the exit 3 hint carries the install line and the full README install URL, not CONTRIBUTING.md", () => {
     const r = sandbox({ PATH: nodeDir(), HOME: tmp() });
     expect(r.code).toBe(3);
-    expect(r.err).toContain("ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops");
+    expect(r.err).toContain("mkdir -p ~/bin && ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops");
     expect(r.err).toContain("https://github.com/adambware/agentic-tools/blob/main/plugins/loops/README.md#install");
     expect(r.err).not.toContain("CONTRIBUTING");
   });
