@@ -26,40 +26,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **nightshift: change detection diffs from the reviewed sha, not a date.** `git rev-list -1 --before=<last_reviewed>T23:59:59 HEAD` made any commit landing later on the same day as a review its own baseline, so its changes never reached `change_flag` until the surface went stale on age alone (up to 90 days for a low-weight vector). Registry entries now carry an engine-managed `last_reviewed_sha`, stamped by `bin/record` from `run.json.pack_sha` (left untouched when the run had no git), and `bin/select` / `bin/due` diff `<sha>..HEAD` directly. The date baseline remains only as a fallback for entries recorded before this field existed or a sha that no longer resolves (shallow clone, rewritten history). The sha comes from a registry committed in the reviewed repo, so anything that is not hex is refused both by `validate` and by the git runner itself: a value like `--output=<path>` would otherwise be parsed by `git diff` as an option.
 
-## [ship-lean 1.0.0] - 2026-11-09
-
-New plugin: a lean overlay for gstack's `/ship` skill, packaged from a
-previously hand-installed set of `~/.claude` files so the hook and agent register
-natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
-`settings.json` edit.
-
-### Added
-
-- `UserPromptSubmit` hook (`hooks/ship-playbook-hook`, python3, fail-open) that
-  injects a short overlay note when the prompt is an interactive `/ship`. Trigger
-  is `^/ship(\s|$)` only; the natural-language form is off unless `SHIP_HOOK_NL=1`.
-  Overlay and reviewers-workflow paths are resolved from `${CLAUDE_PLUGIN_ROOT}`;
-  on a non-match, unset root, or any error it emits nothing and exits 0 — it never
-  blocks or alters a prompt.
-- `ship-lean-reviewer` agent, addressed as `ship-lean:ship-lean-reviewer` (`Read, Grep, Glob` only — read-only is harness-enforced)
-  and `playbooks/ship-lean/reviewers.workflow.js`, the parallel read-only fan-out
-  (per-lens `{lens, ok, findings}`, no silent lens drops, severity `CRITICAL|INFORMATIONAL`).
-- `playbooks/ship.md`, the ~1-page overlay. `SKILL.md` stays authoritative; it
-  overrides only Step 9 specialist dispatch + Step 11 adversarial pass (as a read-only
-  parallel Workflow over an out-of-repo patch) and the push gate, which fails toward
-  "Stop here — nothing pushed." Includes a degrade-to-standard path for when the
-  Workflow can't run (lean is interactive-only).
-- `scripts/migrate-from-manual-install.sh` (dry-run by default) and a README
-  MIGRATION section: enabling the plugin while the old manual install is present
-  double-fires the hook and duplicates the agent, so the manual files and the untagged
-  `settings.json` `UserPromptSubmit` entry must be removed first. The script removes only the
-  `ship-playbook-hook` command, so other hooks in the same matcher group stay.
-- `test/ship-lean-test.sh`: hermetic, no-auth checks of the plugin's hook via
-  `${CLAUDE_PLUGIN_ROOT}` (trigger matrix, fail-open, plugin-resolved paths), static
-  manifest/JSON/syntax validation, and the `W` invariant (conditional on `gstack-wtree`).
-  Wired into CI via `tests/ship-lean-test.sh`.
-
-## [Unreleased] (loops)
+## [loops 0.8.0] - 2026-11-12
 
 `loops env-check` 0.8.0, PR A: Compose project policy v2. One worktree's broken Compose file no longer withholds the project name in every other checkout, and two `[compose]` keys cover a main checkout that runs other files or a wrapper-supplied `-p`.
 
@@ -104,23 +71,55 @@ PR C: CI. A composite action runs `env-check --static` in a consumer's workflow,
 
 ### Upgrade notes
 
-- A peer checkout's failed Compose probe was a FAIL (exit 1, `--compose-project` exit 1 with empty stdout); it is now a WARN and the name is kept. Anything that relied on that FAIL should run env-check in the broken checkout.
-- Under `--compose-project`, peer WARN lines appear on stderr. Scripts that treat any stderr as failure should check the exit code instead.
-- When adopting `main_project` or `main_files`, set `engine = ">=0.8.0"` in `.loops/env-check.toml`, so an older engine says it is too old instead of failing on an unknown key.
+- Peer FAIL becomes WARN: a peer checkout's failed Compose probe was a FAIL (exit 1, `--compose-project` exit 1 with empty stdout); it is now a WARN and the name is kept. Anything that relied on that FAIL should run env-check in the broken checkout.
+- WARN lines on stderr under `--compose-project`: peer WARN lines appear on stderr. Scripts that treat any stderr as failure should check the exit code instead.
+- Set the engine floor, `engine = ">=0.8.0"` in `.loops/env-check.toml`, when adopting any 0.8.0 key (`main_project`, `main_files`, `range`, `optional`, a `local` table, `needs`, `node_modules`). An older engine then says it is too old instead of failing on an unknown key.
 - Not in this change: a Docker shim without Compose (podman-docker, exit 125) still FAILs `e.project`; it stays on the 0.7.2 review-notes TODO.
 - A pin disagreement now also prints `a.local.<tool>` rows, one per distinct pin; a mismatching one is a WARN, or a FAIL (exit 1, as the disagreement already is) under `local = "fail"`.
 - A Dockerfile whose `FROM ${VAR}` resolves to the tool's image now adds that pin, which can surface a disagreement (or an unsupported-tag FAIL) that 0.7.x never saw.
 - A Dockerfile whose only image of interest is `FROM ${VAR}` with no value in the global `ARG` scope used to FAIL `no <tool> version found`; it is now the INFO `image set at build time`, and the row's verdict comes from the other sources (with no other source, `no exact pin among sources` still FAILs). The exception is the tool's own image tagged with its unset `<TOOL>_VERSION` `ARG`, directly or through another `ARG`, which still FAILs.
-- `install-mode: ""` now reads as unset, so a versionless golangci-lint-action step with it reads `go.mod`, so its pin now joins the comparison.
+- `install-mode: ""` now unset: it reads as unset, so a versionless golangci-lint-action step with it reads `go.mod`, so its pin now joins the comparison.
 - A machine with a stray copy of a tool behind an asdf shim (a `go install`ed binary next to the tool's own plugin) now gets a WARN; the exit code is unchanged.
 - `d.tools` reads an asdf shim's exec line from the whole shim, up to 1 MiB, not only its first 4 KiB: a long shim (one header line per installed version) that execs asdf by an absolute path now asks that asdf instead of the one on PATH.
-- When adopting `range`, `optional` or a `local` table, set `engine = ">=0.8.0"`, as for the `[compose]` keys.
 - Not in this change: B7 (a workflow that runs Go with no `setup-go`) was cut to a TODO.
-- `d.node_modules` is opt-in. When adopting it, set `engine = ">=0.8.0"`. Every tracked `package-lock.json` counts, a test fixture's too.
-- A `[[local]]` check cut short now gets SIGTERM + 2 s grace before SIGKILL (SIGINT for a Ctrl-C), so a timed-out run can take up to 2 s longer. A check that cleans up on SIGTERM now gets the chance; one that ignores it is still killed.
+- `d.node_modules` is opt-in. Every tracked `package-lock.json` counts, a test fixture's too.
+- SIGTERM + 2 s grace before SIGKILL: a `[[local]]` check cut short now gets SIGTERM + 2 s grace before SIGKILL (SIGINT for a Ctrl-C), so a timed-out run can take up to 2 s longer. A check that cleans up on SIGTERM now gets the chance; one that ignores it is still killed.
 - Re-copy the wrapper: copy `plugins/loops/templates/env-check` over your `bin/env-check` (`chmod +x`). Its exit 3 hint now carries the `ln -sf` install line and the full README install URL instead of `see CONTRIBUTING.md`. The engine is unchanged by this, but a repo keeps the old hint until it copies.
-- Under `--require-checks` (either form), a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
+- `x.none` FAIL under `--require-checks`: in either form, a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
 - `--require-checks` is a flag, not a config key, so `engine = ">=0.8.0"` in `.loops/env-check.toml` cannot make an older engine accept it: an engine before 0.8.0 exits 2 `unknown flag --require-checks...`. (flags are read before the config, so the floor is never reached). Pin the action, or the fallback's checkout, at an agentic-tools SHA that has the flag, and add the flag and move the pin in the same change.
+
+## [ship-lean 1.0.0] - 2026-11-09
+
+New plugin: a lean overlay for gstack's `/ship` skill, packaged from a
+previously hand-installed set of `~/.claude` files so the hook and agent register
+natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
+`settings.json` edit.
+
+### Added
+
+- `UserPromptSubmit` hook (`hooks/ship-playbook-hook`, python3, fail-open) that
+  injects a short overlay note when the prompt is an interactive `/ship`. Trigger
+  is `^/ship(\s|$)` only; the natural-language form is off unless `SHIP_HOOK_NL=1`.
+  Overlay and reviewers-workflow paths are resolved from `${CLAUDE_PLUGIN_ROOT}`;
+  on a non-match, unset root, or any error it emits nothing and exits 0 — it never
+  blocks or alters a prompt.
+- `ship-lean-reviewer` agent, addressed as `ship-lean:ship-lean-reviewer` (`Read, Grep, Glob` only — read-only is harness-enforced)
+  and `playbooks/ship-lean/reviewers.workflow.js`, the parallel read-only fan-out
+  (per-lens `{lens, ok, findings}`, no silent lens drops, severity `CRITICAL|INFORMATIONAL`).
+- `playbooks/ship.md`, the ~1-page overlay. `SKILL.md` stays authoritative; it
+  overrides only Step 9 specialist dispatch + Step 11 adversarial pass (as a read-only
+  parallel Workflow over an out-of-repo patch) and the push gate, which fails toward
+  "Stop here — nothing pushed." Includes a degrade-to-standard path for when the
+  Workflow can't run (lean is interactive-only).
+- `scripts/migrate-from-manual-install.sh` (dry-run by default) and a README
+  MIGRATION section: enabling the plugin while the old manual install is present
+  double-fires the hook and duplicates the agent, so the manual files and the untagged
+  `settings.json` `UserPromptSubmit` entry must be removed first. The script removes only the
+  `ship-playbook-hook` command, so other hooks in the same matcher group stay.
+- `test/ship-lean-test.sh`: hermetic, no-auth checks of the plugin's hook via
+  `${CLAUDE_PLUGIN_ROOT}` (trigger matrix, fail-open, plugin-resolved paths), static
+  manifest/JSON/syntax validation, and the `W` invariant (conditional on `gstack-wtree`).
+  Wired into CI via `tests/ship-lean-test.sh`.
 
 ## [loops 0.7.1] - 2026-11-04
 

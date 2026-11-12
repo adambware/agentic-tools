@@ -1,2 +1,2 @@
 /** The `loops` CLI version. Keep in sync with package.json and .claude-plugin/plugin.json (a test checks). */
-export const VERSION = "0.7.1";
+export const VERSION = "0.8.0";
