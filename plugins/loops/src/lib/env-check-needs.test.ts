@@ -66,6 +66,15 @@ describe("[[local]] needs (D1)", () => {
     }
   });
 
+  // Value: protects=a SKIP naming only the needed commands that are lacking; fails_when=every needed command is listed, or
+  // one lacking command hides another; why_new=the rows above need one command each; seam=none; no_claim=shim reasons
+  it("with several needs, names only the lacking ones and says them", () => {
+    const dir = shim("gr-tool", "exit 0");
+    const r = check(toml('needs = ["gr-tool", "no-such-a-zz", "no-such-b-zz"]'), { path: [dir] });
+    expect(r.out).toContain("SKIP x.rel  no-such-a-zz, no-such-b-zz not installed — fix: install them and put them on PATH");
+    expect(r.ran).toBe(false);
+  });
+
   it("a needs-SKIP does not satisfy --require-checks=<id>", () => {
     const r = check(toml('needs = ["no-such-tool-zz"]'), { args: ["--require-checks=x.rel"] });
     expect(r.code).toBe(1);
