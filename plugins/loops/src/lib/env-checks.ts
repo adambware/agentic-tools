@@ -381,7 +381,11 @@ export function harnessChecks(c: Ctx): Result[] {
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
   }
-  if (h.nodeModules !== "off" && !c.static) out.push(...nodeModulesRows(c.root, c.tracked, h.nodeModules, c.platform ?? hostPlatform()));
+  if (h.nodeModules !== "off" && !c.static) {
+    // A tracked lockfile that is not on disk: `git ls-files -t` tags one sparse checkout left out (skip-worktree) "S".
+    const sparse = (f: string): boolean => git(c.run, c.root, ["ls-files", "-t", "-z", "--", `:(literal)${f}`], gitEnv(c.env, c))?.startsWith("S ") ?? false;
+    out.push(...nodeModulesRows(c.root, c.tracked, h.nodeModules, c.platform ?? hostPlatform(), sparse));
+  }
   return out;
 }
 

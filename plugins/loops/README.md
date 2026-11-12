@@ -440,13 +440,17 @@ difference: `node_modules/` missing, a package at another version or integrity, 
 installed package the lockfile does not list. A missing dev package says it may come from `--omit=dev`. The fix is
 `npm ci` in that directory. Other rules:
 
-- A package npm skips on this platform (its `os`, `cpu` or `libc` does not match) never differs.
+- A package npm skips on this platform (its `os`, `cpu` or `libc` does not match) never differs. Nor does an optional
+  package that only skipped packages depend on: npm skips it too.
 - A missing optional package that this platform could install is a WARN, never a FAIL: npm skips an optional package
   whose install failed.
-- `libc` matters only on Linux. loops reads glibc when Node's process report names a glibc runtime, else musl when a
-  `/lib/ld-musl-*` loader exists, else unknown; an unknown libc filters nothing.
+- `libc` matters only on Linux, as in npm: a package with a `libc` field is skipped on any other OS, and when the libc
+  is unknown. loops reads the libc as npm does: the text of `/usr/bin/ldd`, else Node's process report.
 - Workspaces: only the root lockfile and the root `node_modules` are compared, and each member link must exist. A
-  lockfile inside a member is not checked.
+  lockfile inside a member (a path the root's `workspaces` globs match) is not checked. A `file:` dependency is not a
+  member: its own tracked lockfile is checked.
+- A tracked lockfile that sparse checkout left out is INFO "not checked out". A deleted one is at the configured level.
+- No tracked lockfile at all is INFO "no tracked package-lock.json to compare".
 - No `node_modules/.package-lock.json` (npm 6, yarn or pnpm installs) is a WARN "cannot verify".
 - `lockfileVersion` 2 and 3 are read; any other is INFO "unsupported lockfile".
 - Every tracked lockfile counts, also a test fixture's, which has no `node_modules`.

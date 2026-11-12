@@ -6,7 +6,7 @@ import { dirname, join, normalize } from "node:path";
 import type { Level, Result } from "./env-checks.js";
 import { shQuote } from "./proc.js";
 
-/** What npm filters `os`, `cpu` and `libc` on. `libc` is "glibc", "musl" or null (unknown: filters nothing); only Linux reads it. */
+/** What npm filters `os`, `cpu` and `libc` on. `libc` is "glibc", "musl" or null (unknown, and always null off Linux). */
 export interface Platform {
   os: string;
   cpu: string;
@@ -14,24 +14,42 @@ export interface Platform {
 }
 
 /**
- * This machine's platform, as npm sees it. On Linux the libc is glibc when Node's process report names a glibc runtime
- * (`header.glibcVersionRuntime`, the test npm's own detect-libc makes first), else musl when a `/lib/ld-musl-*` loader
- * exists, else unknown.
+ * The libc family as npm's current-env reads it: off Linux none; on Linux the text of `/usr/bin/ldd` ("musl" is musl,
+ * "GNU C Library" is glibc, other text unknown), and only when ldd cannot be read Node's process report (a glibc runtime
+ * version is glibc, a musl loader among the shared objects is musl).
  */
+export function detectLibc(os: string, ldd: () => string | null, report: () => { header?: { glibcVersionRuntime?: string }; sharedObjects?: unknown } | null): string | null {
+  if (os !== "linux") return null;
+  const text = ldd();
+  if (text !== null) return text.includes("musl") ? "musl" : text.includes("GNU C Library") ? "glibc" : null;
+  const r = report();
+  if (r?.header?.glibcVersionRuntime) return "glibc";
+  const libs = Array.isArray(r?.sharedObjects) ? (r.sharedObjects as unknown[]) : [];
+  return libs.some((f) => typeof f === "string" && (f.includes("libc.musl-") || f.includes("ld-musl-"))) ? "musl" : null;
+}
+
+/** This machine's platform, as npm sees it (see detectLibc). */
 export function hostPlatform(): Platform {
-  let libc: string | null = null;
-  if (process.platform === "linux") {
-    const header = (process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined)?.header;
-    if (header?.glibcVersionRuntime) libc = "glibc";
-    else {
-      try {
-        if (readdirSync("/lib").some((f) => f.startsWith("ld-musl-"))) libc = "musl";
-      } catch {
-        // no /lib: unknown
-      }
+  const ldd = (): string | null => {
+    try {
+      return readFileSync("/usr/bin/ldd", "utf8");
+    } catch {
+      return null;
     }
-  }
-  return { os: process.platform, cpu: process.arch, libc };
+  };
+  const report = () => {
+    // excludeNetwork (Node 20.13+) keeps the report from resolving host names; older Node ignores it.
+    const rep = process.report as (NodeJS.ProcessReport & { excludeNetwork?: boolean }) | undefined;
+    if (!rep) return null;
+    const saved = rep.excludeNetwork;
+    rep.excludeNetwork = true;
+    try {
+      return rep.getReport() as { header?: { glibcVersionRuntime?: string }; sharedObjects?: unknown };
+    } finally {
+      rep.excludeNetwork = saved;
+    }
+  };
+  return { os: process.platform, cpu: process.arch, libc: detectLibc(process.platform, ldd, report) };
 }
 
 interface Pkg {
@@ -46,6 +64,9 @@ interface Pkg {
   os?: unknown;
   cpu?: unknown;
   libc?: unknown;
+  dependencies?: unknown;
+  optionalDependencies?: unknown;
+  devDependencies?: unknown;
 }
 
 /** npm-install-checks' list rule: `any`, `!x` excludes x, and a list of only negations admits everything else. */
@@ -63,21 +84,88 @@ function listOk(value: string, raw: unknown): boolean {
   return match || negated === list.length;
 }
 
-/** Whether npm installs `p` on this platform at all; libc only matters on Linux, and an unknown libc filters nothing. */
+/**
+ * Whether npm installs `p` on this platform at all, by npm-install-checks' checkPlatform: a package with a `libc` field
+ * is never installed off Linux or when the libc is unknown.
+ */
 export function eligible(p: Pkg, pf: Platform): boolean {
   if (p.os !== undefined && !listOk(pf.os, p.os)) return false;
   if (p.cpu !== undefined && !listOk(pf.cpu, p.cpu)) return false;
-  if (p.libc !== undefined && pf.os === "linux" && pf.libc !== null && !listOk(pf.libc, p.libc)) return false;
+  if (p.libc !== undefined && (pf.os !== "linux" || pf.libc === null || !listOk(pf.libc, p.libc))) return false;
   return true;
 }
 
+/** Where a dependency `name` of the record at `key` resolves: node's lookup, up from `key`'s own node_modules. */
+function resolveDep(packages: Record<string, Pkg>, key: string, name: string): string | null {
+  for (let at: string | null = key; at !== null; ) {
+    const k = at === "" ? `node_modules/${name}` : `${at}/node_modules/${name}`;
+    if (Object.hasOwn(packages, k)) return k;
+    if (at === "") at = null;
+    else {
+      const i = at.lastIndexOf("node_modules/");
+      at = i <= 0 ? "" : at.slice(0, i - 1);
+    }
+  }
+  return null;
+}
+
+const names = (deps: unknown): string[] => (deps && typeof deps === "object" && !Array.isArray(deps) ? Object.keys(deps) : []);
+
+/**
+ * The records npm skips on this platform: each one that fails `eligible`, plus npm's optional set, every optional
+ * record that only skipped records depend on (fsevents' own dependencies on Linux). A required record is never
+ * skipped this way: one reachable only through a skipped package is a lockfile problem, and is still compared.
+ */
+function skipped(packages: Record<string, Pkg>, pf: Platform): Set<string> {
+  const out = new Set<string>();
+  const users = new Map<string, Set<string>>();
+  for (const [k, p] of Object.entries(packages)) {
+    if (!p || typeof p !== "object") continue;
+    if (rootTree(k) && !eligible(p, pf)) out.add(k);
+    const deps = [...names(p.dependencies), ...names(p.optionalDependencies), ...(k === "" ? names(p.devDependencies) : [])];
+    for (const name of deps) {
+      const to = resolveDep(packages, k, name);
+      if (to !== null) users.set(to, (users.get(to) ?? new Set()).add(k));
+    }
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [k, p] of Object.entries(packages)) {
+      if (out.has(k) || !rootTree(k) || !p || !(p.optional || p.devOptional)) continue;
+      const by = users.get(k);
+      if (by?.size && [...by].every((u) => out.has(u))) {
+        out.add(k);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
+
+/** Whether `path` (relative, `/`-separated) matches a workspaces glob: `*` is one segment, `**` any number. */
+function globMatch(glob: string, path: string): boolean {
+  const g = normalize(glob).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
+  const p = path.split("/").filter((x) => x && x !== ".");
+  const seg = (pat: string, s: string): boolean => {
+    const re = pat.split("*").map((part) => part.replace(/[.+?^$()|[\]{}\\]/g, "\\$&")).join("[^/]*");
+    return new RegExp("^" + re + "$").test(s);
+  };
+  const go = (i: number, j: number): boolean => {
+    if (i === g.length) return j === p.length;
+    if (g[i] === "**") return go(i + 1, j) || (j < p.length && go(i, j + 1));
+    return j < p.length && seg(g[i]!, p[j]!) && go(i + 1, j + 1);
+  };
+  return go(0, 0);
+}
+
 type Read = { ok: true; version: unknown; packages: Record<string, Pkg> } | { ok: false; why: string };
-function readLock(file: string): Read | null {
+/** The lockfile at `file`; "missing" when it is not there (ENOENT), null when it cannot be read. */
+function readLock(file: string): Read | "missing" | null {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
-  } catch {
-    return null;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : null;
   }
   try {
     const j = JSON.parse(text) as { lockfileVersion?: unknown; packages?: unknown };
@@ -101,29 +189,51 @@ const label = (key: string): string => key.slice("node_modules/".length);
 const same = (a: unknown, b: unknown): boolean => (a ?? null) === (b ?? null);
 const pkgs = (n: number): string => `${n} package${n === 1 ? "" : "s"}`;
 
+/** `packages[""].workspaces`: an array of globs, or `{packages: [...]}`. */
+function workspaces(r: { packages: Record<string, Pkg> }): string[] {
+  const w = (r.packages[""] as { workspaces?: unknown } | undefined)?.workspaces;
+  const list = Array.isArray(w) ? w : w && typeof w === "object" && Array.isArray((w as { packages?: unknown }).packages) ? (w as { packages: unknown[] }).packages : [];
+  return list.filter((x): x is string => typeof x === "string");
+}
+
 /**
  * One `d.node_modules` row per tracked `package-lock.json` (none inside a node_modules tree or a workspace member of
  * another one): at `level` for a difference, WARN for a missing optional package or a lockfile it cannot verify, INFO for
- * an unsupported lockfileVersion, else PASS.
+ * an unsupported lockfileVersion, a lockfile sparse checkout left out (`sparse` says which: git's skip-worktree), or
+ * nothing to compare, else PASS.
  */
-export function nodeModulesRows(root: string, tracked: string[], level: "fail" | "warn", pf: Platform): Result[] {
+export function nodeModulesRows(root: string, tracked: string[], level: "fail" | "warn", pf: Platform, sparse: (f: string) => boolean = () => false): Result[] {
   const LEVEL: Level = level === "fail" ? "FAIL" : "WARN";
   const row = (lvl: Level, message: string, fix?: string): Result => ({ level: lvl, id: "d.node_modules", message, fix, source: "builtin" });
   const locks = tracked.filter((f) => (f === "package-lock.json" || f.endsWith("/package-lock.json")) && !f.split("/").includes("node_modules"));
   const read = new Map(locks.map((f) => [f, readLock(join(root, f))]));
-  // Workspace members of any lockfile here: their link targets. Only the root lockfile and root node_modules count.
+  // Workspace members of any lockfile here: the link targets its root record's workspaces globs name (a `file:`
+  // dependency's link target is not one, and its own lockfile is compared). Only the root lockfile and root
+  // node_modules count for a member.
   const members = new Set<string>();
   for (const [f, r] of read) {
-    if (!r?.ok) continue;
-    for (const p of Object.values(r.packages)) if (p?.link && typeof p.resolved === "string") members.add(normalize(join(dirname(f), p.resolved)));
+    if (!r || r === "missing" || !r.ok) continue;
+    const globs = workspaces(r);
+    if (!globs.length) continue;
+    for (const p of Object.values(r.packages)) {
+      if (!p?.link || typeof p.resolved !== "string") continue;
+      const rel = normalize(p.resolved);
+      if (globs.some((g) => globMatch(g, rel))) members.add(normalize(join(dirname(f), rel)));
+    }
   }
   const out: Result[] = [];
+  let compared = 0;
   for (const f of locks) {
     const dir = dirname(f);
     if (members.has(dir)) continue;
+    compared++;
     const fix = dir === "." ? "npm ci" : `(cd ${shQuote(dir)} && npm ci)`;
     const r = read.get(f);
-    if (!r) {
+    if (r === "missing" && sparse(f)) {
+      out.push(row("INFO", `${f}: not checked out (sparse checkout), not compared`));
+      continue;
+    }
+    if (!r || r === "missing") {
       out.push(row(LEVEL, `${f}: cannot read the lockfile`, `restore it (git checkout -- ${shQuote(f)})`));
       continue;
     }
@@ -135,13 +245,15 @@ export function nodeModulesRows(root: string, tracked: string[], level: "fail" |
       out.push(row("INFO", `${f}: unsupported lockfile (lockfileVersion ${String(r.version)}; 2 and 3 are read), not compared`));
       continue;
     }
-    const want = Object.entries(r.packages).filter(([k, p]) => rootTree(k) && p && typeof p === "object" && eligible(p, pf));
+    const skip = skipped(r.packages, pf);
+    const want = Object.entries(r.packages).filter(([k, p]) => rootTree(k) && p && typeof p === "object" && !skip.has(k));
     const nm = join(root, dir, "node_modules");
     if (!isDir(nm)) {
       out.push(want.length ? row(LEVEL, `${f}: node_modules/ missing (${pkgs(want.length)} to install)`, fix) : row("PASS", `${f}: no packages to install`));
       continue;
     }
-    const hidden = readLock(join(nm, ".package-lock.json"));
+    const installed = readLock(join(nm, ".package-lock.json"));
+    const hidden = installed === "missing" ? null : installed;
     if (!hidden || !hidden.ok || (hidden.version !== 2 && hidden.version !== 3)) {
       if (!want.length && !hidden) {
         out.push(row("PASS", `${f}: no packages to install`));
@@ -177,5 +289,6 @@ export function nodeModulesRows(root: string, tracked: string[], level: "fail" |
       out.push(row("WARN", `${f}: optional package ${optional.sort()[0]} not installed${more}; npm skips an optional package whose install failed`, `${fix}, and read its output for the optional package's error`));
     } else out.push(row("PASS", `${f}: node_modules matches (${pkgs(want.length)})`));
   }
+  if (!out.length) out.push(row("INFO", locks.length && !compared ? "every tracked package-lock.json is a workspace member's; none compared" : "no tracked package-lock.json to compare"));
   return out;
 }

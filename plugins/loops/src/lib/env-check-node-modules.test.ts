@@ -100,11 +100,11 @@ describe("d.node_modules (D2)", () => {
     expect(musl.rows).toEqual(["PASS d.node_modules  package-lock.json: node_modules matches (2 packages)"]);
   });
 
-  it("libc only filters on linux, and an unknown libc filters nothing", () => {
+  it("libc filters as npm does: never eligible off linux or on an unknown libc", () => {
     const p = { libc: ["glibc"] };
-    expect(eligible(p, { os: "darwin", cpu: "arm64", libc: "musl" })).toBe(true);
+    expect(eligible(p, { os: "darwin", cpu: "arm64", libc: null })).toBe(false);
     expect(eligible(p, { ...LINUX, libc: "musl" })).toBe(false);
-    expect(eligible(p, { ...LINUX, libc: null })).toBe(true);
+    expect(eligible(p, { ...LINUX, libc: null })).toBe(false);
     expect(eligible({ os: "any" }, LINUX)).toBe(true);
     expect(eligible({ os: ["!win32", "!darwin"] }, LINUX)).toBe(true);
     expect(eligible({ cpu: "arm64" }, LINUX)).toBe(false);
