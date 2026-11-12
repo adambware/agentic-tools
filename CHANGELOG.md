@@ -118,6 +118,7 @@ PR C: CI. A composite action runs `env-check --static` in a consumer's workflow,
 - Not in this change: B7 (a workflow that runs Go with no `setup-go`) was cut to a TODO.
 - `d.node_modules` is opt-in. When adopting it, set `engine = ">=0.8.0"`. Every tracked `package-lock.json` counts, a test fixture's too.
 - A `[[local]]` check cut short now gets SIGTERM + 2 s grace before SIGKILL (SIGINT for a Ctrl-C), so a timed-out run can take up to 2 s longer. A check that cleans up on SIGTERM now gets the chance; one that ignores it is still killed.
+- Re-copy the wrapper: copy `plugins/loops/templates/env-check` over your `bin/env-check` (`chmod +x`). Its exit 3 hint now carries the `ln -sf` install line and the full README install URL instead of `see CONTRIBUTING.md`. The engine is unchanged by this, but a repo keeps the old hint until it copies.
 - Under `--require-checks` (either form), a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
 - `--require-checks` is a flag, not a config key, so `engine = ">=0.8.0"` in `.loops/env-check.toml` cannot make an older engine accept it: an engine before 0.8.0 exits 2 `unknown flag --require-checks...`. (flags are read before the config, so the floor is never reached). Pin the action, or the fallback's checkout, at an agentic-tools SHA that has the flag, and add the flag and move the pin in the same change.
 

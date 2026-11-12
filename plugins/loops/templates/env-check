@@ -22,6 +22,8 @@ for c in "${LOOPS_BIN:-}" "$HOME/bin/loops" "$(command -v loops 2>/dev/null)"; d
   if [ -x "$c" ]; then exec "$c" env-check "$@"; fi
   exec node "$c" env-check "$@"
 done
-echo "env-check: engine not installed (optional for contributors; see CONTRIBUTING.md)" >&2
+echo "env-check: engine not installed (optional for contributors). Install it with:" >&2
+echo "  ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops" >&2
+echo "  details: https://github.com/adambware/agentic-tools/blob/main/plugins/loops/README.md#install" >&2
 echo "env-check: not run"
 exit 3

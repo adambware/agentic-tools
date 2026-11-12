@@ -928,8 +928,12 @@ after any lines printed before it (so a FAIL printed before the timeout still co
 Any other exit code comes from the engine.
 
 **Re-copy the wrapper after upgrading loops.** A repo keeps running the copy it took, so a release that changes
-`templates/env-check` (0.7.1 added exits 1 and 2) reaches a consumer only when it copies the template over its
-`bin/env-check` again (`chmod +x`). The CHANGELOG says when a release changes the template.
+`templates/env-check` reaches a consumer only when it copies the template again. 0.7.1 added exits 1 and 2; 0.8.0
+changes the exit 3 hint. The CHANGELOG says when a release changes the template. Three steps:
+
+1. Copy `templates/env-check` over the repo's `bin/env-check`, and `chmod +x` it.
+2. When you adopt a 0.8.0 key, set `engine = ">=0.8.0"` in `.loops/env-check.toml`, so an older engine says it is too old.
+3. Run `bin/env-check` from the main checkout, then from a worktree, and check both are clean.
 
 #### Run the static checks in CI
 
