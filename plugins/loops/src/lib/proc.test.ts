@@ -329,11 +329,12 @@ describe("run with group", () => {
   }, 20_000);
 
   it("reads a ps start listing: whose group a pgid is, under whole-second start times and padded days", () => {
-    const at = (s: string) => Date.parse(s);
+    // The listing is in UTC (ps runs with TZ=UTC0).
+    const at = (s: string) => Date.parse(`${s} UTC`);
     const listing = ["  100   100 Thu Nov 12 10:23:45 2026", "  101   100 Thu Nov 12 10:23:46 2026", "  200   200 Mon Nov  2 09:00:00 2026", "  300   300 not a date", ""].join("\n");
-    // startMs is taken before the spawn, so a leader's whole-second lstart is at most 999 ms under it.
+    // startMs is taken before the spawn; a leader's lstart reads up to about 2 s under it on Linux (see LSTART_SLACK_MS).
     expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:45 2026") + 999)).toBe("ours");
-    expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:47 2026"))).toBe("other");
+    expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:48 2026"))).toBe("other");
     expect(groupOwner(listing, 200, at("Mon Nov 2 09:00:00 2026"))).toBe("ours");
     expect(groupOwner(listing, 300, 0)).toBe("unknown");
     expect(groupOwner(listing, 400, 0)).toBe("gone");

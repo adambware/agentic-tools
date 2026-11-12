@@ -18,6 +18,8 @@ export interface RunOpts {
    * SIGINT, then SIGKILL after GRACE_MS), with the descendants it can find, so a child it started does not outlive it.
    */
   group?: boolean;
+  /** The ps a grouped run lists processes with; default findPs(). Tests inject a fake. */
+  ps?: string | null;
 }
 export interface RunResult {
   /** null when the process could not start or was killed. */
@@ -40,45 +42,95 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 
 /** How long a terminated check gets to exit after SIGTERM or SIGINT before SIGKILL. */
 export const GRACE_MS = 2000;
+/** The longest one ps listing may take. */
+export const PS_TIMEOUT_MS = 5000;
+/** How long a terminated check's pipes get to close after the final SIGKILL. */
+export const SETTLE_MS = 500;
+/**
+ * How far a ps start time (lstart) may read before the real start. macOS truncates to whole seconds (under 1 s). Linux
+ * procps adds the boot time, itself truncated to whole seconds, to the start ticks, then truncates again: just under
+ * 2 s, plus a clock tick.
+ */
+export const LSTART_SLACK_MS = 2500;
+
+/**
+ * The engine's backstop on a grouped run: past the check's timeout, the supervisor's worst case to end it (two ps
+ * listings, the grace and the settle) plus 3 s for node to start and exit.
+ */
+export function backstopMs(timeoutMs: number): number {
+  return timeoutMs + 2 * PS_TIMEOUT_MS + GRACE_MS + SETTLE_MS + 3000;
+}
+
+/**
+ * The ps to list processes with: /bin/ps, else /usr/bin/ps, else the first ps on `pathVar` (NixOS keeps it elsewhere).
+ * The system dirs come first, so a repo's PATH cannot put a fake ps ahead of the real one. Null when there is none.
+ */
+export function findPs(pathVar: string | undefined = process.env.PATH, system: string[] = ["/bin/ps", "/usr/bin/ps"]): string | null {
+  for (const f of system) if (isExecutable(f)) return f;
+  return which("ps", pathVar);
+}
 
 /**
  * The supervisor a grouped run goes through: a node process in the caller's own process group that starts the command
  * detached (a new session, so its own process group and no controlling terminal), so the whole group can be killed. It
- * reads {cmd, args, env, timeoutMs, max, parent, pidfile, out} as JSON on stdin. Right after the spawn it publishes
+ * reads {cmd, args, env, timeoutMs, max, parent, pidfile, out, ps} as JSON on stdin. Right after the spawn it publishes
  * {pgid, startMs} to `pidfile` (tmp + rename; startMs is taken before the spawn), and it copies the check's stdout to
  * `out` as it arrives, so an engine that loses the supervisor can still kill the group and keep what the check printed.
  * One terminate routine ends the check at the timeout (SIGTERM), on SIGINT (SIGINT), on SIGTERM or SIGHUP (SIGTERM; a
  * terminal's Ctrl-C and hangup reach the supervisor, not the detached group), and when its parent is gone (SIGTERM; an
  * engine killed while spawnSync blocks its signal handlers): see `terminate`. It relays the command's output once it
- * ends, after one JSON status line on stderr: {code, signal, error, timedOut}.
+ * ends, after one JSON status line on stderr: {code, signal, error, timedOut}. When it exits after its engine is gone
+ * (an engine killed by a signal never runs its own cleanup), it removes the run dir that holds pidfile and out.
  */
 const SUPERVISOR = `
 const { spawn, spawnSync } = require("node:child_process");
-const { openSync, readFileSync, renameSync, writeFileSync, writeSync } = require("node:fs");
+const { closeSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } = require("node:fs");
 const { constants } = require("node:os");
+const { dirname } = require("node:path");
 const o = JSON.parse(readFileSync(0, "utf8"));
-const GRACE_MS = ${GRACE_MS};
+const GRACE_MS = ${GRACE_MS}, PS_TIMEOUT_MS = ${PS_TIMEOUT_MS}, SLACK = ${LSTART_SLACK_MS};
 let child = null, error = null, timedOut = false, done = false, timer = null, terminating = false, closed = false, settling = false, tee = null;
-// Every pid of the check seen so far: the leader and its descendants.
-const seen = new Set();
-// Add every live descendant of a seen pid, walking \`ps -A -o pid=,ppid=\`: a setsid child whose parent is still alive
-// is found; a daemon already reparented to init is not.
-const sweep = () => {
-  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { env: { PATH: "/bin:/usr/bin", LC_ALL: "C" }, encoding: "utf8", timeout: 5000 });
-  const kids = new Map();
-  for (const line of (r.stdout || "").split("\\n")) {
-    const m = /^\\s*(\\d+)\\s+(\\d+)\\s*$/.exec(line);
-    if (m) kids.set(+m[2], [...(kids.get(+m[2]) || []), +m[1]]);
+// Every live pid of the check seen so far, the leader and its descendants, with the start time each had when first seen.
+const seen = new Set(), starts = new Map();
+// When the leader exited (its pid is then free to be reused), and whether the leader's group is still the check's.
+let leaderExitMs = null, groupOk = true;
+// One \`ps -A -o pid=,ppid=,pgid=,lstart=\` listing in UTC (start times parsed to ms, NaN when one does not parse), or
+// null without a usable ps (then the sweep keeps what it knew).
+const list = () => {
+  if (!o.ps) return null;
+  const r = spawnSync(o.ps, ["-A", "-o", "pid=,ppid=,pgid=,lstart="], { env: { LC_ALL: "C", TZ: "UTC0" }, encoding: "utf8", timeout: PS_TIMEOUT_MS });
+  if (!r.stdout) return null;
+  const rows = [];
+  for (const line of r.stdout.split("\\n")) {
+    const m = /^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\S.*?)\\s*$/.exec(line);
+    if (m) rows.push({ pid: +m[1], ppid: +m[2], pgid: +m[3], at: Date.parse(m[4].replace(/\\s+/g, " ") + " UTC") });
   }
+  return rows;
+};
+// Drop every seen pid that is gone or now has another start time (exited, maybe reused), then add every live
+// descendant of the rest: a setsid child whose parent is still alive is found; a daemon already reparented to init is
+// not. Once the leader has exited, its group is still the check's only while a member started before that.
+const sweep = () => {
+  const rows = list();
+  if (!rows) return;
+  const live = new Map(rows.map((x) => [x.pid, x]));
+  for (const p of [...seen]) {
+    const x = live.get(p);
+    if (!x || Math.abs(x.at - starts.get(p)) > SLACK) seen.delete(p);
+    else if (Number.isNaN(starts.get(p))) starts.set(p, x.at);
+  }
+  const kids = new Map();
+  for (const x of rows) kids.set(x.ppid, [...(kids.get(x.ppid) || []), x.pid]);
   const todo = [...seen];
-  while (todo.length) for (const k of kids.get(todo.pop()) || []) if (k !== process.pid && !seen.has(k)) { seen.add(k); todo.push(k); }
+  while (todo.length) for (const k of kids.get(todo.pop()) || []) if (k !== process.pid && !seen.has(k)) { seen.add(k); starts.set(k, live.get(k).at); todo.push(k); }
+  if (leaderExitMs !== null) groupOk = rows.some((x) => x.pgid === child.pid && !(x.at > leaderExitMs + SLACK));
 };
 const signal = (sig) => {
-  try { process.kill(-child.pid, sig); } catch {}
+  if (groupOk) try { process.kill(-child.pid, sig); } catch {}
   for (const p of seen) try { process.kill(p, sig); } catch {}
 };
 const alive = () => {
-  try { process.kill(-child.pid, 0); return true; } catch {}
+  if (groupOk) try { process.kill(-child.pid, 0); return true; } catch {}
   for (const p of seen) try { process.kill(p, 0); return true; } catch {}
   return false;
 };
@@ -103,6 +155,13 @@ const terminate = (sig, then) => {
   wait();
 };
 const orphan = () => process.ppid !== o.parent;
+// An engine that is gone left its run dir behind: remove it on the way out. While the engine lives it reads the
+// pidfile and the stdout copy after a supervisor it lost, and removes the dir itself.
+process.on("exit", () => {
+  if (!o.pidfile || !orphan()) return;
+  try { if (tee !== null) closeSync(tee); } catch {}
+  try { rmSync(dirname(o.pidfile), { recursive: true, force: true }); } catch {}
+});
 const poll = setInterval(() => { if (orphan()) terminate("SIGTERM", () => process.exit(1)); }, 100);
 poll.unref();
 for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => terminate(s === "SIGINT" ? "SIGINT" : "SIGTERM", () => process.exit(128 + constants.signals[s])));
@@ -129,16 +188,19 @@ const finish = (code, signal) => {
   process.exit(0);
 };
 // After a terminate that ends in a result: the kill closes the pipes; one held by a process that left the group would not.
-const settle = () => { settling = true; if (closed) finish(null, null); else setTimeout(() => finish(null, null), 500); };
+const settle = () => { settling = true; if (closed) finish(null, null); else setTimeout(() => finish(null, null), ${SETTLE_MS}); };
 if (orphan()) process.exit(1);
 if (o.out) try { tee = openSync(o.out, "a"); } catch {}
 const startMs = Date.now();
 child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 if (child.pid) {
   seen.add(child.pid);
+  starts.set(child.pid, NaN);
   if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
 }
 child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
+// A reaped leader's pid is free: never signal it on its own again.
+child.on("exit", () => { leaderExitMs = Date.now(); seen.delete(child.pid); });
 [child.stdout, child.stderr].forEach((s, i) => s.on("data", (b) => {
   sizes[i] += b.length;
   if (sizes[i] <= o.max) {
@@ -188,13 +250,14 @@ function runGroup(cmd: string, args: string[], opts: RunOpts): RunResult {
   }
   try {
     const [pidfile, out] = dir ? [join(dir, "group.pid"), join(dir, "out")] : [null, null];
-    const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid, pidfile, out });
+    const ps = opts.ps === undefined ? findPs() : opts.ps;
+    const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid, pidfile, out, ps });
     const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
       cwd: opts.cwd,
       env: {},
       input,
-      // A backstop only: the supervisor keeps the deadline, and its grace and sweeps take far less than 10 s.
-      timeout: opts.timeoutMs === undefined ? undefined : opts.timeoutMs + 10_000,
+      // A backstop only: the supervisor keeps the deadline; backstopMs covers its worst case to end the check.
+      timeout: opts.timeoutMs === undefined ? undefined : backstopMs(opts.timeoutMs),
       killSignal: "SIGKILL",
       encoding: "utf8",
       maxBuffer: 2 * MAX_BUFFER,
@@ -210,7 +273,7 @@ function runGroup(cmd: string, args: string[], opts: RunOpts): RunResult {
     // A supervisor that died after its status line (a relay write failed) relayed only part of the output.
     if (!st || r.status !== 0) {
       const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
-      const cleaned = pidfile ? reapLost(pidfile) : "unverified";
+      const cleaned = pidfile ? reapLost(pidfile, () => psStarts(ps)) : "unverified";
       return { code: null, stdout: out ? printed(out) : "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why, lost: true, cleaned };
     }
     const abend = st.code === null ? (st.error ?? st.signal ?? undefined) : undefined;
@@ -230,29 +293,27 @@ function printed(out: string): string {
   }
 }
 
-/** `LC_ALL=C ps -A -o pid=,pgid=,lstart=`, the system's ps in this process's time zone, or null when it failed. */
-function psStarts(): string | null {
-  const r = spawnSync("ps", ["-A", "-o", "pid=,pgid=,lstart="], {
-    env: { PATH: "/bin:/usr/bin", LC_ALL: "C", ...(process.env.TZ === undefined ? {} : { TZ: process.env.TZ }) },
-    encoding: "utf8",
-    timeout: 5000,
-  });
+/** `LC_ALL=C TZ=UTC0 ps -A -o pid=,pgid=,lstart=` (start times in UTC), or null without a ps or when it failed. */
+function psStarts(ps: string | null = findPs()): string | null {
+  if (!ps) return null;
+  const r = spawnSync(ps, ["-A", "-o", "pid=,pgid=,lstart="], { env: { LC_ALL: "C", TZ: "UTC0" }, encoding: "utf8", timeout: PS_TIMEOUT_MS });
   return r.status === 0 ? r.stdout : null;
 }
 
 /**
- * Whose group `pgid` is in a `pid= pgid= lstart=` listing: "gone" when no process has it, "ours" when every process in
- * it started no earlier than `startMs` - 1 s (lstart has whole seconds; startMs is taken before the spawn), "other" when
- * one started before (a pid reused, or a pidfile not from this run), "unknown" when a start time does not parse.
+ * Whose group `pgid` is in a `pid= pgid= lstart=` listing with UTC start times: "gone" when no process has it, "ours"
+ * when every process in it started no earlier than `startMs` - LSTART_SLACK_MS (startMs is taken before the spawn, and
+ * lstart can read up to about 2 s early on Linux), "other" when one started before (a pid reused, or a pidfile not
+ * from this run), "unknown" when a start time does not parse. UTC, since a local time is ambiguous in a DST fall-back.
  */
 export function groupOwner(listing: string, pgid: number, startMs: number): "gone" | "ours" | "other" | "unknown" {
   let found = false;
   for (const line of listing.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
     if (!m || Number(m[2]) !== pgid) continue;
-    const at = Date.parse(m[3]!.replace(/\s+/g, " "));
+    const at = Date.parse(`${m[3]!.replace(/\s+/g, " ")} UTC`);
     if (Number.isNaN(at)) return "unknown";
-    if (at < startMs - 1000) return "other";
+    if (at < startMs - LSTART_SLACK_MS) return "other";
     found = true;
   }
   return found ? "ours" : "gone";
