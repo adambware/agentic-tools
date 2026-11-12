@@ -79,6 +79,7 @@ function staticSkips(cfg: Config): Result[] {
     ...(cfg.compose?.mode === "test" && cfg.compose.inputs.length ? [skipped("b.containers")] : []),
     ...(cfg.harness.tools.length ? [skipped("d.tools")] : []),
     ...(cfg.harness.sparse ? [skipped("d.sparse")] : []),
+    ...(cfg.harness.nodeModules !== "off" ? [skipped("d.node_modules")] : []),
   ];
 }
 
@@ -172,7 +173,7 @@ export function envCheckMain(argv: string[], d: Deps): number {
   // Escape once, at the edges: a text row is redacted, then escaped, so a file name or relayed output can neither move
   // the cursor nor add a second fix; --json keeps values raw (redacted) and jsonText escapes them the JSON way.
   const showRow = (r: Result): Result => mapText(r, (s) => escapeCtl(redact(s)));
-  const ctx: Ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact };
+  const ctx: Ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact, platform: d.platform };
 
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");

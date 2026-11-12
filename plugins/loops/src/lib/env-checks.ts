@@ -9,6 +9,7 @@ import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck, Severity } from "./env-config.js";
 import { ALIAS, diffPart, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
+import { hostPlatform, nodeModulesRows, type Platform } from "./node-modules.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -45,6 +46,8 @@ export interface Ctx {
    * home would leave a prefix the renderer no longer recognises.
    */
   redact: (s: string) => string;
+  /** d.node_modules' os/cpu/libc; unset: this machine's (hostPlatform), read only when the check runs. */
+  platform?: Platform;
 }
 
 const res = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "builtin" });
@@ -378,6 +381,7 @@ export function harnessChecks(c: Ctx): Result[] {
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
   }
+  if (h.nodeModules !== "off" && !c.static) out.push(...nodeModulesRows(c.root, c.tracked, h.nodeModules, c.platform ?? hostPlatform()));
   return out;
 }
 

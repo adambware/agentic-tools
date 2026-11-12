@@ -32,7 +32,7 @@ export interface LocalCheck {
 export interface Config {
   sharedHint: string | null;
   pins: Pin[];
-  harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean };
+  harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean; nodeModules: "fail" | "warn" | "off" };
   /** null when the config has no [compose] table: no e.* checks run. */
   compose: { mode: "none" | "test"; files: string[]; inputs: string[]; containers: "fail" | "warn"; derive: "slug-hash" | "dirname"; allowContainerName: string[]; mainProject: string | null; mainFiles: string[] | null } | null;
   locals: LocalCheck[];
@@ -138,7 +138,7 @@ export function parseConfig(text: string, file: string): Config {
     };
   });
 
-  const h = table(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse"]);
+  const h = table(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse", "node_modules"]);
   const isEntry = (v: unknown): v is string[] | "auto" => v === "auto" || isStrs(v);
   const harness = {
     tools: pick(h, "tools", "[harness]", isStrs, "a list of strings", []),
@@ -146,6 +146,8 @@ export function parseConfig(text: string, file: string): Config {
     entrypoints: pick(h, "entrypoints", "[harness]", isEntry, '"auto" or a list of paths', []),
     tracked: pick(h, "tracked", "[harness]", isBool, "a boolean", false),
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn",
+    // 0.8.0: d.node_modules, full mode only.
+    nodeModules: pick(h, "node_modules", "[harness]", oneOf<"fail" | "warn" | "off">("fail", "warn", "off"), "fail|warn|off", "off"),
   };
 
   const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name", "main_project", "main_files"]);

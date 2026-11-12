@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import type { Platform } from "./node-modules.js";
 
 /** Bad usage, bad config or an unreadable repo: the CLI prints it to stderr and exits 2. */
 export class UsageError extends Error {}
@@ -339,6 +340,8 @@ export interface Deps {
   readStdin: () => string;
   out: (s: string) => void;
   err: (s: string) => void;
+  /** What d.node_modules filters npm's os/cpu/libc on; tests inject it, else this machine's (hostPlatform). */
+  platform?: Platform;
 }
 
 // What `git rev-parse --local-env-vars` lists (git 2.56), the variables that point git at a repo, index or object

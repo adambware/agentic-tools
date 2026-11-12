@@ -423,7 +423,7 @@ stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in thi
 an absent one included (git would read it as an empty index), is dropped.
 
 `--static` reads repo files only: no toolchain, tool or docker probes; one git rev-parse (`a.local.*`,
-`b.containers`, `d.tools`, `d.sparse` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
+`b.containers`, `d.tools`, `d.sparse`, `d.node_modules` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
 rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
 `ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
 
@@ -431,6 +431,25 @@ rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[
 for it is unresolved. Otherwise the row is `SKIP <id> goreleaser not installed` with an install hint, and the check does
 not run. Under `--static` this is a PATH lookup only; the shim manager is never asked. A name must be a command name,
 not a path (exit 2). A needs-SKIP does not satisfy `--require-checks=<id>`: like any SKIP, it makes `x.required` FAIL.
+
+**`d.node_modules` (0.8.0).** `[harness] node_modules = "fail"` (or `"warn"`; default `"off"`) checks that
+`node_modules` holds what each tracked `package-lock.json` lists. It does not run under `--static`. It compares file
+content only, never times: every package record's `version` and `integrity` in the lockfile against npm's own record
+of the install, `node_modules/.package-lock.json`. One row per lockfile, at the configured level, names the first
+difference: `node_modules/` missing, a package at another version or integrity, a package not installed, or an
+installed package the lockfile does not list. A missing dev package says it may come from `--omit=dev`. The fix is
+`npm ci` in that directory. Other rules:
+
+- A package npm skips on this platform (its `os`, `cpu` or `libc` does not match) never differs.
+- A missing optional package that this platform could install is a WARN, never a FAIL: npm skips an optional package
+  whose install failed.
+- `libc` matters only on Linux. loops reads glibc when Node's process report names a glibc runtime, else musl when a
+  `/lib/ld-musl-*` loader exists, else unknown; an unknown libc filters nothing.
+- Workspaces: only the root lockfile and the root `node_modules` are compared, and each member link must exist. A
+  lockfile inside a member is not checked.
+- No `node_modules/.package-lock.json` (npm 6, yarn or pnpm installs) is a WARN "cannot verify".
+- `lockfileVersion` 2 and 3 are read; any other is INFO "unsupported lockfile".
+- Every tracked lockfile counts, also a test fixture's, which has no `node_modules`.
 
 **Required checks (0.8.0).** `--require-checks` makes a CI run fail when a check it relies on stops running (a
 deleted `[[pins]]` entry, a `[[local]]` that lost `static = true`). The value goes after `=`, never as the next
@@ -500,6 +519,8 @@ files = ["go.mod", "VERSION"]           # d.files: regular files (symlinks follo
 entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by tracked .github/workflows (INFO when there are none), or a list
 tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
 sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on (any git bool spelling) or unreadable, else PASS
+node_modules = "fail"                   # 0.8.0: d.node_modules: fail|warn|off (default off), full mode only; each tracked
+                                        # package-lock.json against node_modules/.package-lock.json (see below)
 
 [compose]                               # e.*; omit the table for no compose checks
 mode = "none"                           # none: FAIL if a compose file is tracked | test
