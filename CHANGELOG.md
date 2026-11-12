@@ -65,6 +65,15 @@ natively via `${CLAUDE_PLUGIN_ROOT}` — no machine-specific paths, no manual
 
 PR B: pins. A pin can be checked against each range its sources declare, a source can be optional, `local` can pick a level per version component, a Dockerfile `FROM ${ARG}` is read, and `a.local` keeps reporting when the pins disagree and warns about an ambiguous asdf shim.
 
+PR C: CI. A composite action runs `env-check --static` in a consumer's workflow, and `--require-checks` turns a check that stopped running (a deleted pin, a `[[local]]` that lost `static = true`) into a red build instead of a quiet pass.
+
+### Added
+
+- Composite action `plugins/loops/action.yml`, pinned by commit SHA (`uses: adambware/agentic-tools/plugins/loops@<sha>`). It runs `node bin/loops.mjs env-check --static --require-checks[=<ids>]` once from the consumer's checkout, prints the rows to the log with workflow commands paused, writes them to the step summary in a `text` fence longer than any backtick run in the output (also on exit 1), and exits with the engine's code. Inputs `working-directory` (default `.`, relative to `$GITHUB_WORKSPACE`) and `require-checks` (empty = bare `--require-checks`); no outputs. Node missing or older than 18 is exit 2 with `add actions/setup-node`; a Windows runner is exit 2. The logic is `scripts/action-env-check.sh`, which takes the inputs only as environment variables. The README's "Run the static checks in CI" has a complete workflow and a no-action fallback.
+- `env-check --require-checks` (bare): `x.none` ("no check ran") is a FAIL, exit 1. `--require-checks=<ids>`: also each comma-separated id or glob (`a.pins.go`, `a.pins.*`) must produce at least one PASS, WARN or FAIL row, matched before rows are folded; an id in a built-in group (`a.` to `e.`) counts only env-check's own rows, never a `[[local]]` lookalike, and an exact id never matches a longer one. The space form (`--require-checks a.pins.go`), an empty value, a malformed or reserved id, and combining it with `--compose-project` are exit 2.
+- New row `FAIL x.required  <id> not configured: no check produced this id`, or `<id> produced only SKIP/INFO rows (...)` naming up to three of them (for example `a.local.go`, which `--static` does not run). One row per unsatisfied id, in the order written, after `x.none`. `x.required` is reserved like `x.none`: a `[[local]]` with either id is exit 2. Both live in one `RESERVED_IDS` constant.
+- CI: the `action-fixtures` job runs the action on `fixtures/env-check/clean` (passes) and `fixtures/env-check/mismatch` (fails, asserting the `FAIL a.pins.go` row), each copied into `$RUNNER_TEMP` as its own git repo.
+
 ### Changed
 
 - Behavior change (exit code): a failed `docker compose config` probe of another checkout (a peer worktree, or the main checkout seen from a worktree) is no longer a FAIL that withholds `e.project`. It is one `WARN e.project` per peer ("... and N more runs"), the name is kept, and the fix says to run `bin/env-check` in that checkout or `git worktree remove` it when abandoned. The peer's own run still FAILs. `ComposeProject` gains `warnings`, shown after `results`, so `results[0]` keeps its meaning.
@@ -101,6 +110,8 @@ PR B: pins. A pin can be checked against each range its sources declare, a sourc
 - `d.tools` reads an asdf shim's exec line from the whole shim, up to 1 MiB, not only its first 4 KiB: a long shim (one header line per installed version) that execs asdf by an absolute path now asks that asdf instead of the one on PATH.
 - When adopting `range`, `optional` or a `local` table, set `engine = ">=0.8.0"`, as for the `[compose]` keys.
 - Not in this change: B7 (a workflow that runs Go with no `setup-go`) was cut to a TODO.
+- Under `--require-checks` (either form), a run that checks nothing is `FAIL x.none`, exit 1; without the flag it stays a WARN, exit 0, as in 0.7.
+- `--require-checks` is a flag, not a config key, so `engine = ">=0.8.0"` in `.loops/env-check.toml` cannot make an older engine accept it: an engine before 0.8.0 exits 2 `unknown flag --require-checks...`. (flags are read before the config, so the floor is never reached). Pin the action, or the fallback's checkout, at an agentic-tools SHA that has the flag, and add the flag and move the pin in the same change.
 
 ## [loops 0.7.1] - 2026-11-04
 
