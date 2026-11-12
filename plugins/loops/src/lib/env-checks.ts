@@ -153,7 +153,7 @@ export function pinChecks(c: Ctx): Result[] {
     const sev = pin.local;
     if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...gitEnv(c.env, c), GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const row = (s: Severity, message: string, fix: string) => void (s !== "off" && out.push(res(s.toUpperCase() as Level, lid, message, fix)));
@@ -952,7 +952,8 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${l.needs.length > 1 ? "them" : "it"} and put ${l.needs.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
   }
   const env: NodeJS.ProcessEnv = {
-    ...c.env,
+    // gitEnv: a foreign GIT_DIR is dropped, a hook's own index and GIT_CONFIG_PARAMETERS/COUNT stay.
+    ...gitEnv(c.env, c),
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
     // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
