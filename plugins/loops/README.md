@@ -427,6 +427,11 @@ an absent one included (git would read it as an empty index), is dropped.
 rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
 `ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
 
+**`needs` (0.8.0).** A `[[local]]` with `needs = ["goreleaser"]` runs only when each name is on PATH and no asdf or mise shim
+for it is unresolved. Otherwise the row is `SKIP <id> goreleaser not installed` with an install hint, and the check does
+not run. Under `--static` this is a PATH lookup only; the shim manager is never asked. A name must be a command name,
+not a path (exit 2). A needs-SKIP does not satisfy `--require-checks=<id>`: like any SKIP, it makes `x.required` FAIL.
+
 **Required checks (0.8.0).** `--require-checks` makes a CI run fail when a check it relies on stops running (a
 deleted `[[pins]]` entry, a `[[local]]` that lost `static = true`). The value goes after `=`, never as the next
 argument:
@@ -511,6 +516,8 @@ id = "d.lint-lock"                      # <a-e or x>.<name>; x.none and x.requir
 run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
 timeout_s = 15                          # 0.8.0: then SIGTERM, a 2 s grace, SIGKILL (was SIGKILL at once)
+needs = ["goreleaser"]                  # 0.8.0: command names; if one is missing (or its asdf/mise shim resolves no
+                                        # version), the row is SKIP "not installed" and the check does not run
 ```
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`

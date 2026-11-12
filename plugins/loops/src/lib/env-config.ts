@@ -23,6 +23,8 @@ export interface LocalCheck {
   id: string;
   run: string;
   static: boolean;
+  /** Command names that must be on PATH (and no unresolved version-manager shim) for the check to run; else it SKIPs. */
+  needs: string[];
   timeoutS: number;
   /** timeoutS in whole milliseconds, rounded once so float error (16.1 * 1000) cannot leak into the spawn timeout. */
   timeoutMs: number;
@@ -164,7 +166,7 @@ export function parseConfig(text: string, file: string): Config {
   const seen = new Set<string>();
   const locals = list(top.local ?? [], "[[local]]").map((l, i): LocalCheck => {
     const where = `[[local]] #${i + 1}`;
-    const t = table(l, where, ["id", "run", "static", "timeout_s"]);
+    const t = table(l, where, ["id", "run", "static", "timeout_s", "needs"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
     if (isReserved(id)) throw new UsageError(`${where}: id ${id} is reserved for env-check's own ${RESERVED_ROWS[id]} row`);
@@ -174,7 +176,8 @@ export function parseConfig(text: string, file: string): Config {
     const timeoutMs = Math.round(timeoutS * 1000);
     const run = pick(t, "run", where, isStr, "a path");
     if (isAbsolute(run) || /^\.\.(\/|$)/.test(normalize(run))) throw new UsageError(`${where}: run "${run}" must be a repo-relative path`);
-    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
+    const needs = pick(t, "needs", where, (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && /^[A-Za-z0-9_][\w.+-]*$/.test(x)), "a list of command names (no paths)", []);
+    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), needs, timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
 }

@@ -286,7 +286,7 @@ function autoEntrypoints(c: Ctx): string[] {
  * executable copy that is no shim follows the shim's own directory on PATH. Only that state falls back: any other mise
  * error (an untrusted or broken config, mise itself failing) fails the shim too.
  */
-function shimProblem(c: Ctx, tool: string, p: string): string | null {
+export function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const s = shimOf(p);
   if (!s) return null;
   const cmd = s.cmd ?? which(s.manager, c.env.PATH);
@@ -941,6 +941,16 @@ const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*)
  */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
+  // A needed command that is absent, or whose shim resolves no version here, SKIPs the check: it never runs. Under
+  // --static this is a PATH lookup only; the shim manager is never asked.
+  const lacking = l.needs.flatMap((n) => {
+    const p = which(n, c.env.PATH);
+    const why = p && !c.static ? shimProblem(c, n, p) : null;
+    return !p ? [n] : why ? [`${n} (${why})`] : [];
+  });
+  if (lacking.length) {
+    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${l.needs.length > 1 ? "them" : "it"} and put ${l.needs.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
+  }
   const env: NodeJS.ProcessEnv = {
     ...c.env,
     ENV_CHECK_ROOT: c.root,
