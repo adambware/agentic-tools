@@ -268,10 +268,10 @@
   - **Effort:** S each
   - **Depends on / blocked by:** None.
 
-- [ ] **loops `zone`: subdirectory `--paths`, hardcoded L0/L7 wording, and the all-SKIP exit code** [P3 correctness]
-  - **What:** (1) `zone --paths` run from a subdirectory classifies the paths as given, without rebasing them onto the repo root (`zone-cli.ts:124`), so `cd src && loops zone --paths foo.ts` matches `foo.ts`, not `src/foo.ts`. (2) The `l7: required` line and the "judgment left to L0" lines are hardcoded (`zone-cli.ts:60,76`) instead of read from `risk-zones.md`, so a repo that words its levels differently gets the engine's wording. (3) Open decision: 0.7.1 made an all-SKIP env-check run print `WARN x.none` but kept exit 0. Decide whether a run where nothing was checked should exit nonzero, at least under `--static` or CI.
-  - **Why:** (1) gives a wrong zone with no error; (2) lets the output drift from the repo's own policy file; (3) a CI run that verified nothing still reads green to anything that checks only the exit code.
-  - **Context:** Found in the 2026-11-04 audit of the loops project. For (1), resolve each path against the cwd, then make it relative to the repo root, and refuse one outside the repo. For (3), a nonzero exit is a behavior change for every consumer; check the pilots' CI first.
+- [ ] **loops `zone`: subdirectory `--paths` and hardcoded L0/L7 wording** [P3 correctness]
+  - **What:** (1) `zone --paths` run from a subdirectory classifies the paths as given, without rebasing them onto the repo root (`zone-cli.ts:124`), so `cd src && loops zone --paths foo.ts` matches `foo.ts`, not `src/foo.ts`. (2) The `l7: required` line and the "judgment left to L0" lines are hardcoded (`zone-cli.ts:60,76`) instead of read from `risk-zones.md`, so a repo that words its levels differently gets the engine's wording. (3) Closed by 0.8.0 PR C: an all-SKIP run stays `WARN x.none`, exit 0, by default, and the opt-in `env-check --require-checks` (the composite action passes it) makes it `FAIL x.none`, exit 1.
+  - **Why:** (1) gives a wrong zone with no error; (2) lets the output drift from the repo's own policy file; (3) was closed by PR C.
+  - **Context:** Found in the 2026-11-04 audit of the loops project. For (1), resolve each path against the cwd, then make it relative to the repo root, and refuse one outside the repo.
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
