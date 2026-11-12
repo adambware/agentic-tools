@@ -9294,13 +9294,13 @@ var require_dist = __commonJS({
 });
 
 // src/lib/loops-cli.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync8 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 
 // src/lib/env-check.ts
-import { readFileSync as readFileSync5, existsSync as existsSync3 } from "node:fs";
+import { readFileSync as readFileSync6, existsSync as existsSync4 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join5, resolve as resolve3 } from "node:path";
+import { join as join6, resolve as resolve3 } from "node:path";
 
 // src/lib/env-config.ts
 import { isAbsolute as isAbsolute3, normalize as normalize2 } from "node:path";
@@ -10065,21 +10065,106 @@ var HAS_WELLFORMED = !!"".isWellFormed;
 
 // src/lib/proc.ts
 import { spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 var UsageError = class extends Error {
 };
 var MAX_BUFFER = 64 * 1024 * 1024;
+var GRACE_MS = 2e3;
+var PS_TIMEOUT_MS = 5e3;
+var SETTLE_MS = 500;
+var LSTART_SLACK_MS = 2500;
+function backstopMs(timeoutMs) {
+  return timeoutMs + 2 * PS_TIMEOUT_MS + GRACE_MS + SETTLE_MS + 3e3;
+}
+function findPs(pathVar = process.env.PATH, system = ["/bin/ps", "/usr/bin/ps"]) {
+  for (const f of system) if (isExecutable(f)) return f;
+  return which("ps", pathVar);
+}
 var SUPERVISOR = `
-const { spawn } = require("node:child_process");
-const { readFileSync, writeSync } = require("node:fs");
+const { spawn, spawnSync } = require("node:child_process");
+const { closeSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } = require("node:fs");
 const { constants } = require("node:os");
+const { dirname } = require("node:path");
 const o = JSON.parse(readFileSync(0, "utf8"));
-let child = null, error = null, timedOut = false, done = false, timer = null;
-const kill = () => { try { if (child && child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} };
-for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => { kill(); process.exit(128 + constants.signals[s]); });
+const GRACE_MS = ${GRACE_MS}, PS_TIMEOUT_MS = ${PS_TIMEOUT_MS}, SLACK = ${LSTART_SLACK_MS};
+let child = null, error = null, timedOut = false, done = false, timer = null, terminating = false, closed = false, settling = false, tee = null;
+// Every live pid of the check seen so far, the leader and its descendants, with the start time each had when first seen.
+const seen = new Set(), starts = new Map();
+// When the leader exited (its pid is then free to be reused), and whether the leader's group is still the check's.
+let leaderExitMs = null, groupOk = true;
+// One \`ps -A -o pid=,ppid=,pgid=,lstart=\` listing in UTC (start times parsed to ms, NaN when one does not parse), or
+// null without a usable ps (then the sweep keeps what it knew).
+const list = () => {
+  if (!o.ps) return null;
+  const r = spawnSync(o.ps, ["-A", "-o", "pid=,ppid=,pgid=,lstart="], { env: { LC_ALL: "C", TZ: "UTC0" }, encoding: "utf8", timeout: PS_TIMEOUT_MS });
+  if (!r.stdout) return null;
+  const rows = [];
+  for (const line of r.stdout.split("\\n")) {
+    const m = /^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\S.*?)\\s*$/.exec(line);
+    if (m) rows.push({ pid: +m[1], ppid: +m[2], pgid: +m[3], at: Date.parse(m[4].replace(/\\s+/g, " ") + " UTC") });
+  }
+  return rows;
+};
+// Drop every seen pid that is gone or now has another start time (exited, maybe reused), then add every live
+// descendant of the rest: a setsid child whose parent is still alive is found; a daemon already reparented to init is
+// not. Once the leader has exited, its group is still the check's only while a member started before that.
+const sweep = () => {
+  const rows = list();
+  if (!rows) return;
+  const live = new Map(rows.map((x) => [x.pid, x]));
+  for (const p of [...seen]) {
+    const x = live.get(p);
+    if (!x || Math.abs(x.at - starts.get(p)) > SLACK) seen.delete(p);
+    else if (Number.isNaN(starts.get(p))) starts.set(p, x.at);
+  }
+  const kids = new Map();
+  for (const x of rows) kids.set(x.ppid, [...(kids.get(x.ppid) || []), x.pid]);
+  const todo = [...seen];
+  while (todo.length) for (const k of kids.get(todo.pop()) || []) if (k !== process.pid && !seen.has(k)) { seen.add(k); starts.set(k, live.get(k).at); todo.push(k); }
+  if (leaderExitMs !== null) groupOk = rows.some((x) => x.pgid === child.pid && !(x.at > leaderExitMs + SLACK));
+};
+const signal = (sig) => {
+  if (groupOk) try { process.kill(-child.pid, sig); } catch {}
+  for (const p of seen) try { process.kill(p, sig); } catch {}
+};
+const alive = () => {
+  if (groupOk) try { process.kill(-child.pid, 0); return true; } catch {}
+  for (const p of seen) try { process.kill(p, 0); return true; } catch {}
+  return false;
+};
+// The one way a check is ended early. It turns off the orphan poll and the timer and ignores a repeat call (a second
+// Ctrl-C), sends sig to the group and every swept pid, and waits up to GRACE_MS for them all to exit, staying alive
+// after the leader exits and when the engine is gone. Then it sweeps again and SIGKILLs the group and every pid seen.
+const terminate = (sig, then) => {
+  if (terminating) return;
+  terminating = true;
+  clearInterval(poll);
+  clearTimeout(timer);
+  if (!child || !child.pid) return then();
+  sweep();
+  signal(sig);
+  const end = Date.now() + GRACE_MS;
+  const wait = () => {
+    if (alive() && Date.now() < end) return void setTimeout(wait, 25);
+    sweep();
+    signal("SIGKILL");
+    then();
+  };
+  wait();
+};
 const orphan = () => process.ppid !== o.parent;
-setInterval(() => { if (orphan()) { kill(); process.exit(1); } }, 100).unref();
+// An engine that is gone left its run dir behind: remove it on the way out. While the engine lives it reads the
+// pidfile and the stdout copy after a supervisor it lost, and removes the dir itself.
+process.on("exit", () => {
+  if (!o.pidfile || !orphan()) return;
+  try { if (tee !== null) closeSync(tee); } catch {}
+  try { rmSync(dirname(o.pidfile), { recursive: true, force: true }); } catch {}
+});
+const poll = setInterval(() => { if (orphan()) terminate("SIGTERM", () => process.exit(1)); }, 100);
+poll.unref();
+for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => terminate(s === "SIGINT" ? "SIGINT" : "SIGTERM", () => process.exit(128 + constants.signals[s])));
 // The pipes to the engine are non-blocking: a full one (64 KB) throws EAGAIN until the engine drains it, so wait a ms.
 const nap = new Int32Array(new SharedArrayBuffer(4));
 const put = (fd, b) => {
@@ -10093,24 +10178,38 @@ const finish = (code, signal) => {
   done = true;
   clearTimeout(timer);
   const st = timedOut || error ? { code: null, signal: null, error, timedOut } : { code, signal, error: null, timedOut };
-  put(2, Buffer.from(JSON.stringify(st) + "\\n"));
-  put(2, Buffer.concat(bufs[1]));
-  put(1, Buffer.concat(bufs[0]));
+  try {
+    put(2, Buffer.from(JSON.stringify(st) + "\\n"));
+    put(2, Buffer.concat(bufs[1]));
+    put(1, Buffer.concat(bufs[0]));
+  } catch {
+    process.exit(1);
+  }
   process.exit(0);
 };
+// After a terminate that ends in a result: the kill closes the pipes; one held by a process that left the group would not.
+const settle = () => { settling = true; if (closed) finish(null, null); else setTimeout(() => finish(null, null), ${SETTLE_MS}); };
 if (orphan()) process.exit(1);
+if (o.out) try { tee = openSync(o.out, "a"); } catch {}
+const startMs = Date.now();
 child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+if (child.pid) {
+  seen.add(child.pid);
+  starts.set(child.pid, NaN);
+  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
+}
 child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
+// A reaped leader's pid is free: never signal it on its own again.
+child.on("exit", () => { leaderExitMs = Date.now(); seen.delete(child.pid); });
 [child.stdout, child.stderr].forEach((s, i) => s.on("data", (b) => {
   sizes[i] += b.length;
-  if (sizes[i] > o.max) { error = "ENOBUFS"; kill(); finish(null, null); } else bufs[i].push(b);
+  if (sizes[i] <= o.max) {
+    bufs[i].push(b);
+    if (i === 0 && tee !== null) try { writeSync(tee, b); } catch {}
+  } else if (!terminating) { error = "ENOBUFS"; terminate("SIGKILL", settle); }
 }));
-child.on("close", finish);
-if (o.timeoutMs) timer = setTimeout(() => {
-  timedOut = true; error = "ETIMEDOUT"; kill();
-  // The kill closes the pipes; one held by a process that left the group would not.
-  setTimeout(() => finish(null, null), 500);
-}, o.timeoutMs);
+child.on("close", (code, signal) => { closed = true; if (!terminating) finish(code, signal); else if (settling) finish(null, null); });
+if (o.timeoutMs) timer = setTimeout(() => { timedOut = true; error = "ETIMEDOUT"; terminate("SIGTERM", settle); }, o.timeoutMs);
 `;
 var run = (cmd, args, opts = {}) => {
   if (opts.group) return runGroup(cmd, args, opts);
@@ -10128,30 +10227,89 @@ var run = (cmd, args, opts = {}) => {
   return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend };
 };
 function runGroup(cmd, args, opts) {
-  const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid });
-  const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
-    cwd: opts.cwd,
-    env: {},
-    input,
-    // A backstop only: the supervisor keeps the deadline.
-    timeout: opts.timeoutMs === void 0 ? void 0 : opts.timeoutMs + 1e4,
-    killSignal: "SIGKILL",
-    encoding: "utf8",
-    maxBuffer: 2 * MAX_BUFFER
-  });
-  const errCode = r.error?.code;
-  const nl = (r.stderr ?? "").indexOf("\n");
-  let st = null;
+  let dir = null;
   try {
-    st = nl < 0 ? null : JSON.parse(r.stderr.slice(0, nl));
+    dir = mkdtempSync(join(tmpdir(), "loops-run-"));
   } catch {
   }
-  if (!st || r.status !== 0) {
-    const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
-    return { code: null, stdout: "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why };
+  try {
+    const [pidfile, out] = dir ? [join(dir, "group.pid"), join(dir, "out")] : [null, null];
+    const ps = opts.ps === void 0 ? findPs() : opts.ps;
+    const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid, pidfile, out, ps });
+    const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
+      cwd: opts.cwd,
+      env: {},
+      input,
+      // A backstop only: the supervisor keeps the deadline; backstopMs covers its worst case to end the check.
+      timeout: opts.timeoutMs === void 0 ? void 0 : backstopMs(opts.timeoutMs),
+      killSignal: "SIGKILL",
+      encoding: "utf8",
+      maxBuffer: 2 * MAX_BUFFER
+    });
+    const errCode = r.error?.code;
+    const nl = (r.stderr ?? "").indexOf("\n");
+    let st = null;
+    try {
+      st = nl < 0 ? null : JSON.parse(r.stderr.slice(0, nl));
+    } catch {
+    }
+    if (!st || r.status !== 0) {
+      const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
+      const cleaned = pidfile ? reapLost(pidfile, () => psStarts(ps)) : "unverified";
+      return { code: null, stdout: out ? printed(out) : "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why, lost: true, cleaned };
+    }
+    const abend = st.code === null ? st.error ?? st.signal ?? void 0 : void 0;
+    return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend, lost: false, cleaned: "yes" };
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
   }
-  const abend = st.code === null ? st.error ?? st.signal ?? void 0 : void 0;
-  return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend };
+}
+function printed(out) {
+  try {
+    const s = readFileSync(out, "utf8");
+    return s.slice(0, s.lastIndexOf("\n") + 1);
+  } catch {
+    return "";
+  }
+}
+function psStarts(ps = findPs()) {
+  if (!ps) return null;
+  const r = spawnSync(ps, ["-A", "-o", "pid=,pgid=,lstart="], { env: { LC_ALL: "C", TZ: "UTC0" }, encoding: "utf8", timeout: PS_TIMEOUT_MS });
+  return r.status === 0 ? r.stdout : null;
+}
+function groupOwner(listing, pgid, startMs) {
+  let found = false;
+  for (const line of listing.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (!m || Number(m[2]) !== pgid) continue;
+    const at = Date.parse(`${m[3].replace(/\s+/g, " ")} UTC`);
+    if (Number.isNaN(at)) return "unknown";
+    if (at < startMs - LSTART_SLACK_MS) return "other";
+    found = true;
+  }
+  return found ? "ours" : "gone";
+}
+function reapLost(pidfile, ps = psStarts) {
+  let rec;
+  try {
+    rec = JSON.parse(readFileSync(pidfile, "utf8"));
+  } catch {
+    return "unverified";
+  }
+  const { pgid, startMs } = rec ?? {};
+  if (!Number.isSafeInteger(pgid) || pgid <= 1 || pgid === process.pid || typeof startMs !== "number") return "unverified";
+  const listing = ps();
+  if (listing === null) return "unverified";
+  const owner = groupOwner(listing, pgid, startMs);
+  if (owner === "unknown") return "unverified";
+  if (owner === "other") return "no";
+  if (owner === "ours") {
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+    }
+  }
+  return "yes";
 }
 function shQuote(s) {
   return /^[\w./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
@@ -10473,10 +10631,10 @@ var pinAt = (raw, tool, file, line) => {
 var ALIAS = { node: ["node", "nodejs"], go: ["go", "golang"] };
 var IMAGE = { go: "golang" };
 var toolVersions = (text, tool, _root, file) => {
-  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
+  const names2 = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
   return text.split("\n").flatMap((line, i) => {
     const m = /^\s*(\S+)\s+(\S+)/.exec(line);
-    return m && names.includes(m[1]) ? pinAt(m[2], tool, file, i + 1) : [];
+    return m && names2.includes(m[1]) ? pinAt(m[2], tool, file, i + 1) : [];
   });
 };
 var plain = (text, tool, _root, file) => {
@@ -10648,7 +10806,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
   };
   const global = scope([]);
   const held = scope(global.has(key) ? [] : [[key, HELD]], UNSET);
-  const skipped2 = [];
+  const skipped3 = [];
   const stages = /* @__PURE__ */ new Set();
   for (const l of logical) {
     const m = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(?:\s+AS\s+(\S+))?/i.exec(l.text);
@@ -10659,7 +10817,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
       const h = r ? null : expand(image, held, UNSET);
       const [hn = "", ht = ""] = h?.split("@")[0].split("/").pop().split(":") ?? [];
       if (h && hn === (IMAGE[tool] ?? tool) && ht.startsWith(HELD)) {
-        skipped2.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+        skipped3.push(`FROM ${image} (line ${at(l, m[1].length)})`);
         if (m[3]) stages.add(m[3].toLowerCase());
         continue;
       }
@@ -10675,7 +10833,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
     if (m[3]) stages.add(m[3].toLowerCase());
     if (stageRef || name !== (IMAGE[tool] ?? tool)) continue;
     if (/^\$\{?(\w+)/.exec(tag)?.[1].toUpperCase() === key) {
-      skipped2.push(`FROM ${image} (line ${at(l, m[1].length)})`);
+      skipped3.push(`FROM ${image} (line ${at(l, m[1].length)})`);
       continue;
     }
     const v = tag ? tagVer(tag) : null;
@@ -10694,7 +10852,7 @@ var dockerfile = (text, tool, _root, file, _calls, notes, bare) => {
       out.push(...pinAt(v, tool, file, at(l, m[1].length + p.index + pair[1].length + 1)));
     }
   }
-  if (!out.length) bare?.push(...skipped2);
+  if (!out.length) bare?.push(...skipped3);
   return out;
 };
 var BY_NAME = {
@@ -10894,7 +11052,7 @@ function readSource(root, tracked, tool, spec, notes) {
   const { target, files } = sourceFiles(tracked, spec);
   if (!files.length) throw new PinError(`${spec}: no file matches ${target}`);
   const out = [];
-  const skipped2 = [];
+  const skipped3 = [];
   const unknown = [];
   const bare = [];
   for (const f of files) {
@@ -10909,17 +11067,17 @@ function readSource(root, tracked, tool, spec, notes) {
     }
     for (const x of found) out.push({ src: `${kind}:${f}`, v: x.v, range: x.range ?? false, ...x.pep440 && { pep440: true } });
     unknown.push(...said.map((n) => `${kind}:${f}: ${n}`));
-    if (!found.length && calls.length) skipped2.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
+    if (!found.length && calls.length) skipped3.push([f, `${short(calls, 3)}, ${calls.length === 1 ? "whose" : "their"} with: inputs are not read`]);
   }
   if (!out.length && (!unknown.length || bare.length)) {
     const msg = `${spec}: no ${tool} version found in ${files.length === 1 ? files[0] : `${files.length} files (${short(files)})`}`;
-    if (!skipped2.length) throw new PinError(msg);
+    if (!skipped3.length) throw new PinError(msg);
     throw new PinError(
-      `${msg}; ${skipped2.map(([f, s]) => files.length === 1 ? s : `${f}: ${s}`).join("; ")}`,
+      `${msg}; ${skipped3.map(([f, s]) => files.length === 1 ? s : `${f}: ${s}`).join("; ")}`,
       `pin the version in a step that uses ${k.action} in a workflow of this repo, or remove the ${kind} source from .loops/env-check.toml (reusable-workflow inputs are not read)`
     );
   }
-  notes?.push(...skipped2.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
+  notes?.push(...skipped3.map(([f, s]) => `${kind}:${f}: ${s}`), ...unknown);
   return out;
 }
 var DEPTH = { exact: 3, minor: 2, major: 1 };
@@ -10946,7 +11104,7 @@ function diffPart(a, b) {
 var localOk = (local, pin, mode) => cmp(local, pin, DEPTH[mode]) === 0;
 
 // src/lib/version.ts
-var VERSION = "0.7.1";
+var VERSION = "0.8.0";
 
 // src/lib/env-config.ts
 function table2(v, where, allowed) {
@@ -11035,14 +11193,16 @@ function parseConfig(text, file) {
       range: pick(t, "range", where, oneOf("check", "info"), "check|info", "info")
     };
   });
-  const h = table2(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse"]);
+  const h = table2(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse", "node_modules"]);
   const isEntry = (v) => v === "auto" || isStrs(v);
   const harness = {
     tools: pick(h, "tools", "[harness]", isStrs, "a list of strings", []),
     files: pick(h, "files", "[harness]", isStrs, "a list of strings", []),
     entrypoints: pick(h, "entrypoints", "[harness]", isEntry, '"auto" or a list of paths', []),
     tracked: pick(h, "tracked", "[harness]", isBool, "a boolean", false),
-    sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn"
+    sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn",
+    // 0.8.0: d.node_modules, full mode only.
+    nodeModules: pick(h, "node_modules", "[harness]", oneOf("fail", "warn", "off"), "fail|warn|off", "off")
   };
   const c = table2(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name", "main_project", "main_files"]);
   const compose = top.compose === void 0 ? null : {
@@ -11061,7 +11221,7 @@ function parseConfig(text, file) {
   const seen = /* @__PURE__ */ new Set();
   const locals = list(top.local ?? [], "[[local]]").map((l, i) => {
     const where = `[[local]] #${i + 1}`;
-    const t = table2(l, where, ["id", "run", "static", "timeout_s"]);
+    const t = table2(l, where, ["id", "run", "static", "timeout_s", "needs"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
     if (isReserved(id)) throw new UsageError(`${where}: id ${id} is reserved for env-check's own ${RESERVED_ROWS[id]} row`);
@@ -11071,7 +11231,8 @@ function parseConfig(text, file) {
     const timeoutMs = Math.round(timeoutS * 1e3);
     const run2 = pick(t, "run", where, isStr, "a path");
     if (isAbsolute3(run2) || /^\.\.(\/|$)/.test(normalize2(run2))) throw new UsageError(`${where}: run "${run2}" must be a repo-relative path`);
-    return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
+    const needs = pick(t, "needs", where, (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && /^[A-Za-z0-9_][\w.+-]*$/.test(x)), "a list of command names (no paths)", []);
+    return { id, run: run2, static: pick(t, "static", where, isBool, "a boolean", false), needs, timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
 }
@@ -11079,8 +11240,8 @@ function parseConfig(text, file) {
 // src/lib/env-checks.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync4, realpathSync as realpathSync2, statSync as statSync2 } from "node:fs";
-import { basename as basename3, delimiter as delimiter2, dirname as dirname2, isAbsolute as isAbsolute4, join as join4, normalize as normalize3, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync5, realpathSync as realpathSync2, statSync as statSync3 } from "node:fs";
+import { basename as basename3, delimiter as delimiter2, dirname as dirname3, isAbsolute as isAbsolute4, join as join5, normalize as normalize4, resolve as resolve2 } from "node:path";
 
 // src/lib/compose-config.ts
 var REMOTE_OFF = { COMPOSE_EXPERIMENTAL_GIT_REMOTE: "0", COMPOSE_EXPERIMENTAL_OCI_REMOTE: "0", GIT_ALLOW_PROTOCOL: "file" };
@@ -11289,6 +11450,229 @@ function readDotEnv(pdir) {
   }
 }
 
+// src/lib/node-modules.ts
+import { existsSync as existsSync2, readFileSync as readFileSync4, statSync as statSync2 } from "node:fs";
+import { dirname as dirname2, join as join4, normalize as normalize3 } from "node:path";
+function detectLibc(os, ldd, report) {
+  if (os !== "linux") return null;
+  const text = ldd();
+  if (text !== null) return text.includes("musl") ? "musl" : text.includes("GNU C Library") ? "glibc" : null;
+  const r = report();
+  if (r?.header?.glibcVersionRuntime) return "glibc";
+  const libs = Array.isArray(r?.sharedObjects) ? r.sharedObjects : [];
+  return libs.some((f) => typeof f === "string" && (f.includes("libc.musl-") || f.includes("ld-musl-"))) ? "musl" : null;
+}
+function hostPlatform() {
+  const ldd = () => {
+    try {
+      return readFileSync4("/usr/bin/ldd", "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const report = () => {
+    const rep = process.report;
+    if (!rep) return null;
+    const saved = rep.excludeNetwork;
+    rep.excludeNetwork = true;
+    try {
+      return rep.getReport();
+    } finally {
+      rep.excludeNetwork = saved;
+    }
+  };
+  return { os: process.platform, cpu: process.arch, libc: detectLibc(process.platform, ldd, report) };
+}
+function listOk(value, raw) {
+  const list2 = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
+  if (!list2.length || list2.length === 1 && list2[0] === "any") return true;
+  let negated = 0;
+  let match = false;
+  for (const e of list2) {
+    if (e.startsWith("!")) {
+      negated++;
+      if (e.slice(1) === value) return false;
+    } else if (e === value) match = true;
+  }
+  return match || negated === list2.length;
+}
+function eligible(p, pf) {
+  if (p.os !== void 0 && !listOk(pf.os, p.os)) return false;
+  if (p.cpu !== void 0 && !listOk(pf.cpu, p.cpu)) return false;
+  if (p.libc !== void 0 && (pf.os !== "linux" || pf.libc === null || !listOk(pf.libc, p.libc))) return false;
+  return true;
+}
+function resolveDep(packages, key, name) {
+  for (let at = key; at !== null; ) {
+    const k = at === "" ? `node_modules/${name}` : `${at}/node_modules/${name}`;
+    if (Object.hasOwn(packages, k)) return k;
+    if (at === "") at = null;
+    else {
+      const i = at.lastIndexOf("node_modules/");
+      at = i <= 0 ? "" : at.slice(0, i - 1);
+    }
+  }
+  return null;
+}
+var names = (deps) => deps && typeof deps === "object" && !Array.isArray(deps) ? Object.keys(deps) : [];
+function skipped(packages, pf) {
+  const out = /* @__PURE__ */ new Set();
+  const users = /* @__PURE__ */ new Map();
+  for (const [k, p] of Object.entries(packages)) {
+    if (!p || typeof p !== "object") continue;
+    if (rootTree(k) && !eligible(p, pf)) out.add(k);
+    const deps = [...names(p.dependencies), ...names(p.optionalDependencies), ...k === "" ? names(p.devDependencies) : []];
+    for (const name of deps) {
+      const to = resolveDep(packages, k, name);
+      if (to !== null) users.set(to, (users.get(to) ?? /* @__PURE__ */ new Set()).add(k));
+    }
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [k, p] of Object.entries(packages)) {
+      if (out.has(k) || !rootTree(k) || !p || !(p.optional || p.devOptional)) continue;
+      const by = users.get(k);
+      if (by?.size && [...by].every((u) => out.has(u))) {
+        out.add(k);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
+function globMatch(glob, path) {
+  const g = normalize3(glob).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
+  const p = path.split("/").filter((x) => x && x !== ".");
+  const seg = (pat, s) => {
+    const re = pat.split("*").map((part) => part.replace(/[.+?^$()|[\]{}\\]/g, "\\$&")).join("[^/]*");
+    return new RegExp("^" + re + "$").test(s);
+  };
+  const go = (i, j) => {
+    if (i === g.length) return j === p.length;
+    if (g[i] === "**") return go(i + 1, j) || j < p.length && go(i, j + 1);
+    return j < p.length && seg(g[i], p[j]) && go(i + 1, j + 1);
+  };
+  return go(0, 0);
+}
+function readLock(file) {
+  let text;
+  try {
+    text = readFileSync4(file, "utf8");
+  } catch (e) {
+    return e.code === "ENOENT" ? "missing" : null;
+  }
+  try {
+    const j = JSON.parse(text);
+    const packages = j.packages && typeof j.packages === "object" && !Array.isArray(j.packages) ? j.packages : {};
+    return { ok: true, version: j.lockfileVersion, packages };
+  } catch (e) {
+    return { ok: false, why: `not valid JSON (${e.message.split("\n")[0]})` };
+  }
+}
+var isDir = (p) => {
+  try {
+    return statSync2(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+var rootTree = (key) => key.startsWith("node_modules/");
+var label = (key) => key.slice("node_modules/".length);
+var same = (a, b) => (a ?? null) === (b ?? null);
+var pkgs = (n) => `${n} package${n === 1 ? "" : "s"}`;
+function workspaces(r) {
+  const w = r.packages[""]?.workspaces;
+  const list2 = Array.isArray(w) ? w : w && typeof w === "object" && Array.isArray(w.packages) ? w.packages : [];
+  return list2.filter((x) => typeof x === "string");
+}
+function nodeModulesRows(root, tracked, level, pf, sparse = () => false) {
+  const LEVEL = level === "fail" ? "FAIL" : "WARN";
+  const row = (lvl, message, fix) => ({ level: lvl, id: "d.node_modules", message, fix, source: "builtin" });
+  const locks = tracked.filter((f) => (f === "package-lock.json" || f.endsWith("/package-lock.json")) && !f.split("/").includes("node_modules"));
+  const read = new Map(locks.map((f) => [f, readLock(join4(root, f))]));
+  const members = /* @__PURE__ */ new Set();
+  for (const [f, r] of read) {
+    if (!r || r === "missing" || !r.ok) continue;
+    const globs = workspaces(r);
+    if (!globs.length) continue;
+    for (const p of Object.values(r.packages)) {
+      if (!p?.link || typeof p.resolved !== "string") continue;
+      const rel = normalize3(p.resolved);
+      if (globs.some((g) => globMatch(g, rel))) members.add(normalize3(join4(dirname2(f), rel)));
+    }
+  }
+  const out = [];
+  let compared = 0;
+  for (const f of locks) {
+    const dir = dirname2(f);
+    if (members.has(dir)) continue;
+    compared++;
+    const fix = dir === "." ? "npm ci" : `(cd ${shQuote(dir)} && npm ci)`;
+    const r = read.get(f);
+    if (r === "missing" && sparse(f)) {
+      out.push(row("INFO", `${f}: not checked out (sparse checkout), not compared`));
+      continue;
+    }
+    if (!r || r === "missing") {
+      out.push(row(LEVEL, `${f}: cannot read the lockfile`, `restore it (git checkout -- ${shQuote(f)})`));
+      continue;
+    }
+    if (!r.ok) {
+      out.push(row(LEVEL, `${f}: ${r.why}`, `restore it (git checkout -- ${shQuote(f)}) or regenerate it with npm install`));
+      continue;
+    }
+    if (r.version !== 2 && r.version !== 3) {
+      out.push(row("INFO", `${f}: unsupported lockfile (lockfileVersion ${String(r.version)}; 2 and 3 are read), not compared`));
+      continue;
+    }
+    const skip = skipped(r.packages, pf);
+    const want = Object.entries(r.packages).filter(([k, p]) => rootTree(k) && p && typeof p === "object" && !skip.has(k));
+    const nm = join4(root, dir, "node_modules");
+    if (!isDir(nm)) {
+      out.push(want.length ? row(LEVEL, `${f}: node_modules/ missing (${pkgs(want.length)} to install)`, fix) : row("PASS", `${f}: no packages to install`));
+      continue;
+    }
+    const installed = readLock(join4(nm, ".package-lock.json"));
+    const hidden = installed === "missing" ? null : installed;
+    if (!hidden || !hidden.ok || hidden.version !== 2 && hidden.version !== 3) {
+      if (!want.length && !hidden) {
+        out.push(row("PASS", `${f}: no packages to install`));
+        continue;
+      }
+      const why = !hidden ? "no node_modules/.package-lock.json" : !hidden.ok ? `node_modules/.package-lock.json is ${hidden.why}` : `node_modules/.package-lock.json has lockfileVersion ${String(hidden.version)}`;
+      out.push(row("WARN", `${f}: cannot verify node_modules (${why}; it is written by npm 7 or later)`, fix));
+      continue;
+    }
+    const diffs = [];
+    const optional = [];
+    for (const [k, p] of want) {
+      const h = hidden.packages[k];
+      const name = label(k);
+      if (p.link) {
+        if (!h || !existsSync2(join4(root, dir, k))) diffs.push([k, `workspace link ${name} missing`]);
+        continue;
+      }
+      if (!h) {
+        if (p.optional || p.devOptional) optional.push(name);
+        else if (p.inBundle) continue;
+        else diffs.push([k, p.dev ? `dev package ${name} not installed (an install with --omit=dev? npm ci installs dev packages)` : `${name} not installed`]);
+      } else if (!same(p.version, h.version)) diffs.push([k, `${name} is ${String(h.version ?? "unversioned")}, the lockfile wants ${String(p.version ?? "none")}`]);
+      else if (!same(p.integrity, h.integrity)) diffs.push([k, `${name}${p.version ? ` ${p.version}` : ""} integrity differs from the lockfile`]);
+    }
+    for (const k of Object.keys(hidden.packages)) if (rootTree(k) && !Object.hasOwn(r.packages, k)) diffs.push([k, `${label(k)} is installed but not in the lockfile`]);
+    diffs.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    if (diffs.length) {
+      const more = diffs.length > 1 ? ` (and ${diffs.length - 1} more)` : "";
+      out.push(row(LEVEL, `${f}: ${diffs[0][1]}${more}`, fix));
+    } else if (optional.length) {
+      const more = optional.length > 1 ? ` (and ${optional.length - 1} more)` : "";
+      out.push(row("WARN", `${f}: optional package ${optional.sort()[0]} not installed${more}; npm skips an optional package whose install failed`, `${fix}, and read its output for the optional package's error`));
+    } else out.push(row("PASS", `${f}: node_modules matches (${pkgs(want.length)})`));
+  }
+  if (!out.length) out.push(row("INFO", locks.length && !compared ? "every tracked package-lock.json is a workspace member's; none compared" : "no tracked package-lock.json to compare"));
+  return out;
+}
+
 // src/lib/env-checks.ts
 var res = (level, id, message, fix) => ({ level, id, message, fix, source: "builtin" });
 var CFG = ".loops/env-check.toml";
@@ -11301,8 +11685,8 @@ var rp = (p) => {
 };
 var gitDirAt = (p) => {
   try {
-    const m = statSync2(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync4(p, "utf8")) : null;
-    return m ? resolve2(dirname2(p), m[1].trim()) : p;
+    const m = statSync3(p).isFile() ? /^gitdir: (.+)/.exec(readFileSync5(p, "utf8")) : null;
+    return m ? resolve2(dirname3(p), m[1].trim()) : p;
   } catch {
     return p;
   }
@@ -11312,12 +11696,12 @@ var NO_INTERP = "could not start (missing interpreter in its #! line?)";
 var PROBE_TIMEOUT_MS = 1e4;
 function installFix(root, tool, want, pins) {
   const generic = `install ${tool} ${want} (asdf install, mise install, or your package manager)`;
-  const names = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
+  const names2 = Object.hasOwn(ALIAS, tool) ? ALIAS[tool] : [tool];
   const written = (file2) => {
     try {
-      return readFileSync4(join4(root, file2), "utf8").split("\n").some((l) => {
+      return readFileSync5(join5(root, file2), "utf8").split("\n").some((l) => {
         const m = /^\s*(\S+)\s+(\S+)/.exec(l);
-        return !!m && names.includes(m[1]) && m[2] === want;
+        return !!m && names2.includes(m[1]) && m[2] === want;
       });
     } catch {
       return false;
@@ -11328,7 +11712,7 @@ function installFix(root, tool, want, pins) {
   if (file === void 0) return generic;
   if (!Object.hasOwn(ALIAS, tool)) return `install ${tool} ${want}: asdf install ${tool} ${want}, or mise install ${tool}@${want}`;
   if (basename3(file) !== ".tool-versions") return generic;
-  const dir = dirname2(file);
+  const dir = dirname3(file);
   return `install ${tool} ${want}: run asdf install (or mise install) in ${dir === "." ? "the repo root" : shQuote(dir)}, which installs the ${file} pins`;
 }
 function pinChecks(c) {
@@ -11376,7 +11760,7 @@ function pinChecks(c) {
     const sev = pin.local;
     if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool] : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...gitEnv(c.env, c), GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const row = (s, message, fix) => void (s !== "off" && out.push(res(s.toUpperCase(), lid, message, fix)));
@@ -11418,7 +11802,7 @@ function asdfActive(c, plugin) {
   const listed = (dir) => {
     let text;
     try {
-      text = readFileSync4(join4(dir, ".tool-versions"), "utf8");
+      text = readFileSync5(join5(dir, ".tool-versions"), "utf8");
     } catch {
       return null;
     }
@@ -11428,10 +11812,10 @@ function asdfActive(c, plugin) {
     }
     return null;
   };
-  for (let d = c.root; ; d = dirname2(d)) {
+  for (let d = c.root; ; d = dirname3(d)) {
     const v = listed(d);
     if (v) return v;
-    if (dirname2(d) === d) break;
+    if (dirname3(d) === d) break;
   }
   return c.env.HOME && listed(c.env.HOME) || [];
 }
@@ -11449,12 +11833,12 @@ function sharedCheck(c) {
     const me = rp(c.root);
     let at = null;
     try {
-      at = dirname2(resolve2(c.gitDir, readFileSync4(join4(c.gitDir, "gitdir"), "utf8").trim()));
+      at = dirname3(resolve2(c.gitDir, readFileSync5(join5(c.gitDir, "gitdir"), "utf8").trim()));
     } catch {
     }
     if (at && rp(at) === me && c.worktrees.some((w) => rp(w) === me)) return [res("PASS", "c.shared", "in a linked worktree")];
-    if (at && rp(at) !== me && existsSync2(join4(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
-    return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync2(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
+    if (at && rp(at) !== me && existsSync3(join5(at, ".git"))) return [res("FAIL", "c.shared", "this folder shares another worktree's git metadata (copied?)", "recreate it with git worktree add; do not run git worktree repair here")];
+    return [res("FAIL", "c.shared", at ? `worktree moved: git has it registered at ${at}${existsSync3(at) ? "" : ", which is missing"}` : "worktree moved: git has no folder registered for its metadata", "run git worktree repair here")];
   }
   if (c.env.ENV_CHECK_ALLOW_MAIN === "1") return [res("INFO", "c.shared", "shared checkout allowed by ENV_CHECK_ALLOW_MAIN")];
   return [res("FAIL", "c.shared", "this is the shared checkout; agents and branches belong in a worktree", c.cfg.sharedHint)];
@@ -11462,8 +11846,8 @@ function sharedCheck(c) {
 function autoEntrypoints(c) {
   const re = compileGlob(".github/workflows/*.{yml,yaml}");
   const found = /* @__PURE__ */ new Set();
-  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync2(join4(c.root, t)))) {
-    for (const m of readFileSync4(join4(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
+  for (const f of c.tracked.filter((t) => re.some((r) => r.test(t)) && existsSync3(join5(c.root, t)))) {
+    for (const m of readFileSync5(join5(c.root, f), "utf8").matchAll(/^\s*(?:-\s+)?(?:run:\s+(?:[|>][+-]?\s*)?)?\.\/([\w./-]+)/gm)) found.add(m[1]);
   }
   return [...found].sort();
 }
@@ -11484,8 +11868,8 @@ function shimProblem(c, tool, p) {
 }
 function fallsBackTo(c, tool, p) {
   const dirs = (c.env.PATH ?? "").split(delimiter2);
-  const at = dirs.findIndex((d) => d && join4(d, tool) === p);
-  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join4(d, tool)) && !shimOf(join4(d, tool)));
+  const at = dirs.findIndex((d) => d && join5(d, tool) === p);
+  return at >= 0 && dirs.slice(at + 1).some((d) => d !== "" && isExecutable(join5(d, tool)) && !shimOf(join5(d, tool)));
 }
 function harnessChecks(c) {
   const h = c.cfg.harness;
@@ -11515,7 +11899,7 @@ function harnessChecks(c) {
   if (h.files.length) {
     const kind = (f) => {
       try {
-        const s = statSync2(join4(c.root, f));
+        const s = statSync3(join5(c.root, f));
         return !s.isFile() ? "other" : s.size === 0 ? "missing" : "ok";
       } catch {
         return "missing";
@@ -11531,14 +11915,14 @@ function harnessChecks(c) {
   const entries = h.entrypoints === "auto" ? autoEntrypoints(c) : h.entrypoints;
   if (h.entrypoints === "auto" && !entries.length) out.push(res("INFO", "d.entrypoints", "auto: no ./ command in tracked .github/workflows; nothing to check"));
   if (entries.length) {
-    const bad = entries.filter((e) => !isExecutable(join4(c.root, e)));
+    const bad = entries.filter((e) => !isExecutable(join5(c.root, e)));
     out.push(bad.length ? res("FAIL", "d.entrypoints", `missing or not executable: ${short(bad)}`, `chmod +x ${bad.slice(0, 3).join(" ")}`) : res("PASS", "d.entrypoints", `${entries.length} executable`));
   }
   const [deletedZ, stagedZ] = h.tracked ? ["-d", "-s"].map((f) => git(c.run, c.root, ["ls-files", f, "-z"], gitEnv(c.env, c))) : [];
   if (h.tracked && (deletedZ == null || stagedZ == null)) out.push(res("FAIL", "d.tracked", "git ls-files failed", "run git status to see what is wrong with the index"));
   else if (h.tracked) {
     const deleted = deletedZ.split("\0").filter(Boolean);
-    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync2(join4(c.root, p)) && !isExecutable(join4(c.root, p)));
+    const lost = stagedZ.split("\0").flatMap((l) => l.startsWith("100755 ") ? [l.split("	")[1] ?? ""] : []).filter((p) => p && existsSync3(join5(c.root, p)) && !isExecutable(join5(c.root, p)));
     const parts2 = [deleted.length ? `deleted: ${short(deleted)}` : "", lost.length ? `exec bit lost: ${short(lost)}` : ""].filter(Boolean);
     out.push(parts2.length ? res("FAIL", "d.tracked", parts2.join("; "), "git checkout -- <path> to restore, chmod +x for exec bits") : res("PASS", "d.tracked", "no tracked file deleted, exec bits intact"));
   }
@@ -11547,6 +11931,10 @@ function harnessChecks(c) {
     if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
+  }
+  if (h.nodeModules !== "off" && !c.static) {
+    const sparse = (f) => git(c.run, c.root, ["ls-files", "-t", "-z", "--", `:(literal)${f}`], gitEnv(c.env, c))?.startsWith("S ") ?? false;
+    out.push(...nodeModulesRows(c.root, c.tracked, h.nodeModules, c.platform ?? hostPlatform(), sparse));
   }
   return out;
 }
@@ -11558,7 +11946,7 @@ var isMetaKey = (k) => k === "name" || k === "version" || k.startsWith("x-");
 function readCompose(file) {
   let text;
   try {
-    text = readFileSync4(file, "utf8");
+    text = readFileSync5(file, "utf8");
   } catch {
     return "cannot be read";
   }
@@ -11585,7 +11973,7 @@ function isComposeFile(c, f) {
   const m = COMPOSE_FILE.exec(f);
   if (!m) return false;
   if (!m[3]?.startsWith("-")) return true;
-  const docs = readCompose(join4(c.root, f));
+  const docs = readCompose(join5(c.root, f));
   if (typeof docs === "string") return true;
   const keys = docs.flatMap((d) => d ? Object.keys(d) : []);
   return keys.some((k) => COMPOSE_KEYS.includes(k)) || keys.some((k) => k !== "version") && keys.every(isMetaKey);
@@ -11595,7 +11983,7 @@ var isProject = (s) => s !== "" && normProject(s) === s;
 var isMainRoot = (c, root) => root === c.root ? !c.isWorktree : rp(root) === rp(c.worktrees[0] ?? c.root);
 var filesFor = (c, root) => (isMainRoot(c, root) ? c.cfg.compose.mainFiles : null) ?? c.cfg.compose.files;
 var filesKey = (c, root) => isMainRoot(c, root) && c.cfg.compose.mainFiles ? "main_files" : "files";
-var projectDir = (c, root) => dirname2(resolve2(root, filesFor(c, root)[0]));
+var projectDir = (c, root) => dirname3(resolve2(root, filesFor(c, root)[0]));
 function derive(c, root) {
   const main2 = c.worktrees[0] ?? c.root;
   if (c.cfg.compose?.derive === "dirname" || rp(root) === rp(main2)) return normProject(basename3(projectDir(c, root)));
@@ -11605,10 +11993,10 @@ function derive(c, root) {
 function runs(c, root) {
   const files = filesFor(c, root);
   let dir = projectDir(c, root);
-  while (!existsSync2(dir) && dir !== root) dir = dirname2(dir);
+  while (!existsSync3(dir) && dir !== root) dir = dirname3(dir);
   const atRoot = rp(dir) === rp(root);
   return [
-    ...files.every((f) => existsSync2(join4(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
+    ...files.every((f) => existsSync3(join5(root, f))) ? [{ dir: root, pdir: projectDir(c, root), files, label: "configured run" }] : [],
     { dir, pdir: dir, label: atRoot ? "root plain run" : "project-dir plain run" },
     ...atRoot ? [] : [{ dir: root, pdir: root, label: "root plain run" }]
   ];
@@ -11631,11 +12019,11 @@ function listContainers(c) {
 }
 function canon(p) {
   if (!isAbsolute4(p)) return p;
-  for (let head = p, tail = ""; ; tail = `/${basename3(head)}${tail}`, head = dirname2(head)) {
+  for (let head = p, tail = ""; ; tail = `/${basename3(head)}${tail}`, head = dirname3(head)) {
     try {
       return realpathSync2.native(head) + tail;
     } catch {
-      if (dirname2(head) === head) return p;
+      if (dirname3(head) === head) return p;
     }
   }
 }
@@ -11671,19 +12059,19 @@ function recoverer(c) {
     const norm2 = composeNameRaw({ ...o, normalize: true });
     if ("error" in norm2) timedOut ||= norm2.kind === "timeout";
     const answer = "error" in norm2 ? null : norm2.raw;
-    const names = new Set(literal ? [literal] : []);
+    const names2 = new Set(literal ? [literal] : []);
     if (raw.raw !== null && literal === null) {
       const dotenv = readDotEnv(p.pdir);
       const local = resolveTemplate(raw.raw, dotenv);
       const resolved = local === null ? "" : normProject(local);
-      if (resolved) names.add(resolved);
+      if (resolved) names2.add(resolved);
       const own = dotenv.get("COMPOSE_PROJECT_NAME");
-      if (own) names.add(normProject(own));
+      if (own) names2.add(normProject(own));
       const beat = !!own || answer !== null && answer !== normProject(raw.raw);
-      if (beat && answer) names.add(answer);
-      return { names: [...names], templated: !resolved && !beat };
-    } else if (answer) names.add(answer);
-    return { names: [...names], templated: false };
+      if (beat && answer) names2.add(answer);
+      return { names: [...names2], templated: !resolved && !beat };
+    } else if (answer) names2.add(answer);
+    return { names: [...names2], templated: false };
   };
   return (p) => {
     const kind = p.r.kind;
@@ -11702,7 +12090,7 @@ function peers(c) {
   return c.worktrees.filter((w) => rp(w) !== rp(c.root)).map((w) => {
     const isMain = rp(w) === main2;
     const holder = isMain ? "the main checkout" : `worktree ${w}`;
-    const exists = existsSync2(w);
+    const exists = existsSync3(w);
     const cells = c.isWorktree && exists ? cellsOf(c, w, `${holder}'s `, [true]) : [];
     const failed = cells.filter((p) => "error" in p.r);
     const got = failed.map(recover);
@@ -11734,7 +12122,7 @@ function peerWarnings(ps, name, kept) {
   });
 }
 var UPGRADE_FIX = "upgrade Docker Compose to one whose config takes --no-env-resolution";
-var interpFix = (v, pdir) => `set ${v} in ${join4(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
+var interpFix = (v, pdir) => `set ${v} in ${join5(pdir, ".env")} or export it; copy its line from .env.example when one defines it; if it is a secret you do not have, ask the repo owner`;
 var NO_NAME_FIX = "Compose exited 0 without a usable project name; check `docker compose version` and upgrade Docker Compose";
 function composeProject(c) {
   const id = "e.project";
@@ -11742,7 +12130,7 @@ function composeProject(c) {
   const files = filesFor(c, c.root);
   const key = filesKey(c, c.root);
   const one = (level, message, fix, name2 = null) => ({ name: name2, results: [res(level, id, message, fix)], withheld: level === "FAIL", answers: [], warnings: [] });
-  const missing = files.filter((f) => !existsSync2(join4(c.root, f)));
+  const missing = files.filter((f) => !existsSync3(join5(c.root, f)));
   if (missing.length === files.length) return one("FAIL", `no compose file found (${files.join(", ")})`, `fix [compose] ${key} in ${CFG}`);
   if (missing.length) return one("FAIL", `compose file missing: ${missing.join(", ")}`, `restore ${missing[0]} or fix [compose] ${key} in ${CFG}`);
   if (c.static) return one("PASS", "compose files present (project name not resolved in --static)");
@@ -11787,14 +12175,14 @@ function composeProject(c) {
     const mine = [name, derive(c, c.root), ...rp(p.pdir) === rp(c.root) ? [normProject(basename3(c.root))] : []];
     if (a === void 0 || mine.includes(a) && !held.has(a)) continue;
     const by = held.get(a);
-    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join4(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
+    const fix = `${unset}add COMPOSE_PROJECT_NAME=${name} to ${join5(p.pdir, ".env")}, or export it, or always pass -p ${name}`;
     fails.push([res("FAIL", id, `${p.pre}${p.label} would use project ${a}, ${by ? `which ${by} uses` : `not ${name}`}`, fix), false]);
   }
   const answers = [...new Set(own.flatMap((p) => named(p) ?? []))];
   const ps = listContainers(c);
   const gone = (d) => {
     try {
-      statSync2(d);
+      statSync3(d);
       return false;
     } catch (e) {
       return ["ENOENT", "ENOTDIR"].includes(e.code ?? "");
@@ -11830,7 +12218,7 @@ function containersCheck(c, { name: project, results, ps }) {
   if (!ct) return [res("SKIP", id, "no commit touches the [compose] inputs")];
   const mtimes = files.map((f) => {
     try {
-      return [f, statSync2(join4(c.root, f)).mtimeMs];
+      return [f, statSync3(join5(c.root, f)).mtimeMs];
     } catch {
       return [f, NaN];
     }
@@ -11846,9 +12234,9 @@ function containersCheck(c, { name: project, results, ps }) {
   const agreed = new Set(stale.map((k) => JSON.stringify([k.configFiles, k.workingDir, k.envFile])));
   const [started = "", wd = "", envFile = ""] = agreed.size === 1 ? JSON.parse([...agreed][0]) : [];
   const own = split2(started);
-  const fs = own.every((f) => isAbsolute4(f) && existsSync2(f)) ? own.map(rel) : filesFor(c, c.root);
+  const fs = own.every((f) => isAbsolute4(f) && existsSync3(f)) ? own.map(rel) : filesFor(c, c.root);
   const args = fs.map((f) => ` -f ${quote2(f)}`);
-  if (wd && rel(wd) !== normalize3(dirname2(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
+  if (wd && rel(wd) !== normalize4(dirname3(fs[0]))) args.push(` --project-directory ${quote2(rel(wd))}`);
   if (envFile) args.push(...split2(envFile).map((f) => ` --env-file ${quote2(rel(f))}`));
   const fix = `docker compose -p ${project}${args.join("")} up -d --build --force-recreate${unreadable.length && level === "FAIL" ? `; if docker ps prints CreatedAt in a form loops cannot read, set [compose] containers = "warn" in ${CFG}` : ""}`;
   const why = unreadable.length ? ` (loops cannot read ${unreadable.length === 1 && stale.length === 1 ? "its creation time" : `the creation time of ${short(unreadable)}`})` : "";
@@ -11862,9 +12250,9 @@ function composeChecks(c, project) {
     const tracked = c.tracked.filter((f) => isComposeFile(c, f));
     return [tracked.length ? res("FAIL", "e.none", `config says compose mode none but ${short(tracked)} is tracked`, `set [compose] mode = "test" and list the files in ${CFG}`) : res("PASS", "e.none", "no compose file tracked")];
   }
-  const read = files.filter((f) => existsSync2(join4(c.root, f))).map((f) => ({ f, docs: readCompose(join4(c.root, f)) }));
+  const read = files.filter((f) => existsSync3(join5(c.root, f))).map((f) => ({ f, docs: readCompose(join5(c.root, f)) }));
   const unread = read.filter((r) => typeof r.docs === "string").map((r) => r.f);
-  const names = read.flatMap((r) => typeof r.docs === "string" ? [] : r.docs).flatMap((d) => Object.values(table3(d?.services) ?? {})).flatMap((s) => {
+  const names2 = read.flatMap((r) => typeof r.docs === "string" ? [] : r.docs).flatMap((d) => Object.values(table3(d?.services) ?? {})).flatMap((s) => {
     const n = table3(s)?.container_name;
     return n == null || n === "" ? [] : [String(n)];
   }).filter((n) => !allowContainerName.includes(n));
@@ -11873,14 +12261,23 @@ function composeChecks(c, project) {
     ...project.results,
     ...project.warnings,
     ...c.static || project.results.some((r) => r.level === "FAIL") ? [] : containersCheck(c, project),
-    unread.length ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it") : names.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
+    unread.length ? res("WARN", "e.container_name", `cannot read container_name: ${short(unread)} does not parse as a compose file`, "fix the file until docker compose config accepts it") : names2.length ? res("WARN", "e.container_name", `fixed container_name ${short([...new Set(names2)])} collides across worktrees`, `drop container_name, or list it in allow_container_name in ${CFG}`) : res("PASS", "e.container_name", "no fixed container_name")
   ];
 }
 var LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*))?)?$/;
 function runLocal(c, l, project) {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
+  const lacking = l.needs.flatMap((n) => {
+    const p = which(n, c.env.PATH);
+    const why2 = p && !c.static ? shimProblem(c, n, p) : null;
+    return !p ? [n] : why2 ? [`${n} (${why2})`] : [];
+  });
+  if (lacking.length) {
+    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${l.needs.length > 1 ? "them" : "it"} and put ${l.needs.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
+  }
   const env = {
-    ...c.env,
+    // gitEnv: a foreign GIT_DIR is dropped, a hook's own index and GIT_CONFIG_PARAMETERS/COUNT stay.
+    ...gitEnv(c.env, c),
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
     // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
@@ -11900,6 +12297,11 @@ function runLocal(c, l, project) {
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2].startsWith(`${l.id}.`))) out.push(mk(m[1], m[2], m[3], m[4]?.trim() || void 0));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>"));
+  }
+  if (r.lost) {
+    if (out.some((x) => x.level === "FAIL")) return out;
+    const what = r.cleaned === "yes" ? "check group killed" : "check group could not be verified, nothing killed";
+    return [...out, mk("WARN", l.id, `supervisor lost; ${what}`, "rerun once; report it if it repeats")];
   }
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";
@@ -11956,14 +12358,15 @@ function idMatcher(id) {
   };
 }
 var STATIC_SKIP = "not run in --static mode";
-var skipped = (id) => ({ level: "SKIP", id, message: STATIC_SKIP, source: "builtin" });
+var skipped2 = (id) => ({ level: "SKIP", id, message: STATIC_SKIP, source: "builtin" });
 var staticOmission = (r) => r.level === "SKIP" && (r.message === STATIC_SKIP || r.message === "not checked in --static mode");
 function staticSkips(cfg) {
   return [
-    ...cfg.pins.filter((p) => Object.values(p.local).some((s) => s !== "off")).map((p) => skipped(`a.local.${p.tool}`)),
-    ...cfg.compose?.mode === "test" && cfg.compose.inputs.length ? [skipped("b.containers")] : [],
-    ...cfg.harness.tools.length ? [skipped("d.tools")] : [],
-    ...cfg.harness.sparse ? [skipped("d.sparse")] : []
+    ...cfg.pins.filter((p) => Object.values(p.local).some((s) => s !== "off")).map((p) => skipped2(`a.local.${p.tool}`)),
+    ...cfg.compose?.mode === "test" && cfg.compose.inputs.length ? [skipped2("b.containers")] : [],
+    ...cfg.harness.tools.length ? [skipped2("d.tools")] : [],
+    ...cfg.harness.sparse ? [skipped2("d.sparse")] : [],
+    ...cfg.harness.nodeModules !== "off" ? [skipped2("d.node_modules")] : []
   ];
 }
 function requiredRows(required, rows, isStatic) {
@@ -11999,11 +12402,11 @@ function envCheckMain(argv, d) {
   const required = typeof req === "string" ? requiredIds(req) : [];
   const root = repoRoot(d.run, d.cwd, gitEnv(d.env));
   if (!root) throw new UsageError("not a git repository");
-  const cfgFile = join5(root, ".loops", "env-check.toml");
-  if (!existsSync3(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
+  const cfgFile = join6(root, ".loops", "env-check.toml");
+  if (!existsSync4(cfgFile)) throw new UsageError(`no ${cfgFile} (nothing to check)`);
   let text;
   try {
-    text = readFileSync5(cfgFile, "utf8");
+    text = readFileSync6(cfgFile, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${cfgFile}: ${e.message}`);
   }
@@ -12032,7 +12435,7 @@ function envCheckMain(argv, d) {
   const home = d.env.HOME || homedir();
   const redact = (s) => redactHome(s, home);
   const showRow = (r) => mapText(r, (s) => escapeCtl(redact(s)));
-  const ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact };
+  const ctx = { run: d.run, root, cwd: d.cwd, env: d.env, static: isStatic, cfg, tracked, isWorktree, gitDir, worktrees, worktreesRead, redact, platform: d.platform };
   if (f["compose-project"]) {
     if (cfg.compose?.mode !== "test") throw new UsageError("compose mode is not test; there is no project name");
     const { name, results: results2, warnings } = composeProject(ctx);
@@ -12079,8 +12482,8 @@ function envCheckMain(argv, d) {
 }
 
 // src/lib/zone-cli.ts
-import { existsSync as existsSync4, readFileSync as readFileSync6 } from "node:fs";
-import { join as join6, relative, resolve as resolve4 } from "node:path";
+import { existsSync as existsSync5, readFileSync as readFileSync7 } from "node:fs";
+import { join as join7, relative, resolve as resolve4 } from "node:path";
 
 // src/lib/zone.ts
 var RANK = { green: 0, yellow: 1, red: 2 };
@@ -12271,12 +12674,12 @@ function zoneMain(argv, d) {
   });
   if (f.paths && f.stdin) throw new UsageError("--paths and --stdin are mutually exclusive");
   const root = repoRoot(d.run, d.cwd, void 0) ?? d.cwd;
-  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join6(root, "risk-zones.md");
-  if (!existsSync4(filePath)) throw new UsageError(`cannot read ${filePath}`);
+  const filePath = typeof f.file === "string" ? resolve4(d.cwd, f.file) : join7(root, "risk-zones.md");
+  if (!existsSync5(filePath)) throw new UsageError(`cannot read ${filePath}`);
   const shown = relative(d.cwd, filePath).startsWith("..") ? filePath : relative(d.cwd, filePath);
   let text;
   try {
-    text = readFileSync6(filePath, "utf8");
+    text = readFileSync7(filePath, "utf8");
   } catch (e) {
     throw new UsageError(`cannot read ${filePath}: ${e.message}`);
   }
@@ -12329,7 +12732,7 @@ function realDeps() {
     run,
     cwd: process.cwd(),
     env: process.env,
-    readStdin: () => readFileSync7(0, "utf8"),
+    readStdin: () => readFileSync8(0, "utf8"),
     out: (s) => process.stdout.write(`${s}
 `),
     err: (s) => process.stderr.write(`${s}
