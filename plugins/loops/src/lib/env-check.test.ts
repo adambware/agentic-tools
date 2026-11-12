@@ -2658,11 +2658,12 @@ describe("local checks", () => {
     expect([ft.code, ft.lines.slice(0, 2)]).toEqual([1, ["FAIL d.x.early  broken — fix: address the message above and re-run", "WARN d.x  timed out after 3s (not a pass) — fix: raise timeout_s or run .loops/checks/d_x.sh by hand"]]);
   }, 15_000);
 
-  it("kills a check that ignores SIGTERM at its timeout", () => {
+  it("kills a check that ignores SIGTERM at the end of its grace", () => {
     const t0 = Date.now();
     // A shell loop, not `exec sleep`: some sh builds reset an ignored TERM across exec.
-    const t = run('trap "" TERM\nend=$(($(date +%s) + 4))\nwhile [ "$(date +%s)" -lt "$end" ]; do :; done', "timeout_s = 0.2\n");
-    expect(Date.now() - t0).toBeLessThan(2000);
+    const t = run('trap "" TERM\nend=$(($(date +%s) + 8))\nwhile [ "$(date +%s)" -lt "$end" ]; do :; done', "timeout_s = 0.2\n");
+    // SIGTERM at 0.2 s, SIGKILL GRACE_MS (2 s) later, well before the loop's own end.
+    expect(Date.now() - t0).toBeLessThan(5000);
     expect(t.out).toContain("WARN d.x  timed out after 0.2s (not a pass)");
   });
 

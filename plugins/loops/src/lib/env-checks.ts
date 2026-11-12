@@ -964,6 +964,12 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>"));
   }
+  // A lost supervisor (it died, or overran the backstop) never downgrades a FAIL the check printed before it.
+  if (r.lost) {
+    if (out.some((x) => x.level === "FAIL")) return out;
+    const what = r.cleaned === "yes" ? "check group killed" : "check group could not be verified, nothing killed";
+    return [...out, mk("WARN", l.id, `supervisor lost; ${what}`, "rerun once; report it if it repeats")];
+  }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];
   const stderr = r.stderr.split("\n").map((x) => x.trim()).find(Boolean) ?? "";

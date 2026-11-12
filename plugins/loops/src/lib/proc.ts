@@ -1,7 +1,8 @@
 // Process and flag helpers shared by `loops zone` and `loops env-check`. Commands that spawn
 // (git, tool version probes, local checks) go through the injected Runner, like RunGh in repos.ts.
 import { spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Bad usage, bad config or an unreadable repo: the CLI prints it to stderr and exits 2. */
@@ -11,7 +12,10 @@ export interface RunOpts {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
-  /** Run in its own process group, and kill the whole group at the timeout or an interrupt, so a child it started does not outlive it. */
+  /**
+   * Run in its own session and process group, and end the whole group at the timeout or an interrupt (SIGTERM or
+   * SIGINT, then SIGKILL after GRACE_MS), with the descendants it can find, so a child it started does not outlive it.
+   */
   group?: boolean;
 }
 export interface RunResult {
@@ -24,29 +28,83 @@ export interface RunResult {
   notFound?: boolean;
   /** What left code null when the process did not just exit: the signal that killed it or the spawn error code (ENOBUFS, EACCES…). */
   abend?: string;
+  /** A grouped run whose supervisor died or overran the backstop: stdout is what the check printed before (whole lines). Absent: false. */
+  lost?: boolean;
+  /** For a lost run, whether the check's group is gone ("yes"), was left as not this run's ("no") or could not be checked. Absent: "yes". */
+  cleaned?: "yes" | "no" | "unverified";
 }
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => RunResult;
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 
+/** How long a terminated check gets to exit after SIGTERM or SIGINT before SIGKILL. */
+export const GRACE_MS = 2000;
+
 /**
  * The supervisor a grouped run goes through: a node process in the caller's own process group that starts the command
- * detached (its own session and process group), so the whole group can be killed, and kills that group with SIGKILL at
- * the timeout, on SIGINT, SIGTERM or SIGHUP (a terminal's Ctrl-C reaches the supervisor, not the detached group), and
- * when its parent is gone (an engine killed while spawnSync blocks its signal handlers). It reads {cmd, args, env,
- * timeoutMs, max, parent} as JSON on stdin and relays the command's output once it ends, after one JSON status line
- * on stderr: {code, signal, error, timedOut}.
+ * detached (a new session, so its own process group and no controlling terminal), so the whole group can be killed. It
+ * reads {cmd, args, env, timeoutMs, max, parent, pidfile, out} as JSON on stdin. Right after the spawn it publishes
+ * {pgid, startMs} to `pidfile` (tmp + rename; startMs is taken before the spawn), and it copies the check's stdout to
+ * `out` as it arrives, so an engine that loses the supervisor can still kill the group and keep what the check printed.
+ * One terminate routine ends the check at the timeout (SIGTERM), on SIGINT (SIGINT), on SIGTERM or SIGHUP (SIGTERM; a
+ * terminal's Ctrl-C and hangup reach the supervisor, not the detached group), and when its parent is gone (SIGTERM; an
+ * engine killed while spawnSync blocks its signal handlers): see `terminate`. It relays the command's output once it
+ * ends, after one JSON status line on stderr: {code, signal, error, timedOut}.
  */
 const SUPERVISOR = `
-const { spawn } = require("node:child_process");
-const { readFileSync, writeSync } = require("node:fs");
+const { spawn, spawnSync } = require("node:child_process");
+const { openSync, readFileSync, renameSync, writeFileSync, writeSync } = require("node:fs");
 const { constants } = require("node:os");
 const o = JSON.parse(readFileSync(0, "utf8"));
-let child = null, error = null, timedOut = false, done = false, timer = null;
-const kill = () => { try { if (child && child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} };
-for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => { kill(); process.exit(128 + constants.signals[s]); });
+const GRACE_MS = ${GRACE_MS};
+let child = null, error = null, timedOut = false, done = false, timer = null, terminating = false, closed = false, settling = false, tee = null;
+// Every pid of the check seen so far: the leader and its descendants.
+const seen = new Set();
+// Add every live descendant of a seen pid, walking \`ps -A -o pid=,ppid=\`: a setsid child whose parent is still alive
+// is found; a daemon already reparented to init is not.
+const sweep = () => {
+  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { env: { PATH: "/bin:/usr/bin", LC_ALL: "C" }, encoding: "utf8", timeout: 5000 });
+  const kids = new Map();
+  for (const line of (r.stdout || "").split("\\n")) {
+    const m = /^\\s*(\\d+)\\s+(\\d+)\\s*$/.exec(line);
+    if (m) kids.set(+m[2], [...(kids.get(+m[2]) || []), +m[1]]);
+  }
+  const todo = [...seen];
+  while (todo.length) for (const k of kids.get(todo.pop()) || []) if (k !== process.pid && !seen.has(k)) { seen.add(k); todo.push(k); }
+};
+const signal = (sig) => {
+  try { process.kill(-child.pid, sig); } catch {}
+  for (const p of seen) try { process.kill(p, sig); } catch {}
+};
+const alive = () => {
+  try { process.kill(-child.pid, 0); return true; } catch {}
+  for (const p of seen) try { process.kill(p, 0); return true; } catch {}
+  return false;
+};
+// The one way a check is ended early. It turns off the orphan poll and the timer and ignores a repeat call (a second
+// Ctrl-C), sends sig to the group and every swept pid, and waits up to GRACE_MS for them all to exit, staying alive
+// after the leader exits and when the engine is gone. Then it sweeps again and SIGKILLs the group and every pid seen.
+const terminate = (sig, then) => {
+  if (terminating) return;
+  terminating = true;
+  clearInterval(poll);
+  clearTimeout(timer);
+  if (!child || !child.pid) return then();
+  sweep();
+  signal(sig);
+  const end = Date.now() + GRACE_MS;
+  const wait = () => {
+    if (alive() && Date.now() < end) return void setTimeout(wait, 25);
+    sweep();
+    signal("SIGKILL");
+    then();
+  };
+  wait();
+};
 const orphan = () => process.ppid !== o.parent;
-setInterval(() => { if (orphan()) { kill(); process.exit(1); } }, 100).unref();
+const poll = setInterval(() => { if (orphan()) terminate("SIGTERM", () => process.exit(1)); }, 100);
+poll.unref();
+for (const s of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(s, () => terminate(s === "SIGINT" ? "SIGINT" : "SIGTERM", () => process.exit(128 + constants.signals[s])));
 // The pipes to the engine are non-blocking: a full one (64 KB) throws EAGAIN until the engine drains it, so wait a ms.
 const nap = new Int32Array(new SharedArrayBuffer(4));
 const put = (fd, b) => {
@@ -60,24 +118,35 @@ const finish = (code, signal) => {
   done = true;
   clearTimeout(timer);
   const st = timedOut || error ? { code: null, signal: null, error, timedOut } : { code, signal, error: null, timedOut };
-  put(2, Buffer.from(JSON.stringify(st) + "\\n"));
-  put(2, Buffer.concat(bufs[1]));
-  put(1, Buffer.concat(bufs[0]));
+  try {
+    put(2, Buffer.from(JSON.stringify(st) + "\\n"));
+    put(2, Buffer.concat(bufs[1]));
+    put(1, Buffer.concat(bufs[0]));
+  } catch {
+    process.exit(1);
+  }
   process.exit(0);
 };
+// After a terminate that ends in a result: the kill closes the pipes; one held by a process that left the group would not.
+const settle = () => { settling = true; if (closed) finish(null, null); else setTimeout(() => finish(null, null), 500); };
 if (orphan()) process.exit(1);
+if (o.out) try { tee = openSync(o.out, "a"); } catch {}
+const startMs = Date.now();
 child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+if (child.pid) {
+  seen.add(child.pid);
+  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
+}
 child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
 [child.stdout, child.stderr].forEach((s, i) => s.on("data", (b) => {
   sizes[i] += b.length;
-  if (sizes[i] > o.max) { error = "ENOBUFS"; kill(); finish(null, null); } else bufs[i].push(b);
+  if (sizes[i] <= o.max) {
+    bufs[i].push(b);
+    if (i === 0 && tee !== null) try { writeSync(tee, b); } catch {}
+  } else if (!terminating) { error = "ENOBUFS"; terminate("SIGKILL", settle); }
 }));
-child.on("close", finish);
-if (o.timeoutMs) timer = setTimeout(() => {
-  timedOut = true; error = "ETIMEDOUT"; kill();
-  // The kill closes the pipes; one held by a process that left the group would not.
-  setTimeout(() => finish(null, null), 500);
-}, o.timeoutMs);
+child.on("close", (code, signal) => { closed = true; if (!terminating) finish(code, signal); else if (settling) finish(null, null); });
+if (o.timeoutMs) timer = setTimeout(() => { timedOut = true; error = "ETIMEDOUT"; terminate("SIGTERM", settle); }, o.timeoutMs);
 `;
 
 interface Status {
@@ -105,35 +174,117 @@ export const run: Runner = (cmd, args, opts = {}) => {
 
 /**
  * `run` for `group`: through SUPERVISOR, with a clean env so NODE_OPTIONS and the like reach only the command. spawnSync
- * blocks this process's own signal handlers, so the supervisor is what ends the group on an interrupt.
+ * blocks this process's own signal handlers, so the supervisor is what ends the group on an interrupt. A supervisor
+ * that dies (SIGKILLed, out of memory) or overruns the backstop is lost: then this side kills the group its pidfile
+ * names, once `ps` shows the group is this run's, and returns what the check had printed.
  */
 function runGroup(cmd: string, args: string[], opts: RunOpts): RunResult {
-  const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid });
-  const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
-    cwd: opts.cwd,
-    env: {},
-    input,
-    // A backstop only: the supervisor keeps the deadline.
-    timeout: opts.timeoutMs === undefined ? undefined : opts.timeoutMs + 10_000,
-    killSignal: "SIGKILL",
-    encoding: "utf8",
-    maxBuffer: 2 * MAX_BUFFER,
-  });
-  const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
-  const nl = (r.stderr ?? "").indexOf("\n");
-  let st: Status | null = null;
+  let dir: string | null = null;
   try {
-    st = nl < 0 ? null : (JSON.parse(r.stderr.slice(0, nl)) as Status);
+    dir = mkdtempSync(join(tmpdir(), "loops-run-"));
   } catch {
-    // no status: the supervisor itself did not finish
+    // no run dir: the supervisor publishes no pidfile, and a lost one's group cannot be verified
   }
-  // A supervisor that died after its status line (a relay write failed) relayed only part of the output.
-  if (!st || r.status !== 0) {
-    const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
-    return { code: null, stdout: "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why };
+  try {
+    const [pidfile, out] = dir ? [join(dir, "group.pid"), join(dir, "out")] : [null, null];
+    const input = JSON.stringify({ cmd, args, env: opts.env ?? process.env, timeoutMs: opts.timeoutMs, max: MAX_BUFFER, parent: process.pid, pidfile, out });
+    const r = spawnSync(process.execPath, ["-e", SUPERVISOR], {
+      cwd: opts.cwd,
+      env: {},
+      input,
+      // A backstop only: the supervisor keeps the deadline, and its grace and sweeps take far less than 10 s.
+      timeout: opts.timeoutMs === undefined ? undefined : opts.timeoutMs + 10_000,
+      killSignal: "SIGKILL",
+      encoding: "utf8",
+      maxBuffer: 2 * MAX_BUFFER,
+    });
+    const errCode = (r.error as NodeJS.ErrnoException | undefined)?.code;
+    const nl = (r.stderr ?? "").indexOf("\n");
+    let st: Status | null = null;
+    try {
+      st = nl < 0 ? null : (JSON.parse(r.stderr.slice(0, nl)) as Status);
+    } catch {
+      // no status: the supervisor itself did not finish
+    }
+    // A supervisor that died after its status line (a relay write failed) relayed only part of the output.
+    if (!st || r.status !== 0) {
+      const why = errCode ?? r.signal ?? `supervisor exited ${r.status}`;
+      const cleaned = pidfile ? reapLost(pidfile) : "unverified";
+      return { code: null, stdout: out ? printed(out) : "", stderr: "", timedOut: errCode === "ETIMEDOUT", notFound: errCode === "ENOENT", abend: why, lost: true, cleaned };
+    }
+    const abend = st.code === null ? (st.error ?? st.signal ?? undefined) : undefined;
+    return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend, lost: false, cleaned: "yes" };
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
   }
-  const abend = st.code === null ? (st.error ?? st.signal ?? undefined) : undefined;
-  return { code: st.code, stdout: r.stdout, stderr: r.stderr.slice(nl + 1), timedOut: st.timedOut, notFound: st.error === "ENOENT", abend };
+}
+
+/** The whole lines of the stdout copy a lost supervisor left (a last line cut short is dropped), or "". */
+function printed(out: string): string {
+  try {
+    const s = readFileSync(out, "utf8");
+    return s.slice(0, s.lastIndexOf("\n") + 1);
+  } catch {
+    return "";
+  }
+}
+
+/** `LC_ALL=C ps -A -o pid=,pgid=,lstart=`, the system's ps in this process's time zone, or null when it failed. */
+function psStarts(): string | null {
+  const r = spawnSync("ps", ["-A", "-o", "pid=,pgid=,lstart="], {
+    env: { PATH: "/bin:/usr/bin", LC_ALL: "C", ...(process.env.TZ === undefined ? {} : { TZ: process.env.TZ }) },
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  return r.status === 0 ? r.stdout : null;
+}
+
+/**
+ * Whose group `pgid` is in a `pid= pgid= lstart=` listing: "gone" when no process has it, "ours" when every process in
+ * it started no earlier than `startMs` - 1 s (lstart has whole seconds; startMs is taken before the spawn), "other" when
+ * one started before (a pid reused, or a pidfile not from this run), "unknown" when a start time does not parse.
+ */
+export function groupOwner(listing: string, pgid: number, startMs: number): "gone" | "ours" | "other" | "unknown" {
+  let found = false;
+  for (const line of listing.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (!m || Number(m[2]) !== pgid) continue;
+    const at = Date.parse(m[3]!.replace(/\s+/g, " "));
+    if (Number.isNaN(at)) return "unknown";
+    if (at < startMs - 1000) return "other";
+    found = true;
+  }
+  return found ? "ours" : "gone";
+}
+
+/**
+ * After a lost supervisor: SIGKILL the group its pidfile names when `ps` shows the group is this run's (the PID-reuse
+ * guard), and say whether the group is gone ("yes"), was left because it is not this run's ("no"), or could not be
+ * checked ("unverified": no pidfile, as when the supervisor died before publishing it, or no usable ps).
+ */
+export function reapLost(pidfile: string, ps: () => string | null = psStarts): "yes" | "no" | "unverified" {
+  let rec: { pgid?: unknown; startMs?: unknown };
+  try {
+    rec = JSON.parse(readFileSync(pidfile, "utf8")) as typeof rec;
+  } catch {
+    return "unverified";
+  }
+  const { pgid, startMs } = rec ?? {};
+  // pgid 1 (or less) would make kill(-pgid) signal every process this user can reach.
+  if (!Number.isSafeInteger(pgid) || (pgid as number) <= 1 || pgid === process.pid || typeof startMs !== "number") return "unverified";
+  const listing = ps();
+  if (listing === null) return "unverified";
+  const owner = groupOwner(listing, pgid as number, startMs);
+  if (owner === "unknown") return "unverified";
+  if (owner === "other") return "no";
+  if (owner === "ours") {
+    try {
+      process.kill(-(pgid as number), "SIGKILL");
+    } catch {
+      // gone since the listing
+    }
+  }
+  return "yes";
 }
 
 /** `s` as one POSIX shell word, for commands a fix tells the developer to run. */

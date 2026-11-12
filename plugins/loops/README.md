@@ -510,7 +510,7 @@ main_files = ["compose.yml", "compose.dev.yml"]  # 0.8.0, test only: the main ch
 id = "d.lint-lock"                      # <a-e or x>.<name>; x.none and x.required are reserved
 run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
-timeout_s = 15
+timeout_s = 15                          # 0.8.0: then SIGTERM, a 2 s grace, SIGKILL (was SIGKILL at once)
 ```
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
@@ -845,14 +845,27 @@ fails), no running container, or no commit touching the inputs is a SKIP, never 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
-`timeout_s` stops the check with SIGKILL (a trapped SIGTERM cannot outlive it). The check runs in its own process group, and
-the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A small node
-supervisor in env-check's own process group starts the check and holds the deadline; it also kills the check's group
-with SIGKILL when env-check is interrupted (Ctrl-C at the terminal, or SIGINT, SIGTERM or SIGHUP) and when env-check
-dies while the check runs, so an interrupted run leaves no check behind. A child that leaves the group (`setsid`)
-is out of its reach. A child it leaves
-running when it exits on its own can hold the run open, so `exec` long commands. It prints one line per
-result on stdout:
+A small node supervisor in env-check's own process group starts the check in a new session, so the check has its own
+process group and no controlling terminal; a terminal's Ctrl-C reaches the supervisor, not the check. The supervisor
+holds the deadline and ends the check's whole group, so a child it started (`go` under a shell) does not keep running.
+The kill sequence (0.8.0) is the same for every way a check is cut short:
+
+1. The signal: SIGTERM at `timeout_s`, and when env-check dies or gets SIGTERM or SIGHUP; SIGINT when env-check is
+   interrupted (Ctrl-C or SIGINT). It goes to the check's group and to every descendant the supervisor finds by walking
+   `ps` from the check, so a `setsid` child whose parent is still running gets it too.
+2. A grace of 2 s for all of them to exit. The supervisor stays for the whole grace, also when the check's first
+   process exits at once or env-check has already died. A second Ctrl-C is ignored.
+3. SIGKILL to the group and to every process it found, after one more `ps` walk. A trapped SIGTERM cannot outlive it.
+
+If the supervisor itself dies (SIGKILLed, out of memory), env-check kills the check's group, but only after `ps` shows
+the group's processes all started during this run, so a reused process id is never killed. The row is then
+`WARN <id>  supervisor lost; check group killed`, or `... could not be verified, nothing killed` when env-check cannot
+tell; a FAIL the check printed first still stands. Rerun once, and report it if it repeats. One gap remains: a
+double-forked daemon that its parent left before the timeout is reparented to init, so no `ps` walk finds it. A child
+the check leaves running when it exits on its own is not killed either, and it can hold the run open, so `exec` long
+commands.
+
+The check prints one line per result on stdout:
 
 ```
 (PASS|WARN|FAIL|SKIP|INFO) <id> <message>[ — fix: <fix>]
