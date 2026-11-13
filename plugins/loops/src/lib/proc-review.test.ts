@@ -24,8 +24,8 @@ describe("groupOwner (review fixes)", () => {
   it("counts a group whose lstart reads up to about 2 s before startMs as ours, and one 2.6 s before as other", () => {
     const start = Date.UTC(2026, 10, 12, 10, 23, 45);
     const listing = "  100   100 Thu Nov 12 10:23:45 2026\n";
-    expect(groupOwner(listing, 100, start + 1999)).toBe("ours");
-    expect(groupOwner(listing, 100, start + 2600)).toBe("other");
+    expect(groupOwner(listing, 100, start + 1999, start + 2000)).toBe("ours");
+    expect(groupOwner(listing, 100, start + 2600, start + 2600)).toBe("other");
   });
 
   // Value: protects=the start-time guard in a DST fall-back hour (a local lstart is ambiguous there, and V8 picks the
@@ -37,8 +37,25 @@ describe("groupOwner (review fixes)", () => {
     // 06:30Z is 01:30 EST, the second pass of the 2026-11-01 fall-back hour.
     const start = Date.UTC(2026, 10, 1, 6, 30);
     const listing = "  4242  4242 Sun Nov  1 06:30:00 2026\n";
-    expect(groupOwner(listing, 4242, start)).toBe("ours");
-    expect(groupOwner(listing, 4242, start + 10_000)).toBe("other");
+    expect(groupOwner(listing, 4242, start, start)).toBe("ours");
+    expect(groupOwner(listing, 4242, start + 10_000, start + 10_000)).toBe("other");
+  });
+
+  // Value: protects=an unrelated process group being SIGKILLed after a lost supervisor when the check's group ended and
+  // its pgid was reused (every member of the new group starts after startMs, so a lower bound alone reads it as ours);
+  // fails_when=ownership is a lower bound on member start times only (red on e55dc2f: the reused group read "ours");
+  // why_new=PR #33 review (codex P2); seam=a synthetic listing; no_claim=how often a pgid is reused in practice
+  it("reads a reused pgid (leader started after the spawn) as other, and a leaderless group as unknown", () => {
+    const start = Date.UTC(2026, 10, 12, 10, 0, 0);
+    const spawned = start + 30;
+    const ours = "  500   500 Thu Nov 12 10:00:00 2026\n  501   500 Thu Nov 12 10:05:00 2026\n";
+    expect(groupOwner(ours, 500, start, spawned)).toBe("ours");
+    // The check's group is gone; a new group, leader and member, has pgid 500 ten minutes later.
+    const reused = "  500   500 Thu Nov 12 10:10:00 2026\n  777   500 Thu Nov 12 10:10:01 2026\n";
+    expect(groupOwner(reused, 500, start, spawned)).toBe("other");
+    expect(groupOwner("  500   500 Thu Nov 12 10:00:03 2026\n", 500, start, spawned)).toBe("other");
+    // Only members left: this run's group with its leader gone, or a newer one whose leader exited. Not provable.
+    expect(groupOwner("  777   500 Thu Nov 12 10:10:01 2026\n", 500, start, spawned)).toBe("unknown");
   });
 });
 

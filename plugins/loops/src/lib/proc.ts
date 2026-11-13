@@ -77,7 +77,8 @@ export function findPs(pathVar: string | undefined = process.env.PATH, system: s
  * The supervisor a grouped run goes through: a node process in the caller's own process group that starts the command
  * detached (a new session, so its own process group and no controlling terminal), so the whole group can be killed. It
  * reads {cmd, args, env, timeoutMs, max, parent, pidfile, out, ps} as JSON on stdin. Right after the spawn it publishes
- * {pgid, startMs} to `pidfile` (tmp + rename; startMs is taken before the spawn), and it copies the check's stdout to
+ * {pgid, startMs, spawnedMs} to `pidfile` (tmp + rename; startMs is taken before the spawn, spawnedMs right after it, so
+ * the leader's start time lies between them), and it copies the check's stdout to
  * `out` as it arrives, so an engine that loses the supervisor can still kill the group and keep what the check printed.
  * One terminate routine ends the check at the timeout (SIGTERM), on SIGINT (SIGINT), on SIGTERM or SIGHUP (SIGTERM; a
  * terminal's Ctrl-C and hangup reach the supervisor, not the detached group), and when its parent is gone (SIGTERM; an
@@ -199,7 +200,7 @@ child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pi
 if (child.pid) {
   seen.add(child.pid);
   starts.set(child.pid, NaN);
-  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
+  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs, spawnedMs: Date.now() })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
 }
 child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
 // A reaped leader's pid is free: never signal it on its own again.
@@ -304,42 +305,50 @@ function psStarts(ps: string | null = findPs()): string | null {
 }
 
 /**
- * Whose group `pgid` is in a `pid= pgid= lstart=` listing with UTC start times: "gone" when no process has it, "ours"
- * when every process in it started no earlier than `startMs` - LSTART_SLACK_MS (startMs is taken before the spawn, and
- * lstart can read up to about 2 s early on Linux), "other" when one started before (a pid reused, or a pidfile not
- * from this run), "unknown" when a start time does not parse. UTC, since a local time is ambiguous in a DST fall-back.
+ * Whose group `pgid` is in a `pid= pgid= lstart=` listing with UTC start times, for a leader spawned between `startMs`
+ * and `spawnedMs`: "gone" when no process has it; "other" when one of its processes started before startMs, or its
+ * leader (pid == pgid) after spawnedMs (the group ended and a new one got the same number); "ours" when its leader is
+ * there and started in that window; "unknown" when a start time does not parse, or the leader is not there (a group
+ * whose leader exited cannot be told from a newer one with the same pgid). Each bound allows LSTART_SLACK_MS, since
+ * lstart is whole seconds and can read up to about 2 s off on Linux. UTC, since a local time is ambiguous in a DST
+ * fall-back.
  */
-export function groupOwner(listing: string, pgid: number, startMs: number): "gone" | "ours" | "other" | "unknown" {
+export function groupOwner(listing: string, pgid: number, startMs: number, spawnedMs: number): "gone" | "ours" | "other" | "unknown" {
   let found = false;
+  let leader: number | null = null;
   for (const line of listing.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
     if (!m || Number(m[2]) !== pgid) continue;
     const at = Date.parse(`${m[3]!.replace(/\s+/g, " ")} UTC`);
     if (Number.isNaN(at)) return "unknown";
     if (at < startMs - LSTART_SLACK_MS) return "other";
+    if (Number(m[1]) === pgid) leader = at;
     found = true;
   }
-  return found ? "ours" : "gone";
+  if (!found) return "gone";
+  if (leader === null) return "unknown";
+  return leader > spawnedMs + LSTART_SLACK_MS ? "other" : "ours";
 }
 
 /**
  * After a lost supervisor: SIGKILL the group its pidfile names when `ps` shows the group is this run's (the PID-reuse
- * guard), and say whether the group is gone ("yes"), was left because it is not this run's ("no"), or could not be
- * checked ("unverified": no pidfile, as when the supervisor died before publishing it, or no usable ps).
+ * guard: its leader started in the spawn window), and say whether the group is gone ("yes"), was left because it is not
+ * this run's ("no"), or could not be checked ("unverified": no pidfile, as when the supervisor died before publishing
+ * it, no usable ps, or a group whose leader has exited).
  */
 export function reapLost(pidfile: string, ps: () => string | null = psStarts): "yes" | "no" | "unverified" {
-  let rec: { pgid?: unknown; startMs?: unknown };
+  let rec: { pgid?: unknown; startMs?: unknown; spawnedMs?: unknown };
   try {
     rec = JSON.parse(readFileSync(pidfile, "utf8")) as typeof rec;
   } catch {
     return "unverified";
   }
-  const { pgid, startMs } = rec ?? {};
+  const { pgid, startMs, spawnedMs } = rec ?? {};
   // pgid 1 (or less) would make kill(-pgid) signal every process this user can reach.
-  if (!Number.isSafeInteger(pgid) || (pgid as number) <= 1 || pgid === process.pid || typeof startMs !== "number") return "unverified";
+  if (!Number.isSafeInteger(pgid) || (pgid as number) <= 1 || pgid === process.pid || typeof startMs !== "number" || typeof spawnedMs !== "number") return "unverified";
   const listing = ps();
   if (listing === null) return "unverified";
-  const owner = groupOwner(listing, pgid as number, startMs);
+  const owner = groupOwner(listing, pgid as number, startMs, spawnedMs);
   if (owner === "unknown") return "unverified";
   if (owner === "other") return "no";
   if (owner === "ours") {

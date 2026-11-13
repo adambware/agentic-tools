@@ -322,7 +322,7 @@ describe("run with group", () => {
     const victim = spawn("sh", ["-c", `sleep 30; : ${mark}`], { detached: true, stdio: "ignore" });
     try {
       expect(until(() => running(mark) === true, 5_000)).toBe(true);
-      const forged = JSON.stringify({ pgid: victim.pid, startMs: Date.now() + 60_000 });
+      const forged = JSON.stringify({ pgid: victim.pid, startMs: Date.now() + 60_000, spawnedMs: Date.now() + 60_000 });
       const { r } = inRunDir(`${PIDFILE}; printf '%s' '${forged}' > "$RUN/group.pid"; kill -9 $PPID`);
       expect({ lost: r.lost, cleaned: r.cleaned }).toEqual({ lost: true, cleaned: "no" });
       expect(running(mark)).toBe(true);
@@ -336,11 +336,12 @@ describe("run with group", () => {
     const at = (s: string) => Date.parse(`${s} UTC`);
     const listing = ["  100   100 Thu Nov 12 10:23:45 2026", "  101   100 Thu Nov 12 10:23:46 2026", "  200   200 Mon Nov  2 09:00:00 2026", "  300   300 not a date", ""].join("\n");
     // startMs is taken before the spawn; a leader's lstart reads up to about 2 s under it on Linux (see LSTART_SLACK_MS).
-    expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:45 2026") + 999)).toBe("ours");
-    expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:48 2026"))).toBe("other");
-    expect(groupOwner(listing, 200, at("Mon Nov 2 09:00:00 2026"))).toBe("ours");
-    expect(groupOwner(listing, 300, 0)).toBe("unknown");
-    expect(groupOwner(listing, 400, 0)).toBe("gone");
+    const t = at("Thu Nov 12 10:23:45 2026") + 999;
+    expect(groupOwner(listing, 100, t, t + 50)).toBe("ours");
+    expect(groupOwner(listing, 100, at("Thu Nov 12 10:23:48 2026"), at("Thu Nov 12 10:23:48 2026"))).toBe("other");
+    expect(groupOwner(listing, 200, at("Mon Nov 2 09:00:00 2026"), at("Mon Nov 2 09:00:00 2026"))).toBe("ours");
+    expect(groupOwner(listing, 300, 0, 0)).toBe("unknown");
+    expect(groupOwner(listing, 400, 0, 0)).toBe("gone");
   });
 
   it("reaps nothing on a missing, malformed or dangerous pidfile, or without ps", () => {
@@ -349,11 +350,11 @@ describe("run with group", () => {
       throw new Error("ps must not run");
     };
     expect(reapLost(join(d, "none"), ps)).toBe("unverified");
-    for (const [f, body] of [["junk", "{"], ["one", '{"pgid":1,"startMs":0}'], ["neg", '{"pgid":-5,"startMs":0}'], ["self", `{"pgid":${process.pid},"startMs":0}`], ["nostart", '{"pgid":12345}']]) {
+    for (const [f, body] of [["junk", "{"], ["one", '{"pgid":1,"startMs":0,"spawnedMs":0}'], ["neg", '{"pgid":-5,"startMs":0,"spawnedMs":0}'], ["self", `{"pgid":${process.pid},"startMs":0,"spawnedMs":0}`], ["nostart", '{"pgid":12345}'], ["nospawned", '{"pgid":12345,"startMs":0}']]) {
       put(d, f!, body!);
       expect(reapLost(join(d, f!), ps)).toBe("unverified");
     }
-    put(d, "ok", '{"pgid":999999,"startMs":0}');
+    put(d, "ok", '{"pgid":999999,"startMs":0,"spawnedMs":0}');
     expect(reapLost(join(d, "ok"), () => null)).toBe("unverified");
     expect(reapLost(join(d, "ok"), () => "")).toBe("yes");
   });
