@@ -10075,6 +10075,7 @@ var GRACE_MS = 2e3;
 var PS_TIMEOUT_MS = 5e3;
 var SETTLE_MS = 500;
 var LSTART_SLACK_MS = 2500;
+var LSTART_TICK_MS = 1e3;
 function backstopMs(timeoutMs) {
   return timeoutMs + 2 * PS_TIMEOUT_MS + GRACE_MS + SETTLE_MS + 3e3;
 }
@@ -10089,7 +10090,7 @@ const { closeSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, wr
 const { constants } = require("node:os");
 const { dirname } = require("node:path");
 const o = JSON.parse(readFileSync(0, "utf8"));
-const GRACE_MS = ${GRACE_MS}, PS_TIMEOUT_MS = ${PS_TIMEOUT_MS}, SLACK = ${LSTART_SLACK_MS};
+const GRACE_MS = ${GRACE_MS}, PS_TIMEOUT_MS = ${PS_TIMEOUT_MS}, SLACK = ${LSTART_SLACK_MS}, TICK = ${LSTART_TICK_MS};
 let child = null, error = null, timedOut = false, done = false, timer = null, terminating = false, closed = false, settling = false, tee = null;
 // Every live pid of the check seen so far, the leader and its descendants, with the start time each had when first seen.
 const seen = new Set(), starts = new Map();
@@ -10108,7 +10109,8 @@ const list = () => {
   }
   return rows;
 };
-// Drop every seen pid that is gone or now has another start time (exited, maybe reused), then add every live
+// Drop every seen pid that is gone or now has another start time (exited, maybe reused; two listings of one process
+// differ by at most TICK, so a pid whose start moved further is another process), then add every live
 // descendant of the rest: a setsid child whose parent is still alive is found; a daemon already reparented to init is
 // not. Once the leader has exited, its group is still the check's only while a member started before that.
 const sweep = () => {
@@ -10117,7 +10119,7 @@ const sweep = () => {
   const live = new Map(rows.map((x) => [x.pid, x]));
   for (const p of [...seen]) {
     const x = live.get(p);
-    if (!x || Math.abs(x.at - starts.get(p)) > SLACK) seen.delete(p);
+    if (!x || Math.abs(x.at - starts.get(p)) > TICK) seen.delete(p);
     else if (Number.isNaN(starts.get(p))) starts.set(p, x.at);
   }
   const kids = new Map();

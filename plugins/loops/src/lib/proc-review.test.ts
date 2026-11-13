@@ -146,4 +146,31 @@ describe("run with group (review fixes)", () => {
       cleanup(mark);
     }
   }, 30_000);
+
+  // Value: protects=an unrelated process that reused a seen pid within seconds (its lstart only 2 s off the one seen)
+  // being SIGKILLed at the grace's end, while a real descendant whose lstart reads one second off between listings
+  // (procps 4) is still killed; fails_when=the sweep keeps a pid whose start moved by more than one lstart step (red on
+  // 29fa5be: the 2.5 s slack kept the 2 s shift and SIGKILLed it); why_new=PR #33 review (codex P2), the old test
+  // shifted by a year; seam=a fake ps that shifts every start time by N s after the first listing; no_claim=a real pid wrap
+  it("drops a seen pid whose start time moved by 2 s, and keeps one that moved by 1 s", () => {
+    const mark = `loops-tick-${process.pid}-${n++}`;
+    const d = tmp();
+    const shifted = (secs: number) =>
+      `#!/bin/sh\nif [ -f "${d}/once" ]; then /bin/ps "$@" | /usr/bin/awk '{ split($(NF-1), t, ":"); s = t[1] * 3600 + t[2] * 60 + t[3] + ${secs}; $(NF-1) = sprintf("%02d:%02d:%02d", int(s / 3600) % 24, int(s / 60) % 60, s % 60); print }'; else : > "${d}/once"; exec /bin/ps "$@"; fi\n`;
+    put(d, "escape.cjs", `require("node:child_process").spawn("sh", ["-c", "trap '' TERM; sleep 30; : ${mark}"], { detached: true, stdio: "ignore" });\nsetInterval(() => {}, 1000);\n`);
+    try {
+      put(d, "ps", shifted(2), true);
+      const r = run(process.execPath, [join(d, "escape.cjs")], { group: true, timeoutMs: 1500, ps: join(d, "ps") });
+      expect(r.timedOut).toBe(true);
+      expect(running(mark)).toBe(true);
+      cleanup(mark);
+      spawnSync("rm", ["-f", join(d, "once")]);
+      put(d, "ps", shifted(1), true);
+      const c = run(process.execPath, [join(d, "escape.cjs")], { group: true, timeoutMs: 1500, ps: join(d, "ps") });
+      expect(c.timedOut).toBe(true);
+      expect(until(() => running(mark) === false, 1_000)).toBe(true);
+    } finally {
+      cleanup(mark);
+    }
+  }, 30_000);
 });
