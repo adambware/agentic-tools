@@ -16,7 +16,7 @@ from GitHub via `gh`; without one, everything stays local.
 Every row carries two windows, `w7` and `w30` (`(now - N days, now]`), plus parse counters:
 
 ```json
-{"schema":1,"version":"0.7.1","generated_at":"…","window_end":"…",
+{"schema":1,"version":"0.8.0","generated_at":"…","window_end":"…",
  "w7": {"workflows": {…}, "sessions": {…}, "lenses": {…}, "repos": {…}}, "w30": {…},
  "parse":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
  "parse_lenses":{"bad_lines":0,"bad_files":0,"bad_records":0,"dup_records":0},
@@ -110,7 +110,7 @@ mkdir -p ~/bin && ln -sf "/path/to/agentic-tools/plugins/loops/bin/loop-metrics.
 The `loops` CLI is a second bundle, `bin/loops.mjs` (executable, zero runtime dependencies):
 
 ```bash
-ln -sf "/path/to/agentic-tools/plugins/loops/bin/loops.mjs" ~/bin/loops
+mkdir -p ~/bin && ln -sf "/path/to/agentic-tools/plugins/loops/bin/loops.mjs" ~/bin/loops
 ```
 
 ## Run
@@ -415,7 +415,7 @@ Text output escapes every row (and each `--compose-project` stderr line) once: c
 the zero-width space as `\t`, `\u001b`…, and a `— fix:` or ` -- fix:` inside a message or fix as `\u2014 fix:` or
 `\u002d- fix:`, so a row has one fix. `--json` values are the raw text (redacted, not escaped), with DEL, C1, U+2028/2029,
 bidi and zero-width characters written as `\uXXXX` like JSON's own C0 escapes, so `JSON.parse` returns them exactly.
-env-check's git commands run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
+env-check's git commands, and (0.8.0) its `[[local]]` checks and `a.local` version probes, run without git's repo-local variables (the `git rev-parse --local-env-vars` set: `GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_CONFIG`…), so they read the checkout env-check runs in; `loops zone` keeps them. As git's
 `prepare_other_repo_env` does, command-scope config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, e.g. `safe.directory`)
 stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in this checkout's own git-dir (the
@@ -423,9 +423,40 @@ stays, and `GIT_INDEX_FILE` stays when it names an existing file directly in thi
 an absent one included (git would read it as an empty index), is dropped.
 
 `--static` reads repo files only: no toolchain, tool or docker probes; one git rev-parse (`a.local.*`,
-`b.containers`, `d.tools`, `d.sparse` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
+`b.containers`, `d.tools`, `d.sparse`, `d.node_modules` are not run, `git worktree list` is not read, `c.shared` is SKIP unless that
 rev-parse fails, `e.project` does not resolve the name). The rev-parse gives `[[local]]` checks the same
 `ENV_CHECK_WORKTREE` full mode does. Only `[[local]]` checks with `static = true` run.
+
+**`needs` (0.8.0).** A `[[local]]` with `needs = ["goreleaser"]` runs only when each name is on PATH and no asdf or mise shim
+for it is unresolved. Otherwise the row is `SKIP <id> goreleaser not installed` with an install hint, and the check does
+not run. Under `--static` this is a PATH lookup only; the shim manager is never asked. A name must be a command name,
+not a path (exit 2). A needs-SKIP does not satisfy `--require-checks=<id>`: like any SKIP, it makes `x.required` FAIL.
+
+**`d.node_modules` (0.8.0).** `[harness] node_modules = "fail"` (or `"warn"`; default `"off"`) checks that
+`node_modules` holds what each tracked `package-lock.json` lists. It does not run under `--static`. It compares file
+content only, never times: every package record's `version` and `integrity` in the lockfile against npm's own record
+of the install, `node_modules/.package-lock.json`. One row per lockfile, at the configured level, names the first
+difference: `node_modules/` missing, a package at another version or integrity, a package not installed, or an
+installed package the lockfile does not list. A missing dev package says it may come from `--omit=dev`. The fix is
+`npm ci` in that directory. Other rules:
+
+- A package npm skips on this platform (its `os`, `cpu` or `libc` does not match) never differs. Nor does an optional
+  package that only skipped packages depend on: npm skips it too.
+- A missing optional package that this platform could install is a WARN, never a FAIL: npm skips an optional package
+  whose install failed.
+- `libc` matters only on Linux, as in npm: a package with a `libc` field is skipped on any other OS, and when the libc
+  is unknown. loops reads the libc as npm does: the text of `/usr/bin/ldd`, else Node's process report.
+- Workspaces: only the root lockfile and the root `node_modules` are compared, and each member link must exist. A
+  lockfile inside a member (a path the root's `workspaces` globs match, read as npm reads them: `*`, `**`, `?`,
+  `[...]`, `{a,b}` and `{1..3}`, and `!` negations) is not checked. A `file:` dependency is not a
+  member: its own tracked lockfile is checked.
+- A tracked lockfile that sparse checkout left out is INFO "not checked out". A deleted one is at the configured level.
+- No tracked lockfile at all is INFO "no tracked package-lock.json to compare".
+- No `node_modules/.package-lock.json` (npm 6, yarn or pnpm installs) is a WARN "cannot verify".
+- `lockfileVersion` 2 and 3 are read; any other is INFO "unsupported lockfile".
+- Every tracked lockfile counts, also a test fixture's, which has no `node_modules`.
+- Only npm's record is read, not each package's directory: a package deleted by hand from `node_modules` while
+  `node_modules/.package-lock.json` still lists it is not caught.
 
 **Required checks (0.8.0).** `--require-checks` makes a CI run fail when a check it relies on stops running (a
 deleted `[[pins]]` entry, a `[[local]]` that lost `static = true`). The value goes after `=`, never as the next
@@ -495,6 +526,8 @@ files = ["go.mod", "VERSION"]           # d.files: regular files (symlinks follo
 entrypoints = "auto"                    # d.entrypoints: executable; "auto" = ./paths run by tracked .github/workflows (INFO when there are none), or a list
 tracked = true                          # d.tracked: no tracked file deleted, 100755 bits intact
 sparse = "warn"                         # d.sparse: WARN when core.sparseCheckout is on (any git bool spelling) or unreadable, else PASS
+node_modules = "fail"                   # 0.8.0: d.node_modules: fail|warn|off (default off), full mode only; each tracked
+                                        # package-lock.json against node_modules/.package-lock.json (see below)
 
 [compose]                               # e.*; omit the table for no compose checks
 mode = "none"                           # none: FAIL if a compose file is tracked | test
@@ -510,7 +543,9 @@ main_files = ["compose.yml", "compose.dev.yml"]  # 0.8.0, test only: the main ch
 id = "d.lint-lock"                      # <a-e or x>.<name>; x.none and x.required are reserved
 run = ".loops/checks/lint-lock.sh"      # an executable, as a repo-relative path; listed explicitly, never auto-discovered
 static = true                           # also run under --static (default false)
-timeout_s = 15
+timeout_s = 15                          # 0.8.0: then SIGTERM, a 2 s grace, SIGKILL (was SIGKILL at once)
+needs = ["goreleaser"]                  # 0.8.0: command names; if one is missing (or its asdf/mise shim resolves no
+                                        # version), the row is SKIP "not installed" and the check does not run
 ```
 
 **Pins contract.** `a.pins.<tool>` compares exact pins only: every pair of pins must agree at the `compare`
@@ -845,14 +880,29 @@ fails), no running container, or no commit touching the inputs is a SKIP, never 
 **Local check protocol.** A `[[local]]` check is run with the repo root as cwd, no arguments, and
 a timeout. It must be read-only, offline, and never print secret values. `env-check` runs the repo's own code
 (local checks, `<tool> --version`), so run it only in checkouts you trust, as you would `make`.
-`timeout_s` stops the check with SIGKILL (a trapped SIGTERM cannot outlive it). The check runs in its own process group, and
-the timeout kills the whole group, so a child it started (`go` under a shell) does not keep running. A small node
-supervisor in env-check's own process group starts the check and holds the deadline; it also kills the check's group
-with SIGKILL when env-check is interrupted (Ctrl-C at the terminal, or SIGINT, SIGTERM or SIGHUP) and when env-check
-dies while the check runs, so an interrupted run leaves no check behind. A child that leaves the group (`setsid`)
-is out of its reach. A child it leaves
-running when it exits on its own can hold the run open, so `exec` long commands. It prints one line per
-result on stdout:
+A small node supervisor in env-check's own process group starts the check in a new session, so the check has its own
+process group and no controlling terminal; a terminal's Ctrl-C reaches the supervisor, not the check. The supervisor
+holds the deadline and ends the check's whole group, so a child it started (`go` under a shell) does not keep running.
+The kill sequence (0.8.0) is the same for every way a check is cut short:
+
+1. The signal: SIGTERM at `timeout_s`, and when env-check dies or gets SIGTERM or SIGHUP; SIGINT when env-check is
+   interrupted (Ctrl-C or SIGINT). It goes to the check's group and to every descendant the supervisor finds by walking
+   `ps` from the check, so a `setsid` child whose parent is still running gets it too.
+2. A grace of 2 s for all of them to exit. The supervisor stays for the whole grace, also when the check's first
+   process exits at once or env-check has already died. A second Ctrl-C is ignored.
+3. SIGKILL to the group and to every process it found, after one more `ps` walk. A trapped SIGTERM cannot outlive it.
+
+If the supervisor itself dies (SIGKILLed, out of memory), env-check kills the check's group, but only after `ps` shows
+the group's processes all started during this run and its leader started at the spawn, so a reused process id or
+group id is never killed. A group whose leader has exited cannot be told from a newer one, and is left (`could not be
+verified`). The row is then
+`WARN <id>  supervisor lost; check group killed`, `... belongs to another process, nothing killed` when the group is
+live but not this run's, or `... could not be verified, nothing killed` when env-check cannot tell; a FAIL the check printed first still stands. Rerun once, and report it if it repeats. One gap remains: a
+double-forked daemon that its parent left before the timeout is reparented to init, so no `ps` walk finds it. A child
+the check leaves running when it exits on its own is not killed either, and it can hold the run open, so `exec` long
+commands.
+
+The check prints one line per result on stdout:
 
 ```
 (PASS|WARN|FAIL|SKIP|INFO) <id> <message>[ — fix: <fix>]
@@ -874,7 +924,7 @@ exit without a FAIL line adds one (with the first stderr line, cut to 120 charac
 a timeout adds a WARN, "not a pass",
 after any lines printed before it (so a FAIL printed before the timeout still counts).
 
-**Wrapper.** `templates/env-check` is a 27-line POSIX `sh` wrapper to copy into a repo as
+**Wrapper.** `templates/env-check` is a 29-line POSIX `sh` wrapper to copy into a repo as
 `bin/env-check` (`chmod +x`). It runs the first regular file among `$LOOPS_BIN`, `$HOME/bin/loops` and
 `loops` on PATH as `loops env-check "$@"` (through `node` when the file is not executable). Exit codes of its own:
 
@@ -887,8 +937,12 @@ after any lines printed before it (so a FAIL printed before the timeout still co
 Any other exit code comes from the engine.
 
 **Re-copy the wrapper after upgrading loops.** A repo keeps running the copy it took, so a release that changes
-`templates/env-check` (0.7.1 added exits 1 and 2) reaches a consumer only when it copies the template over its
-`bin/env-check` again (`chmod +x`). The CHANGELOG says when a release changes the template.
+`templates/env-check` reaches a consumer only when it copies the template again. 0.7.1 added exits 1 and 2; 0.8.0
+changes the exit 3 hint. The CHANGELOG says when a release changes the template. Three steps:
+
+1. Copy `templates/env-check` over the repo's `bin/env-check`, and `chmod +x` it.
+2. When you adopt a 0.8.0 key, set `engine = ">=0.8.0"` in `.loops/env-check.toml`, so an older engine says it is too old.
+3. Run `bin/env-check` from the main checkout, then from a worktree, and check both are clean.
 
 #### Run the static checks in CI
 

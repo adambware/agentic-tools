@@ -53,6 +53,23 @@ jobs:
             exit 1
           fi
 
+  # The supervisor's kill sequence and its `ps` parsing (proc.test.ts) on macOS:
+  # BSD ps, launchd as init and a bash /bin/sh differ from the Linux runner.
+  proc-macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: plugins/loops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install
+        run: npm ci --no-audit --no-fund
+      - name: proc tests
+        run: npx vitest run src/lib/proc.test.ts
+
   # The real-Compose corpora: compose-config.test.ts (the wrapper against the
   # real `docker compose config`) and compose-policy.test.ts (e.project end to
   # end over real checkouts). The loops-engine job also runs these files but

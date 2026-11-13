@@ -3,7 +3,7 @@
 # Config: .loops/env-check.toml. Exit 3 means no engine is installed here: contributors can
 # ignore it, the repo's own CI gate stays the merge gate. Exit 2 is a broken install (a LOOPS_BIN
 # that is not a file, a dangling link); exit 1 with a FAIL row means node cannot run. Install with:
-#   ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops
+#   mkdir -p ~/bin && ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops
 if [ -n "${LOOPS_BIN:-}" ] && [ ! -f "$LOOPS_BIN" ]; then
   printf 'env-check: LOOPS_BIN=%s is not a file\n' "$LOOPS_BIN" >&2
   exit 2
@@ -22,6 +22,8 @@ for c in "${LOOPS_BIN:-}" "$HOME/bin/loops" "$(command -v loops 2>/dev/null)"; d
   if [ -x "$c" ]; then exec "$c" env-check "$@"; fi
   exec node "$c" env-check "$@"
 done
-echo "env-check: engine not installed (optional for contributors; see CONTRIBUTING.md)" >&2
+echo "env-check: engine not installed (optional for contributors). Install it with:" >&2
+echo "  mkdir -p ~/bin && ln -sf /path/to/agentic-tools/plugins/loops/bin/loops.mjs ~/bin/loops" >&2
+echo "  details: https://github.com/adambware/agentic-tools/blob/main/plugins/loops/README.md#install" >&2
 echo "env-check: not run"
 exit 3

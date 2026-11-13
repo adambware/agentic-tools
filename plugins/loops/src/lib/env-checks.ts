@@ -9,6 +9,7 @@ import { readDotEnv, resolveTemplate } from "./compose-env.js";
 import { compileGlob } from "./glob.js";
 import type { Config, LocalCheck, Severity } from "./env-config.js";
 import { ALIAS, diffPart, disagreement, inRange, localOk, pinOf, PinError, readSource, sourceAbsent, ver, type PinValue } from "./pins.js";
+import { hostPlatform, nodeModulesRows, type Platform } from "./node-modules.js";
 import { git, gitEnv, isExecutable, shimOf, shQuote, which, type Runner } from "./proc.js";
 import { CONTROL, cut, quote, short } from "./text.js";
 
@@ -45,6 +46,8 @@ export interface Ctx {
    * home would leave a prefix the renderer no longer recognises.
    */
   redact: (s: string) => string;
+  /** d.node_modules' os/cpu/libc; unset: this machine's (hostPlatform), read only when the check runs. */
+  platform?: Platform;
 }
 
 const res = (level: Level, id: string, message: string, fix?: string): Result => ({ level, id, message, fix, source: "builtin" });
@@ -153,7 +156,7 @@ export function pinChecks(c: Ctx): Result[] {
     const sev = pin.local;
     if (c.static || Object.values(sev).every((s) => s === "off")) continue;
     const [bin, args] = Object.hasOwn(VERSION_CMD, pin.tool) ? VERSION_CMD[pin.tool]! : [pin.tool, ["--version"]];
-    const r = c.run(bin, args, { cwd: c.root, env: { ...c.env, GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
+    const r = c.run(bin, args, { cwd: c.root, env: { ...gitEnv(c.env, c), GOTOOLCHAIN: "local", GOPROXY: "off", MISE_AUTO_INSTALL: "0" }, timeoutMs: PROBE_TIMEOUT_MS });
     const have = r.code === 0 ? ver(r.stdout + r.stderr) : null;
     const lid = `a.local.${pin.tool}`;
     const row = (s: Severity, message: string, fix: string) => void (s !== "off" && out.push(res(s.toUpperCase() as Level, lid, message, fix)));
@@ -286,7 +289,7 @@ function autoEntrypoints(c: Ctx): string[] {
  * executable copy that is no shim follows the shim's own directory on PATH. Only that state falls back: any other mise
  * error (an untrusted or broken config, mise itself failing) fails the shim too.
  */
-function shimProblem(c: Ctx, tool: string, p: string): string | null {
+export function shimProblem(c: Ctx, tool: string, p: string): string | null {
   const s = shimOf(p);
   if (!s) return null;
   const cmd = s.cmd ?? which(s.manager, c.env.PATH);
@@ -377,6 +380,11 @@ export function harnessChecks(c: Ctx): Result[] {
     if (on === "true") out.push(res("WARN", "d.sparse", "sparse checkout is enabled; tools may not see every file", "git sparse-checkout disable"));
     else if (on === "false") out.push(res("PASS", "d.sparse", "sparse checkout is off"));
     else out.push(res("WARN", "d.sparse", "could not read core.sparseCheckout", "run git config --type=bool --get core.sparseCheckout to see what is wrong"));
+  }
+  if (h.nodeModules !== "off" && !c.static) {
+    // A tracked lockfile that is not on disk: `git ls-files -t` tags one sparse checkout left out (skip-worktree) "S".
+    const sparse = (f: string): boolean => git(c.run, c.root, ["ls-files", "-t", "-z", "--", `:(literal)${f}`], gitEnv(c.env, c))?.startsWith("S ") ?? false;
+    out.push(...nodeModulesRows(c.root, c.tracked, h.nodeModules, c.platform ?? hostPlatform(), sparse));
   }
   return out;
 }
@@ -941,8 +949,19 @@ const LINE = /^(PASS|WARN|FAIL|SKIP|INFO) (\S+) (.+?)(?: (?:—|--) fix:(?: (.*)
  */
 export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[] {
   if (c.static && !l.static) return [{ ...res("SKIP", l.id, "not run in --static mode"), source: "local" }];
+  // A needed command that is absent, or whose shim resolves no version here, SKIPs the check: it never runs. Under
+  // --static this is a PATH lookup only; the shim manager is never asked.
+  const lacking = l.needs.flatMap((n) => {
+    const p = which(n, c.env.PATH);
+    const why = p && !c.static ? shimProblem(c, n, p) : null;
+    return !p ? [n] : why ? [`${n} (${why})`] : [];
+  });
+  if (lacking.length) {
+    return [{ ...res("SKIP", l.id, `${lacking.join(", ")} not installed`, `install ${lacking.length > 1 ? "them" : "it"} and put ${lacking.length > 1 ? "them" : "it"} on PATH (for an asdf or mise shim, set a version for this checkout)`), source: "local" }];
+  }
   const env: NodeJS.ProcessEnv = {
-    ...c.env,
+    // gitEnv: a foreign GIT_DIR is dropped, a hook's own index and GIT_CONFIG_PARAMETERS/COUNT stay.
+    ...gitEnv(c.env, c),
     ENV_CHECK_ROOT: c.root,
     ENV_CHECK_MODE: c.static ? "static" : "full",
     // "Not the main checkout"; empty when git could not be read, set so an inherited value never wins.
@@ -963,6 +982,13 @@ export function runLocal(c: Ctx, l: LocalCheck, project: string | null): Result[
     const m = CONTROL.test(line) ? null : LINE.exec(line);
     if (m && (m[2] === l.id || m[2]!.startsWith(`${l.id}.`))) out.push(mk(m[1] as Level, m[2]!, m[3]!, m[4]?.trim() || undefined));
     else out.push(mk("FAIL", `${l.id}.protocol`, `unparseable line ${quote(c.redact(line))}`, "emit `LEVEL id message`, with an optional fix after an em dash and `fix:`, one line per result, id = the configured id or <id>.<name>"));
+  }
+  // A lost supervisor (it died, or overran the backstop) never downgrades a FAIL the check printed before it.
+  if (r.lost) {
+    if (out.some((x) => x.level === "FAIL")) return out;
+    const what =
+      r.cleaned === "yes" ? "check group killed" : r.cleaned === "no" ? "check group belongs to another process, nothing killed" : "check group could not be verified, nothing killed";
+    return [...out, mk("WARN", l.id, `supervisor lost; ${what}`, "rerun once; report it if it repeats")];
   }
   // What the check printed before the timeout still counts (an emitted FAIL survives).
   if (r.timedOut) return [...out, mk("WARN", l.id, `timed out after ${l.timeoutS}s (not a pass)`, `raise timeout_s or run ${l.run} by hand`)];

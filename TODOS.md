@@ -224,32 +224,6 @@
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
-- [ ] **loops 0.8.0 backlog: features the 0.7.1 pilots asked for** [P2 features]
-  - **What:** Eight items cut from 0.7.1 as features: opt-in `a.range` (compare ranges, not only exact pins); optional pin sources (`.nvmrc` and `.tool-versions`, "if present"); a built-in npm `node_modules`-vs-lockfile check; detect a workflow that runs Go with no `setup-go`; a "skip when absent" level for local checks; a compose test mode with `${VAR:?}` interpolation; split the pin check's local severity by major versus minor/patch; run `[[local]]` checks in parallel.
-  - **Why:** Each was asked for by one of the four pilot repos during the 0.7.1 review and cut as a feature, not a fix. Without this entry the list lives only in a session note.
-  - **Context:** 0.7.1 is fixes-only. Start from the 0.7.1 plan's out-of-scope list. Also open from the 0.7.1 review: a `[[local]]` child that leaves the check's group with `setsid` escapes both the timeout and the interrupt group kill (needs process-tree tracking); if the supervisor is SIGKILLed or its 10 s backstop fires, the local's group is orphaned because the engine does not know the check's pid; on an interrupt the supervisor sends SIGKILL at once instead of forwarding SIGINT with a grace period; CI still runs Node 20 with no `engines` field in `package.json`.
-  - **Status (0.8.0 PR B):** closed by PR B: `a.range` (as `[[pins]] range = "check"`), optional pin sources (`[[pins]] optional`) and the local severity split (a `local` table). Cut to its own TODO: the workflow that runs Go with no `setup-go` (B7, below). PR D owns the `node_modules` check (D2) and skip-when-absent (D1). The compose `${VAR:?}` test mode and parallel `[[local]]` checks (J5) are out of 0.8.0 scope; the last PR to merge files TODOs for them before closing this entry.
-  - **Effort:** L
-  - **Depends on / blocked by:** loops 0.7.1 merged.
-
-- [ ] **loops 0.8.0: gaps a later pilot found migrating a Compose + Go repo to env-check (B1-B10)** [P2 features]
-  - **What:** Found on 2026-11-04 by moving a pilot repo's own env-check script onto loops 0.7.0. None is patched in the engine; the repo covers them with `[[local]]` checks for now. Each was re-checked against the merged 0.7.1 code.
-    - B1: a peer worktree's failing Compose model withholds `e.project` everywhere. Recorded on the D14 entry above as its second data point.
-    - B2 (config key): Compose test mode cannot see a main-checkout `-p` name held outside Compose (a project name in the repo's own wrapper env file). The main checkout resolves the dirname and PASSes, `b.containers` SKIPs "stack down" while the real stack runs, and `ENV_CHECK_PROJECT` is wrong for locals. Ask: a `[compose] main_project` key, or treat the main checkout's name as unknown when no running labeled stack has it.
-    - B3: `[compose] files` is one set for every checkout, but the main checkout runs base + a non-prod overlay and worktrees run base + `docker-compose.override.yml`.
-    - B4: the `dockerfile` pin kind ignores image ARGs. `ARG NODE_IMAGE=node:24-alpine` then `FROM ${NODE_IMAGE}` yields neither a pin nor a range. Ask: resolve `FROM ${ARG}` through the ARG's default.
-    - B5: `engines` is never compared against the major pins; a second consumer for `a.range`.
-    - B6 (config key): `a.local.<tool>` has no per-pin directory and forces `GOTOOLCHAIN=local` (`env-checks.ts:135`). For a Go module in a subdirectory it reports the installed go, not what `go` there would select, and misses the "will download" case.
-    - B7: `d.entrypoints` cannot be "auto" plus an extra list, and does not read pre-commit `language: script` entries.
-    - B8 (template): `templates/env-check` hard-codes "see CONTRIBUTING.md" in its not-installed hint (`templates/env-check:25`), which a repo without that file has to add. Also: the wrapper needs a runnable `node` on the host even for repos that run all Node work in containers. The pilot saw its 0.7.0 copy report the engine as not installed (exit 3); the 0.7.1 template instead FAILs `d.tools  node not runnable here` (exit 1), which is clearer but still requires host `node`.
-    - B9: there are no row dependencies, so every Docker-dependent local re-probes the daemon and SKIP chains are kept by convention. Ask: a shared daemon probe, or a way for one row to depend on another. (Long locals carrying their own watchdog against timeout orphaning is already on the 0.8.0 backlog above.)
-    - B10: when a tool's pins disagree, the pin branch `continue`s (`env-checks.ts:127-130`) before the `a.local.<tool>` probe, so the local row vanishes. No FAIL or WARN is lost, but the installed version goes unreported. Also cosmetic: `redactHome` rewrites `$HOME` to `~` inside fix commands (they still work in a shell).
-  - **Why:** These came from a real migration, not a review. Without this entry they live only in a session note.
-  - **Context:** Several are config keys (B2, B6), which the 0.7.1 fixes-only rule kept out. B4, B8 and B10 were tagged "0.7.1 fix or 0.8.0" and are still open at 0.7.1.
-  - **Status (0.8.0):** B1-B3 closed by PR A. Closed by PR B: B4 (`FROM ${ARG}` is resolved through the global `ARG` scope; no value there is INFO "image set at build time"), B5 (`engines` is compared under `range = "check"`) and B10 (`a.local.<tool>` probes against each distinct pin when they disagree). The `redactHome` cosmetic note under B10 stays open. B6-B9 of this list are outside PR B (this list's B7 is PR D's `d.entrypoints` item, not the plan's B7).
-  - **Effort:** M
-  - **Depends on / blocked by:** None. Scope 0.8.0 alongside the backlog entry above.
-
 - [ ] **loops env-check: WARN a workflow job that runs Go with no `setup-go` (0.8.0 item B7, cut)** [P1 features]
   - **What:** A job whose `run:` lines invoke `go`, `golangci-lint` or `goreleaser` at command position (start of a line or after `&&`, `;`, `|`), with no `actions/setup-go` step, is `WARN a.pins.go.setup job <name> uses the runner's Go`, fix: add an `actions/setup-go` step reading the pinned version. Runs only when a go `[[pins]]` entry exists; its own id keeps it from satisfying `--require-checks=a.pins.go`. Skips `container:` jobs and jobs using a local `./` composite action.
   - **Build specifics (normative, from the 0.8.0 Eng phase):** parse workflows with `yaml`. `actions/setup-go`, `jdx/mise-action` and `asdf-vm/actions` steps count as setup; job-level `uses:` (reusable workflow) jobs are skipped. Tests: `cargo build` does not match; a `container:` job is skipped.
@@ -259,9 +233,100 @@
   - **Effort:** S
   - **Depends on / blocked by:** None.
 
+- [ ] **loops env-check: compose `${VAR:?}` test mode and placeholder injection** [P2 features]
+  - **What:** A `[compose]` test mode that gives a required variable (`${VAR:?}` or `${VAR?}`) a placeholder value, so `docker compose config` can resolve the project name when the real secret is not in `.env`.
+  - **Why:** Today a required variable that is unset in a checkout makes the probe fail with kind `interp`, and the name cannot be read in CI or in a fresh worktree.
+  - **Context:** Cut from loops 0.8.0 by the owner decision of 2026-11-10: may-slip items are cut to TODOs unless trivial. After 0.8.0 the engine is in maintenance mode, so this lands only when a pilot hits it. 0.8.0 reads only the variable's name from the error and tells the user to set it.
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: run `[[local]]` checks in parallel (J5)** [P3 features]
+  - **What:** Run independent `[[local]]` checks at the same time, with a bounded worker count, keeping the output order of the config.
+  - **Why:** A repo with many slow locals runs them one after another.
+  - **Context:** Cut from loops 0.8.0 by the owner decision of 2026-11-10: may-slip items are cut to TODOs unless trivial. After 0.8.0 the engine is in maintenance mode, so this lands only when a pilot hits it. The supervisor now owns one run dir per check, so parallel runs do not share state, but the output order, the `needs` chains and the Docker probe sharing (next entry) need design.
+  - **Effort:** M
+  - **Depends on / blocked by:** The shared daemon probe (B9) entry, if rows are to depend on each other.
+
+- [ ] **loops env-check: row dependencies and a shared daemon probe (B9)** [P3 features]
+  - **What:** Let one row depend on another, or probe the Docker daemon once and share the answer, so every Docker-dependent `[[local]]` stops re-probing it and SKIP chains stop depending on convention.
+  - **Why:** Each Docker local pays for its own daemon probe, and the SKIP chain between them is kept by hand.
+  - **Context:** B9 from the Compose + Go pilot list. Not in 0.8.0 scope.
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: per-directory `a.local` probes and GOTOOLCHAIN "will download" (B6)** [P3 features]
+  - **What:** Give `a.local.<tool>` a per-pin directory, and stop forcing `GOTOOLCHAIN=local`, so a Go module in a subdirectory reports what `go` there would select and the "will download" case is seen.
+  - **Why:** The probe runs at the repo root and reports the installed go, not the toolchain the module would pick.
+  - **Context:** B6 from the Compose + Go pilot list; the probe sets `GOTOOLCHAIN=local` on purpose so it never downloads.
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: detect an ambiguous mise shim** [P3 correctness]
+  - **What:** Extend the ambiguous-shim WARN, which covers asdf shims, to mise shims: a command provided by more than one mise tool.
+  - **Why:** 0.8.0 warns for asdf only. The stray copy behind a mise shim goes unreported.
+  - **Context:** Cut from 0.8.0 PR B: mise shims are not checked, and the CHANGELOG says so. Needs a captured example of a mise shim with two providers first.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: the env-check wrapper needs a host `node` for container-only repos (B8b)** [P3 features]
+  - **What:** Let the wrapper `templates/env-check` run the engine without a runnable host `node`, or give a clear skip, for repos that run all Node work in containers.
+  - **Why:** The wrapper reports `d.tools  node not runnable here` (exit 1) on a host without node, which is clear but still a block.
+  - **Context:** B8 from the Compose + Go pilot list. The exit 3 hint half shipped in 0.8.0 (it carries the install line and the README URL).
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: `redactHome` rewrites `$HOME` inside fix commands (B10b)** [P3 cosmetic]
+  - **What:** Leave a home path inside a copy-paste fix command as written, and redact it only in messages.
+  - **Why:** The `~` form still works in a shell, but a fix with a quoted path or a flag glued to it can read wrong.
+  - **Context:** B10 cosmetic note from the Compose + Go pilot list. See also the `redactHome` glued-token note in the 0.7.2 review-notes entry.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: children a `[[local]]` check leaves after a NORMAL exit (F18)** [P3 correctness]
+  - **What:** After a check exits normally, sweep its process group and descendants too, as the timeout and interrupt paths do.
+  - **Why:** 0.8.0 kills the group only when a check is cut short, so a daemon the check started and left running survives a normal exit. A double-forked daemon already reparented to init stays out of reach on every path.
+  - **Context:** Named in the 0.8.0 README as the remaining gap. Needs a rule for which leftovers are meant to stay (a check that starts a dev server on purpose).
+  - **Effort:** M
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops env-check: `d.node_modules` lockfile exclusion (fixture lockfiles)** [P3 features]
+  - **What:** Add a key to leave named `package-lock.json` files out of `d.node_modules`, for example test fixtures.
+  - **Why:** Every tracked lockfile counts, so a fixture's lockfile with no `node_modules` beside it reports a difference.
+  - **Context:** Accepted in the 0.8.0 eng review and documented in the README. Add the key when a pilot hits it. Also open: a package deleted by hand while the hidden lockfile still lists it passes; a stat per package would catch it.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: Windows runners** [P3 features]
+  - **What:** Make the engine and the composite action run on Windows runners.
+  - **Why:** The action exits 2 on a Windows runner today, and the supervisor depends on POSIX process groups and `ps`.
+  - **Context:** Not in 0.8.0 scope.
+  - **Effort:** L
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: a `loops ci-init` generator** [P3 features]
+  - **What:** A command that writes the workflow file for the composite action, and the `.loops/env-check.toml` stub, from the repo's pins.
+  - **Why:** The README gives a complete workflow to copy, and each repo edits it by hand.
+  - **Context:** Not in 0.8.0 scope.
+  - **Effort:** M
+  - **Depends on / blocked by:** The 0.8.0 composite action.
+
+- [ ] **loops env-check: `d.entrypoints` auto plus an extra list, and pre-commit `language: script` hooks (D5, pilot list B7)** [P3 features]
+  - **What:** Accept `entrypoints = ["auto", "./extra"]`. Have auto also read `.pre-commit-config.yaml` hooks with `language: script`, only under `repo: local`, so a remote hook repo's script path is ignored.
+  - **Why:** A pilot could not keep auto detection and add one entrypoint it misses, and its pre-commit script hooks are not checked.
+  - **Context:** Cut from loops 0.8.0 PR D (may-slip items became TODOs). Tests to add: auto plus a list, a local script hook is read, a remote repo's script hook is ignored. Land it when a pilot hits it.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
+- [ ] **loops: engines node >=18 and a Node 18/24 CI matrix (D6)** [P3 packaging]
+  - **What:** Add `engines: node >=18` to `package.json` and run `loops-ci` on Node 18 and 24.
+  - **Why:** CI runs Node 20 only, with no `engines` field, while the action accepts Node 18.
+  - **Context:** Cut from loops 0.8.0 PR D: no Node 18 was available to verify. The source has no APIs known to need Node 20 (checked by grep) and vitest 2 supports Node 18. Try it in a CI-only PR.
+  - **Effort:** S
+  - **Depends on / blocked by:** None.
+
 - [ ] **loops 0.7.2 review-notes backlog: fix the ones a pilot hits** [P3 correctness]
   - **What:** INFORMATIONAL notes below the blocking floor in the 0.7.1 (PR #27) and 0.6.0 (PR #25) reviews, not fixed in either PR. Fix one when a pilot hits it; leave the rest. Line numbers are as reviewed.
-    - From PR #27: `pins.ts:328` the go.mod guard is lexical, so a committed symlink (folder or go.mod) still reads outside the checkout, as does every pin source; `pins.ts:305` a SHA or branch ref reads as the current release for every DEFAULTS rule (asserted on purpose in `pins.test.ts`); `env-checks.ts:691` `[[local]]` checks and `a.local` probes still get raw inherited `GIT_*` vars, while env-check's own git uses `gitEnv`; `proc.ts:166` `redactHome` no longer redacts a home glued to a flag or token (`-I/Users/x/inc`, `pkg@/Users/x`), which 0.7.0 did; `env-check.ts:136` a tab in a `[[local]]` message or fix now prints as a literal `\t`, undocumented; `proc.ts:69` `detached: true` gives `[[local]]` checks a new session with no controlling terminal (`/dev/tty` ENXIO), where the docs say only "own process group"; the CHANGELOG's 0.7.1 entry is labeled fixes-only but adds implicit pin sources, the mise fallback and the process-group supervisor; `env-checks.ts:230` the mise fallback ignores PATH order (mise shims, then an unresolved asdf shim, then a system copy PASSes, though mise's fallback reaches the failing asdf shim); `env-checks.ts:223` the inactive-state regex matches anywhere in stderr, so a config path containing that phrase enables the fallback; `pins.ts:394` `install-mode: ""` is read as non-binary, a false FAIL (closed by 0.8.0 PR B, item B8); `env-check.ts:75` a worktree path containing a newline reads as moved, a false FAIL; `pins.ts:330` a versionless golangci-lint-action step with `install-mode: none` FAILs with no hint about install-mode; `pins.test.ts:855` a "Value" header sits above the wrong test.
+    - From PR #27: `pins.ts:328` the go.mod guard is lexical, so a committed symlink (folder or go.mod) still reads outside the checkout, as does every pin source; `pins.ts:305` a SHA or branch ref reads as the current release for every DEFAULTS rule (asserted on purpose in `pins.test.ts`); `proc.ts:166` `redactHome` no longer redacts a home glued to a flag or token (`-I$HOME/inc`, `pkg@$HOME`), which 0.7.0 did; `env-check.ts:136` a tab in a `[[local]]` message or fix now prints as a literal `\t`, undocumented; the CHANGELOG's 0.7.1 entry is labeled fixes-only but adds implicit pin sources, the mise fallback and the process-group supervisor; `env-checks.ts:230` the mise fallback ignores PATH order (mise shims, then an unresolved asdf shim, then a system copy PASSes, though mise's fallback reaches the failing asdf shim); `env-checks.ts:223` the inactive-state regex matches anywhere in stderr, so a config path containing that phrase enables the fallback; `pins.ts:394` `install-mode: ""` is read as non-binary, a false FAIL (closed by 0.8.0 PR B, item B8); `env-check.ts:75` a worktree path containing a newline reads as moved, a false FAIL; `pins.ts:330` a versionless golangci-lint-action step with `install-mode: none` FAILs with no hint about install-mode; `pins.test.ts:855` a "Value" header sits above the wrong test.
     - From PR #25, still open after 0.7.1 (which fixed its later notes 1, 2, 4 and 8; line numbers here are not given, since `pins.ts` has moved since): in `compose-config.ts` a Docker-compatible shim without Compose (podman-docker, exit 125) FAILs `e.project` instead of SKIP, with fix text that cannot clear it (deferred from 0.8.0 PR A, item A6: the plan builds the SKIP matcher only from captured podman-docker stderr, and none was captured, so the wording is not guessed; a bare exit 125 must still FAIL); in `pins.ts`, for a workflow block-scalar input the unsupported-form line is the scalar's start line; the README's `b.containers` wording merges failed and non-numeric `git log` output, which the code distinguishes; the `readSource` prefix repeats the file the message already names; the Dockerfile directive scan continues past unknown `# name=value` lines and treats an empty `# escape=` as a change (a false FAIL; a non-default escape is already rejected); setup-python's free-threaded `3.13t` is an unsupported FAIL; the `b.containers` FAIL for a failed or garbled `git log` has no fix text; a setup-* range input is an INFO row until `a.range` lands (by design; 0.8.0 PR B checks it under the opt-in `range = "check"`); `pins-matrix.test.ts` checks kind names and files, not the pin, range and "anything else" columns the docs imply; a tracked `[compose]` input missing on disk (sparse checkout) is a FAIL that cannot be cleared from inside that state.
   - **Why:** None blocks a release, and most are narrow or a false FAIL. They live only in two PR bodies, so 0.8.0 scoping would not see them.
   - **Context:** Recorded in the "Review notes" sections of PR #27 and PR #25. Check that a note still reproduces before fixing it.
@@ -276,6 +341,14 @@
   - **Depends on / blocked by:** None.
 
 ## Completed
+
+- [x] **loops 0.8.0 backlog: features the 0.7.1 pilots asked for** [P2 features]
+  - Done: all eight items are decided. Shipped in loops 0.8.0: `[[pins]] range = "check"`, optional pin sources, the `local` severity table, `[[local]] needs` (skip when absent) and the `d.node_modules` check. Cut to their own entries: the workflow that runs Go with no `setup-go`, the compose `${VAR:?}` test mode, and parallel `[[local]]` checks. The 0.7.1 review leftovers on the supervisor are handled too: it sends SIGTERM with a 2 s grace, forwards SIGINT, and cleans up after a lost supervisor. Node 18 support (D6) was cut to its own entry.
+  - **Completed:** 2026-11-12 (loops 0.8.0)
+
+- [x] **loops 0.8.0: gaps a later pilot found migrating a Compose + Go repo to env-check (B1-B10)** [P2 features]
+  - Done: B1-B3 (PR A), B4, B5 and B10's pin-disagreement probe (PR B), and B8's exit 3 hint (PR D: it carries the install line and the README URL). The still-open pieces each have their own entry: B6 as per-directory probes, B8b, B9, and the `redactHome` cosmetic note under B10 (B10b). This list's B7 (`d.entrypoints` auto plus a list) did not ship; it has its own entry (0.8.0 item D5).
+  - **Completed:** 2026-11-12 (loops 0.8.0)
 
 - [x] **Change detection uses a date, not the reviewed SHA** [P1 correctness]
   - Done: registry entries now carry `last_reviewed_sha` (`schemas/registry-entry.yml`, `RegistryEntry.last_reviewed_sha`) alongside `last_reviewed`. `bin/record` stamps it from the reviewed repo's HEAD sha (`run.json.pack_sha`, itself `git rev-parse HEAD` against `--pack`, which lives inside the reviewed repo) for every actually-reviewed entry, leaving it untouched when git was unavailable (`pack_sha === "no-git"`) rather than stamping a bogus baseline. `src/lib/git.ts`'s `GitRunner.changedFilesSince` now takes `{ sha, date }`: it diffs `<sha>..HEAD` directly when a sha is present, and falls back to the old date-derived `--before=<date>T23:59:59` baseline only when no sha is recorded yet or the sha fails to resolve (shallow clone, rewritten history) — closing the same-day-commit blind spot the TODO described. Both selection call sites (`bin/select` / `src/lib/select-run.ts` and `bin/due` / `src/lib/due.ts`) pass both fields. A non-hex sha (a `--option` or a ref name planted in the reviewed repo's registry) is never handed to git: the runner treats it as unresolvable and `validate` rejects it. Covered by `src/lib/git.test.ts` (new) plus updated `src/lib/record-run.test.ts` and `src/lib/select-run.test.ts` assertions.

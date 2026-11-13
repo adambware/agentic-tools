@@ -23,6 +23,8 @@ export interface LocalCheck {
   id: string;
   run: string;
   static: boolean;
+  /** Command names that must be on PATH (and no unresolved version-manager shim) for the check to run; else it SKIPs. */
+  needs: string[];
   timeoutS: number;
   /** timeoutS in whole milliseconds, rounded once so float error (16.1 * 1000) cannot leak into the spawn timeout. */
   timeoutMs: number;
@@ -30,7 +32,7 @@ export interface LocalCheck {
 export interface Config {
   sharedHint: string | null;
   pins: Pin[];
-  harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean };
+  harness: { tools: string[]; files: string[]; entrypoints: string[] | "auto"; tracked: boolean; sparse: boolean; nodeModules: "fail" | "warn" | "off" };
   /** null when the config has no [compose] table: no e.* checks run. */
   compose: { mode: "none" | "test"; files: string[]; inputs: string[]; containers: "fail" | "warn"; derive: "slug-hash" | "dirname"; allowContainerName: string[]; mainProject: string | null; mainFiles: string[] | null } | null;
   locals: LocalCheck[];
@@ -136,7 +138,7 @@ export function parseConfig(text: string, file: string): Config {
     };
   });
 
-  const h = table(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse"]);
+  const h = table(top.harness ?? {}, "[harness]", ["tools", "files", "entrypoints", "tracked", "sparse", "node_modules"]);
   const isEntry = (v: unknown): v is string[] | "auto" => v === "auto" || isStrs(v);
   const harness = {
     tools: pick(h, "tools", "[harness]", isStrs, "a list of strings", []),
@@ -144,6 +146,8 @@ export function parseConfig(text: string, file: string): Config {
     entrypoints: pick(h, "entrypoints", "[harness]", isEntry, '"auto" or a list of paths', []),
     tracked: pick(h, "tracked", "[harness]", isBool, "a boolean", false),
     sparse: pick(h, "sparse", "[harness]", oneOf("warn", "off"), "warn|off", "off") === "warn",
+    // 0.8.0: d.node_modules, full mode only.
+    nodeModules: pick(h, "node_modules", "[harness]", oneOf<"fail" | "warn" | "off">("fail", "warn", "off"), "fail|warn|off", "off"),
   };
 
   const c = table(top.compose ?? {}, "[compose]", ["mode", "files", "inputs", "containers", "derive", "allow_container_name", "main_project", "main_files"]);
@@ -164,7 +168,7 @@ export function parseConfig(text: string, file: string): Config {
   const seen = new Set<string>();
   const locals = list(top.local ?? [], "[[local]]").map((l, i): LocalCheck => {
     const where = `[[local]] #${i + 1}`;
-    const t = table(l, where, ["id", "run", "static", "timeout_s"]);
+    const t = table(l, where, ["id", "run", "static", "timeout_s", "needs"]);
     const id = pick(t, "id", where, isStr, "a string");
     if (!/^[a-ex]\.[\w.-]+$/.test(id)) throw new UsageError(`${where}: id "${id}" must look like <a-e or x>.<name>`);
     if (isReserved(id)) throw new UsageError(`${where}: id ${id} is reserved for env-check's own ${RESERVED_ROWS[id]} row`);
@@ -174,7 +178,8 @@ export function parseConfig(text: string, file: string): Config {
     const timeoutMs = Math.round(timeoutS * 1000);
     const run = pick(t, "run", where, isStr, "a path");
     if (isAbsolute(run) || /^\.\.(\/|$)/.test(normalize(run))) throw new UsageError(`${where}: run "${run}" must be a repo-relative path`);
-    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), timeoutS, timeoutMs };
+    const needs = pick(t, "needs", where, (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string" && /^[A-Za-z0-9_][\w.+-]*$/.test(x)), "a list of command names (no paths)", []);
+    return { id, run, static: pick(t, "static", where, isBool, "a boolean", false), needs, timeoutS, timeoutMs };
   });
   return { sharedHint, pins, harness, compose, locals };
 }
