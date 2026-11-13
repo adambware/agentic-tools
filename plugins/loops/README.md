@@ -447,7 +447,8 @@ installed package the lockfile does not list. A missing dev package says it may 
 - `libc` matters only on Linux, as in npm: a package with a `libc` field is skipped on any other OS, and when the libc
   is unknown. loops reads the libc as npm does: the text of `/usr/bin/ldd`, else Node's process report.
 - Workspaces: only the root lockfile and the root `node_modules` are compared, and each member link must exist. A
-  lockfile inside a member (a path the root's `workspaces` globs match) is not checked. A `file:` dependency is not a
+  lockfile inside a member (a path the root's `workspaces` globs match, read as npm reads them: `*`, `**`, `?`,
+  `[...]`, `{a,b}` and `{1..3}`, and `!` negations) is not checked. A `file:` dependency is not a
   member: its own tracked lockfile is checked.
 - A tracked lockfile that sparse checkout left out is INFO "not checked out". A deleted one is at the configured level.
 - No tracked lockfile at all is INFO "no tracked package-lock.json to compare".
@@ -892,7 +893,9 @@ The kill sequence (0.8.0) is the same for every way a check is cut short:
 3. SIGKILL to the group and to every process it found, after one more `ps` walk. A trapped SIGTERM cannot outlive it.
 
 If the supervisor itself dies (SIGKILLed, out of memory), env-check kills the check's group, but only after `ps` shows
-the group's processes all started during this run, so a reused process id is never killed. The row is then
+the group's processes all started during this run and its leader started at the spawn, so a reused process id or
+group id is never killed. A group whose leader has exited cannot be told from a newer one, and is left (`could not be
+verified`). The row is then
 `WARN <id>  supervisor lost; check group killed`, `... belongs to another process, nothing killed` when the group is
 live but not this run's, or `... could not be verified, nothing killed` when env-check cannot tell; a FAIL the check printed first still stands. Rerun once, and report it if it repeats. One gap remains: a
 double-forked daemon that its parent left before the timeout is reparented to init, so no `ps` walk finds it. A child

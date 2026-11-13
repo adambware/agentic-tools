@@ -10197,7 +10197,7 @@ child = spawn(o.cmd, o.args, { env: o.env, detached: true, stdio: ["ignore", "pi
 if (child.pid) {
   seen.add(child.pid);
   starts.set(child.pid, NaN);
-  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
+  if (o.pidfile) try { writeFileSync(o.pidfile + ".tmp", JSON.stringify({ pgid: child.pid, startMs, spawnedMs: Date.now() })); renameSync(o.pidfile + ".tmp", o.pidfile); } catch {}
 }
 child.on("error", (e) => { error = e.code || String(e); finish(null, null); });
 // A reaped leader's pid is free: never signal it on its own again.
@@ -10278,17 +10278,21 @@ function psStarts(ps = findPs()) {
   const r = spawnSync(ps, ["-A", "-o", "pid=,pgid=,lstart="], { env: { LC_ALL: "C", TZ: "UTC0" }, encoding: "utf8", timeout: PS_TIMEOUT_MS });
   return r.status === 0 ? r.stdout : null;
 }
-function groupOwner(listing, pgid, startMs) {
+function groupOwner(listing, pgid, startMs, spawnedMs) {
   let found = false;
+  let leader = null;
   for (const line of listing.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line);
     if (!m || Number(m[2]) !== pgid) continue;
     const at = Date.parse(`${m[3].replace(/\s+/g, " ")} UTC`);
     if (Number.isNaN(at)) return "unknown";
     if (at < startMs - LSTART_SLACK_MS) return "other";
+    if (Number(m[1]) === pgid) leader = at;
     found = true;
   }
-  return found ? "ours" : "gone";
+  if (!found) return "gone";
+  if (leader === null) return "unknown";
+  return leader > spawnedMs + LSTART_SLACK_MS ? "other" : "ours";
 }
 function reapLost(pidfile, ps = psStarts) {
   let rec;
@@ -10297,11 +10301,11 @@ function reapLost(pidfile, ps = psStarts) {
   } catch {
     return "unverified";
   }
-  const { pgid, startMs } = rec ?? {};
-  if (!Number.isSafeInteger(pgid) || pgid <= 1 || pgid === process.pid || typeof startMs !== "number") return "unverified";
+  const { pgid, startMs, spawnedMs } = rec ?? {};
+  if (!Number.isSafeInteger(pgid) || pgid <= 1 || pgid === process.pid || typeof startMs !== "number" || typeof spawnedMs !== "number") return "unverified";
   const listing = ps();
   if (listing === null) return "unverified";
-  const owner = groupOwner(listing, pgid, startMs);
+  const owner = groupOwner(listing, pgid, startMs, spawnedMs);
   if (owner === "unknown") return "unverified";
   if (owner === "other") return "no";
   if (owner === "ours") {
@@ -11541,19 +11545,93 @@ function skipped(packages, pf) {
   }
   return out;
 }
+var MAX_BRACES = 1024;
+function braces(glob) {
+  for (let i = 0; i < glob.length; i++) {
+    if (glob[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (glob[i] !== "{") continue;
+    const parts2 = [];
+    let depth = 0;
+    let from = i + 1;
+    let close = -1;
+    for (let j = i; j < glob.length && close < 0; j++) {
+      const c = glob[j];
+      if (c === "\\") j++;
+      else if (c === "{") depth++;
+      else if (c === "," && depth === 1) {
+        parts2.push(glob.slice(from, j));
+        from = j + 1;
+      } else if (c === "}" && --depth === 0) {
+        parts2.push(glob.slice(from, j));
+        close = j;
+      }
+    }
+    if (close < 0) return [glob];
+    let alts = parts2;
+    if (parts2.length === 1) {
+      const m = /^(-?\d+)\.\.(-?\d+)$/.exec(parts2[0]);
+      if (!m) {
+        i = close;
+        continue;
+      }
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      if (Math.abs(b - a) >= MAX_BRACES) return [glob];
+      alts = [];
+      for (let k = a; a <= b ? k <= b : k >= b; k += a <= b ? 1 : -1) alts.push(String(k));
+    }
+    const pre = glob.slice(0, i);
+    const post = glob.slice(close + 1);
+    const out = [];
+    for (const alt of alts) {
+      out.push(...braces(pre + alt + post));
+      if (out.length > MAX_BRACES) return [glob];
+    }
+    return out;
+  }
+  return [glob];
+}
+function segRe(pat) {
+  const esc = (c) => c.replace(/[.*+?^$()|[\]{}\\/-]/g, "\\$&");
+  let re = "";
+  for (let i = 0; i < pat.length; i++) {
+    const c = pat[i];
+    if (c === "\\" && i + 1 < pat.length) re += esc(pat[++i]);
+    else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else if (c === "[") {
+      let j = i + 1;
+      const neg = pat[j] === "!" || pat[j] === "^";
+      if (neg) j++;
+      const end = pat.indexOf("]", j + 1);
+      if (end < 0) {
+        re += "\\[";
+        continue;
+      }
+      const body = pat.slice(j, end).replace(/\\/g, "\\\\").replace(/\]/g, "\\]").replace(/\^/g, "\\^");
+      re += `[${neg ? "^" : ""}${body}]`;
+      i = end;
+    } else re += esc(c);
+  }
+  return new RegExp("^" + re + "$");
+}
 function globMatch(glob, path) {
-  const g = normalize3(glob).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
   const p = path.split("/").filter((x) => x && x !== ".");
-  const seg = (pat, s) => {
-    const re = pat.split("*").map((part) => part.replace(/[.+?^$()|[\]{}\\]/g, "\\$&")).join("[^/]*");
-    return new RegExp("^" + re + "$").test(s);
-  };
-  const go = (i, j) => {
-    if (i === g.length) return j === p.length;
-    if (g[i] === "**") return go(i + 1, j) || j < p.length && go(i, j + 1);
-    return j < p.length && seg(g[i], p[j]) && go(i + 1, j + 1);
-  };
-  return go(0, 0);
+  return braces(glob).some((one) => {
+    const g = normalize3(one).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
+    const go = (i, j) => {
+      if (i === g.length) return j === p.length;
+      if (g[i] === "**") return go(i + 1, j) || j < p.length && go(i, j + 1);
+      return j < p.length && segRe(g[i]).test(p[j]) && go(i + 1, j + 1);
+    };
+    return go(0, 0);
+  });
+}
+function isMember(globs, rel) {
+  const neg = globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1));
+  return globs.some((g) => !g.startsWith("!") && globMatch(g, rel)) && !neg.some((g) => globMatch(g, rel));
 }
 function readLock(file) {
   let text;
@@ -11599,7 +11677,7 @@ function nodeModulesRows(root, tracked, level, pf, sparse = () => false) {
     for (const p of Object.values(r.packages)) {
       if (!p?.link || typeof p.resolved !== "string") continue;
       const rel = normalize3(p.resolved);
-      if (globs.some((g) => globMatch(g, rel))) members.add(normalize3(join4(dirname2(f), rel)));
+      if (isMember(globs, rel)) members.add(normalize3(join4(dirname2(f), rel)));
     }
   }
   const out = [];
