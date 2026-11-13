@@ -142,20 +142,109 @@ function skipped(packages: Record<string, Pkg>, pf: Platform): Set<string> {
   return out;
 }
 
-/** Whether `path` (relative, `/`-separated) matches a workspaces glob: `*` is one segment, `**` any number. */
+/** Brace expansion past this many globs is refused (the glob is then kept as written). */
+const MAX_BRACES = 1024;
+
+/**
+ * `glob` with its braces expanded as npm's (minimatch's) brace-expansion does: `{a,b}` alternatives, nested ones too,
+ * and `{1..3}` numeric ranges. A `{x}` with neither, an unclosed `{` and a `\\`-escaped brace stay literal.
+ */
+export function braces(glob: string): string[] {
+  for (let i = 0; i < glob.length; i++) {
+    if (glob[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (glob[i] !== "{") continue;
+    const parts: string[] = [];
+    let depth = 0;
+    let from = i + 1;
+    let close = -1;
+    for (let j = i; j < glob.length && close < 0; j++) {
+      const c = glob[j];
+      if (c === "\\") j++;
+      else if (c === "{") depth++;
+      else if (c === "," && depth === 1) {
+        parts.push(glob.slice(from, j));
+        from = j + 1;
+      } else if (c === "}" && --depth === 0) {
+        parts.push(glob.slice(from, j));
+        close = j;
+      }
+    }
+    if (close < 0) return [glob];
+    let alts = parts;
+    if (parts.length === 1) {
+      const m = /^(-?\d+)\.\.(-?\d+)$/.exec(parts[0]!);
+      if (!m) {
+        i = close;
+        continue;
+      }
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      if (Math.abs(b - a) >= MAX_BRACES) return [glob];
+      alts = [];
+      for (let k = a; a <= b ? k <= b : k >= b; k += a <= b ? 1 : -1) alts.push(String(k));
+    }
+    const pre = glob.slice(0, i);
+    const post = glob.slice(close + 1);
+    const out: string[] = [];
+    for (const alt of alts) {
+      out.push(...braces(pre + alt + post));
+      if (out.length > MAX_BRACES) return [glob];
+    }
+    return out;
+  }
+  return [glob];
+}
+
+/** One glob path segment as a regex: `*` any run within the segment, `?` one character, `[...]` a class (`[!...]` or `[^...]` negated). */
+function segRe(pat: string): RegExp {
+  const esc = (c: string) => c.replace(/[.*+?^$()|[\]{}\\/-]/g, "\\$&");
+  let re = "";
+  for (let i = 0; i < pat.length; i++) {
+    const c = pat[i]!;
+    if (c === "\\" && i + 1 < pat.length) re += esc(pat[++i]!);
+    else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else if (c === "[") {
+      // A class runs to the first `]` after its first character; an unclosed `[` is literal.
+      let j = i + 1;
+      const neg = pat[j] === "!" || pat[j] === "^";
+      if (neg) j++;
+      const end = pat.indexOf("]", j + 1);
+      if (end < 0) {
+        re += "\\[";
+        continue;
+      }
+      const body = pat.slice(j, end).replace(/\\/g, "\\\\").replace(/\]/g, "\\]").replace(/\^/g, "\\^");
+      re += `[${neg ? "^" : ""}${body}]`;
+      i = end;
+    } else re += esc(c);
+  }
+  return new RegExp("^" + re + "$");
+}
+
+/**
+ * Whether `path` (relative, `/`-separated) matches a workspaces glob the way npm's minimatch does for these: braces
+ * expanded first, then per segment `*`, `?` and `[...]`, and `**` for any number of segments.
+ */
 function globMatch(glob: string, path: string): boolean {
-  const g = normalize(glob).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
   const p = path.split("/").filter((x) => x && x !== ".");
-  const seg = (pat: string, s: string): boolean => {
-    const re = pat.split("*").map((part) => part.replace(/[.+?^$()|[\]{}\\]/g, "\\$&")).join("[^/]*");
-    return new RegExp("^" + re + "$").test(s);
-  };
-  const go = (i: number, j: number): boolean => {
-    if (i === g.length) return j === p.length;
-    if (g[i] === "**") return go(i + 1, j) || (j < p.length && go(i, j + 1));
-    return j < p.length && seg(g[i]!, p[j]!) && go(i + 1, j + 1);
-  };
-  return go(0, 0);
+  return braces(glob).some((one) => {
+    const g = normalize(one).replace(/\/+$/, "").split("/").filter((x) => x && x !== ".");
+    const go = (i: number, j: number): boolean => {
+      if (i === g.length) return j === p.length;
+      if (g[i] === "**") return go(i + 1, j) || (j < p.length && go(i, j + 1));
+      return j < p.length && segRe(g[i]!).test(p[j]!) && go(i + 1, j + 1);
+    };
+    return go(0, 0);
+  });
+}
+
+/** Whether `rel` is a member under npm's workspaces `globs`: matched by one, and by no `!` negation. */
+export function isMember(globs: string[], rel: string): boolean {
+  const neg = globs.filter((g) => g.startsWith("!")).map((g) => g.slice(1));
+  return globs.some((g) => !g.startsWith("!") && globMatch(g, rel)) && !neg.some((g) => globMatch(g, rel));
 }
 
 type Read = { ok: true; version: unknown; packages: Record<string, Pkg> } | { ok: false; why: string };
@@ -218,7 +307,7 @@ export function nodeModulesRows(root: string, tracked: string[], level: "fail" |
     for (const p of Object.values(r.packages)) {
       if (!p?.link || typeof p.resolved !== "string") continue;
       const rel = normalize(p.resolved);
-      if (globs.some((g) => globMatch(g, rel))) members.add(normalize(join(dirname(f), rel)));
+      if (isMember(globs, rel)) members.add(normalize(join(dirname(f), rel)));
     }
   }
   const out: Result[] = [];

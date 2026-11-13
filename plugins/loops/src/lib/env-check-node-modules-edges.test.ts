@@ -2,7 +2,7 @@
 // packages and the object form of workspaces.
 import { describe, expect, it } from "vitest";
 import { main } from "./loops-cli.js";
-import type { Platform } from "./node-modules.js";
+import { braces, isMember, type Platform } from "./node-modules.js";
 import { deps, put, repo } from "./testkit.js";
 
 const CFG = ".loops/env-check.toml";
@@ -70,5 +70,45 @@ describe("d.node_modules edges", () => {
     put(root, "node_modules/.package-lock.json", hidden({ ...LEFT, "node_modules/host": locked["node_modules/host"], "node_modules/b": locked["node_modules/b"] }));
     put(root, "node_modules/b/package.json", '{"name":"b"}\n');
     expect(run(root)).toEqual({ code: 0, rows: ["PASS d.node_modules  package-lock.json: node_modules matches (4 packages)"] });
+  });
+});
+
+// Value: protects=a workspace member named by a brace, `?` or `[...]` glob being compared as its own install (a false
+// "node_modules/ missing" FAIL for a member npm installed through the root); fails_when=those constructs are matched
+// literally (red on e55dc2f: the {a,b} member's lockfile FAILed); why_new=PR #33 review (codex P2), the matcher knew only
+// * and **; seam=a hand-written lockfile; no_claim=minimatch's extglobs (@(a|b)) and dot rules
+describe("d.node_modules workspaces globs (review fix)", () => {
+  it("expands braces like npm: alternatives, nested ones, numeric ranges; a lone {x} and an escaped brace stay", () => {
+    expect(braces("packages/{a,b}")).toEqual(["packages/a", "packages/b"]);
+    expect(braces("{apps,libs/{x,y}}/*")).toEqual(["apps/*", "libs/x/*", "libs/y/*"]);
+    expect(braces("p/v{1..3}")).toEqual(["p/v1", "p/v2", "p/v3"]);
+    expect(braces("p/{x}/{a,b}")).toEqual(["p/{x}/a", "p/{x}/b"]);
+    expect(braces("p/\\{a,b}")).toEqual(["p/\\{a,b}"]);
+    expect(braces("p/{a,b")).toEqual(["p/{a,b"]);
+  });
+
+  it("matches ?, [...] and [!...] within a segment, and honours ! negations", () => {
+    expect(isMember(["packages/?"], "packages/a")).toBe(true);
+    expect(isMember(["packages/?"], "packages/ab")).toBe(false);
+    expect(isMember(["packages/[ab]"], "packages/b")).toBe(true);
+    expect(isMember(["packages/[!ab]"], "packages/b")).toBe(false);
+    expect(isMember(["packages/[a-c]x"], "packages/bx")).toBe(true);
+    expect(isMember(["packages/a.b"], "packages/aXb")).toBe(false);
+    expect(isMember(["packages/*", "!packages/legacy"], "packages/legacy")).toBe(false);
+    expect(isMember(["packages/*", "!packages/legacy"], "packages/new")).toBe(true);
+  });
+
+  it("skips the lockfile of a member a {a,b} glob names", () => {
+    const locked = { ...LEFT, "node_modules/a": { resolved: "packages/a", link: true }, "packages/a": { name: "a", version: "0.1.0" } };
+    const root = repo({
+      "package.json": "{}\n",
+      "package-lock.json": lock(locked, { workspaces: ["packages/{a,b}"] }),
+      "packages/a/package.json": '{"name":"a"}\n',
+      "packages/a/package-lock.json": lock({ "node_modules/nope": { version: "1.0.0" } }),
+      [CFG]: CONFIG,
+    });
+    put(root, "node_modules/.package-lock.json", hidden({ ...LEFT, "node_modules/a": locked["node_modules/a"] }));
+    put(root, "node_modules/a/package.json", '{"name":"a"}\n');
+    expect(run(root)).toEqual({ code: 0, rows: ["PASS d.node_modules  package-lock.json: node_modules matches (2 packages)"] });
   });
 });
